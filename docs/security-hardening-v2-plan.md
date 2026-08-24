@@ -66,7 +66,7 @@ if not real.is_relative_to(base_dir.resolve()):
 
 **问题**：`Origin` 原样回显 + `Allow-Credentials: true` = 跨域 API 读全部会话数据。
 
-**修法**：改成从环境变量读 `ALLOWED_ORIGINS`（默认 `https://192.168.30.5:9090,http://127.0.0.1`）。
+**修法**：改成从环境变量读 `ALLOWED_ORIGINS`（默认自动探测本机 LAN IP + 127.0.0.1；IP 每周变化，勿写死）。
 局域网同源访问根本不触发 CORS，无影响。
 
 ### 1f. dreamina install-cli — Should-fix 上公网

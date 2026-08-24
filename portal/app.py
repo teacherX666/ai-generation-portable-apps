@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import http.client
 import io
+import ipaddress
 import json
 import mimetypes
 import os
@@ -116,8 +117,12 @@ def _default_allowed_origins() -> frozenset[str]:
 
 
 # Lazy — get_lan_ip needs ifconfig/ipconfig which may take a beat.
-# Refreshed on each _cors_headers call if unset, so LAN IP changes get picked up.
+# Refreshed with a TTL (see _cors_headers): the IP may change mid-run (DHCP
+# lease), and a whitelist frozen at startup would reject CORS preflights from
+# clients that re-discovered the new IP before the next portal restart.
 _ALLOWED_ORIGINS: frozenset[str] | None = None
+_ALLOWED_ORIGINS_TS: float = 0.0
+_CORS_REFRESH_SECONDS = 60.0
 
 # Shared secret between portal and sub-apps for the internal finalize callback.
 # Generated fresh per portal launch; injected into each sub-app's env so a
@@ -259,6 +264,58 @@ def ensure_certs(cert_dir: Path) -> tuple[Path, Path] | None:
     ip_file.write_text(current_ip)
     print(f"  Generated self-signed certificate (LAN IP: {current_ip})")
     return cert_file, key_file
+
+
+def start_cert_ip_watcher(cert_dir: Path) -> None:
+    """Watch for LAN IP changes at runtime and regenerate the TLS cert, then
+    exit so launchd (KeepAlive) restarts the portal with the fresh cert.
+
+    ensure_certs() only runs at startup — a mid-run DHCP IP change leaves the
+    running server answering on the old IP with a cert whose SAN no longer
+    matches, which browsers refuse to bypass ("继续访问" only rescues an
+    untrusted issuer, not a SAN mismatch). Regen + clean exit is the recovery:
+    launchd brings the process back and the startup path serves the new cert.
+
+    Guards: the change must be confirmed twice (5 min apart) so transient
+    flapping (VPN up/down) doesn't trigger a restart loop, and the new IP must
+    be a private LAN address (get_lan_ip already filters reserved ranges, this
+    double-checks with ipaddress).
+    """
+    ip_file = cert_dir / "lan_ip.txt"
+
+    def _known_ip() -> str:
+        try:
+            return ip_file.read_text().strip() if ip_file.exists() else ""
+        except Exception:
+            return ""
+
+    pending_new_ip = ""
+    while True:
+        time.sleep(300)
+        try:
+            current_ip = get_lan_ip()
+            ipaddress.ip_address(current_ip)  # raises on junk
+        except Exception:
+            continue
+        if not current_ip or not ipaddress.ip_address(current_ip).is_private:
+            pending_new_ip = ""
+            continue
+        known = _known_ip()
+        if not known or current_ip == known:
+            pending_new_ip = ""
+            continue
+        if pending_new_ip == current_ip:
+            print(f"  [cert-watch] LAN IP changed {known} -> {current_ip} (confirmed twice), "
+                  f"regenerating cert and exiting for restart", flush=True)
+            try:
+                ensure_certs(cert_dir)
+            except Exception as exc:
+                print(f"  [cert-watch] cert regeneration failed: {exc}", flush=True)
+            os._exit(0)
+        else:
+            pending_new_ip = current_ip
+            print(f"  [cert-watch] LAN IP change detected {known} -> {current_ip}; "
+                  f"will act if confirmed on next cycle", flush=True)
 
 
 # ─── Auth ──────────────────────────────────────────────────────────────────────
@@ -986,7 +1043,16 @@ class UsageTracker:
                     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
                     conn.request("GET", f"/api/jobs/{job['job_id']}")
                     resp = conn.getresponse()
-                    if resp.status == 200:
+                    if resp.status == 404:
+                        # 子应用内存态 JOBS 已丢（典型：子应用重启）。终态回调
+                        # 不会再发生——按失败回滚注册时的 daily.jobs +1，
+                        # 立即停止轮询，避免统计虚高为「成功」。
+                        try:
+                            self.finalize_job(job["app"], job["job_id"], "failed")
+                        except Exception:
+                            pass
+                        done_ids.append(job["job_id"])
+                    elif resp.status == 200:
                         data = json.loads(resp.read())
                         # dreamina nests fields under "job"; tracker prefers top-level
                         # (handle_job_status flattens them) but fall back for safety.
@@ -1039,6 +1105,13 @@ class UsageTracker:
                 except Exception:
                     pass
                 if time.time() - job["submitted_at"] > 7200:
+                    # 轮询 2 小时仍未拿到终态、回调也未到：按失败回滚注册时
+                    # 的 daily.jobs +1，避免「永远 pending」的任务虚高为成功。
+                    # finalize_job 幂等：若任务之后真的成功并回调，也不会重复回滚。
+                    try:
+                        self.finalize_job(job["app"], job["job_id"], "failed")
+                    except Exception:
+                        pass
                     done_ids.append(job["job_id"])
             if done_ids:
                 with self._lock:
@@ -1632,12 +1705,19 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _platform_status(self, user: dict):
         lan_ip = get_lan_ip()
+        # 磁盘剩余空间（GB），供前端横幅预警；探测失败时为 None（前端忽略）。
+        disk_free_gb = None
+        try:
+            disk_free_gb = round(shutil.disk_usage(str(STATE_DIR)).free / 1024**3, 1)
+        except Exception:
+            pass
         apps_info = []
         for name, config in APPS.items():
             info = {"name": name, "port": config["port"], **manager.status.get(name, {"status": "unknown"})}
             info["url"] = f"/{name}/"
             apps_info.append(info)
-        self._json(200, {"ok": True, "lan_ip": lan_ip, "portal_port": PORTAL_PORT, "apps": apps_info})
+        self._json(200, {"ok": True, "lan_ip": lan_ip, "portal_port": PORTAL_PORT,
+                         "disk_free_gb": disk_free_gb, "apps": apps_info})
 
     def _platform_stats(self, user: dict):
         stats = tracker.get_stats(username=user["username"], role=user["role"])
@@ -2212,9 +2292,11 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(200, {"ok": True, "rolled_back": rolled})
 
     def _cors_headers(self):
-        global _ALLOWED_ORIGINS
-        if _ALLOWED_ORIGINS is None:
+        global _ALLOWED_ORIGINS, _ALLOWED_ORIGINS_TS
+        now = time.time()
+        if _ALLOWED_ORIGINS is None or now - _ALLOWED_ORIGINS_TS > _CORS_REFRESH_SECONDS:
             _ALLOWED_ORIGINS = _default_allowed_origins()
+            _ALLOWED_ORIGINS_TS = now
         origin = self.headers.get("Origin") or ""
         # Only echo Origin back if it is in the whitelist. Missing or foreign
         # origins get no ACAO header at all, so browsers block the response
@@ -2304,6 +2386,15 @@ def main():
         name="daily_report_scheduler",
     ).start()
     print("  [daily_report] scheduler thread started", flush=True)
+
+    if certs:
+        threading.Thread(
+            target=start_cert_ip_watcher,
+            args=(_DATA_BASE / "certs",),
+            daemon=True,
+            name="cert_ip_watcher",
+        ).start()
+        print("  [cert-watch] LAN IP watcher started", flush=True)
 
     for name, config in APPS.items():
         print(f"    {name:20s} -> http://127.0.0.1:{config['port']}")

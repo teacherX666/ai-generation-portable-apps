@@ -6,7 +6,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 这是一个部署在**服务机**（用户本机 Mac）上的多子应用聚合平台，聚合 Seedance / Nano Banana / Dreamina / Volcengine Portrait 等 AI 生成能力，统一 Portal 前端 + 反向代理暴露给使用者。
 
-**当前部署**：服务机通过局域网 HTTPS（`https://192.168.30.5:9090`，自签证书）向公司同事提供服务，同事只需浏览器即可使用，不需要在自己电脑上安装任何环境。
+**当前部署**：服务机通过局域网 HTTPS（`https://<局域网IP>:9090`，自签证书）向公司同事提供服务，同事只需浏览器即可使用，不需要在自己电脑上安装任何环境。**IP 每周会变**（DHCP），以启动日志 / 顶部标题栏 LAN 显示 / 页面顶部横幅为准，勿在文档写死具体 IP。
 
 **后续演进方向**：可能迁移到公网服务器，让外部客户通过域名访问。因此设计上应尽量避免绑死「本机路径 / 本机 IP / 单机 launchd」这类假设——涉及主机名、证书、端口、路径的代码要留出配置化的余地，方便日后切换到域名 + 反向代理 + 正式证书的部署形态。
 
@@ -100,9 +100,9 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 
 - **实际启动方式**：`~/Library/LaunchAgents/com.ai-portal.plist`（launchd 守护，`KeepAlive=true`，`RunAtLoad=true`），**不是**双击 `启动器.command`
 - **重启命令**：`launchctl kickstart -k gui/$(id -u)/com.ai-portal`（改 plist 后必须重载，`launchctl list | grep com.ai-portal` 看状态）
-- **cloudflared 已 unload**（`com.ai-portal-tunnel.plist`），改走局域网 HTTPS
-- **访问 URL**：`https://192.168.30.5:9090`（自签证书，首次访问需点「高级 → 继续」）；9089 是 HTTP→HTTPS 跳转
-- **Python 路径**：plist 里是 `/usr/bin/python3`（3.9）；手动重启必须用 `/opt/homebrew/bin/python3.12`，3.9 会让所有代理请求静默超时
+- **cloudflared 隧道仍在运行**（`com.ai-portal-tunnel.plist`，2026-08-24 用户确认：现承载**其他应用**的流量，不再服务本 Portal），勿动
+- **访问 URL**：`https://<局域网IP>:9090`（自签证书，首次访问需点「高级 → 继续」；IP 每周变化——cert-watch 自动重生证书并重启，前端横幅提示新地址）；9089 是 HTTP→HTTPS 跳转
+- **Python 路径**：plist 里是 `/opt/homebrew/bin/python3.12`（2026-08-14 实测确认）；**不要**用系统 `/usr/bin/python3`（3.9），它会让所有代理请求静默超时
 - **端口表**：
 
 | App | 生产 | 测试 |

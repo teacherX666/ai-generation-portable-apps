@@ -829,3 +829,15 @@ img.dm-hist-thumb { cursor: zoom-in; }
   transition: opacity 0.2s ease;
 }
 .dm-hist-toast.show { opacity: 1; }
+
+/* 全局横幅：IP 变化提示 / 磁盘预警（数据来自 /api/platform/status） */
+.global-banner {
+  background: linear-gradient(90deg, #b45309, #dc2626);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 8px 16px;
+  text-align: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+.global-banner a { color: #fff; font-weight: 700; text-decoration: underline; }

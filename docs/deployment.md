@@ -19,12 +19,12 @@
 │  └── volcengine-portrait (8891)│
 └─────────────────────────────┘
                 ↑ HTTPS 自签证书
-       LAN: https://192.168.30.5:9090
+       LAN: https://<局域网IP>:9090  （IP 每周变化，以启动日志为准）
 ```
 
 - Portal 由 `~/Library/LaunchAgents/com.ai-portal.plist` 守护启动，**不是** `启动器.command`
 - `启动器.command` 是 GUI 工具：自己启动 Portal 进程（不走 launchd）+ 显示菜单。和 launchd 守护**互不感知**——双开会冲突端口
-- cloudflared tunnel 已 unload，需要外网时再 `launchctl bootstrap`
+- cloudflared tunnel（com.ai-portal-tunnel）2026-08-24 起承载其他应用的流量，与本 Portal 无关，勿动
 - 自签证书 SAN 含 `127.0.0.1` 和当前 LAN IP，IP 漂移时 Portal 启动期会自动重签
 
 ---

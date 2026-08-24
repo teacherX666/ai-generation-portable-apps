@@ -142,8 +142,17 @@ function wireFileDrop(drop, input, name) {
         showPreview(drop, name, serverUrl, res.filename);
         try { URL.revokeObjectURL(localUrl); } catch (e) {}
         if (app && typeof app.saveWorkspaceDraft === 'function') app.saveWorkspaceDraft();
+      } else {
+        // Server rejected the upload (wrong content type / too large / network
+        // drop). Roll back the local preview — otherwise the user believes the
+        // reference material is saved and submits a job without it.
+        clearDropMedia(drop, input, name);
+        alert('上传失败：' + ((res && res.error) ? res.error : '服务器未接受文件（请检查类型或大小）'));
       }
-    } catch (e) { /* silent fallback: local blob preview stays */ }
+    } catch (e) {
+      clearDropMedia(drop, input, name);
+      alert('上传失败：网络错误，请重试');
+    }
   });
   drop.addEventListener('dragover', e => {
     e.preventDefault();
@@ -1123,7 +1132,7 @@ function SeedanceApp() {
             errorHint = '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
           } else if (firstError.includes('[permission_denied]') || firstError.includes('403')) {
             errorHint = '🚫 权限不足或配额已用完，请联系管理员';
-          } else if (firstError.includes('[server_error]') || firstError.includes('5')) {
+          } else if (firstError.includes('[server_error]') || /HTTP 5\d\d/.test(firstError)) {
             errorHint = '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
           } else if (firstError.includes('[network_error]')) {
             errorHint = '🌐 网络连接失败，请检查网络或 API 地址';

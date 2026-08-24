@@ -714,6 +714,22 @@ def _extract_http_code(result: dict) -> int | None:
     return None
 
 
+# 无 HTTP 码的错误里，只有这些形态值得重试（网络抖动/超时）。
+# 其余字符串（Missing AK/SK 等确定性配置错误）重试不会好转，应立即失败——
+# 否则配置错误要空耗 6 次指数退避（约 63s）才报出来。
+_NETWORK_ERROR_MARKERS = (
+    "timed out", "timeout", "urlerror", "connection", "network",
+    "reset by peer", "refused", "unreachable", "getaddrinfo",
+    "temporary failure", "remote end closed", "badstatusline",
+    "chunkedencodingerror", "eof occurred", "broken pipe", "max retries",
+)
+
+
+def _looks_transient_network_error(err) -> bool:
+    low = str(err or "").lower()
+    return any(marker in low for marker in _NETWORK_ERROR_MARKERS)
+
+
 def _call_with_retry(fn, *, label: str, max_retries: int = 6):
     """
     调用 fn()（返回结果字典），对瞬态错误自动重试。
@@ -732,7 +748,11 @@ def _call_with_retry(fn, *, label: str, max_retries: int = 6):
         # 有明确 HTTP 码但不可重试 → 立即返回
         if code is not None and code not in _RETRYABLE_HTTP_CODES:
             return result
-        # 可重试（429/5xx 或无 HTTP 码的网络错误）
+        # 无 HTTP 码的错误分两类：网络类（超时/连接中断）值得重试；
+        # 其余（Missing AK/SK 等确定性配置错误）重试无意义，立即返回。
+        if code is None and not _looks_transient_network_error(result.get("error")):
+            return result
+        # 可重试（429/5xx 或网络类错误）
         if attempt < max_retries - 1:
             backoff = min(2 ** attempt, 32)
             print(f"  [retry] {label} attempt {attempt+1}/{max_retries} failed ({result.get('error')}), retrying in {backoff}s", flush=True)
@@ -1830,6 +1850,7 @@ def _run_virtual_job_impl(job_id, job):
         with JOBS_LOCK:
             job["events"].append({"time": time.strftime("%H:%M:%S"), "message": f"Run {idx} 已提交 task={task_id}"})
 
+        run_finished = False
         for _ in range(240):
             time.sleep(5)
             task_result = ark_v3_call("GET", f"/contents/generations/tasks/{task_id}", api_key=api_key)
@@ -1870,6 +1891,7 @@ def _run_virtual_job_impl(job_id, job):
                             "time": time.strftime("%H:%M:%S"),
                             "message": f"Run {idx} 失败: 任务已成功但没有视频地址",
                         })
+                run_finished = True
                 break
             elif t_status in ("failed", "error"):
                 # Surface Ark's error.code and message, and translate the
@@ -1895,7 +1917,19 @@ def _run_virtual_job_impl(job_id, job):
                         "time": time.strftime("%H:%M:%S"),
                         "message": summary,
                     })
+                run_finished = True
                 break
+
+        if not run_finished:
+            # 20 分钟轮询窗口耗尽仍未终态：显式记为失败——绝不能让
+            # 「无错误即成功」的收尾逻辑把它标成 0 结果的 succeeded。
+            with JOBS_LOCK:
+                job["errors"].append(f"Run {idx}: 生成超时（20 分钟未完成），已中止等待")
+                job["done"] += 1
+                job["events"].append({
+                    "time": time.strftime("%H:%M:%S"),
+                    "message": f"Run {idx} 失败: 生成超时（20 分钟未完成）",
+                })
 
     with JOBS_LOCK:
         job["status"] = "failed" if job.get("errors") else "succeeded"

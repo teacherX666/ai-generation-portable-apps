@@ -34,6 +34,10 @@
     </div>
   </div>
 
+  <!-- 全局横幅：IP 变化提示 / 磁盘预警。数据来自 /api/platform/status
+       （lan_ip/portal_port 已有；disk_free_gb 由后端 Phase 2 补充后自动激活）。 -->
+  <div id="globalBanner" class="global-banner" style="display:none"></div>
+
   <!-- SEEDANCE -->
   <div class="tab-panel active" id="tab-seedance">
     <iframe id="iframe-seedance" src="/seedance/index.html" style="width:100%;height:calc(100vh - 48px);border:none;display:block" allow="fullscreen"></iframe>
@@ -509,7 +513,7 @@
 
       <section class="card">
         <h2>生成历史 <button @click="loadJobs()" style="font-size:11px;padding:3px 10px;margin-left:8px">刷新</button></h2>
-        <div v-if="jobs.length===0" style="color:#64748b;font-size:12px">暂无生成记录</div>
+        <div v-if="jobs.length===0 && extraHistory().length===0" style="color:#64748b;font-size:12px">暂无生成记录</div>
         <div v-for="j in jobs" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px">
           <div class="row" style="align-items:center;margin-bottom:2px">
             <span :class="'tag tag-'+(j.status||'queued')">{{ j.status }}</span>
@@ -523,6 +527,15 @@
             <video :src="appPath + r.download_url" controls style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
             <span style="font-size:11px;color:#64748b;flex:1;margin-left:8px">{{ r.filename || 'video' }}</span>
             <button @click="blobDownload(appPath + r.download_url, r.filename || 'video')" class="btn-sm" style="background:#2563eb;color:#fff;border-color:#2563eb;font-size:11px">⬇ 下载</button>
+          </div>
+        </div>
+        <div v-if="extraHistory().length" style="margin-top:14px;padding-top:10px;border-top:1px dashed #e2e8f0;font-size:12px;color:#94a3b8">服务重启前的历史任务</div>
+        <div v-for="a in extraHistory()" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px;margin-top:8px">
+          <div class="row" style="align-items:center;margin-bottom:2px">
+            <span :class="'tag tag-'+(a.status||'queued')">{{ a.status }}</span>
+            <span style="font-size:12px;flex:1;margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.title || '' }}</span>
+            <span v-if="a.created_at" style="font-size:11px;color:#64748b;margin-right:6px">{{ a.created_at }}</span>
+            <button v-if="a.status==='failed'" @click="retryActivity(a.id)" class="btn-sm" style="background:#2563eb;color:#fff;border-color:#2563eb;font-size:11px">重试</button>
           </div>
         </div>
       </section>

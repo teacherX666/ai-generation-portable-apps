@@ -41,6 +41,11 @@ DREAMINA_CLI_URL = "https://jimeng.jianying.com/cli"
 _DEFAULT_TRUSTED_CLI_HASHES = frozenset({
     # 2026-07-09 snapshot — verified in-context against jimeng.jianying.com/cli
     "3d9a5cade9c94420b13c46f1a425d657e22225c926b06a4608eae32065d7e158",
+    # 2026-08-20 snapshot — upstream released 1.4.17 (seedance 2.5 1080p support).
+    # Reviewed in-context: set -euo pipefail, downloads binary+SKILL.md+version.json
+    # from lf3-static.bytednsdoc.com CDN, installs to DREAMINA_INSTALL_DIR (~/.local/bin),
+    # openclaw injection is a no-op without /root/.openclaw. Used for server deployment.
+    "c9c5966b216e2f38d88f8419031cc2e865f07ef1d8dfce2eed2802ca43c0e422",
 })
 
 
@@ -1113,6 +1118,36 @@ def parse_cli_json(stdout: str) -> dict[str, Any]:
     return {"raw": stdout}
 
 
+# 把 CLI stderr 里的常见错误关键词翻译成中文（Dreamina CLI 没有结构化错误
+# 码，只有英文文案）。命中返回中文说明；未命中返回 None，调用方保留原文
+# （原始 stderr 已进 events 日志，便于排障）。顺序即优先级，先命中先返回。
+_CLI_ERROR_TRANSLATIONS = (
+    ("creditpredeductnotenough", "账户点数/余额不足，请管理员充值或切换账号后重试"),
+    ("insufficient balance", "账户余额不足，请管理员充值或切换账号后重试"),
+    ("not enough credit", "账户余额不足，请管理员充值或切换账号后重试"),
+    ("quota", "账户配额不足，请联系管理员"),
+    ("risk", "内容或账号触发风控，请调整内容后重试"),
+    ("forbidden", "请求被拒绝（风控或权限），请调整内容后重试"),
+    ("contentpolicy", "内容未通过平台审核，请调整提示词后重试"),
+    ("timed out", "任务超时，可点击重试或重新提交"),
+    ("timeout", "任务超时，可点击重试或重新提交"),
+    ("login", "账号登录失效，请重新登录 Dreamina 账号"),
+    ("unauthorized", "账号凭证无效或已过期，请重新登录"),
+    ("token", "账号凭证无效或已过期，请重新登录"),
+    ("concurrency", "同时进行中的任务过多，请稍后再试"),
+    ("network", "网络连接失败，请稍后重试"),
+    ("connection", "网络连接失败，请稍后重试"),
+)
+
+
+def translate_cli_error(err: str) -> str | None:
+    low = (err or "").lower()
+    for keyword, zh in _CLI_ERROR_TRANSLATIONS:
+        if keyword in low:
+            return zh
+    return None
+
+
 def execute_task(job_id: str, task_type: str, args: list[str], params: dict[str, Any]):
     try:
         _execute_task_impl(job_id, task_type, args, params)
@@ -1200,7 +1235,7 @@ def _execute_task_impl(job_id: str, task_type: str, args: list[str], params: dic
                     if dl.get("error") or not dl.get("files"):
                         err = dl.get("error") or "no files produced"
                         with LOCK:
-                            job["errors"].append(f"[{index}] {err}")
+                            job["errors"].append(f"[{index}] {translate_cli_error(err) or err}")
                         add_event(f"子任务 {index}/{total} 失败: {err[:80]}")
                         return
                     with LOCK:
@@ -1213,7 +1248,7 @@ def _execute_task_impl(job_id: str, task_type: str, args: list[str], params: dic
         else:
             error_msg = result["stderr"] or result["stdout"] or "unknown error"
             with LOCK:
-                job["errors"].append(f"[{index}] {error_msg}")
+                job["errors"].append(f"[{index}] {translate_cli_error(error_msg) or error_msg}")
             add_event(f"子任务 {index}/{total} 失败: {error_msg[:80]}")
 
     if total <= 1:

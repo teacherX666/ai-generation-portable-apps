@@ -38,7 +38,7 @@ token 做 live 实测 / 并行探查 / 端到端验证把问题一锤定音，�
 
 这是一个部署在**服务机**（用户本机 Mac）上的多子应用聚合平台，聚合 Seedance / Nano Banana / Dreamina / Volcengine Portrait 等 AI 生成能力，统一 Portal 前端 + 反向代理暴露给使用者。
 
-**当前部署**：服务机通过局域网 HTTPS（`https://192.168.30.5:9090`，自签证书）向公司同事提供服务，同事只需浏览器即可使用，不需要在自己电脑上安装任何环境。
+**当前部署**：服务机通过局域网 HTTPS（`https://<局域网IP>:9090`，自签证书）向公司同事提供服务，同事只需浏览器即可使用，不需要在自己电脑上安装任何环境。**IP 每周会变**（DHCP），以启动日志 / 顶部标题栏 LAN 显示 / 页面顶部横幅为准，勿在文档写死具体 IP。
 
 **后续演进方向**：可能迁移到公网服务器，让外部客户通过域名访问。因此设计上应尽量避免绑死「本机路径 / 本机 IP / 单机 launchd」这类假设——涉及主机名、证书、端口、路径的代码要留出配置化的余地，方便日后切换到域名 + 反向代理 + 正式证书的部署形态。
 
@@ -135,8 +135,8 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 
 - **实际启动方式**：`~/Library/LaunchAgents/com.ai-portal.plist`（launchd 守护，`KeepAlive=true`，`RunAtLoad=true`），**不是**双击 `启动器.command`
 - **重启命令**：`launchctl kickstart -k gui/$(id -u)/com.ai-portal`（改 plist 后必须重载，`launchctl list | grep com.ai-portal` 看状态）
-- **cloudflared 已 unload**（`com.ai-portal-tunnel.plist`），改走局域网 HTTPS
-- **访问 URL**：`https://192.168.30.5:9090`（自签证书，首次访问需点「高级 → 继续」）；9089 是 HTTP→HTTPS 跳转
+- **cloudflared 隧道仍在运行**（`com.ai-portal-tunnel.plist`，2026-08-24 用户确认：现承载**其他应用**的流量，不再服务本 Portal）；Portal 本身走局域网 HTTPS。**勿动该 plist 与隧道日志**
+- **访问 URL**：`https://<局域网IP>:9090`（自签证书，首次访问需点「高级 → 继续」；IP 每周变化——cert-watch 线程会自动重生证书并重启，前端横幅会提示新地址）；9089 是 HTTP→HTTPS 跳转
 - **Python 路径**：plist 里是 `/opt/homebrew/bin/python3.12`（2026-08-14 实测确认）；**不要**用系统 `/usr/bin/python3`（3.9），它会让所有代理请求静默超时
 - **改 plist 后必须 `unload` + `load`**：`launchctl kickstart -k` 只重启进程、**不重读 plist**（2026-08-14 实测：加了 `INFINITE_CANVAS_ENGINE` 后 kickstart 无效，子应用回退到 stdlib 引擎）
 - **端口表**：
@@ -156,6 +156,7 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 - **下载映射持久化**：`state/download_files.json`（token→文件路径）
 - **数据布局（2026-07-22 起）**：各子应用的 `outputs/`、`state/`、`archives/`、`uploads/`、`accounts/` 以及 `portal/state/` 已从软链改为**主仓库内的真实目录**，不再依赖 `ai-generation-portable-apps-backup-2026-07-14-1653/`（该 backup 目录已删除，主干数据打包留档在 `~/backup-trunk-2026-07-22.zip`）。迁移时**弃掉了草稿缓存** `state/workspaces/` 和 `state/media/`（历史参考图需用户重传）以及 `portal/state/logs/`。`activity_log.json` / `usage.json` / `users.json` / `accounts.json` 等主干与统计数据完整保留。
 - **飞书产出搬运**：独立服务 `com.feishu-output-sync`（launchd，**独立于 com.ai-portal**）常驻轮询 `feishu-output-sync/sync.py`，把各子应用 outputs 增量搬进「每人一张多维表格」（组织内可编辑）。日志 `~/Library/Logs/feishu-output-sync.log`；配置 `feishu-output-sync/config.json`（gitignored）。
+- **每日清理**：独立服务 `com.ai-portal-cleanup`（launchd，每日 03:47）跑 `tools/cleanup_daily.py --apply`：outputs 保留 14 天（命中飞书 synced 表指纹→直接删，未命中→回收站）、workspaces 超 30 天未编辑的 media/ 删除（preset.json 保留）、download_files.json 失效 token 剪枝、超大日志截断（agent 日志 >100MB、portal 子应用日志 >50MB）。**统计数据（usage.json 等）一律不碰**。日志 `~/Library/Logs/ai-portal-cleanup.log`；脚本改动即时生效，plist 改动需 unload+load。
 
 ## 无限画布 2026-08-19 上游同步（新增功能）
 
@@ -264,6 +265,16 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 
 - 删除存档后 `selectedArchive` 不显式重置，浏览器自动选第一个但 Vue 数据仍指向已删除值 → 「读取」发送不存在的名字 → 400
 - 修复模式（4 个函数 × 3 个子应用都改）：`loadArchives()` 校验 selected 是否还在列表；`saveArchive()` 后刷新并显式选中新存档；`loadArchive()` 加空值防御；`deleteArchive()` 加 `confirm()`、删后刷新+重置
+
+### 飞书 Agent 视觉模型与 image 模式规划（2026-08-20 排障）
+
+- 视觉模型配置在 `feishu-generation-agent/.env` 的 `CLAUDE_API_KEY` / `CLAUDE_BASE_URL` / `CLAUDE_MODEL`（ChatAnthropic 走 t8star `.org`）；改后 `launchctl kickstart -k gui/$(id -u)/com.feishu-generation-agent` 重启
+- **image 模式 planner 排序契约**：校验器 `planner.py::_normalize_generated_plan_payload` 要求 `reference_images` 按**文档素材顺序**排列（`@图片N` 编号顺序）；prompt 契约里绝不能写别的排序规则——曾写「按 角色→场景→概念→风格 排列」与校验器矛盾，导致 deepseek 规划连挂 3 次、所有图片需求 run 全失败
+- **image 模式 prompt 缺 token 同理**：`validate_image_prompt` 检查的是模型**原始 prompt**（不是 prompt_slots 拼装版），参考图一多模型必漏写个别 `@图片N` → 在 `_normalize_generated_plan_payload` 里用 `reference_tokens` 同源编号把漏掉的 token 确定性补齐到 prompt 尾部，不靠模型重试（2026-08-20 修）
+- **审批页编辑是热修改**（2026-08-20）：提示词/任务字段改动即时 `PATCH /api/runs/{id}/tasks/{task_id}` 落服务端草稿（`runtime.patch_task`），参考图用途/顺序走既有 references PATCH；浏览器本地草稿只剩任务勾选（`mutate()` 刷新后恢复勾选）。**手工改 prompt 时清空 `prompt_slots`**，否则 `_assemble_prompt_from_slots` 会在下次校验时用槽位拼装覆盖手工内容——这是「改了提示词没生效」的根因
+- **拼装模板的「参考图一」**：`build_image_prompt` 里固定句式「画面风格严格参考图一」指风格参考图整体；风格槽位有多张 token 时必须列全（`image_prompt.py::_style_tokens` 从「的画风」前缀提取），否则需求方读起来像只参考第一张
+- **画面比例 ≠ 交付尺寸**（2026-08-20 需求方反馈）：文档里的 1700\*2500 是交付尺寸（进 size_variants），生成模型只接受离散比例（`plan.py::IMAGE_ASPECT_RATIOS` 9 档，与 seedream 一致）；`nearest_image_aspect_ratio` 把抄错的比例确定性归一到数值最近档（1700:2500 → 2:3）。**交付裁剪是人工开关 `delivery_crop`**（默认 False 原图直出；True 才按 size_variants 居中 cover_crop）——此前一律强制裁到 1700x2500，低分辨率成图被放大后观感像「过度拉伸」
+- **t8star 令牌会被面板禁用**（HTTP 401「该令牌状态不可用」）：排障时逐个 key 实测，别假设 key 还活着。2026-08-20 实测：agent 视觉 key 与 nano-banana `state/secrets.json` 的 key 可用；seedance 预设 key 和 openclaw 两个 `.cn` key 已禁用
 
 ### 通用调试直觉
 

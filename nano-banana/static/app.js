@@ -125,8 +125,23 @@ function wireFileDrop(drop, input) {
         showPreview(drop, input.name, resolveMediaUrl(res.url), res.filename);
         try { URL.revokeObjectURL(localUrl); } catch (e) {}
         if (app && typeof app.saveWorkspaceDraft === 'function') app.saveWorkspaceDraft();
+      } else {
+        // Server rejected the upload (wrong content type / too large / network
+        // drop). Roll back the local preview — otherwise the user believes the
+        // reference material is saved and submits a job without it.
+        clearPreview(drop);
+        delete window._currentSavedMedia?.[input.name];
+        const app = window._app_nb;
+        if (app && app.savedMedia) delete app.savedMedia[input.name];
+        alert('上传失败：' + ((res && res.error) ? res.error : '服务器未接受文件（请检查类型或大小）'));
       }
-    } catch (e) { /* silent fallback: local blob preview stays */ }
+    } catch (e) {
+      clearPreview(drop);
+      delete window._currentSavedMedia?.[input.name];
+      const app = window._app_nb;
+      if (app && app.savedMedia) delete app.savedMedia[input.name];
+      alert('上传失败：网络错误，请重试');
+    }
   });
   drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('isDragging'); });
   drop.addEventListener('dragleave', function () { drop.classList.remove('isDragging'); });

@@ -1,8 +1,33 @@
+import re
+import subprocess
 from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _lan_base_url(port: int = 8765) -> str:
+    """默认素材库对外地址：动态探测本机 LAN IP（服务机 IP 每周变动，禁止
+    硬编码）。探测失败回退 127.0.0.1（至少本机可用）。"""
+    try:
+        out = subprocess.run(
+            ["ifconfig"], capture_output=True, text=True, timeout=10
+        ).stdout
+        ips = re.findall(r"inet (\d+\.\d+\.\d+\.\d+)", out)
+        private = [
+            ip for ip in ips
+            if ip.startswith(("192.168.", "10."))
+            or re.match(r"172\.(1[6-9]|2\d|3[01])\.", ip)
+        ]
+        candidates = private or [
+            ip for ip in ips if not ip.startswith(("127.", "169.254."))
+        ]
+        if candidates:
+            return f"http://{candidates[0]}:{port}"
+    except Exception:
+        pass
+    return f"http://127.0.0.1:{port}"
 
 
 class Settings(BaseSettings):
@@ -16,8 +41,9 @@ class Settings(BaseSettings):
     checkpoint_db_path: Path = Path("data/checkpoints.sqlite3")
     asset_library_db_path: Path = Path("data/asset-library.sqlite3")
     asset_library_dir: Path = Path("data/asset-library")
-    # 服务机 LAN IP 每周变动，禁止在代码里硬编码；部署时通过 .env 覆盖。
-    asset_base_url: str = "http://127.0.0.1:8765"
+    # 服务机 LAN IP 每周变动，禁止在代码里硬编码；默认动态探测本机 LAN IP
+    # （_lan_base_url，探测失败回退 127.0.0.1），部署时可通过 .env 覆盖。
+    asset_base_url: str = Field(default_factory=lambda: _lan_base_url())
 
     lark_app_id: str | None = None
     lark_app_secret: SecretStr | None = None

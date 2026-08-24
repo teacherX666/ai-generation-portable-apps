@@ -18,6 +18,28 @@ async function api(url, method, body) {
 
 function escHtml(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''; }
 
+// Status-aware single poll for the Dreamina tab, mirroring seedance's
+// pollJobOnce (seedance/static/app.js). The portal-wide api() returns null on
+// network errors, but a truthy {ok:false, error:...} JSON body on HTTP 404/5xx
+// from the sub-app — pollJob used to mistake that body for a live job and
+// looped forever rendering "unknown". This distinguishes:
+//   {kind:'ok', job}   HTTP 200 + a job object carrying a status field
+//   {kind:'gone'}      HTTP 404 — job no longer exists (sub-app restarted)
+//   {kind:'error'}     network error / 5xx / non-JSON — transient, retry with backoff
+async function dmPollOnce(url) {
+  try {
+    const res = await fetch(url, { method: 'GET', headers: { 'X-Workspace-Id': workspaceId() } });
+    if (res.status === 404) return { kind: 'gone' };
+    if (!res.ok) return { kind: 'error' };
+    const body = await res.json();
+    const job = body && body.job ? body.job : body;
+    if (!job || typeof job.status === 'undefined') return { kind: 'error' };
+    return { kind: 'ok', job };
+  } catch (e) {
+    return { kind: 'error' };
+  }
+}
+
 function makeDrop(container, name, label, accept, formId) {
   const el = document.createElement('label');
   el.className = 'drop';
@@ -352,10 +374,40 @@ function DreaminaApp() {
       card.style.cssText = 'border-color:#4f46e5;background:#101828;color:#e2e8f0;grid-column:1/-1';
       card.innerHTML = `<div class="meta">Job ${jobId.slice(0, 8)} - 提交中...</div>`;
       el.prepend(card);
+      // Guard against stacked loops: loadJobs() can run repeatedly (login poll,
+      // manual refresh) and must not spawn a second poller for the same job.
+      this._pollingJobs = this._pollingJobs || new Set();
+      if (this._pollingJobs.has(jobId)) { card.remove(); return; }
+      this._pollingJobs.add(jobId);
+      const stop = () => {
+        this._pollingJobs.delete(jobId);
+        card.style.cssText = '';
+        card.id = '';
+      };
+      let fails = 0;
+      let backoff = 2500;
       while (true) {
-        const res = await api(`/dreamina/api/jobs/${jobId}`);
-        if (!res) break;
-        const job = res.job || res;
+        const r = await dmPollOnce(`/dreamina/api/jobs/${jobId}`);
+        if (r.kind === 'gone') {
+          card.innerHTML = '<div class="meta" style="color:#fca5a5">任务已失效（服务可能重启过），请查看历史记录或重新提交</div>';
+          stop();
+          break;
+        }
+        if (r.kind === 'error') {
+          fails++;
+          if (fails >= 15) {
+            card.innerHTML = '<div class="meta" style="color:#fca5a5">网络不稳定，已停止轮询（任务可能仍在后台运行，请稍后在历史记录中查看）</div>';
+            stop();
+            break;
+          }
+          card.innerHTML = `<div class="meta" style="color:#fbbf24">网络连接中断，正在重试 (${fails}/15)...</div>`;
+          await new Promise(res => setTimeout(res, backoff));
+          backoff = Math.min(backoff * 1.5, 10000);
+          continue;
+        }
+        fails = 0;
+        backoff = 2500;
+        const job = r.job;
         const events = (job.events || []).slice(-6).map(e => `<div style="font-size:11px;color:#d1e0ff;padding:2px 0"><span style="color:#697386">${escHtml(e.time)}</span> ${escHtml(e.message)}</div>`).join('');
         let html = `<div class="meta" style="color:#818cf8;font-weight:600;margin-bottom:6px">${job.task_type || ''} · ${job.status || 'unknown'} · ${job.done || 0}/${job.total || 0}</div>`;
         if (events) html += events;
@@ -367,8 +419,7 @@ function DreaminaApp() {
         html += this.renderFiles(allFiles);
         card.innerHTML = html;
         if (['completed', 'failed'].includes(job.status)) {
-          card.style.cssText = '';
-          card.id = '';
+          stop();
           if (job.status === 'completed' && this.dirHandle && allFiles.length) {
             await this.saveDreaminaToClient(allFiles);
           } else if (job.status === 'completed' && this.autoDownload && allFiles.length) {
@@ -553,6 +604,33 @@ function DreaminaApp() {
       copyBtn.textContent = '复制提示词';
       copyBtn.addEventListener('click', () => this._dmCopyPrompt(prompt));
       actions.appendChild(copyBtn);
+      if (status === 'failed') {
+        // One-click retry via the sub-app's existing handle_retry (only valid
+        // while the sub-app still holds the job in memory — after a sub-app
+        // restart it 404s and we fall back to telling the user to resubmit).
+        const retryBtn = document.createElement('button');
+        retryBtn.type = 'button';
+        retryBtn.className = 'btn-small dm-hist-retry-btn';
+        retryBtn.textContent = '重试';
+        retryBtn.addEventListener('click', async () => {
+          const jid = item.job_id || item.id;
+          if (!jid) { alert('该任务缺少 ID，无法重试，请重新提交'); return; }
+          retryBtn.disabled = true;
+          retryBtn.textContent = '重试中...';
+          const res = await api(`/dreamina/api/jobs/${jid}/retry`, 'POST');
+          retryBtn.disabled = false;
+          retryBtn.textContent = '重试';
+          if (res && res.ok) {
+            this.statusText = '已重新提交，任务在后台运行';
+            this.pollJob(res.job_id || jid);
+            this.loadHistory();
+          } else {
+            alert((res && res.error) ? '重试失败：' + res.error : '重试失败（服务可能已重启，请重新提交）');
+            this.loadHistory();
+          }
+        });
+        actions.appendChild(retryBtn);
+      }
       head.appendChild(actions);
       card.appendChild(head);
 
@@ -1577,7 +1655,7 @@ function VolcenginePortraitApp() {
         maxDuration: 30, resolutions: ['480p', '720p'],
       },
     ],
-    submitting: false, events: '', results: [], jobs: [],
+    submitting: false, events: '', results: [], jobs: [], activityRecords: [],
     runtimeTick: 0,
     outputDir: '', outputDirInput: '', showOutputDirInput: false,
     savingOutputDir: false, outputDirMsg: '', outputDirOk: true,
@@ -2023,9 +2101,23 @@ function VolcenginePortraitApp() {
     },
 
     async pollJob(jobId) {
+      // Transient failures (network blip / sub-app restart) used to break the
+      // loop silently — the running task vanished from view with no hint. Now
+      // retry with a cap, and say so while retrying.
+      let fails = 0;
       while (true) {
         const job = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}`);
-        if (!job || job.ok === false) break;
+        if (!job || job.ok === false) {
+          fails++;
+          if (fails >= 10) {
+            this.statusText = '网络不稳定，已暂停轮询（任务仍在后台运行，稍后可从历史查看）';
+            break;
+          }
+          this.statusText = `连接中断，正在重试 (${fails}/10)...`;
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        fails = 0;
         this.statusText = `${job.status} ${job.done || 0}/${job.total || 0}`;
         this.events = (job.events || []).map(e => '<div>' + e.time + ' ' + e.message + '</div>').join('');
         for (const r of job.results || []) {
@@ -2043,6 +2135,42 @@ function VolcenginePortraitApp() {
     async loadJobs() {
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs`);
       if (res?.ok) this.jobs = res.jobs || [];
+      this.loadActivity();
+    },
+
+    // Persisted activity log (survives sub-app restarts, unlike the in-memory
+    // JOBS list). Loaded alongside loadJobs so the history panel stays fresh.
+    async loadActivity() {
+      const res = await vpApi.call(this, `${appPath}/api/activity`);
+      this.activityRecords = (res && res.records) || [];
+    },
+
+    // History items that only live in the persisted activity log — i.e. jobs
+    // lost from the in-memory list (typically after a sub-app restart).
+    extraHistory() {
+      const liveIds = new Set((this.jobs || []).map(j => j.job_id));
+      return (this.activityRecords || []).filter(a => a.job_id && !liveIds.has(a.job_id));
+    },
+
+    // Retry a failed task from the persisted history: restore its params into
+    // the form and resubmit. (volcengine-portrait has no backend retry
+    // endpoint, so retry == refill + createJob. Local uploaded extra files are
+    // not restorable and are dropped.)
+    async retryActivity(activityId) {
+      const rec = await vpApi.call(this, `${appPath}/api/activity/${activityId}`);
+      const req = rec && rec.request;
+      if (!req) { this.statusText = '无法读取该任务参数，请重新填写提交'; return; }
+      if (req.asset_id) this.genAssetId = req.asset_id;
+      this.extraAssetIds = req.extra_asset_ids || [];
+      this.extraFiles = [];
+      this.prompt = req.prompt || '';
+      if (req.model) this.model = req.model;
+      if (typeof req.duration === 'number') this.duration = req.duration;
+      if (req.resolution) this.resolution = req.resolution;
+      if (req.ratio) this.ratio = req.ratio;
+      if (req.repeat_count) this.repeat = Math.max(1, Math.min(4, req.repeat_count));
+      this.statusText = '已从历史恢复参数并重新提交';
+      this.createJob();
     },
 
     async blobDownload(url, filename) {
@@ -2089,4 +2217,42 @@ PetiteVue.createApp({
       location.replace('/login');
     });
   }
+})();
+
+// === Global banner: LAN IP change notice + disk space warning ===
+// /api/platform/status already returns lan_ip + portal_port (used by lanInfo
+// in the top bar); disk_free_gb is added in a later backend phase — until
+// then the disk part simply stays dormant. Best-effort: never breaks the app.
+(async () => {
+  const banner = document.getElementById('globalBanner');
+  if (!banner) return;
+  async function check() {
+    try {
+      const res = await fetch('/api/platform/status');
+      if (!res.ok) return;
+      const st = await res.json();
+      if (!st || st.ok === false) return;
+      const msgs = [];
+      const host = location.hostname;
+      if (st.lan_ip && host !== st.lan_ip && host !== 'localhost' && !host.startsWith('127.')) {
+        const base = `${location.protocol}//${st.lan_ip}:${st.portal_port || location.port || 9090}/`;
+        msgs.push(`⚠️ 服务器 IP 已变化，当前地址即将失效，请使用新地址：<a href="${base}">${base}</a>`);
+      }
+      if (typeof st.disk_free_gb === 'number') {
+        if (st.disk_free_gb < 10) {
+          msgs.push(`🟥 服务器磁盘仅剩 ${st.disk_free_gb.toFixed(1)} GB，新任务可能失败，请尽快联系管理员清理`);
+        } else if (st.disk_free_gb < 20) {
+          msgs.push(`🟨 服务器磁盘剩余 ${st.disk_free_gb.toFixed(1)} GB，建议管理员尽快清理`);
+        }
+      }
+      if (msgs.length) {
+        banner.innerHTML = msgs.join('&nbsp;&nbsp;&nbsp;');
+        banner.style.display = 'block';
+      } else {
+        banner.style.display = 'none';
+      }
+    } catch (e) { /* banner is best-effort */ }
+  }
+  check();
+  setInterval(check, 60000);
 })();
