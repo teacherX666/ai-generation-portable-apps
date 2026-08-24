@@ -1924,6 +1924,60 @@ async def test_add_reference_uses_verified_image_and_invalidates_approval(
         assert view["approval"]["revision"] == 8
 
 
+async def test_patch_task_hot_edits_prompt_and_rejects_unknown_fields(
+    tmp_path: Path,
+):
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime
+        run_id = (
+            await client.post(
+                "/api/runs",
+                json={"source_url": "https://acme.feishu.cn/docx/hot-edit"},
+            )
+        ).json()["run_id"]
+        await _wait_for_status(client, run_id, "waiting_approval")
+        run = await repository.get_run(run_id)
+        assert run is not None
+        state = graph.states[run["thread_id"]]
+        state["approval_decision"] = {"action": "approve"}
+        state["approved_tasks"] = [_task()]
+
+        edited = "手工修改后的中文提示词，光线柔和。"
+        response = await client.patch(
+            f"/api/runs/{run_id}/tasks/task-1",
+            json={"patch": {"prompt": edited}},
+        )
+
+        assert response.status_code == 200
+        view = (await client.get(f"/api/runs/{run_id}")).json()
+        task = next(
+            item
+            for item in view["approval"]["tasks"]
+            if item["task_id"] == "task-1"
+        )
+        assert task["prompt"] == edited
+        # 手工提示词以人的版本为准：槽位清空，避免后续校验重新拼装覆盖
+        assert task.get("prompt_slots") is None
+        # 热修改同样使既有审批失效
+        assert state["approval_decision"] is None
+        assert state["approved_tasks"] == []
+
+        rejected = await client.patch(
+            f"/api/runs/{run_id}/tasks/task-1",
+            json={"patch": {"not_a_field": "x"}},
+        )
+        assert rejected.status_code == 422
+        assert "不支持修改的字段" in rejected.json()["detail"]
+
+        # 空提示词是输入过程的中间态：后端宽容接受并记为校验警告，
+        # 由前端在防抖时跳过空值发送，执行时再兜底拦截。
+        empty = await client.patch(
+            f"/api/runs/{run_id}/tasks/task-1",
+            json={"patch": {"prompt": "   "}},
+        )
+        assert empty.status_code == 200
+
+
 async def test_add_reference_accepts_verified_video_and_audio(tmp_path: Path):
     async with _environment(tmp_path) as (client, runtime, graph, repository):
         del runtime, graph, repository

@@ -36,6 +36,7 @@ from feishu_generation_agent.domain.plan import (
 from feishu_generation_agent.domain.reference_contract import (
     ReferenceRemapError,
     canonicalize_references,
+    reference_tokens,
     remap_prompt_references,
 )
 from feishu_generation_agent.integrations.planner import (
@@ -933,6 +934,97 @@ class GraphRuntime:
             updated_task = self._task_with_references(task, references, assets)
             updated_plan = self._replace_task(plan, task_index, updated_task)
             await self._persist_draft(run, state, updated_plan, assets)
+
+    _PATCHABLE_TASK_FIELDS = {
+        "prompt",
+        "negative_constraints",
+        "aspect_ratio",
+        "output_count",
+        "image_size",
+        "size_variants",
+        "safe_area",
+        "image_provider",
+        "duration",
+        "resolution",
+        "generate_audio",
+        "user_intent",
+        "delivery_crop",
+    }
+
+    async def patch_task(
+        self,
+        run_id: str,
+        *,
+        task_id: str,
+        patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        """热修改：把任务字段编辑直接持久化进审批草稿。
+
+        与 set_references 同模式，但针对提示词等任务字段。提示词被手工修改
+        后以人的版本为准：清空 prompt_slots，避免后续校验用槽位拼装覆盖手工
+        内容；同时沿用确定性补齐，把漏写的 @图片N 补回 prompt 尾部。
+        """
+        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
+        if lock.locked():
+            raise RunConflict("运行正在更新，请稍后重试")
+        async with lock:
+            run, state = await self._waiting_state(run_id)
+            plan = self._state_plan(state)
+            task_index, task = self._task(plan, task_id)
+            unknown = set(patch) - self._PATCHABLE_TASK_FIELDS
+            if unknown:
+                raise RunValidationError(
+                    "不支持修改的字段：" + "、".join(sorted(unknown))
+                )
+            assets = [
+                MediaAsset.model_validate(item)
+                for item in state.get("media_assets", [])
+            ]
+            updated = dict(task.model_dump(mode="json"))
+            updated.update(patch)
+            if "prompt" in patch:
+                updated["prompt_slots"] = None
+                # 只对图片任务做 token 补齐：视频 prompt 的 @图片N 必须出现在
+                # 具体镜头段落里，尾部追加反而会被判「只罗列未用于镜头」。
+                if updated.get("task_type") == "image_to_image":
+                    mime_types = {
+                        asset.asset_id: asset.mime_type for asset in assets
+                    }
+                    references = [
+                        ImageReference.model_validate(item)
+                        for item in updated.get("reference_images", [])
+                    ]
+                    ordered = sorted(references, key=lambda item: item.order)
+                    missing_tokens = [
+                        token
+                        for token in reference_tokens(
+                            ordered, mime_types
+                        ).values()
+                        if token not in updated["prompt"]
+                    ]
+                    if missing_tokens:
+                        updated["prompt"] = (
+                            f"{updated['prompt']}，画面风格严格参考 "
+                            f"{'、'.join(missing_tokens)}"
+                        )
+            try:
+                updated_task = GenerationTask.model_validate(updated)
+            except ValidationError as exc:
+                compact = "; ".join(
+                    ".".join(str(part) for part in item["loc"])
+                    + ": "
+                    + str(item["msg"])
+                    for item in exc.errors(
+                        include_url=False, include_input=False
+                    )[:6]
+                )
+                raise RunValidationError(f"修改后的任务参数无效：{compact}") from None
+            updated_plan = self._replace_task(plan, task_index, updated_task)
+            await self._persist_draft(run, state, updated_plan, assets)
+            return {
+                "status": "updated",
+                "task": updated_task.model_dump(mode="json"),
+            }
 
     async def get_reference_file(
         self,

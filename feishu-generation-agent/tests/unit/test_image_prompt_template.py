@@ -37,7 +37,6 @@ def test_assembled_prompt_carries_the_template_skeleton():
 
     for clause in (
         "禁止勾勒边缘线",
-        "画面风格严格参考图一",
         "画面主次分明",
         "光影自然",
         "冷暖对比",
@@ -47,6 +46,22 @@ def test_assembled_prompt_carries_the_template_skeleton():
         "禁止出现窗户",
     ):
         assert clause in prompt, f"固定句式缺失：{clause}"
+
+
+def test_style_sentence_lists_all_style_tokens_when_multiple():
+    """多张风格参考时必须列全，而不是只说「参考图一」（2026-08-20 需求方反馈）。"""
+    prompt = _prompt()
+
+    assert "画面风格严格参考@图片4、@图片5重新生成图片" in prompt
+    assert "画面风格严格参考@图片4、@图片5生成图片" in prompt
+    assert "画面风格严格参考图一重新生成图片" not in prompt
+
+
+def test_style_sentence_falls_back_to_figure_one_without_style_tokens():
+    prompt = build_image_prompt(ImagePromptSlots(shot="近景"))
+
+    assert "画面风格严格参考图一重新生成图片" in prompt
+    assert "画面风格严格参考图一生成图片" in prompt
 
 
 def test_contract_names_every_slot_field():

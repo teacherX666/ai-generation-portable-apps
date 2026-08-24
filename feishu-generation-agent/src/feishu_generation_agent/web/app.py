@@ -69,6 +69,7 @@ from feishu_generation_agent.web.schemas import (
     PlannerPromptResponse,
     PlannerPromptUpdate,
     ReferenceListRequest,
+    TaskPatchRequest,
 )
 
 ProductionCategory = Literal["animation", "portrait"]
@@ -1008,6 +1009,27 @@ def create_app(
                     task_id=task_id,
                     references=payload.references,
                     reference_mode=payload.reference_mode,
+                )
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"status": "updated"}
+
+    @app.patch("/api/runs/{run_id}/tasks/{task_id}")
+    async def patch_task(
+        run_id: str,
+        task_id: str,
+        payload: TaskPatchRequest,
+        request: Request,
+    ) -> dict[str, str]:
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                await active.patch_task(
+                    run_id,
+                    task_id=task_id,
+                    patch=payload.patch,
                 )
         except (RunNotFound, RunConflict, RunValidationError) as exc:
             raise_runtime_error(exc)

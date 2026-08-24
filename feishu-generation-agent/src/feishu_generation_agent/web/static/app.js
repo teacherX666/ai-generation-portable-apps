@@ -585,6 +585,58 @@
     return control;
   }
 
+  // 与后端 domain/plan.py 的 IMAGE_ASPECT_RATIOS 保持一致：
+  // 生成模型（seedream/banana/gpt-image2）只接受这些离散比例，
+  // 文档里的 1700*2500 是交付尺寸，不是比例参数。
+  const IMAGE_ASPECT_RATIOS = ["16:9", "9:16", "2:3", "3:2", "1:1", "4:3", "3:4", "21:9", "9:21"];
+
+  function ratioPicker(task) {
+    const control = document.createElement("select");
+    IMAGE_ASPECT_RATIOS.forEach((ratio) => {
+      const option = element("option", "", ratio);
+      option.value = ratio;
+      option.selected = task.aspect_ratio === ratio;
+      control.append(option);
+    });
+    if (!IMAGE_ASPECT_RATIOS.includes(task.aspect_ratio)) {
+      const option = element("option", "", task.aspect_ratio || "未选择");
+      option.value = task.aspect_ratio || "";
+      option.selected = true;
+      control.append(option);
+    }
+    control.addEventListener("change", () => {
+      updateTask(task.task_id, { aspect_ratio: control.value });
+    });
+    return control;
+  }
+
+  function deliveryCropToggle(task) {
+    const wrapper = element("label", "task-crop-toggle", "");
+    const control = document.createElement("input");
+    control.type = "checkbox";
+    control.checked = Boolean(task.delivery_crop);
+    const variants = task.size_variants || [];
+    const first = variants[0] || "";
+    const match = String(first).match(/^(\d+)[x×*](\d+)$/i);
+    let ratioLabel = "交付尺寸";
+    if (match) {
+      const a = Number(match[1]);
+      const b = Number(match[2]);
+      const gcd = (x, y) => (y ? gcd(y, x % y) : x);
+      const divisor = gcd(a, b) || 1;
+      ratioLabel = `${a / divisor}:${b / divisor}`;
+    }
+    const caption = document.createElement("span");
+    caption.textContent = `裁剪为 ${ratioLabel} 比例（居中，保持中心点不变）`;
+    control.disabled = !variants.length;
+    control.title = variants.length ? "" : "任务没有输出尺寸，无法裁剪";
+    control.addEventListener("change", () => {
+      updateTask(task.task_id, { delivery_crop: control.checked });
+    });
+    wrapper.append(control, caption);
+    return wrapper;
+  }
+
   function stylePresets(task) {
     const wrapper = element("div", "task-style-presets");
     STYLE_PRESETS.forEach(([label, fragment]) => {
@@ -609,9 +661,51 @@
       state.review = ReviewState.patchTask(state.review, taskId, patch);
       state.view = ReviewState.draftView(state.review);
       updateActionAvailability();
+      scheduleHotPatch(taskId, patch);
     } catch (error) {
       showError(error);
     }
+  }
+
+  const hotPatchTimers = new Map();
+
+  function scheduleHotPatch(taskId, patch) {
+    // 热修改：编辑即时持久化到服务端草稿，不再停留在浏览器本地。
+    // 文本输入按 600ms 防抖；空提示词/非法数字是输入过程的中间态，跳过发送。
+    if (Object.prototype.hasOwnProperty.call(patch, "prompt") && !String(patch.prompt).trim()) return;
+    for (const field of ["output_count", "duration"]) {
+      if (Object.prototype.hasOwnProperty.call(patch, field) && !Number.isFinite(patch[field])) return;
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(patch, "reference_images")
+      || Object.prototype.hasOwnProperty.call(patch, "reference_mode")
+    ) {
+      const task = currentTask(taskId);
+      if (!task) return;
+      scheduleHotReferences(task);
+      return;
+    }
+    const key = `${taskId}:${Object.keys(patch).join(",")}`;
+    clearTimeout(hotPatchTimers.get(key));
+    hotPatchTimers.set(key, setTimeout(() => {
+      hotPatchTimers.delete(key);
+      api(`/api/runs/${state.runId}/tasks/${encodeURIComponent(taskId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patch }),
+      }).then(() => poll(false)).catch((error) => showError(error));
+    }, 600));
+  }
+
+  const hotReferenceTimers = new Map();
+
+  function scheduleHotReferences(task) {
+    const taskId = task.task_id;
+    clearTimeout(hotReferenceTimers.get(taskId));
+    hotReferenceTimers.set(taskId, setTimeout(() => {
+      hotReferenceTimers.delete(taskId);
+      patchReferences(task).catch((error) => showError(error));
+    }, 600));
   }
 
   function currentTask(taskId) {
@@ -649,7 +743,7 @@
           : "blocked";
     if (directive === "proceed") return true;
     if (directive === "save_then_proceed") return patchReferences(task);
-    showError(new Error("请先提交或放弃提示词、任务选择等本地编辑，再增添、替换或删除参考图片"));
+    showError(new Error("正在提交审批或检测到数据冲突，请稍后重试"));
     return false;
   }
 
@@ -702,9 +796,29 @@
     if (state.busy) return false;
     setBusy(true);
     clearError();
+    // 参考图增删替换会整页刷新草稿；任务勾选是本地状态，刷掉用户会
+    // 丢选择。快照后恢复，只恢复非空选择（空选择保持默认全选）。
+    const selection = [...ReviewState.selectedTaskIds(state.review)];
     try {
       await api(url, options);
       await poll(true, resetDraft);
+      if (resetDraft && selection.length) {
+        let review = state.review;
+        const current = ReviewState.selectedTaskIds(review);
+        for (const taskId of [...new Set([...current, ...selection])]) {
+          const shouldSelect = selection.includes(taskId);
+          if (current.includes(taskId) !== shouldSelect) {
+            try {
+              review = ReviewState.setTaskSelected(review, taskId, shouldSelect);
+            } catch {
+              // 任务可能已随刷新消失
+            }
+          }
+        }
+        state.review = review;
+        state.view = ReviewState.draftView(review);
+        updateActionAvailability();
+      }
       return true;
     } catch (error) {
       showError(error);
@@ -1098,14 +1212,13 @@
         }, 5, "task-negative-editor"),
         true,
       ),
-      field("画面比例", textInput(task.aspect_ratio, (value) => {
-        updateTask(task.task_id, { aspect_ratio: value });
-      })),
+      field("画面比例", ratioPicker(task)),
       field("生成数量", textInput(task.output_count, (value) => {
         updateTask(task.task_id, { output_count: Number(value) });
       }, "number")),
     );
     if (task.task_type === "image_to_image") {
+      grid.append(field("裁剪交付", deliveryCropToggle(task), true));
       grid.append(field("图片尺寸", textInput(task.image_size, (value) => {
         updateTask(task.task_id, { image_size: value });
       })));

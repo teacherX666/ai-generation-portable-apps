@@ -870,16 +870,24 @@ def _approval_payload(state: AgentState) -> dict[str, Any]:
 
 def _parse_approval(value: Any) -> ApprovalDecision:
     if not isinstance(value, dict):
-        raise _validation_error()
+        raise _validation_error("审批请求格式无效：期望 JSON 对象")
     allowed_keys = {"action", "selected_task_ids", "tasks", "feedback"}
-    if set(value) - allowed_keys:
-        raise _validation_error()
+    extra_keys = set(value) - allowed_keys
+    if extra_keys:
+        raise _validation_error(
+            "审批请求包含未知字段："
+            + "、".join(sorted(str(key) for key in extra_keys))
+        )
     try:
         decision = ApprovalDecision.model_validate(value)
-    except Exception:
-        decision = None
+    except ValidationError as exc:
+        compact = "; ".join(
+            ".".join(str(part) for part in item["loc"]) + ": " + str(item["msg"])
+            for item in exc.errors(include_url=False, include_input=False)[:6]
+        )
+        raise _validation_error(f"审批载荷无效：{compact}") from None
     if decision is None:
-        raise _validation_error()
+        raise _validation_error("审批载荷无法解析")
 
     if decision.action == "reject":
         if (
@@ -888,21 +896,24 @@ def _parse_approval(value: Any) -> ApprovalDecision:
             or decision.selected_task_ids
             or decision.tasks
         ):
-            raise _validation_error()
+            raise _validation_error(
+                "退回重新规划时必须填写反馈，且不能携带任务选择或任务修改"
+            )
     elif decision.action == "cancel":
         if (
             decision.selected_task_ids
             or decision.tasks
             or decision.feedback is not None
         ):
-            raise _validation_error()
-    elif (
-        not decision.selected_task_ids
-        or decision.feedback is not None
-        or len(decision.selected_task_ids)
-        != len(set(decision.selected_task_ids))
+            raise _validation_error("取消请求不能携带任务选择或任务修改")
+    elif not decision.selected_task_ids:
+        raise _validation_error("批准时必须选择至少一个任务")
+    elif decision.feedback is not None:
+        raise _validation_error("批准请求不能携带反馈")
+    elif len(decision.selected_task_ids) != len(
+        set(decision.selected_task_ids)
     ):
-        raise _validation_error()
+        raise _validation_error("批准的任务选择不能重复")
     return decision
 
 
@@ -941,23 +952,37 @@ async def human_approval(
             )
 
         original = TaskPlan.model_validate(_draft_plan(state))
-        candidate = (
-            reconcile_task_asset_coverage(original, decision.tasks)
-            if decision.tasks
-            else original
-        )
+        try:
+            candidate = (
+                reconcile_task_asset_coverage(original, decision.tasks)
+                if decision.tasks
+                else original
+            )
+        except Exception as exc:
+            raise _validation_error(
+                f"审批任务合并失败：{type(exc).__name__}: {exc}"
+            ) from None
         original_ids = {task.task_id for task in original.tasks}
-        if any(task.task_id not in original_ids for task in candidate.tasks):
-            raise _validation_error()
+        unknown_ids = [
+            task.task_id
+            for task in candidate.tasks
+            if task.task_id not in original_ids
+        ]
+        if unknown_ids:
+            raise _validation_error(
+                "审批包含未知任务：" + "、".join(sorted(unknown_ids))
+            )
         try:
             approved = candidate.approved_subset(
                 decision.selected_task_ids,
                 services.settings.max_output_count,
             )
-        except Exception:
-            approved = None
+        except Exception as exc:
+            raise _validation_error(
+                f"所选任务无法批准：{type(exc).__name__}: {exc}"
+            ) from None
         if approved is None or not approved.tasks:
-            raise _validation_error()
+            raise _validation_error("所选任务无法批准：批准结果为空")
         return Command(
             update={
                 "approval_decision": decision_json,
@@ -989,25 +1014,44 @@ async def revalidate_approval(
             or approval_revision < 0
             or approval_revision != _document_revision(state)
         ):
-            raise _validation_error()
+            raise _validation_error(
+                "审批时的文档版本与当前不一致，请刷新页面后重新审批"
+            )
         draft = TaskPlan.model_validate(_draft_plan(state))
         decision = ApprovalDecision.model_validate(
             state.get("approval_decision")
         )
         if decision.action != "approve":
-            raise _validation_error()
-        candidate = (
-            reconcile_task_asset_coverage(draft, decision.tasks)
-            if decision.tasks
-            else draft
-        )
+            raise _validation_error("审批决策已不是批准状态")
+        try:
+            candidate = (
+                reconcile_task_asset_coverage(draft, decision.tasks)
+                if decision.tasks
+                else draft
+            )
+        except Exception as exc:
+            raise _validation_error(
+                f"审批任务合并失败：{type(exc).__name__}: {exc}"
+            ) from None
         draft_ids = {task.task_id for task in draft.tasks}
-        if any(task.task_id not in draft_ids for task in candidate.tasks):
-            raise _validation_error()
-        selected_plan = candidate.approved_subset(
-            decision.selected_task_ids,
-            services.settings.max_output_count,
-        )
+        unknown_ids = [
+            task.task_id
+            for task in candidate.tasks
+            if task.task_id not in draft_ids
+        ]
+        if unknown_ids:
+            raise _validation_error(
+                "审批包含未知任务：" + "、".join(sorted(unknown_ids))
+            )
+        try:
+            selected_plan = candidate.approved_subset(
+                decision.selected_task_ids,
+                services.settings.max_output_count,
+            )
+        except Exception as exc:
+            raise _validation_error(
+                f"所选任务无法批准：{type(exc).__name__}: {exc}"
+            ) from None
         checkpoint_plan = approved_plan_from_state(
             state,
             max_output_count=services.settings.max_output_count,
@@ -1015,7 +1059,9 @@ async def revalidate_approval(
         if checkpoint_plan.model_dump(mode="json") != selected_plan.model_dump(
             mode="json"
         ):
-            raise _validation_error()
+            raise _validation_error(
+                "审批内容与系统记录不一致，请刷新页面后重新审批"
+            )
         document = NormalizedDocument.model_validate(
             state.get("normalized_document")
         )

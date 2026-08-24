@@ -353,8 +353,20 @@ test("reference-only draft changes are saved before adding or replacing an image
     ReviewState.referenceMutationDirective(state, "task-1"),
     "save_then_proceed",
   );
+});
 
-  state = ReviewState.patchTask(state, "task-1", { prompt: "unsaved prompt" });
+test("prompt edits no longer block image mutations because edits are hot-persisted", () => {
+  // 热修改之后，提示词编辑由前端即时 PATCH 到服务端草稿，本地草稿只是
+  // 乐观更新镜像；参考图增删替换不再因此被拦截（2026-08-20）。
+  let state = ReviewState.mergeServerView(ReviewState.createReviewState(), view());
+  state = ReviewState.patchTask(state, "task-1", { prompt: "hot-persisted prompt" });
+
+  assert.equal(
+    ReviewState.referenceMutationDirective(state, "task-1"),
+    "save_then_proceed",
+  );
+
+  state = ReviewState.beginApprovalSubmit(state).state;
   assert.equal(ReviewState.referenceMutationDirective(state, "task-1"), "blocked");
 });
 

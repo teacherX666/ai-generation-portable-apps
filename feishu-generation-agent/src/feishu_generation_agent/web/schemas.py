@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import quote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -73,6 +73,14 @@ class ReferenceListRequest(BaseModel):
 
     references: list[ImageReference] = Field(min_length=1)
     reference_mode: ReferenceMode | None = None
+
+
+class TaskPatchRequest(BaseModel):
+    """审批页任务字段热修改。字段白名单在 runtime.patch_task 里再校验一遍。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patch: dict[str, Any] = Field(min_length=1)
 
 
 class PlannerPromptUpdate(BaseModel):

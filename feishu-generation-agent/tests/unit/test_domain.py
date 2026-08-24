@@ -75,6 +75,27 @@ def test_image_task_requires_image_size_and_rejects_video_fields():
     assert GenerationTask.model_validate(payload).image_size == "2K"
 
 
+def test_image_task_normalizes_delivery_size_into_supported_aspect_ratio():
+    """文档交付尺寸不是比例参数：1700*2500 只能进 size_variants，抄进
+    aspect_ratio 会被归一化到数值最接近的模型支持比例（2:3）。"""
+    assert image_task(aspect_ratio="1700:2500").aspect_ratio == "2:3"
+    assert image_task(aspect_ratio="17:25").aspect_ratio == "2:3"
+    assert image_task(aspect_ratio="16:9").aspect_ratio == "16:9"
+    assert image_task(aspect_ratio="auto").aspect_ratio == "auto"
+
+
+def test_video_task_keeps_video_aspect_ratio_untouched():
+    assert video_task(aspect_ratio="adaptive").aspect_ratio == "adaptive"
+
+
+def test_delivery_crop_gates_resized_variants():
+    """裁剪交付比例是人工选项：默认关闭时原图直出，开启才按 size_variants
+    居中裁切（cover_crop 等比裁切不拉伸）。"""
+    assert image_task(size_variants=["1700x2500"]).resolved_size_variants == []
+    cropped = image_task(size_variants=["1700x2500"], delivery_crop=True)
+    assert cropped.resolved_size_variants == ["1700x2500"]
+
+
 @pytest.mark.parametrize("generate_audio", [None, True, False])
 def test_video_task_requires_duration_and_resolution(generate_audio: bool | None):
     payload = task_payload("image_to_video")

@@ -24,6 +24,7 @@ from feishu_generation_agent.domain.plan import (
 from feishu_generation_agent.domain.reference_contract import (
     canonicalize_references,
     has_multiple_shot_markers,
+    reference_tokens,
     remap_asset_id_tokens,
     validate_image_prompt,
     validate_seedance_prompt,
@@ -126,6 +127,8 @@ _IMAGE_PLANNING_CONTRACT = """【图片生成提示词契约】
 尺寸按需求小节里写的完整版尺寸出图（例：尺寸 1700*2500），size_variants 只写这一个完整版尺寸。
 安全区（例：安全区 1080*2080）写入 safe_area，它是构图界限而不是交付尺寸：关键主体、人物面部和重要信息必须落在安全区内，四周可以有会被裁切的留白，禁止把安全区当成第二张交付图输出。
 每个 image_to_image 任务都必须填 image_size，取值只能是 1K、1.5K 或 2K，表示出图基准分辨率；它与 size_variants 各自独立，都要给。
+aspect_ratio 只能从生成模型支持的离散比例里选：1:1、4:3、3:4、16:9、9:16、3:2、2:3、21:9、9:21。按需求画面的横竖方向选数值最接近的一个。文档里的「尺寸 1700*2500」是交付尺寸，只写进 size_variants，禁止写进 aspect_ratio——生成模型没有这个比例参数。
+delivery_crop 一律填 false：是否把成图居中裁切成交付比例由制作人在审批页人工决定，你不要替人决定。
 一个需求有多种尺寸时文档会分成独立小节分开提，按小节各自成任务，不要把不同小节的尺寸塞进同一个任务。
 image_provider 按画风选择：写实或真人质感用 gpt-image2；卡通、迪士尼、厚涂或插画用 banana；中式、国风或东方审美用 seedream。无法判断时用 banana。
 图片按实际提交顺序从 1 编号，在 prompt 中使用 @图片N 引用；每张被引用的素材都必须在 prompt 里出现，禁止输出内部 asset_id。
@@ -153,7 +156,7 @@ prompt 只描述这一张静帧，禁止出现运动镜头、时长、秒数、�
 （2）场景参考（「场景参考」一节，常含同一场景的角度1/角度2）：用于统一空间结构与镜位关系；按「具体需求」表里该编号的「对应场景」取对应场景图，取不到就取该场景的任一角度。
 （3）风格参考（「风格参考」一节）：用于统一色调与画风；每个任务都要挂，并把其色调、画风关键词写进 prompt。
 （4）概念示意图（「具体需求」表里「概念/豆包/火柴人」一列）：制作人为提升模型理解力手绘的构图示意，约束力高于风格参考。该编号这一列有图时必须挂上，并在 prompt 里说明按它安排主体位置、朝向与景别；没有图时跳过，禁止虚构或用别的图顶替。
-reference_images 的 order 按「角色 → 场景 → 概念示意 → 风格」排列，prompt 用 @图片N 引用时与该顺序一致。
+reference_images 必须按文档素材的实际提交顺序排列（与 @图片N 编号顺序完全一致）：角色、场景、概念示意、风格四类素材都要挂进对应任务，但排列顺序跟随素材在文档中出现的先后，不得按类别重排。
 excluded_assets 只放确实与本次出图无关的素材（例如往期完成图、无关截图），并写明中文排除理由。
 negative_constraints 按需求补充负向约束（例：禁止勾勒黑色边缘线、禁止拉伸变形、禁止水印与 Logo）。
 """
@@ -482,6 +485,23 @@ def _normalize_generated_plan_payload(
                 reference.model_dump(mode="json")
                 for reference in references
             ]
+            if task.get("task_type") == "image_to_image":
+                # 图片任务参考图一多，模型常漏写个别 @图片N（实测 21 张图漏
+                # 3 张），校验因此判「缺少素材引用」连挂 3 次。token 编号与
+                # validate_image_prompt 同源（canonicalize 后 order 即列表
+                # 位次），漏掉的直接补进 prompt 尾部，不靠模型重试。
+                missing_tokens = [
+                    token
+                    for token in reference_tokens(
+                        references, mime_types
+                    ).values()
+                    if token not in task["prompt"]
+                ]
+                if missing_tokens:
+                    task["prompt"] = (
+                        f"{task['prompt']}，画面风格严格参考 "
+                        f"{'、'.join(missing_tokens)}"
+                    )
         except (TypeError, ValueError):
             continue
     return issues

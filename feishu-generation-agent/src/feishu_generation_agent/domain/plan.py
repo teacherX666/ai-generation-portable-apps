@@ -21,6 +21,9 @@ ImageProvider = Literal["seedream", "banana", "gpt-image2"]
 DEFAULT_IMAGE_PROVIDER: ImageProvider = "banana"
 # provider 只接受这三个基准分辨率档位；像素尺寸属于 size_variants。
 IMAGE_SIZE_TOKENS = ("1K", "1.5K", "2K")
+# 图片生成模型（seedream / banana / gpt-image2）支持的离散画面比例。
+# 需求文档里的 1700*2500 是交付尺寸，不是比例参数：禁止写进 aspect_ratio。
+IMAGE_ASPECT_RATIOS = ("1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9", "9:21")
 # 反解只取标签段，标签外的 @图片N 会丢；拼装后要按这个把它们补回去。
 _REFERENCE_TOKEN = re.compile(r"@(?:图片|视频|音频)\d+")
 # 统一按最高档出图，再裁到交付尺寸，避免小档位放大导致画质损失。
@@ -33,6 +36,45 @@ def _contains_chinese(value: str) -> bool:
         or "\u4e00" <= character <= "\u9fff"
         for character in value
     )
+
+
+def nearest_image_aspect_ratio(value: str | None) -> str:
+    """\u628a\u6a21\u578b\u586b\u7684\u753b\u9762\u6bd4\u4f8b\u5f52\u4e00\u5230\u751f\u6210\u6a21\u578b\u652f\u6301\u7684\u79bb\u6563\u96c6\u5408\u3002
+
+    \u6a21\u578b\u5e38\u628a\u6587\u6863\u4ea4\u4ed8\u5c3a\u5bf8\u76f4\u63a5\u6284\u6210 aspect_ratio\uff08\u5b9e\u6d4b 1700:2500\uff09\uff0c\u800c
+    seedream/banana \u6ca1\u6709\u8fd9\u4e2a\u6bd4\u4f8b\u53c2\u6570\u3002\u6570\u503c\u53ef\u89e3\u6790\u65f6\u6620\u5c04\u5230\u6570\u503c\u6700\u63a5\u8fd1\u7684
+    \u652f\u6301\u6bd4\u4f8b\uff081700:2500 \u2192 2:3\uff09\uff1b\u4e0d\u53ef\u89e3\u6790\u6216 auto \u539f\u6837\u4fdd\u7559\uff0c\u7531 provider
+    \u62a5\u660e\u786e\u9519\u8bef\u3002
+    """
+    raw = (value or "auto").strip().lower()
+    if raw == "auto" or raw in IMAGE_ASPECT_RATIOS:
+        return raw
+    width, separator, height = raw.partition(":")
+    if not separator:
+        width, separator, height = raw.partition("x")
+    if not separator:
+        return raw
+    try:
+        width_value = float(width)
+        height_value = float(height)
+    except ValueError:
+        return raw
+    if width_value <= 0 or height_value <= 0:
+        return raw
+    target = width_value / height_value
+    candidates: list[tuple[float, str]] = []
+    for candidate in IMAGE_ASPECT_RATIOS:
+        candidate_width, _, candidate_height = candidate.partition(":")
+        candidates.append(
+            (
+                abs(
+                    target
+                    - int(candidate_width) / int(candidate_height)
+                ),
+                candidate,
+            )
+        )
+    return min(candidates, key=lambda item: item[0])[1]
 
 
 class ExcludedAsset(BaseModel):
@@ -81,6 +123,8 @@ class GenerationTask(BaseModel):
     image_provider: ImageProvider | None = None
     size_variants: list[str] = Field(default_factory=list)
     safe_area: str | None = None
+    # 是否把成图居中裁切成交付比例（如 17:25）：人工在审批页选择，默认不裁。
+    delivery_crop: bool = False
     # 模型只填槽位，最终 prompt 由代码按模板拼装——让模型自己写模板骨架
     # 实测不稳定（时而套用、时而退回视频三段式）。
     prompt_slots: ImagePromptSlots | None = None
@@ -120,8 +164,15 @@ class GenerationTask(BaseModel):
 
     @property
     def resolved_size_variants(self) -> list[str]:
-        """图片任务要产出的尺寸变体；未显式指定时回退到 image_size 单尺寸。"""
+        """图片任务要产出的尺寸变体；未显式指定时回退到 image_size 单尺寸。
+
+        裁剪交付比例是人工选项（delivery_crop）：默认关闭时原图直出，
+        不做任何 resize——此前一律强制裁到 1700x2500，低分辨率出图被放大
+        后观感「过度拉伸」（2026-08-20 需求方反馈）。
+        """
         if self.task_type is not TaskType.IMAGE_TO_IMAGE:
+            return []
+        if not self.delivery_crop:
             return []
         return list(self.size_variants)
 
@@ -268,6 +319,10 @@ class GenerationTask(BaseModel):
                 # 缺失时按最高档兜底，而不是让整个计划失败：出图分辨率由
                 # 我们统一决定，交付尺寸靠 size_variants 裁切。
                 self.image_size = DEFAULT_IMAGE_SIZE
+            # 画面比例必须落在生成模型支持的离散集合里；文档交付尺寸
+            # （1700*2500）是 size_variants 的事，抄进 aspect_ratio 会被
+            # provider 拒（seedream 直接报「不支持比例」）。
+            self.aspect_ratio = nearest_image_aspect_ratio(self.aspect_ratio)
             self._normalize_image_size()
             self._drop_safe_area_from_variants()
             self._assemble_prompt_from_slots()

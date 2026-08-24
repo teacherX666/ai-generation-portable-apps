@@ -8,7 +8,11 @@
 改成模型只填槽位、固定句式由这里拼出来，模型就没有跑偏空间。
 """
 
+import re
+
 from pydantic import BaseModel, Field
+
+_REFERENCE_TOKEN = re.compile(r"@图片\d+")
 
 # 模型没填 prompt_slots 时，从它自己写的带标签文本里反解。实测它会写成
 # 「景别：中景；时间与场景：…；动作：…」这种结构——解析它比强迫它改格式稳。
@@ -89,13 +93,28 @@ def parse_prompt_slots(prompt: str) -> ImagePromptSlots | None:
     return ImagePromptSlots.model_validate(found)
 
 
+def _style_tokens(style_text: str) -> list[str]:
+    """从风格槽位里提取风格参考 token。
+
+    契约让模型写成「严格参考 @图片4、@图片5 的画风」，取「的画风」之前的
+    全部 @图片N token；没有该标记时退回整段提取（宁多勿漏，token 多列一
+    次只强化约束）。
+    """
+    clause = style_text.split("的画风")[0] if "的画风" in style_text else style_text
+    return _REFERENCE_TOKEN.findall(clause)
+
+
 def build_image_prompt(slots: ImagePromptSlots) -> str:
     """把槽位拼成完整 prompt。
 
     固定句式与顺序都不可变。空槽位整段跳过，避免出现「整体氛围，」这类
     悬空标点。
     """
-    segments: list[str] = ["禁止勾勒边缘线", "画面风格严格参考图一重新生成图片"]
+    # 需求方模板里的「参考图一」指风格参考图整体；实际挂载多张风格参考时
+    # 必须列全，否则读起来像只参考了第一张（2026-08-20 需求方反馈）。
+    style_tokens = _style_tokens(slots.style)
+    style_ref = "、".join(style_tokens) if len(style_tokens) > 1 else "图一"
+    segments: list[str] = ["禁止勾勒边缘线", f"画面风格严格参考{style_ref}重新生成图片"]
 
     for value in (slots.shot, slots.time_and_scene):
         if value.strip():
@@ -125,7 +144,7 @@ def build_image_prompt(slots: ImagePromptSlots) -> str:
     closing.extend(
         [
             "整体画面高亮度高明度",
-            "画面风格严格参考图一生成图片",
+            f"画面风格严格参考{style_ref}生成图片",
             "禁止勾勒边缘线",
             "禁止勾勒边缘线",
             "禁止拉伸图片",

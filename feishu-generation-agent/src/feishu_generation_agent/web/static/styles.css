@@ -279,6 +279,18 @@ button {
 .task-negative-editor { min-height: 10rem; }
 .task-size-variants-editor { min-height: 4.5rem; }
 .task-style-presets { display: flex; flex-wrap: wrap; gap: .4rem; }
+.task-crop-toggle {
+  display: flex;
+  gap: .5rem;
+  align-items: center;
+  padding: .45rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  font-size: .85rem;
+  cursor: pointer;
+}
+.task-crop-toggle input[type="checkbox"] { width: 1rem; height: 1rem; }
+.task-crop-toggle input[type="checkbox"]:disabled { opacity: .5; }
 .task-style-preset {
   cursor: pointer;
   border: 1px solid var(--line);

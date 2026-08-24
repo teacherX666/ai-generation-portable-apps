@@ -158,6 +158,13 @@ def test_image_planner_prompt_is_distinct_and_image_specific():
     assert "generate_audio" not in image_prompt
 
 
+def test_image_contract_pins_supported_aspect_ratios_and_delivery_crop():
+    contract = image_planner_system_prompt()
+    assert "16:9、9:16、3:2、2:3" in contract
+    assert "禁止写进 aspect_ratio" in contract
+    assert "delivery_crop 一律填 false" in contract
+
+
 def test_image_contract_explains_every_required_field():
     """契约必须交代所有必填字段，否则模型漏填导致三次重试全废。
 

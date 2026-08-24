@@ -96,7 +96,24 @@
     const incoming = clone(view);
     const incomingIdentity = serverIdentity(incoming);
     if (incomingIdentity === state.serverIdentity) {
-      return { ...state, serverView: incoming };
+      // 页面在规划阶段就打开时，进入等待审批时选择列表还是空的。
+      // 此时用户没动过勾选就默认全选，避免「批准所选任务」因空选择被拒。
+      const reachedApproval = (
+        incoming?.status === "waiting_approval"
+        && (state.serverView?.status || "") !== "waiting_approval"
+      );
+      const shouldAutoSelect = (
+        reachedApproval
+        && !state.selectionDirty
+        && state.selectedTaskIds.length === 0
+      );
+      return {
+        ...state,
+        serverView: incoming,
+        ...(shouldAutoSelect
+          ? { selectedTaskIds: taskIds(incoming) }
+          : {}),
+      };
     }
     if (hasDirty(state) || state.submitting) {
       return {
@@ -349,13 +366,10 @@
   }
 
   function canSaveReferences(state, taskId) {
-    if (state.submitting || state.conflict || state.selectionDirty) return false;
-    return Object.entries(state.editsByTaskId).every(([editedTaskId, patch]) => (
-      editedTaskId === taskId
-      && Object.keys(patch).every((fieldName) => (
-        fieldName === "reference_images" || fieldName === "reference_mode"
-      ))
-    ));
+    // 任务字段与参考图都是热修改（改动即时持久化到服务端），本地草稿只是
+    // 乐观更新镜像；这里只剩提交中/冲突两种硬阻塞。
+    if (state.submitting || state.conflict) return false;
+    return true;
   }
 
   function referenceMutationDirective(state, taskId) {
