@@ -1,0 +1,16 @@
+# systemd unit — 飞书生成 Agent（复刻 Mac 端 com.feishu-generation-agent.plist）
+# 端口 8765 只走本机（Portal 代理），安全组不放行
+[Unit]
+Description=Feishu Generation Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/ai-portal/feishu-generation-agent
+ExecStart=/opt/ai-portal/feishu-generation-agent/.venv/bin/feishu-generation-agent --port 8765
+Restart=always
+RestartSec=3
+Environment=PATH=/opt/ai-portal/feishu-generation-agent/.venv/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

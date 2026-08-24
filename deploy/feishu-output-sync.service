@@ -1,0 +1,16 @@
+# systemd unit — 飞书产出搬运（复刻 Mac 端 com.feishu-output-sync.plist）
+# 纯 stdlib，用仓库根 venv 的 python3.12 即可
+[Unit]
+Description=Feishu Output Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/ai-portal/feishu-output-sync
+ExecStart=/opt/ai-portal/.venv/bin/python3 sync.py
+Restart=always
+RestartSec=5
+Environment=PATH=/opt/ai-portal/.venv/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

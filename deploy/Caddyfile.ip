@@ -1,0 +1,23 @@
+# 临时形态（路线 B）：IP + 自签证书 —— 域名备案/切换前让各区域同事试用
+# 切域名时换成 deploy/Caddyfile（easyq.cn + Let's Encrypt 自动证书）
+#
+# 站点键必须同时写内网 IP 和公网 IP：
+# - TLS：浏览器访问 IP 不带 SNI，Caddy 对空 SNI 连接按「连接落到的本机地址」
+#   匹配站点。公网 IP 是 NAT 的，连接实际落在 192.168.0.133 —— 所以要有内网键
+# - HTTP 路由：按 Host 头匹配，浏览器发 Host: 124.174.33.130 —— 所以要有公网键
+# 只写公网键 → TLS alert internal error；只写内网键 → 路由不命中、返回 200 空 body
+# （2026-08-20 实测两个坑）。证书 SAN 写公网 IP，浏览器校验不受影响。
+#
+# 证书（10 年自签，双 IP SAN）：
+#   openssl req -x509 -newkey rsa:2048 -keyout /etc/caddy/ip.key -out /etc/caddy/ip.pem \
+#     -days 3650 -nodes -subj "/CN=124.174.33.130" \
+#     -addext "subjectAltName=IP:124.174.33.130,IP:192.168.0.133"
+192.168.0.133, 124.174.33.130 {
+	tls /etc/caddy/ip.pem /etc/caddy/ip.key
+
+	request_body {
+		max_size 2GB
+	}
+
+	reverse_proxy 127.0.0.1:9090
+}

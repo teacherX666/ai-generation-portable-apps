@@ -1,0 +1,35 @@
+# systemd unit — Portal + 全部子应用（复刻 Mac 端 com.ai-portal.plist）
+# 安装：cp deploy/ai-portal.service /etc/systemd/system/ && systemctl daemon-reload
+# 注意：KillMode=control-group 保证重启时连 Portal 拉起的 uvicorn 子进程一起收掉
+[Unit]
+Description=AI Generation Portal (portal + sub-apps)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/ai-portal/portal
+ExecStart=/opt/ai-portal/.venv/bin/python3 app.py
+Restart=always
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=30
+# 日志走 journald（journalctl -u ai-portal -f 查看）；
+# LogsDirectory+append 组合在 Ubuntu 22.04 的 systemd 249 上会 209/STDOUT 起不来
+
+# TLS 由 Caddy 在 443 终结，Portal 跑纯 HTTP
+Environment=PORTAL_PORT=9090
+Environment=PORTAL_HTTP_ONLY=1
+# 公网部署显式覆盖 CORS 白名单（同源访问为主，此为兜底）
+Environment=ALLOWED_ORIGINS=https://easyq.cn
+# 生产引擎（与 Mac plist 一致；Linux 上无需 DYLD_LIBRARY_PATH）
+Environment=SEEDANCE_ENGINE=fastapi
+Environment=NANO_BANANA_ENGINE=fastapi
+Environment=DREAMINA_ENGINE=fastapi
+Environment=VOLCENGINE_PORTRAIT_ENGINE=fastapi
+Environment=INFINITE_CANVAS_ENGINE=fastapi
+# dreamina CLI 会话存 $HOME/.dreamina_cli，systemd 默认不设 HOME，必须显式指到 /root
+Environment=HOME=/root
+Environment=PATH=/opt/ai-portal/.venv/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

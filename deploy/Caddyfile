@@ -1,0 +1,20 @@
+# Caddy 配置 — easyq.cn 反代到 Portal
+# 安装：cp deploy/Caddyfile /etc/caddy/Caddyfile && systemctl reload caddy
+# Let's Encrypt 自动签发与续期（80/443 必须已在安全组与 ufw 放行）
+
+easyq.cn {
+	# 大文件上传（视频可达数百 MB），默认无上限，显式放开到 2GB 更清晰
+	request_body {
+		max_size 2GB
+	}
+	# Portal（PORTAL_HTTP_ONLY=1）。Caddy 自动附带 X-Forwarded-Proto/Host，
+	# Portal 的 _is_https() 依赖 X-Forwarded-Proto 判定（portal/app.py:1352）
+	reverse_proxy 127.0.0.1:9090 {
+		# 子应用状态是轮询模型、无 SSE，不需要 flush_interval；
+		# 视频下载 Caddy 默认流式转发，不整包缓冲
+	}
+}
+
+www.easyq.cn {
+	redir https://easyq.cn{uri}
+}
