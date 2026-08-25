@@ -75,18 +75,26 @@ UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple uv sync --locked
 | `BUSINESS_DB_PATH` | 业务 SQLite 路径 |
 | `CHECKPOINT_DB_PATH` | LangGraph checkpoint SQLite 路径 |
 | `LARK_APP_ID` / `LARK_APP_SECRET` | 飞书自建应用凭证 |
-| `LARK_BITABLE_URL` / `LARK_BITABLE_TABLE_ID` / `LARK_BITABLE_VIEW_ID` | 多维表格链接、数据表 ID 与视图 ID；本地 MVP 使用这三项扫描并回写 |
+| `LARK_BITABLE_URL` / `LARK_BITABLE_TABLE_ID` / `LARK_BITABLE_VIEW_ID` | 多维表格链接、数据表 ID 与视图 ID；本地 MVP 使用这三项扫描并回写。支持两种链接：wiki 内嵌的多维表格（`/wiki/...?table=...&view=...`）或独立 Base（`/base/{app_token}`） |
 | `LARK_OUTPUT_OWNER_OPEN_ID` | 旧版交付文档协作者的 Open ID；多维表格模式不需要 |
 | `LARK_OUTPUT_FOLDER_TOKEN` | 旧版新建交付文档所在的文件夹 token；多维表格模式不需要 |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` | 需求规划模型配置，默认模型名为 `deepseek-v4-pro` |
-| `CLAUDE_API_KEY` / `CLAUDE_BASE_URL` / `CLAUDE_MODEL` | 图片理解模型配置 |
-| `CHIYUN_API_KEY` / `CHIYUN_BASE_URL` / `CHIYUN_MODEL` | Chiyun 图生图配置 |
+| `CLAUDE_API_KEY` / `CLAUDE_BASE_URL` / `CLAUDE_MODEL` | 图片理解模型配置（**可选**，不配则跳过视觉分析） |
+| `CHIYUN_API_KEY` / `CHIYUN_BASE_URL` / `CHIYUN_MODEL` | Chiyun 图生图配置（**可选**，图片可改走火山 Seedream，见 `ARK_API_KEY`） |
 | `ARK_API_KEY` / `ARK_BASE_URL` / `SEEDANCE_MODEL` | 火山方舟 Seedance 配置 |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | 可选追踪；默认关闭 |
 | `LANGGRAPH_STRICT_MSGPACK` | 保持 `true`，禁止 checkpoint 回退到 pickle |
 | `ALLOW_PAID_SMOKE` | 只有精确设置为 `YES` 才开放真实付费冒烟 |
 
 应用未配齐时仍可打开首页和 `/api/health`，但创建 run 会返回 503。先运行配置探针可以看到缺少哪一类能力。
+
+**最小可生成配置**（跑通「扫表 → 出图/出视频 → 回写」只需这些）：
+
+- 飞书：`LARK_APP_ID` / `LARK_APP_SECRET` + `LARK_BITABLE_URL` / `LARK_BITABLE_TABLE_ID` / `LARK_BITABLE_VIEW_ID`
+- 规划：`DEEPSEEK_API_KEY`
+- 生成：`ARK_API_KEY`（视频走 Seedance、图片走 Seedream，复用同一把 key）
+
+`CLAUDE_API_KEY` 与 `CHIYUN_API_KEY` 均为可选：缺省时图片理解自动跳过、图片生成自动回退到火山 Seedream。
 
 ## 飞书网页配置
 
@@ -96,6 +104,7 @@ UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple uv sync --locked
 - 读取新版文档元数据和文档块。
 - 读取 wiki 节点并解析到 docx。
 - 下载文档中的图片素材。
+- 导出文档内嵌的电子表格（`drive:export:readonly` 或 `docs:document:export`）——需求文档里嵌了「分镜表/电子表格」时必须开，否则读不到分镜内容。
 - 在指定文件夹创建新版文档。
 - 上传文件；大文件交付会使用分片上传。
 - 写入文档块。
