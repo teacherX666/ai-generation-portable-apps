@@ -2,7 +2,6 @@ from dataclasses import replace
 
 import pytest
 
-from feishu_generation_agent.domain.errors import AgentError
 from feishu_generation_agent.domain.plan import GenerationTask
 from feishu_generation_agent.graph.nodes import _generator_for_task
 
@@ -85,22 +84,38 @@ async def test_explicit_provider_routes_to_that_generator(
     assert generator == f"{requested.split('-')[0]}-generator"
 
 
-async def test_unconfigured_provider_raises_actionable_chinese_error(
+async def test_falls_back_to_available_provider_when_requested_missing(
     fake_services,
 ):
+    """请求的图片 provider 未配置时，回退到可用 provider，而不是直接失败。"""
     services = replace(
         fake_services,
         image_providers={"banana": "banana-generator"},
     )
 
-    with pytest.raises(AgentError) as excinfo:
-        await _generator_for_task(
-            "run-1", _image_task(image_provider="seedream"), services
-        )
+    provider, generator = await _generator_for_task(
+        "run-1", _image_task(image_provider="seedream"), services
+    )
 
-    message = str(excinfo.value)
-    assert "seedream" in message
-    assert any("一" <= char <= "鿿" for char in message)
+    assert provider == "banana"
+    assert generator == "banana-generator"
+
+
+async def test_ark_only_falls_back_to_seedream(
+    fake_services,
+):
+    """仅配了火山 Seedream（无 Chiyun）时，banana 请求回退到 seedream。"""
+    services = replace(
+        fake_services,
+        image_providers={"seedream": "seedream-generator"},
+    )
+
+    provider, generator = await _generator_for_task(
+        "run-1", _image_task(image_provider="banana"), services
+    )
+
+    assert provider == "seedream"
+    assert generator == "seedream-generator"
 
 
 async def test_falls_back_to_legacy_image_generator_when_registry_absent(

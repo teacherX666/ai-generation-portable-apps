@@ -193,12 +193,13 @@ async def probe(settings: Settings, *, network: bool = True) -> dict[str, Any]:
             )
             location = await bitable.resolve_location(location)
             schema = await bitable.ensure_schema(location)
-        except Exception:
+        except Exception as exc:
+            detail = str(exc).strip() or type(exc).__name__
             checks["bitable_schema"] = _result(
                 True,
                 reachable=True,
                 permission_ok=False,
-                message="多维表格字段或权限检查失败",
+                message=f"多维表格字段或权限检查失败：{detail}",
             )
             checks["bitable_read"] = _result(
                 True,

@@ -601,10 +601,10 @@ def validate_plan(
         )
 
         references = task.get("reference_images")
-        if not isinstance(references, list) or not references:
-            issues.append(
-                f"{prefix}.reference_images: at least one image is required"
-            )
+        if references is None:
+            references = []
+        elif not isinstance(references, list):
+            issues.append(f"{prefix}.reference_images: must be a JSON array")
             references = []
         task_reference_ids: list[str] = []
         for reference_index, reference in enumerate(references):
@@ -913,19 +913,35 @@ def validate_plan(
 
 class DeepSeekPlanner:
     def __init__(self, model: Any, *, max_output_count: int = 4) -> None:
-        self._plan_model = model.bind(
-            response_format={"type": "json_object"},
-            extra_body={
-                "thinking": {"type": "enabled"},
-                "reasoning_effort": "high",
-            },
-        )
-        self._audit_model = model.bind(
-            response_format={"type": "json_object"},
-            extra_body={
-                "thinking": {"type": "disabled"},
-            },
-        )
+        # reasoning_effort / thinking 必须直接写进模型配置再 bind，
+        # langchain 的 bind(extra_body=...) 不会把这些字段转发到 API，
+        # 会导致 DeepSeek v4 在未开启推理时返回空任务列表。
+        # 真实模型（langchain ChatOpenAI）支持 model_copy，用它正确下发；
+        # 测试里的 FakeModel 只有 bind，走回退分支保持兼容。
+        if hasattr(model, "model_copy"):
+            self._plan_model = model.model_copy(
+                update={
+                    "reasoning_effort": "high",
+                    "extra_body": {"thinking": {"type": "enabled"}},
+                }
+            ).bind(response_format={"type": "json_object"})
+            self._audit_model = model.model_copy(
+                update={
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                }
+            ).bind(response_format={"type": "json_object"})
+        else:
+            self._plan_model = model.bind(
+                response_format={"type": "json_object"},
+                extra_body={
+                    "thinking": {"type": "enabled"},
+                    "reasoning_effort": "high",
+                },
+            )
+            self._audit_model = model.bind(
+                response_format={"type": "json_object"},
+                extra_body={"thinking": {"type": "disabled"}},
+            )
         self.max_output_count = max_output_count
 
     async def plan(

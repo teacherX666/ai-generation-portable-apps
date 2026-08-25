@@ -77,9 +77,9 @@ from .state import AgentState
 @dataclass(frozen=True, slots=True)
 class GraphServices:
     document_source: DocumentSource
-    vision_analyzer: VisionAnalyzer
+    vision_analyzer: VisionAnalyzer | None
     planner: RequirementPlanner
-    image_generator: ImageGenerator
+    image_generator: ImageGenerator | None
     video_generator: VideoGenerator
     delivery_writer: DeliveryWriter
     repository: Repository
@@ -553,7 +553,15 @@ async def _planning_mode_for_run(
         return declared_state
     store = getattr(services, "production_task_store", None)
     if store is None:
-        return "video"
+        # MVP 多维表格没有「需求类型」字段，也没有生产表 binding，
+        # 按需求文档正文推断图片/视频，避免图片需求被硬塞进视频规划。
+        normalized = (state or {}).get("normalized_document")
+        text = ""
+        if isinstance(normalized, Mapping):
+            text = str(normalized.get("text_view") or "")
+        elif normalized is not None:
+            text = str(getattr(normalized, "text_view", "") or "")
+        return _infer_planning_mode(text)
     try:
         binding = await store.get_by_run(run_id)
     except Exception:
@@ -565,6 +573,21 @@ async def _planning_mode_for_run(
         return declared
     task_type = getattr(getattr(binding, "snapshot", None), "task_type", None)
     return "image" if task_type == _IMAGE_REQUIREMENT_TYPE else "video"
+
+
+def _infer_planning_mode(text: str) -> str:
+    """从需求文档正文推断图片/视频模式；默认视频，明确是图片时返回 image。"""
+    content = text or ""
+    image_keywords = (
+        "图片", "一张图", "生成图", "海报", "插画", "壁纸",
+        "头像", "设计图", "绘画", "静帧", "成图",
+    )
+    video_keywords = (
+        "视频", "动画", "短片", "镜头", "运镜", "分镜", "片段", "动态",
+    )
+    wants_image = any(keyword in content for keyword in image_keywords)
+    wants_video = any(keyword in content for keyword in video_keywords)
+    return "image" if wants_image and not wants_video else "video"
 
 
 def _planner_mode_argument(
@@ -700,6 +723,11 @@ async def analyze_images(
 ) -> AgentState:
     async def operation() -> AgentState:
         _ensure_thread_id(state, config)
+        if services.vision_analyzer is None:
+            return {
+                "vision_descriptions": [],
+                "vision_issues": [],
+            }
         document = NormalizedDocument.model_validate(
             state.get("normalized_document")
         )
@@ -1296,14 +1324,24 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
         registry = getattr(services, "image_providers", None)
         if not registry:
             # 未配置 registry：沿用单实例与历史 provider 名，存量 run 不受影响。
+            if services.image_generator is None:
+                raise _validation_error("图片生成未配置任何 provider")
             return "chiyun", services.image_generator
         requested = task.resolved_image_provider
         generator = registry.get(requested)
         if generator is None:
-            raise _validation_error(
-                f"图片 provider {requested} 未配置，"
-                f"当前可用：{'、'.join(sorted(registry))}"
+            fallback = (
+                "seedream"
+                if "seedream" in registry
+                else next(iter(registry), None)
             )
+            if fallback is None:
+                raise _validation_error(
+                    f"图片 provider {requested} 未配置，"
+                    f"当前可用：{'、'.join(sorted(registry))}"
+                )
+            requested = fallback
+            generator = registry[fallback]
         return requested, generator
     if services.portrait_video_generator is not None and services.production_task_store is not None:
         binding = await services.production_task_store.get_by_run(run_id)

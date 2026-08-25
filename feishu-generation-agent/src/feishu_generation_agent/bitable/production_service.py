@@ -364,7 +364,11 @@ class ProductionBitableService:
             raise RunConflict("多维表格服务正在关闭")
         source = self._sources.get(category)
         if source is None:
-            label = "真人类" if category == "portrait" else "动画类"
+            label = {
+                "animation": "动画类",
+                "portrait": "真人类",
+                "image": "图片类",
+            }.get(category, category)
             raise RunValidationError(f"{label}视图尚未配置")
         if source.location.app_token is None:
             resolved = await self._bitable.resolve_location(source.location)

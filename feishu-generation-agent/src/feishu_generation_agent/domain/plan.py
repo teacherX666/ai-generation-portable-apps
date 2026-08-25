@@ -116,7 +116,7 @@ class GenerationTask(BaseModel):
     user_intent: str
     prompt: str
     negative_constraints: list[str] = Field(default_factory=list)
-    reference_images: list[ImageReference] = Field(min_length=1)
+    reference_images: list[ImageReference] = Field(default_factory=list)
     reference_mode: ReferenceMode | None = None
     aspect_ratio: str
     image_size: str | None = None

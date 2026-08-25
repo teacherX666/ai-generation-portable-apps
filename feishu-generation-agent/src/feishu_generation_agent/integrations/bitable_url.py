@@ -1,6 +1,13 @@
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    unquote,
+    urlencode,
+    urlsplit,
+    urlunsplit,
+)
 
 from feishu_generation_agent.domain.bitable import BitableLocation
 from feishu_generation_agent.domain.document import SourceType
@@ -8,11 +15,26 @@ from feishu_generation_agent.integrations.feishu_source import parse_feishu_url
 
 
 def parse_bitable_url(url: str, table_id: str, view_id: str) -> BitableLocation:
+    parsed = urlsplit(url)
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if parts and parts[0] == "base":
+        # 独立多维表格 Base（非 wiki 内嵌）：app_token 直接来自 URL，
+        # table_id / view_id 由配置提供。
+        if len(parts) != 2 or not parts[1].strip():
+            raise ValueError("Base 链接缺少 app_token")
+        return BitableLocation(
+            wiki_token="",
+            app_token=parts[1].strip(),
+            table_id=table_id,
+            view_id=view_id,
+            source_url=url,
+        )
+
     source_type, wiki_token = parse_feishu_url(url)
     if source_type is not SourceType.WIKI:
-        raise ValueError("多维表格链接必须是 wiki 链接")
+        raise ValueError("多维表格链接必须是 wiki 或 base 链接")
 
-    query = parse_qs(urlsplit(url).query, keep_blank_values=True)
+    query = parse_qs(parsed.query, keep_blank_values=True)
     _require_matching_query_value(query, "table", table_id)
     _require_matching_query_value(query, "view", view_id)
 

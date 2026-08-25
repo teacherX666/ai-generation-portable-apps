@@ -10,7 +10,7 @@
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
 
-  const CATEGORY_NAMES = new Set(["animation", "portrait"]);
+  const CATEGORY_NAMES = new Set(["animation", "portrait", "image"]);
   const TERMINAL_RUN_STATUSES = new Set([
     "succeeded",
     "completed_with_errors",
@@ -48,6 +48,7 @@
       categories: {
         animation: createCategoryState(),
         portrait: createCategoryState(),
+        image: createCategoryState(),
       },
       claim: {
         phase: "idle",
