@@ -43,7 +43,8 @@
   const directRunFeedback = byId("direct-run-feedback");
   const animationCategoryTab = byId("animation-category-tab");
   const portraitCategoryTab = byId("portrait-category-tab");
-  const categoryTabs = [animationCategoryTab, portraitCategoryTab];
+  const imageCategoryTab = byId("image-category-tab");
+  const categoryTabs = [animationCategoryTab, portraitCategoryTab, imageCategoryTab];
   const bitableTaskList = byId("bitable-task-list");
   const bitableStatus = byId("bitable-status");
   const recentRunList = byId("recent-run-list");

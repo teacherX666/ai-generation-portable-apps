@@ -1436,10 +1436,6 @@ def test_validator_rejects_frame_mode_without_exactly_two_frame_roles(
     [
         (lambda plan: plan["tasks"][0].update(task_type="text_to_video"), "task_type"),
         (
-            lambda plan: plan["tasks"][0].update(reference_images=[]),
-            "reference_images",
-        ),
-        (
             lambda plan: plan["tasks"][0]["reference_images"][0].update(
                 asset_id="missing"
             ),

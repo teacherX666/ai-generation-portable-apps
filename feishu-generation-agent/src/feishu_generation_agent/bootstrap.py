@@ -70,11 +70,9 @@ from feishu_generation_agent.storage.repository import Repository
 CAPABILITY_FIELDS: dict[str, tuple[str, ...]] = {
     "core": (
         "lark_app_id", "lark_app_secret", "deepseek_api_key",
-        "claude_api_key", "claude_model",
     ),
     "generation": (
-        "chiyun_api_key", "chiyun_model", "ark_api_key",
-        "seedance_model",
+        "ark_api_key", "seedance_model",
     ),
     "portrait_generation": (
         "ark_api_key", "volcengine_access_key", "volcengine_secret_key",
@@ -110,6 +108,17 @@ def capability_is_configured(settings: Settings, name: str) -> bool:
     return True
 
 
+def _nonempty(value: Any) -> str | None:
+    """返回 SecretStr/字符串的非空值，未设置或为空则返回 None。"""
+    if value is None:
+        return None
+    getter = getattr(value, "get_secret_value", None)
+    raw = getter() if getter is not None else value
+    if isinstance(raw, str):
+        raw = raw.strip()
+    return raw or None
+
+
 def runtime_is_configured(settings: Settings) -> bool:
     return (
         capability_is_configured(settings, "core")
@@ -138,7 +147,7 @@ def build_image_providers(
     的 ark 传输层。
     """
     providers: dict[str, Any] = {}
-    if settings.chiyun_api_key is not None:
+    if _nonempty(settings.chiyun_api_key):
         models = {
             "banana": settings.banana_model,
             "gpt-image2": settings.gpt_image_model,
@@ -350,17 +359,19 @@ async def _open_application_services(
             asset_library_store = await open_asset_library_store(settings)
         except Exception:
             asset_library_store = None
-        vision_options = {
-            "api_key": settings.claude_api_key,
-            "model_name": settings.claude_model,
-            "max_tokens_to_sample": 2048,
-            "temperature": 0,
-            "max_retries": 2,
-            "timeout": 120,
-        }
-        if settings.claude_base_url:
-            vision_options["base_url"] = settings.claude_base_url
-        vision_model = ChatAnthropic(**vision_options)
+        vision_model = None
+        if _nonempty(settings.claude_api_key) and _nonempty(settings.claude_model):
+            vision_options = {
+                "api_key": settings.claude_api_key,
+                "model_name": settings.claude_model,
+                "max_tokens_to_sample": 2048,
+                "temperature": 0,
+                "max_retries": 2,
+                "timeout": 120,
+            }
+            if settings.claude_base_url:
+                vision_options["base_url"] = settings.claude_base_url
+            vision_model = ChatAnthropic(**vision_options)
         legacy_writer = (
             FeishuDeliveryWriter(
                 feishu,
@@ -466,23 +477,31 @@ async def _open_application_services(
                 file_store,
                 sheet_exporter=FeishuSheetExporter(feishu),
             ),
-            vision_analyzer=ClaudeVisionAnalyzer(
-                vision_model,
-                repository,
-                prompt_version="v1",
-                model_name=settings.claude_model,
+            vision_analyzer=(
+                ClaudeVisionAnalyzer(
+                    vision_model,
+                    repository,
+                    prompt_version="v1",
+                    model_name=settings.claude_model,
+                )
+                if vision_model is not None
+                else None
             ),
             planner=DeepSeekPlanner(
                 planner_model, max_output_count=settings.max_output_count
             ),
-            image_generator=ChiyunImageGenerator(
-                provider_http,
-                base_url=settings.chiyun_base_url,
-                api_key=settings.chiyun_api_key,
-                model=settings.chiyun_model,
-                staging_dir=settings.data_dir / "provider-results",
-                result_downloader=downloader,
-                max_result_bytes=settings.max_download_bytes,
+            image_generator=(
+                ChiyunImageGenerator(
+                    provider_http,
+                    base_url=settings.chiyun_base_url,
+                    api_key=settings.chiyun_api_key,
+                    model=settings.chiyun_model,
+                    staging_dir=settings.data_dir / "provider-results",
+                    result_downloader=downloader,
+                    max_result_bytes=settings.max_download_bytes,
+                )
+                if _nonempty(settings.chiyun_api_key) and _nonempty(settings.chiyun_model)
+                else None
             ),
             image_providers=build_image_providers(
                 settings,

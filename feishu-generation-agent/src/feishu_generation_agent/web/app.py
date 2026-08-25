@@ -72,7 +72,7 @@ from feishu_generation_agent.web.schemas import (
     TaskPatchRequest,
 )
 
-ProductionCategory = Literal["animation", "portrait"]
+ProductionCategory = Literal["animation", "portrait", "image"]
 _MAX_IDENTITY_LENGTH = 255
 _LOGGER = logging.getLogger(__name__)
 _WORKSPACE_STYLESHEET_LINK = (
@@ -378,9 +378,8 @@ def create_app(
             ),
             "planning": configured("deepseek_api_key", "deepseek_model"),
             "vision": configured("claude_api_key", "claude_model"),
-            "image_generation": configured(
-                "chiyun_api_key", "chiyun_model"
-            ),
+            "image_generation": configured("chiyun_api_key", "chiyun_model")
+            or configured("ark_api_key", "seedream_model"),
             "video_generation": configured("ark_api_key", "seedance_model"),
         }
         capabilities = {
@@ -397,7 +396,6 @@ def create_app(
                 checks["local_storage"]
                 and checks["feishu_read"]
                 and checks["planning"]
-                and checks["vision"]
                 and checks["image_generation"]
                 and checks["video_generation"]
                 and (checks["bitable_write"] or checks["feishu_write"])
@@ -700,10 +698,15 @@ def create_app(
     async def list_recent_bitable_runs(request: Request) -> list[dict]:
         active = get_bitable_service(request)
         identity = current_identity(request)
+        # MVP 模式的服务没有「最近完成任务」能力，返回空列表即可，
+        # 避免前端把缺失方法误报成「读取多维表格失败」。
+        recent_runs = getattr(active, "recent_runs", None)
+        if recent_runs is None:
+            return []
         try:
-            bindings = await active.recent_runs(
+            bindings = await recent_runs(
                 **owner_argument(
-                    active.recent_runs, identity.owner_user_id
+                    recent_runs, identity.owner_user_id
                 )
             )
         except Exception as exc:

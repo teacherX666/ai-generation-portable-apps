@@ -78,6 +78,9 @@ class FeishuBitableClient:
         self._client = client
 
     async def resolve_location(self, location: BitableLocation) -> BitableLocation:
+        if location.app_token:
+            # 独立 Base 的 app_token 已在 URL 中给出，无需走 wiki 解析。
+            return location
         payload = await self._client.request_json(
             "GET",
             "/open-apis/wiki/v2/spaces/get_node",

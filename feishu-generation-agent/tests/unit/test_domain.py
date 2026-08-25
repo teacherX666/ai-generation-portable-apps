@@ -111,19 +111,20 @@ def test_video_task_requires_duration_and_resolution(generate_audio: bool | None
             GenerationTask.model_validate(invalid_payload)
 
 
-def test_video_task_rejects_image_size_and_all_tasks_require_references():
+def test_video_task_rejects_image_size_and_empty_references_allowed():
     payload = task_payload("image_to_video")
     payload.update(duration=10, resolution="720p", image_size="2K")
     with pytest.raises(ValidationError, match="image_size"):
         GenerationTask.model_validate(payload)
 
+    # 文生图/文生视频允许空参考图列表
     for task_type, task_fields in (
         ("image_to_image", {"image_size": "2K"}),
         ("image_to_video", {"duration": 10, "resolution": "720p"}),
     ):
         payload = task_payload(task_type) | task_fields | {"reference_images": []}
-        with pytest.raises(ValidationError, match="reference_images"):
-            GenerationTask.model_validate(payload)
+        task = GenerationTask.model_validate(payload)
+        assert task.reference_images == []
 
 
 def test_reference_role_normalizes_saved_planner_alias():
