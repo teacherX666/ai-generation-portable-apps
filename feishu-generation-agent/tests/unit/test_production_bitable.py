@@ -57,7 +57,7 @@ async def test_lists_readable_production_tasks_and_filters_completed() -> None:
         {"field_id": "fld_project", "field_name": "项目名称", "type": 4},
         {"field_id": "fld_requester", "field_name": "发起人", "type": 11},
         {"field_id": "fld_maker", "field_name": "需求制作人", "type": 11},
-        {"field_id": "fld_progress", "field_name": "当前进度", "type": 3},
+        {"field_id": "fld_progress", "field_name": "制作进度", "type": 3},
     ]
     records = [
         {
@@ -69,7 +69,7 @@ async def test_lists_readable_production_tasks_and_filters_completed() -> None:
                 "项目名称": [],
                 "发起人": [],
                 "需求制作人": [],
-                "当前进度": "",
+                "制作进度": "",
             },
         },
         {
@@ -81,7 +81,7 @@ async def test_lists_readable_production_tasks_and_filters_completed() -> None:
                 "项目名称": ["项目 A"],
                 "发起人": [{"id": "ou-request", "name": "发起人"}],
                 "需求制作人": [{"id": "ou-maker", "name": "制作人"}],
-                "当前进度": "未开始",
+                "制作进度": "未开始",
             },
         },
         {
@@ -93,7 +93,19 @@ async def test_lists_readable_production_tasks_and_filters_completed() -> None:
                 "项目名称": [],
                 "发起人": [],
                 "需求制作人": [],
-                "当前进度": "已确认完成",
+                "制作进度": "制作完成",
+            },
+        },
+        {
+            "record_id": "rec-done-legacy",
+            "fields": {
+                "需求名称": "旧完成标志需求",
+                "需求类型": "动画类",
+                "需求附件": "https://tenant.feishu.cn/wiki/wikiDoneLegacy",
+                "项目名称": [],
+                "发起人": [],
+                "需求制作人": [],
+                "制作进度": "已确认完成",
             },
         },
         {
@@ -105,7 +117,7 @@ async def test_lists_readable_production_tasks_and_filters_completed() -> None:
                 "项目名称": [],
                 "发起人": [],
                 "需求制作人": [],
-                "当前进度": "未开始",
+                "制作进度": "未开始",
             },
         },
     ]

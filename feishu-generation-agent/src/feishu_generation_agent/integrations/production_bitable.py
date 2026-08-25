@@ -17,7 +17,7 @@ _REQUIRED_FIELDS: dict[str, frozenset[int]] = {
     "项目名称": frozenset({4}),
     "发起人": frozenset({11}),
     "需求制作人": frozenset({11}),
-    "当前进度": frozenset({3}),
+    "制作进度": frozenset({3}),
 }
 # 图片需求表没有「需求类型」字段——类型由 ProductionTaskSource 声明并在
 # scan 时补齐，所以这个字段是可选的。
@@ -25,7 +25,9 @@ _OPTIONAL_FIELDS: dict[str, frozenset[int]] = {
     "需求类型": frozenset({3}),
 }
 _ALL_KNOWN_FIELDS = _REQUIRED_FIELDS | _OPTIONAL_FIELDS
-_COMPLETED_PROGRESS = "已确认完成"
+# 需求表的完成标志：曾用「已确认完成」，2026-08 表格改造后改名「制作完成」。
+# 两个值都视为已完成，扫描时跳过，避免把制作完成的任务当新任务抓进来。
+_COMPLETED_PROGRESS_VALUES = frozenset({"制作完成", "已确认完成"})
 
 
 class ProductionBitableClient:
@@ -76,7 +78,7 @@ class ProductionBitableClient:
             project_name_field_id=field_ids["项目名称"],
             requester_field_id=field_ids["发起人"],
             maker_field_id=field_ids["需求制作人"],
-            progress_field_id=field_ids["当前进度"],
+            progress_field_id=field_ids["制作进度"],
         )
 
     async def list_tasks(
@@ -93,7 +95,7 @@ class ProductionBitableClient:
         tasks: list[ProductionTaskSummary] = []
         for record in records:
             task = _to_task(record)
-            if task is not None and task.progress != _COMPLETED_PROGRESS:
+            if task is not None and task.progress not in _COMPLETED_PROGRESS_VALUES:
                 tasks.append(task)
         return tasks
 
@@ -115,7 +117,7 @@ def _to_task(record: Mapping[str, Any]) -> ProductionTaskSummary | None:
         source_url = parse_requirement_source(fields.get("需求附件"))
     except (TypeError, ValueError):
         return None
-    progress = _text(fields.get("当前进度"))
+    progress = _text(fields.get("制作进度"))
     task_type = _text(fields.get("需求类型"))
     requirement_name = _text(fields.get("需求名称"))
     if not requirement_name:

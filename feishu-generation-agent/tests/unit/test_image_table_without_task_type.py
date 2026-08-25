@@ -29,7 +29,7 @@ BASE_FIELDS = [
     {"field_name": "项目名称", "type": 4, "field_id": "fld_proj"},
     {"field_name": "发起人", "type": 11, "field_id": "fld_req"},
     {"field_name": "需求制作人", "type": 11, "field_id": "fld_maker"},
-    {"field_name": "当前进度", "type": 3, "field_id": "fld_prog"},
+    {"field_name": "制作进度", "type": 3, "field_id": "fld_prog"},
 ]
 
 
@@ -75,7 +75,7 @@ async def test_schema_still_accepts_table_with_task_type_field():
 
 async def test_schema_still_rejects_missing_required_field():
     client = ProductionBitableClient(
-        _Client([f for f in BASE_FIELDS if f["field_name"] != "当前进度"])
+        _Client([f for f in BASE_FIELDS if f["field_name"] != "制作进度"])
     )
 
     with pytest.raises(BitableSchemaError):
