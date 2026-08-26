@@ -1,0 +1,13 @@
+{
+  "ark": {
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "model": "doubao-seedream-5-0-pro-260628",
+    "default_resolution": "2K",
+    "default_aspect_ratio": "1:1",
+    "default_count": 1
+  },
+  "deepseek": {
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat"
+  }
+}
