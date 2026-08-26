@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import shutil
 import threading
 import urllib.error
 import urllib.parse
@@ -170,6 +171,58 @@ def request_json(method: str, url: str, api_key: str, body: dict | None = None,
         raise APIError(502, f"网络错误：{exc.reason}", "") from exc
 
 
+def _download_image(url: str, dest: Path) -> None:
+    """下载生成结果到本地文件；失败抛 APIError。"""
+    req = urllib.request.Request(url, headers={"User-Agent": "director/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            with dest.open("wb") as fh:
+                shutil.copyfileobj(resp, fh)
+    except Exception as exc:
+        raise APIError(502, "生成结果下载失败", str(exc)) from exc
+
+
+def _run_text2image(job_id: str, prompt: str, aspect_ratio: str,
+                    count: int, resolution: str) -> None:
+    """在线程中执行：逐张调方舟 Seedream（同步接口）并落盘。"""
+    job = JOBS[job_id]
+    ark = PROVIDERS.get("ark", {})
+    base_url = ark.get("base_url", "https://ark.cn-beijing.volces.com/api/v3")
+    model = ark.get("model", "doubao-seedream-5-0-pro-260628")
+    api_key = _ark_key()
+    try:
+        size = seedream_size(resolution, aspect_ratio)
+    except ValueError as exc:
+        job["status"] = "failed"
+        job["error"] = str(exc)
+        return
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for index in range(count):
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "size": size,
+            "response_format": "url",
+            "output_format": "png",
+            "watermark": False,
+        }
+        try:
+            result = request_json(
+                "POST", f"{base_url}/images/generations", api_key, body, timeout=180,
+            )
+            items = result.get("data") or []
+            if not items:
+                raise APIError(502, "方舟未返回图片结果", json.dumps(result, ensure_ascii=False)[:300])
+            dest = OUTPUT_DIR / f"{job_id}-{index}.png"
+            _download_image(items[0].get("url") or "", dest)
+            job["results"].append({"index": index, "url": f"/outputs/{dest.name}"})
+        except APIError as exc:
+            job["status"] = "failed"
+            job["error"] = exc.message
+            return
+    job["status"] = "done"
+
+
 def optimize_prompt(text: str, mode: str) -> dict[str, Any]:
     skill = _load_skill()
     if not skill:
@@ -206,12 +259,78 @@ def optimize_prompt(text: str, mode: str) -> dict[str, Any]:
 
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/jobs/"):
+            job_id = self.path.rsplit("/", 1)[-1]
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+            if job is None:
+                json_response(self, 404, {"ok": False, "error": "任务不存在"})
+                return
+            json_response(self, 200, {"ok": True, **job})
+            return
+        if self.path.startswith("/outputs/"):
+            self._serve_output()
+            return
         if self.path == "/api/config":
             json_response(self, 200, {"ok": True, **config_payload()})
             return
         super().do_GET()
 
+    def _serve_output(self) -> None:
+        name = Path(urllib.parse.unquote(self.path.rsplit("/", 1)[-1])).name
+        path = OUTPUT_DIR / name
+        if not path.exists() or not path.is_file():
+            json_response(self, 404, {"ok": False, "error": "文件不存在"})
+            return
+        data = path.read_bytes()
+        ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/jobs":
+            length = int(self.headers.get("Content-Length") or "0")
+            raw = self.rfile.read(length).decode("utf-8", errors="replace") if length else "{}"
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                json_response(self, 400, {"ok": False, "error": "请求格式异常"})
+                return
+            prompt = str(data.get("prompt", "")).strip()
+            if not prompt:
+                json_response(self, 400, {"ok": False, "error": "请先输入提示词"})
+                return
+            aspect_ratio = str(data.get("aspect_ratio", "1:1")).strip()
+            if aspect_ratio not in ASPECT_RATIOS:
+                json_response(self, 400, {"ok": False, "error": f"不支持的比例：{aspect_ratio}"})
+                return
+            try:
+                count = max(1, min(int(data.get("count", 1)), 4))
+            except (TypeError, ValueError):
+                count = 1
+            resolution = str(data.get("resolution", "2K")).strip()
+            if not _ark_key():
+                json_response(self, 503, {"ok": False, "error": "方舟 Ark key 未配置，请联系管理员"})
+                return
+            job_id = uuid.uuid4().hex
+            job = {"id": job_id, "status": "pending", "prompt": prompt,
+                   "aspect_ratio": aspect_ratio, "count": count,
+                   "resolution": resolution, "results": [], "error": ""}
+            with JOBS_LOCK:
+                JOBS[job_id] = job
+            threading.Thread(
+                target=_run_text2image,
+                args=(job_id, prompt, aspect_ratio, count, resolution),
+                daemon=True,
+            ).start()
+            # X-Job-Id 让 portal 按「张」登记用量（统计红线）
+            json_response(self, 200, {"ok": True, "job_id": job_id},
+                          extra_headers={"X-Job-Id": job_id})
+            return
         if self.path == "/api/optimize-prompt":
             length = int(self.headers.get("Content-Length") or "0")
             raw = self.rfile.read(length).decode("utf-8", errors="replace") if length else "{}"
