@@ -10,6 +10,10 @@ import json
 import mimetypes
 import os
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -114,12 +118,113 @@ def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: Any,
     handler.wfile.write(data)
 
 
+DEEPSEEK_MODEL = PROVIDERS.get("deepseek", {}).get("model", "deepseek-chat")
+DEEPSEEK_BASE = PROVIDERS.get("deepseek", {}).get("base_url", "https://api.deepseek.com/v1")
+
+JOBS: dict[str, dict[str, Any]] = {}
+JOBS_LOCK = threading.Lock()
+
+
+class APIError(Exception):
+    def __init__(self, status_code: int, message: str, raw_response: str = ""):
+        self.status_code = status_code
+        self.message = message
+        self.raw_response = raw_response
+        super().__init__(message)
+
+
+def _load_skill() -> str:
+    if SKILL_PATH.exists():
+        return SKILL_PATH.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def request_json(method: str, url: str, api_key: str, body: dict | None = None,
+                 timeout: float = 120) -> dict:
+    """urllib JSON 请求；非 2xx 抛 APIError（message 为中文翻译）。"""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        detail = ""
+        try:
+            detail = json.loads(raw).get("error", {}).get("message", "")
+        except Exception:
+            detail = raw[:200]
+        if exc.code == 401:
+            raise APIError(401, "密钥无效或已过期（InvalidApiKey）", raw)
+        if exc.code == 429:
+            raise APIError(429, "请求过于频繁，稍后重试", raw)
+        raise APIError(exc.code, f"上游服务错误：{detail or exc.reason}", raw)
+    except urllib.error.URLError as exc:
+        raise APIError(502, f"网络错误：{exc.reason}", "") from exc
+
+
+def optimize_prompt(text: str, mode: str) -> dict[str, Any]:
+    skill = _load_skill()
+    if not skill:
+        return {"ok": False, "error": "SKILL.md 未找到或为空，无法进行优化"}
+    if not (text or "").strip():
+        return {"ok": False, "error": "请先输入提示词"}
+    api_key = _load_deepseek_key()
+    if not api_key:
+        return {"ok": False, "error": (
+            "提示词优化未配置 DeepSeek API Key，"
+            "请联系管理员把 sk-... 写入 director/state/deepseek.key"
+        )}
+    mode_text = "按「优化 refine」规则改写" if mode == "refine" else "按「扩写 expand」规则改写"
+    body = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": skill},
+            {"role": "user", "content": f"{mode_text}：\n{text.strip()}"},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 4096,
+    }
+    try:
+        result = request_json(
+            "POST", f"{DEEPSEEK_BASE}/chat/completions", api_key, body, timeout=120,
+        )
+        content = (result.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        if not content.strip():
+            return {"ok": False, "error": "DeepSeek 返回了空结果，请重试"}
+        return {"ok": True, "prompt": content.strip()}
+    except APIError as exc:
+        return {"ok": False, "error": exc.message}
+
+
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/api/config":
             json_response(self, 200, {"ok": True, **config_payload()})
             return
         super().do_GET()
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/optimize-prompt":
+            length = int(self.headers.get("Content-Length") or "0")
+            raw = self.rfile.read(length).decode("utf-8", errors="replace") if length else "{}"
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                json_response(self, 400, {"ok": False, "error": "请求格式异常"})
+                return
+            json_response(self, 200, optimize_prompt(
+                str(data.get("text", "")), str(data.get("mode", "refine"))
+            ))
+            return
+        json_response(self, 404, {"ok": False, "error": "未知接口"})
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: N802
         if not CORS:
