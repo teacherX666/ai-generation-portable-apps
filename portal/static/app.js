@@ -2194,12 +2194,153 @@ function VolcenginePortraitApp() {
   };
 }
 
+// ============ 导演台（右侧栏） ============
+function DirectorApp() {
+  return {
+    skills: [
+      { id: "refine", label: "提示词优化" },
+      { id: "expand", label: "提示词扩写" },
+      { id: "text2image", label: "文生图" },
+    ],
+    skill: "refine",
+    input: "",
+    style: "",
+    ratio: "1:1",
+    resolution: "2K",
+    count: 1,
+    ratios: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9", "9:21"],
+    resolutions: ["1K", "1.5K", "2K"],
+    running: false,
+    error: "",
+    statusText: "",
+    resultText: "",
+    images: [],
+    collapsed: false,
+    async init() {
+      try {
+        const cfg = await api("/director/api/config", "GET");
+        if (cfg && cfg.ok) {
+          if (Array.isArray(cfg.aspect_ratios) && cfg.aspect_ratios.length) this.ratios = cfg.aspect_ratios;
+          if (Array.isArray(cfg.resolutions) && cfg.resolutions.length) this.resolutions = cfg.resolutions;
+          if (cfg.default_aspect_ratio) this.ratio = cfg.default_aspect_ratio;
+          if (cfg.default_resolution) this.resolution = cfg.default_resolution;
+          if (cfg.default_count) this.count = cfg.default_count;
+          if (cfg.ark_ready === false && cfg.deepseek_ready === false) {
+            this.error = "导演台未配置任何密钥，请联系管理员";
+          }
+        } else {
+          this.error = "导演台服务不可用，请稍后重试";
+        }
+      } catch (e) {
+        this.error = "导演台服务不可用：" + (e && e.message ? e.message : "网络错误");
+      }
+    },
+    async run() {
+      this.error = "";
+      this.statusText = "";
+      if (!this.input.trim()) return;
+      this.running = true;
+      try {
+        if (this.skill === "text2image") {
+          this.resultText = "";
+          this.images = [];
+          this.statusText = "提交生成任务…";
+          const res = await api("/director/api/jobs", "POST", JSON.stringify({
+            prompt: this.input.trim(),
+            aspect_ratio: this.ratio,
+            count: this.count,
+            resolution: this.resolution,
+          }));
+          if (!res || !res.ok || !res.job_id) {
+            this.error = (res && res.error) || "提交任务失败";
+            return;
+          }
+          const jobId = res.job_id;
+          for (let i = 0; i < 60; i++) {
+            await new Promise((r) => setTimeout(r, 1500));
+            const job = await api("/director/api/jobs/" + jobId, "GET");
+            if (!job || !job.ok) { this.error = "查询任务失败"; return; }
+            if (job.status === "done") {
+              this.images = job.results || [];
+              this.statusText = "生成完成";
+              return;
+            }
+            if (job.status === "failed") {
+              this.error = job.error || "生成失败";
+              return;
+            }
+          }
+          this.error = "任务超时，请稍后在统计页核对结果";
+        } else {
+          this.resultText = "";
+          this.statusText = "正在处理提示词…";
+          const res = await api("/director/api/optimize-prompt", "POST", JSON.stringify({
+            text: this.input.trim() + (this.style.trim() ? "\n风格补充：" + this.style.trim() : ""),
+            mode: this.skill,
+          }));
+          if (!res || !res.ok || !res.prompt) {
+            this.error = (res && res.error) || "处理失败";
+            return;
+          }
+          this.resultText = res.prompt;
+          this.statusText = "处理完成";
+        }
+      } catch (e) {
+        this.error = "请求异常：" + (e && e.message ? e.message : "网络错误");
+      } finally {
+        this.running = false;
+      }
+    },
+    fillToImage() {
+      this.input = this.resultText;
+      this.skill = "text2image";
+      this.statusText = "已填入文生图，检查后点「生成图片」";
+    },
+    async copyPrompt() {
+      try {
+        await navigator.clipboard.writeText(this.resultText);
+        this.statusText = "已复制到剪贴板";
+      } catch (e) {
+        this.statusText = "复制失败，请手动选择文本";
+      }
+    },
+    toggleCollapse() {
+      this.collapsed = !this.collapsed;
+      document.body.classList.toggle("director-collapsed", this.collapsed);
+      document.body.classList.toggle("director-open", !this.collapsed);
+    },
+    async downloadImage(img, index) {
+      const url = "/director" + img.url;
+      const filename = "director-" + index + ".png";
+      // fetch → blob → <a download>：绕开自签证书下载陷阱（与各子应用一致）
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename;
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+      } catch (e) {
+        this.statusText = "下载失败：" + (e && e.message ? e.message : "网络错误");
+      }
+    },
+  };
+}
+window.DirectorApp = DirectorApp;
+
 // === Mount ===
 PetiteVue.createApp({
   DreaminaApp,
   VolcenginePortraitApp,
   StatsApp,
   KeysApp,
+  DirectorApp,
   openPreview
 }).mount();
 
