@@ -27,6 +27,7 @@ Environment=NANO_BANANA_ENGINE=fastapi
 Environment=DREAMINA_ENGINE=fastapi
 Environment=VOLCENGINE_PORTRAIT_ENGINE=fastapi
 Environment=INFINITE_CANVAS_ENGINE=fastapi
+Environment=RAG_ASSISTANT_ENGINE=fastapi
 # dreamina CLI 会话存 $HOME/.dreamina_cli，systemd 默认不设 HOME，必须显式指到 /root
 Environment=HOME=/root
 Environment=PATH=/opt/ai-portal/.venv/bin:/usr/local/bin:/usr/bin:/bin

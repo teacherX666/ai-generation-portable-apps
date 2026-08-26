@@ -43,7 +43,15 @@ class AppSpecLoaderTests(unittest.TestCase):
     def test_golden_set_includes_externally_managed_agent(self):
         self.assertEqual(
             [s.name for s in self.specs],
-            ["seedance", "nano-banana", "dreamina", "volcengine-portrait", "feishu-generation-agent"],
+            [
+                "seedance",
+                "nano-banana",
+                "dreamina",
+                "volcengine-portrait",
+                "infinite-canvas",
+                "feishu-generation-agent",
+                "rag-assistant",
+            ],
         )
 
     def test_feishu_generation_agent_is_externally_managed(self):
