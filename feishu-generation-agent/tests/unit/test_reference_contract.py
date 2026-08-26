@@ -291,6 +291,27 @@ def test_seedance_prompt_accepts_equivalent_concrete_binding_phrases() -> None:
     ) == []
 
 
+def test_seedance_prompt_accepts_pure_text_to_video_without_references() -> None:
+    prompt = (
+        "镜头 1：固定镜头展示空锅。\n"
+        "镜头 2：近景展示食材入锅。\n"
+        "高清，物体稳定不变形，不要生成水印，不要生成 Logo。"
+    )
+
+    issues = validate_seedance_prompt(
+        {
+            "task_id": "task-pure-text",
+            "task_type": "image_to_video",
+            "prompt": prompt,
+            "reference_images": [],
+        },
+        {},
+        require_storyboard=True,
+    )
+
+    assert issues == []
+
+
 def test_seedance_prompt_rejects_generic_generation_and_quality_phrases() -> None:
     prompt = (
         "镜头 1：根据 @图片1 生成视频，保持高清稳定不变形。\n"

@@ -15,6 +15,7 @@ from .nodes import (
     normalize_document,
     plan_requirements,
     revalidate_approval,
+    review_artifacts,
     validate_planned_tasks,
     verify_and_download_artifacts,
 )
@@ -22,7 +23,7 @@ from .state import AgentState
 
 
 def _route_after_artifact_verification(state: AgentState) -> str:
-    return "deliver_to_feishu" if state.get("artifacts") else END
+    return "review_artifacts" if state.get("artifacts") else END
 
 
 def build_graph(services: GraphServices, checkpointer: Any):
@@ -64,6 +65,11 @@ def build_graph(services: GraphServices, checkpointer: Any):
     builder.add_node(
         "verify_and_download_artifacts",
         partial(verify_and_download_artifacts, services=services),
+    )
+    builder.add_node(
+        "review_artifacts",
+        partial(review_artifacts, services=services),
+        destinations=("deliver_to_feishu", "plan_requirements", END),
     )
     builder.add_node(
         "deliver_to_feishu",

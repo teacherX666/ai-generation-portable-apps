@@ -266,17 +266,20 @@ def validate_seedance_prompt(
 
     token_values = set(tokens.values())
     tokens_used_in_shots: set[str] = set()
-    for shot_number, segment in shot_segments:
-        used = {token for token in token_values if token in segment}
-        if not used:
+    # 只有存在参考素材时才要求每个镜头绑定；纯文生视频没有参考图，
+    # 不应被误判为「缺少参考素材绑定」。
+    if token_values:
+        for shot_number, segment in shot_segments:
+            used = {token for token in token_values if token in segment}
+            if not used:
+                issues.append(
+                    f"镜头 {shot_number} 缺少明确的 Seedance 参考素材绑定"
+                )
+            tokens_used_in_shots.update(used)
+        for token in sorted(token_values - tokens_used_in_shots):
             issues.append(
-                f"镜头 {shot_number} 缺少明确的 Seedance 参考素材绑定"
+                f"{token} 只被罗列但没有用于任何实际镜头"
             )
-        tokens_used_in_shots.update(used)
-    for token in sorted(token_values - tokens_used_in_shots):
-        issues.append(
-            f"{token} 只被罗列但没有用于任何实际镜头"
-        )
 
     if not any(
         keyword in prompt for keyword in ("稳定", "不变形", "连贯")

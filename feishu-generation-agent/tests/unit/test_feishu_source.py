@@ -42,6 +42,7 @@ class FakeFeishuClient:
     def __init__(self, blocks: list[dict[str, Any]], media: bytes) -> None:
         self.blocks = blocks
         self.media = media
+        self.media_content_type = "image/png"
         self.download_calls: list[str] = []
         self.wiki_type = "docx"
         self.download_error: Exception | None = None
@@ -89,7 +90,7 @@ class FakeFeishuClient:
         self.download_calls.append(file_token)
         if self.download_error is not None:
             raise self.download_error
-        return self.media, "image/png"
+        return self.media, self.media_content_type
 
 
 class FakeFeishuSheetExporter:
@@ -567,6 +568,59 @@ async def test_ingest_docx_preserves_hierarchy_and_stable_references(
         "doccn123",
         "inputs",
     )
+
+
+def _mp4_bytes() -> bytes:
+    return (
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+        b"\x00\x00\x00\x08free"
+    )
+
+
+async def test_ingest_video_file_block_becomes_video_asset(
+    file_store: FileStore,
+):
+    blocks = [
+        {
+            "block_id": "video-page",
+            "block_type": 1,
+            "children": ["video-view"],
+            "page": {"elements": [{"text_run": {"content": "参考视频"}}]},
+        },
+        {
+            "block_id": "video-view",
+            "parent_id": "video-page",
+            "block_type": 33,
+            "children": ["video-file"],
+            "view": {"view_type": 2},
+        },
+        {
+            "block_id": "video-file",
+            "parent_id": "video-view",
+            "block_type": 23,
+            "file": {"token": "video-file-token", "name": "11.mp4"},
+        },
+    ]
+    client = FakeFeishuClient(blocks, _mp4_bytes())
+    client.media_content_type = "video/mp4"
+    source = FeishuDocumentSource(client, file_store)
+
+    document = await source.ingest(
+        RequirementRequest(source_url="https://fiction.feishu.cn/docx/doccn123")
+    )
+
+    assert client.download_calls == ["video-file-token"]
+    assert "[video:video-1]" in document.text_view
+    video_assets = [
+        asset
+        for asset in document.media_assets
+        if asset.mime_type.startswith("video/")
+    ]
+    assert len(video_assets) == 1
+    assert video_assets[0].asset_id == "video-1"
+    assert video_assets[0].origin == "feishu_video"
+    assert video_assets[0].file_token == "video-file-token"
+    assert video_assets[0].local_path.is_file()
 
 
 async def test_ingest_merges_target_sheet_export_at_sheet_block_order(

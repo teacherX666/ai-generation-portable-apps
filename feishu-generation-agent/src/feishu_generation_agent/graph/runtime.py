@@ -28,6 +28,7 @@ from feishu_generation_agent.domain.errors import AgentError
 from feishu_generation_agent.ports import DeliveryWriter
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
+    ArtifactReviewDecision,
     AuditReport,
     GenerationTask,
     ImageReference,
@@ -323,10 +324,8 @@ class GraphRuntime:
                 result = await self._graph_ainvoke(
                     None, config=self._config(run["thread_id"])
                 )
-                final_status = (
-                    "waiting_approval"
-                    if self._has_interrupt(result)
-                    else self._safe_status(result.get("status"), "failed")
+                final_status = self._waiting_status(result) or self._safe_status(
+                    result.get("status"), "failed"
                 )
                 await self.repository.update_run_status(run_id, final_status)
             except asyncio.CancelledError:
@@ -429,7 +428,7 @@ class GraphRuntime:
             run = await self.repository.get_run(run_id)
             if run is None:
                 raise RunNotFound("运行不存在")
-            allowed = self._TERMINAL_STATUSES | {"waiting_approval"}
+            allowed = self._TERMINAL_STATUSES | {"waiting_approval", "waiting_review"}
             if run["status"] not in allowed:
                 raise RunConflict("只有等待审批或已结束的运行可以删除")
             checkpointer = getattr(self.graph, "checkpointer", None)
@@ -465,10 +464,8 @@ class GraphRuntime:
                 },
                 config=self._config(thread_id),
             )
-            status = (
-                "waiting_approval"
-                if self._has_interrupt(result)
-                else self._safe_status(result.get("status"), "completed")
+            status = self._waiting_status(result) or self._safe_status(
+                result.get("status"), "completed"
             )
             await self.repository.update_run_status(run_id, status)
         except asyncio.CancelledError:
@@ -603,10 +600,18 @@ class GraphRuntime:
                     "status": artifact.status,
                     "provider_task_id": artifact.provider_task_id,
                     "delivered": artifact.feishu_file_token is not None,
+                    "preview_url": (
+                        f"/api/runs/{run_id}/artifacts/"
+                        f"{artifact.artifact_id}/content"
+                    ),
                 }
                 for artifact in artifacts
             ],
             "delivery": state.get("delivery_record"),
+            "artifact_review": {
+                "feedback": state.get("artifact_review_feedback"),
+                "decision": state.get("artifact_review_decision"),
+            },
             "last_error": state.get("last_error"),
             "privacy": {
                 "langsmith_tracing": self.settings.langsmith_tracing,
@@ -779,12 +784,86 @@ class GraphRuntime:
                 )
                 await self.repository.update_run_status(run_id, "failed")
                 return
-            status = (
-                "waiting_approval"
-                if self._has_interrupt(result)
-                else self._safe_status(result.get("status"), "completed")
+            status = self._waiting_status(result) or self._safe_status(
+                result.get("status"), "completed"
             )
             await self.repository.update_run_status(run_id, status)
+
+    async def resume_artifact_review(
+        self,
+        run_id: str,
+        decision: ArtifactReviewDecision,
+    ) -> None:
+        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
+        if lock.locked():
+            raise RunConflict("成片确认正在处理中，请勿重复提交")
+        async with lock:
+            run = await self.repository.get_run(run_id)
+            if run is None:
+                raise RunNotFound("运行不存在")
+            if run["status"] != "waiting_review":
+                raise RunConflict("只有等待成片确认的运行可以提交决定")
+            snapshot = await self.graph.aget_state(
+                self._config(run["thread_id"])
+            )
+            state = dict(snapshot.values or {})
+            if self._planning_prompt_from_state(state) is None:
+                await self._fail_missing_planning_prompt(run_id)
+                raise RunValidationError("运行缺少有效提示词快照")
+            self._validate_artifact_review(state, decision)
+            await self.repository.update_run_status(run_id, "resuming")
+            self._start_background(
+                self._resume_artifact_review_run(
+                    run_id, run["thread_id"], decision
+                ),
+                name=f"artifact-review-resume-{run_id}",
+            )
+
+    async def _resume_artifact_review_run(
+        self,
+        run_id: str,
+        thread_id: str,
+        decision: ArtifactReviewDecision,
+    ) -> None:
+        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
+        async with lock:
+            try:
+                result = await self._graph_ainvoke(
+                    Command(resume=decision.model_dump(mode="json")),
+                    config=self._config(thread_id),
+                )
+            except AgentError as exc:
+                await self._record_last_error(run_id, thread_id, exc)
+                await self.repository.update_run_status(run_id, "failed")
+                return
+            except Exception:
+                await self.repository.append_event(
+                    run_id,
+                    "runtime",
+                    "failed",
+                    "Workflow artifact review resume failed",
+                )
+                await self.repository.update_run_status(run_id, "failed")
+                return
+            status = self._waiting_status(result) or self._safe_status(
+                result.get("status"), "completed"
+            )
+            await self.repository.update_run_status(run_id, status)
+
+    @staticmethod
+    def _validate_artifact_review(
+        state: dict[str, Any],
+        decision: ArtifactReviewDecision,
+    ) -> None:
+        if decision.action == "adjust" and (
+            not isinstance(decision.feedback, str)
+            or not decision.feedback.strip()
+        ):
+            raise RunValidationError("退回调整时必须填写调整意见")
+        if decision.action != "adjust" and decision.feedback is not None:
+            raise RunValidationError("确认或取消时不能携带调整意见")
+        if decision.action == "confirm" and not state.get("artifacts"):
+            raise RunValidationError("当前没有可确认的成片")
 
     async def _record_last_error(
         self,
@@ -1075,6 +1154,29 @@ class GraphRuntime:
                 break
             return resolved_path, asset.mime_type
         raise RunNotFound("参考素材不存在")
+
+    async def get_artifact_file(
+        self,
+        run_id: str,
+        artifact_id: str,
+    ) -> tuple[Path, str]:
+        run = await self.repository.get_run(run_id)
+        if run is None:
+            raise RunNotFound("运行不存在")
+        for artifact in await self.repository.list_artifacts(run_id):
+            if artifact.artifact_id != artifact_id:
+                continue
+            resolved_path = artifact.local_path.resolve()
+            outputs_root = self.settings.outputs_dir.resolve()
+            if (
+                artifact.kind not in {"image", "video"}
+                or not artifact.mime_type.startswith(("image/", "video/"))
+                or not resolved_path.is_relative_to(outputs_root)
+                or not resolved_path.is_file()
+            ):
+                break
+            return resolved_path, artifact.mime_type
+        raise RunNotFound("成片产物不存在")
 
     async def _waiting_state(
         self,
@@ -1426,6 +1528,28 @@ class GraphRuntime:
         return isinstance(interrupts, (list, tuple)) and bool(interrupts)
 
     @staticmethod
+    def _interrupt_actions(result: dict[str, Any]) -> set[str]:
+        interrupts = result.get("__interrupt__")
+        actions: set[str] = set()
+        if not isinstance(interrupts, (list, tuple)):
+            return actions
+        for item in interrupts:
+            value = getattr(item, "value", None)
+            if isinstance(value, dict) and isinstance(value.get("action"), str):
+                actions.add(value["action"])
+        return actions
+
+    def _waiting_status(self, result: dict[str, Any]) -> str | None:
+        if not self._has_interrupt(result):
+            return None
+        actions = self._interrupt_actions(result)
+        if "review_artifacts" in actions:
+            return "waiting_review"
+        if "review_plan" in actions:
+            return "waiting_approval"
+        return None
+
+    @staticmethod
     def _safe_status(value: Any, fallback: str) -> str:
         return value if isinstance(value, str) and value else fallback
 
@@ -1581,6 +1705,13 @@ class GraphRuntime:
                         "action": "review_plan",
                         "status": GraphRuntime._safe_status(
                             state.get("status"), "waiting_approval"
+                        ),
+                    }
+                if isinstance(value, dict) and value.get("action") == "review_artifacts":
+                    return {
+                        "action": "review_artifacts",
+                        "status": GraphRuntime._safe_status(
+                            state.get("status"), "waiting_review"
                         ),
                     }
         return None

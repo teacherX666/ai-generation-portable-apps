@@ -386,13 +386,18 @@ async def test_approved_graph_executes_and_materializes_before_end(
         config=config,
     )
 
-    assert result["status"] == "succeeded"
+    assert _interrupt_payload(result)["action"] == "review_artifacts"
+    confirmed = await graph.ainvoke(
+        Command(resume={"action": "confirm"}),
+        config=config,
+    )
+    assert confirmed["status"] == "succeeded"
     assert video.submit_calls == 1
     assert video.poll_calls == 0
     assert len(video.submission_ids[0]) == 32
-    assert len(result["execution_records"]) == 1
-    assert result["execution_records"][0]["status"] == "succeeded"
-    assert len(result["artifacts"]) == 1
+    assert len(confirmed["execution_records"]) == 1
+    assert confirmed["execution_records"][0]["status"] == "succeeded"
+    assert len(confirmed["artifacts"]) == 1
     operation = await services.repository.get_operation(
         "run-execute-success", "task-video", "submit"
     )
@@ -406,7 +411,7 @@ async def test_approved_graph_executes_and_materializes_before_end(
     assert services.file_store.verify_artifact(
         "run-execute-success", artifacts[0]
     )
-    json.dumps(result, ensure_ascii=False)
+    json.dumps(confirmed, ensure_ascii=False)
 
 
 class _TwoTaskPlanner:
@@ -506,9 +511,14 @@ async def test_only_selected_task_runs_after_formal_approval(
         config=config,
     )
 
-    assert result["status"] == "succeeded"
+    assert _interrupt_payload(result)["action"] == "review_artifacts"
+    confirmed = await graph.ainvoke(
+        Command(resume={"action": "confirm"}),
+        config=config,
+    )
+    assert confirmed["status"] == "succeeded"
     assert video.submitted_task_ids == ["task-video-second"]
-    assert [record["task_id"] for record in result["execution_records"]] == [
+    assert [record["task_id"] for record in confirmed["execution_records"]] == [
         "task-video-second"
     ]
     assert await services.repository.get_operation(
@@ -552,7 +562,7 @@ async def test_video_output_count_fans_out_to_one_seedance_job_per_output(
         "succeeded",
     ]
     assert len(verified["artifacts"]) == 3
-    assert verified["status"] == "succeeded"
+    assert verified["status"] == "waiting_review"
 
 
 @pytest.mark.asyncio
@@ -787,7 +797,12 @@ async def test_submitted_recovery_retries_poll_only_and_materializes(
         config=config,
     )
 
-    assert result["status"] == "succeeded"
+    assert _interrupt_payload(result)["action"] == "review_artifacts"
+    confirmed = await graph.ainvoke(
+        Command(resume={"action": "confirm"}),
+        config=config,
+    )
+    assert confirmed["status"] == "succeeded"
     assert video.submit_calls == 0
     assert video.poll_calls == 3
     operation = await services.repository.get_operation(
@@ -1359,11 +1374,16 @@ async def test_signed_result_url_marker_reaches_only_downloader(
             ),
             config=config,
         )
+        assert _interrupt_payload(result)["action"] == "review_artifacts"
+        confirmed = await graph.ainvoke(
+            Command(resume={"action": "confirm"}),
+            config=config,
+        )
 
     assert downloader.calls == [(raw_url, "video/mp4")]
-    serialized = json.dumps(result, ensure_ascii=False)
+    serialized = json.dumps(confirmed, ensure_ascii=False)
     assert marker not in serialized
-    assert result["artifacts"][0]["provider_url"] == (
+    assert confirmed["artifacts"][0]["provider_url"] == (
         "https://cdn.fictional.test/result.mp4"
     )
     events = await services.repository.list_events("run-signed-result")
@@ -1446,8 +1466,13 @@ async def test_cold_checkpoint_resume_of_submitted_operation_is_poll_only(
             ),
             config=config,
         )
+        assert _interrupt_payload(result)["action"] == "review_artifacts"
+        confirmed = await second_graph.ainvoke(
+            Command(resume={"action": "confirm"}),
+            config=config,
+        )
 
-    assert result["status"] == "succeeded"
+    assert confirmed["status"] == "succeeded"
     assert video.submit_calls == 0
     assert video.poll_calls == 1
 

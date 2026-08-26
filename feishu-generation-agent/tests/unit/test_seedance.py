@@ -195,6 +195,35 @@ async def test_submit_can_use_official_asset_urls_for_image_references(tmp_path:
     assert submission.provider == "volcengine_portrait"
 
 
+async def test_submit_allows_text_only_video_without_references(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def create(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"id": "task-ark-text-only", "status": "queued"},
+        )
+
+    task = _video_task().model_copy(update={"reference_images": []})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(create)) as client:
+        generator = SeedanceVideoGenerator(
+            client,
+            base_url="https://ark.fictional.test/api/v3",
+            api_key="fictional-key",
+            model="fictional-model",
+        )
+        submission = await generator.submit(task, [])
+
+    content = json.loads(requests[0].content)["content"]
+    assert len(content) == 1
+    assert content[0]["type"] == "text"
+    assert task.prompt in content[0]["text"]
+    assert submission.provider == "seedance"
+
+
 def _video_task(
     *,
     references: list[dict] | None = None,

@@ -7,6 +7,7 @@ class TableTaskStatus(StrEnum):
     PENDING = "待处理"
     PROCESSING = "处理中"
     WAITING_APPROVAL = "待审批"
+    REVIEWING = "待确认成片"
     GENERATING = "生成中"
     WRITING_BACK = "回写中"
     COMPLETED = "已完成"

@@ -51,7 +51,11 @@ _BLOCK_TYPE_NAMES = {
     30: "sheet",
     31: "table",
     32: "table_cell",
+    33: "view",
 }
+_VIDEO_FILE_SUFFIXES = frozenset(
+    {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv", ".flv", ".wmv"}
+)
 
 
 def parse_feishu_url(url: str) -> tuple[SourceType, str]:
@@ -110,6 +114,7 @@ class FeishuDocumentSource:
         text_lines: list[str] = []
         media_cache: dict[str, StoredFile | Exception] = {}
         normal_image_count = 0
+        normal_video_count = 0
 
         for order, (raw, path, row, column) in enumerate(ordered):
             block_id = raw["block_id"]
@@ -148,6 +153,20 @@ class FeishuDocumentSource:
                     cache=media_cache,
                 )
                 media_assets.append(asset)
+                if issue_record is not None:
+                    ingest_issue_records.append(issue_record)
+            elif block_type_number == 23 and self._looks_like_video_file(raw):
+                normal_video_count += 1
+                video_asset_id = f"video-{normal_video_count}"
+                asset, issue_record = await self._file_asset(
+                    raw,
+                    document_id=document_id,
+                    asset_id=video_asset_id,
+                    cache=media_cache,
+                )
+                if asset is not None:
+                    text_lines.append(f"[video:{video_asset_id}]")
+                    media_assets.append(asset)
                 if issue_record is not None:
                     ingest_issue_records.append(issue_record)
 
@@ -686,6 +705,87 @@ class FeishuDocumentSource:
                 sha256=cached.sha256,
                 width=cached.width if cached.width is not None else width,
                 height=cached.height if cached.height is not None else height,
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _looks_like_video_file(raw: dict[str, Any]) -> bool:
+        file_payload = raw.get("file")
+        if not isinstance(file_payload, Mapping):
+            return False
+        name = file_payload.get("name")
+        if not isinstance(name, str) or not name:
+            return False
+        return Path(name).suffix.lower() in _VIDEO_FILE_SUFFIXES
+
+    async def _file_asset(
+        self,
+        raw: dict[str, Any],
+        *,
+        document_id: str,
+        asset_id: str,
+        cache: dict[str, StoredFile | Exception],
+    ) -> tuple[MediaAsset | None, IngestIssueRecord | None]:
+        file_payload = raw.get("file")
+        file_token = (
+            file_payload.get("token")
+            if isinstance(file_payload, Mapping)
+            else None
+        )
+        file_name = (
+            file_payload.get("name")
+            if isinstance(file_payload, Mapping)
+            else None
+        )
+        block_id = raw["block_id"]
+        if not isinstance(file_token, str) or not file_token:
+            return self._failed_media_asset(
+                document_id, asset_id, block_id, None
+            )
+
+        cached = cache.get(file_token)
+        if cached is None:
+            try:
+                content, _content_type = await self._client.download_media(
+                    file_token
+                )
+                safe_name = (
+                    file_name
+                    if isinstance(file_name, str)
+                    and file_name
+                    and "/" not in file_name
+                    and "\\" not in file_name
+                    else None
+                )
+                cached = self._file_store.save_input(
+                    document_id,
+                    safe_name or f"{asset_id}.video",
+                    content,
+                )
+            except Exception as exc:
+                cached = exc
+            cache[file_token] = cached
+
+        if isinstance(cached, Exception):
+            return self._failed_media_asset(
+                document_id, asset_id, block_id, file_token
+            )
+        if not cached.mime_type.startswith("video/"):
+            # 文件名像视频但内容不是视频时，当作无关附件跳过，不产生噪音。
+            return None, None
+        return (
+            MediaAsset(
+                asset_id=asset_id,
+                source_block_id=block_id,
+                origin="feishu_video",
+                file_token=file_token,
+                local_path=cached.local_path,
+                mime_type=cached.mime_type,
+                size=cached.size,
+                sha256=cached.sha256,
+                width=cached.width,
+                height=cached.height,
             ),
             None,
         )

@@ -563,3 +563,14 @@ class ApprovalDecision(BaseModel):
     selected_task_ids: list[str] = Field(default_factory=list)
     tasks: list[GenerationTask] = Field(default_factory=list)
     feedback: str | None = None
+
+
+class ArtifactReviewDecision(BaseModel):
+    """成片确认门禁的人工决定。
+
+    ``confirm`` 确认后回写多维表格结果列；``adjust`` 带着反馈退回重新规划，
+    不写结果列；``cancel`` 终止本次运行，同样不写结果列。
+    """
+
+    action: Literal["confirm", "adjust", "cancel"]
+    feedback: str | None = None

@@ -62,6 +62,7 @@ from feishu_generation_agent.web.schemas import (
     AssetLibraryItem,
     AssetLibraryListResponse,
     AssetLibraryUpdateRequest,
+    ArtifactReviewRequest,
     BitableClaimResponse,
     BitableRetryResponse,
     CreateRunRequest,
@@ -969,6 +970,31 @@ def create_app(
         return {"run_id": run_id, "status": "accepted"}
 
     @app.post(
+        "/api/runs/{run_id}/artifact-review",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def decide_artifact_review(
+        run_id: str,
+        payload: ArtifactReviewRequest,
+        request: Request,
+    ) -> dict[str, str]:
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                await active.resume_artifact_review(
+                    run_id, payload.to_domain()
+                )
+        except RunNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        except RunConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except RunValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        return {"run_id": run_id, "status": "accepted"}
+
+    @app.post(
         "/api/runs/{run_id}/retry-delivery",
         status_code=status.HTTP_202_ACCEPTED,
     )
@@ -1139,6 +1165,24 @@ def create_app(
             with runtime_owner_scope(active, identity.owner_user_id):
                 path, mime_type = await active.get_reference_file(
                     run_id, asset_id
+                )
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return FileResponse(path, media_type=mime_type)
+
+    @app.get("/api/runs/{run_id}/artifacts/{artifact_id}/content")
+    async def artifact_content(
+        run_id: str,
+        artifact_id: str,
+        request: Request,
+    ) -> FileResponse:
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                path, mime_type = await active.get_artifact_file(
+                    run_id, artifact_id
                 )
         except (RunNotFound, RunConflict, RunValidationError) as exc:
             raise_runtime_error(exc)

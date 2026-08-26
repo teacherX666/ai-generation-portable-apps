@@ -41,6 +41,7 @@ _ACTIVE_STATUSES = {
     "created": TableTaskStatus.PROCESSING,
     "running": TableTaskStatus.PROCESSING,
     "waiting_approval": TableTaskStatus.WAITING_APPROVAL,
+    "waiting_review": TableTaskStatus.REVIEWING,
     "resuming": TableTaskStatus.GENERATING,
     "waiting_provider": TableTaskStatus.GENERATING,
     "delivering": TableTaskStatus.WRITING_BACK,

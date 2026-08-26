@@ -1085,6 +1085,10 @@ class DeepSeekPlanner:
             }
             for asset in document.media_assets
         ]
+        video_semantics = [
+            semantic.model_dump(mode="json")
+            for semantic in document.video_semantics
+        ]
         vision_payload = [
             vision.model_dump(mode="json") for vision in visions
         ]
@@ -1173,6 +1177,11 @@ class DeepSeekPlanner:
                 document.text_view,
                 f"序列化表格及后代 blocks={_compact_json(table_blocks)}",
                 f"可用素材引用={_compact_json(media_references)}",
+                (
+                    f"视频参考语义={_compact_json(video_semantics)}"
+                    if video_semantics
+                    else "视频参考语义=[]"
+                ),
                 f"全部视觉描述={_compact_json(vision_payload)}",
                 f"用户反馈={_compact_json(feedback)}",
                 f"TaskPlan JSON Schema={_compact_json(schema)}",

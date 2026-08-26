@@ -183,6 +183,33 @@
         </section>
         <div id="task-list" class="task-list"></div>
 
+        <section id="artifact-review" class="artifact-review" aria-label="成片预览" hidden>
+          <div class="panel-heading">
+            <h3>成片预览</h3>
+            <p class="mode-message">确认满意后才会把产物写回多维表格「结果」列。</p>
+          </div>
+          <div id="artifact-list" class="artifact-list"></div>
+          <div class="feedback-box">
+            <label for="artifact-review-feedback">调整意见（不满意时填写）</label>
+            <textarea
+              id="artifact-review-feedback"
+              rows="3"
+              placeholder="说明哪里不满意、希望如何调整"
+            ></textarea>
+          </div>
+          <div class="artifact-review-actions">
+            <button id="confirm-artifacts-button" type="button" class="primary">
+              确认并回写结果表
+            </button>
+            <button id="adjust-artifacts-button" type="button" class="secondary">
+              不满意，退回调整
+            </button>
+            <button id="cancel-artifacts-button" type="button" class="danger">
+              取消本次运行
+            </button>
+          </div>
+        </section>
+
         <div class="feedback-box">
           <label for="reject-feedback">退回意见</label>
           <textarea id="reject-feedback" rows="3"

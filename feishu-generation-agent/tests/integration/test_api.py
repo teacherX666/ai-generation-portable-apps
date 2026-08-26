@@ -27,7 +27,10 @@ from feishu_generation_agent.domain.errors import (
     ErrorCategory,
     ErrorDetail,
 )
-from feishu_generation_agent.domain.plan import ApprovalDecision
+from feishu_generation_agent.domain.plan import (
+    ApprovalDecision,
+    ArtifactReviewDecision,
+)
 from feishu_generation_agent.graph.builder import build_graph
 from feishu_generation_agent.graph.nodes import GraphServices
 from feishu_generation_agent.graph.runtime import (
@@ -535,14 +538,13 @@ async def test_run_view_exposes_safe_chinese_validation_field_paths(
             f"/api/runs/{run_id}/decision",
             json={"action": "approve", "selected_task_ids": ["task-1"]},
         )
-        view = await client.get(f"/api/runs/{run_id}")
+        assert response.status_code == 202
+        view = await _wait_for_status(client, run_id, "failed")
+        view_response = await client.get(f"/api/runs/{run_id}")
 
-    assert response.status_code == 422
-    assert "tasks[0].prompt" in response.text
-    assert raw_prompt not in response.text
-    assert view.status_code == 200
-    assert view.json()["last_error"]["message"] == message
-    assert raw_prompt not in view.text
+    assert view["last_error"]["message"] == message
+    assert "tasks[0].prompt" in view["last_error"]["message"]
+    assert raw_prompt not in view_response.text
 
 
 async def test_run_view_exposes_safe_execution_errors(tmp_path: Path) -> None:
@@ -950,6 +952,18 @@ async def _complete_run_with_approval_edits(
             selected_task_ids=["task-video"],
             tasks=[edited_task],
         ),
+    )
+    # 生成完成后会停在「成片确认」门禁，确认后才回写结果列并到达终态。
+    for _ in range(200):
+        source = await runtime.get_run_view(run_id)
+        if source["status"] == "waiting_review":
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("run did not reach artifact review after approval")
+    await runtime.resume_artifact_review(
+        run_id,
+        ArtifactReviewDecision(action="confirm"),
     )
     # resume_run 现在异步执行生成与交付，需轮询到终态再断言。
     for _ in range(200):
@@ -2558,7 +2572,7 @@ async def test_reference_patch_persists_multi_reference_mode(tmp_path: Path):
         assert view["approval"]["tasks"][0]["reference_mode"] == "multi_reference"
 
 
-async def test_unlink_last_reference_and_oversized_upload_are_rejected(
+async def test_unlink_last_reference_allows_pure_text_to_video_and_rejects_oversized_upload(
     tmp_path: Path,
 ):
     async with _environment(tmp_path) as (client, runtime, graph, repository):
@@ -2573,8 +2587,9 @@ async def test_unlink_last_reference_and_oversized_upload_are_rejected(
         removed = await client.delete(
             f"/api/runs/{run_id}/tasks/task-1/references/asset-1"
         )
-        assert removed.status_code == 422
-        assert "至少一张" in removed.text
+        assert removed.status_code == 200
+        view = (await client.get(f"/api/runs/{run_id}")).json()
+        assert view["approval"]["tasks"][0]["reference_images"] == []
 
         oversized = await client.post(
             f"/api/runs/{run_id}/references",

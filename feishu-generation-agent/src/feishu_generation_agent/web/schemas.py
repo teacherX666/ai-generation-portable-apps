@@ -7,6 +7,7 @@ from feishu_generation_agent.domain.asset_library import CharacterAsset
 from feishu_generation_agent.domain.document import RequirementRequest
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
+    ArtifactReviewDecision,
     GenerationTask,
     ImageReference,
     ReferenceMode,
@@ -66,6 +67,27 @@ class DecisionRequest(BaseModel):
 
     def to_domain(self) -> ApprovalDecision:
         return ApprovalDecision.model_validate(self.model_dump(mode="json"))
+
+
+class ArtifactReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["confirm", "adjust", "cancel"]
+    feedback: str | None = None
+
+    @model_validator(mode="after")
+    def validate_action_fields(self) -> "ArtifactReviewRequest":
+        if self.action == "adjust":
+            if self.feedback is None or not self.feedback.strip():
+                raise ValueError("退回调整时必须填写调整意见")
+        elif self.feedback is not None:
+            raise ValueError("确认或取消时不能携带调整意见")
+        return self
+
+    def to_domain(self) -> ArtifactReviewDecision:
+        return ArtifactReviewDecision.model_validate(
+            self.model_dump(mode="json")
+        )
 
 
 class ReferenceListRequest(BaseModel):

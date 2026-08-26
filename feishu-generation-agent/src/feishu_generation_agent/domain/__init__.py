@@ -28,6 +28,7 @@ from feishu_generation_agent.domain.errors import (
 )
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
+    ArtifactReviewDecision,
     AuditReport,
     ExcludedAsset,
     GenerationTask,
@@ -50,6 +51,7 @@ from feishu_generation_agent.domain.production_bitable import (
 __all__ = [
     "AgentError",
     "ApprovalDecision",
+    "ArtifactReviewDecision",
     "Artifact",
     "AuditReport",
     "BitableBinding",
