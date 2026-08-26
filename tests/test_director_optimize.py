@@ -1,10 +1,17 @@
+import importlib.util
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "director"))
 
-import app as director  # noqa: E402
+# 用唯一模块名加载，避免与套件里其它 `import app` 的测试撞 sys.modules
+_spec = importlib.util.spec_from_file_location(
+    "director_app_optimize", ROOT / "director" / "app.py"
+)
+director = importlib.util.module_from_spec(_spec)
+sys.modules["director_app_optimize"] = director
+_spec.loader.exec_module(director)
 
 
 def test_optimize_empty_text_rejected():

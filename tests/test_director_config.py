@@ -1,10 +1,17 @@
+import importlib.util
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "director"))
 
-import app as director  # noqa: E402
+# 用唯一模块名加载，避免与套件里其它 `import app` 的测试撞 sys.modules
+_spec = importlib.util.spec_from_file_location(
+    "director_app_config", ROOT / "director" / "app.py"
+)
+director = importlib.util.module_from_spec(_spec)
+sys.modules["director_app_config"] = director
+_spec.loader.exec_module(director)
 
 
 def test_seedream_size_mapping():
@@ -23,13 +30,8 @@ def test_seedream_size_rejects_unknown_ratio():
 
 
 def test_config_payload_shape(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("PORT", "8895")
-    monkeypatch.setenv("CORS", "1")
+    # _ark_key()/_load_deepseek_key() 运行时读 env，无需 reload 模块
     monkeypatch.setenv("VOLCENGINE_ARK_API_KEY", "test-ark-key")
-    import importlib
-
-    importlib.reload(director)
     payload = director.config_payload()
     assert payload["aspect_ratios"] == list(director.ASPECT_RATIOS)
     assert payload["resolutions"] == ["1K", "1.5K", "2K"]

@@ -1,4 +1,5 @@
 import http.client
+import importlib.util
 import json
 import sys
 import threading
@@ -8,7 +9,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "director"))
 
-import app as director  # noqa: E402
+# 用唯一模块名加载，避免与套件里其它 `import app` 的测试撞 sys.modules
+_spec = importlib.util.spec_from_file_location(
+    "director_app_jobs", ROOT / "director" / "app.py"
+)
+director = importlib.util.module_from_spec(_spec)
+sys.modules["director_app_jobs"] = director
+_spec.loader.exec_module(director)
 
 
 def _fake_ark_json(method, url, api_key, body=None, timeout=None):
@@ -19,9 +26,6 @@ def _fake_ark_json(method, url, api_key, body=None, timeout=None):
 
 def test_run_text2image_writes_outputs(tmp_path, monkeypatch):
     monkeypatch.setenv("VOLCENGINE_ARK_API_KEY", "sk-ark-test")
-    import importlib
-
-    importlib.reload(director)
     monkeypatch.setattr(director, "OUTPUT_DIR", tmp_path / "outputs")
     monkeypatch.setattr(director, "request_json", _fake_ark_json)
     monkeypatch.setattr(director, "_download_image", lambda url, dest: dest.write_bytes(b"PNG"))
@@ -37,12 +41,8 @@ def test_run_text2image_writes_outputs(tmp_path, monkeypatch):
 
 
 def test_jobs_post_returns_x_job_id_header(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))  # 隔离，避免写入真实 director/outputs
     monkeypatch.setenv("VOLCENGINE_ARK_API_KEY", "sk-ark-test")
-    monkeypatch.setenv("CORS", "1")
-    import importlib
-
-    importlib.reload(director)
+    monkeypatch.setattr(director, "OUTPUT_DIR", tmp_path / "outputs")  # 隔离，避免写真实 outputs
     monkeypatch.setattr(director, "request_json", _fake_ark_json)
     monkeypatch.setattr(director, "_download_image", lambda url, dest: dest.write_bytes(b"PNG"))
 
