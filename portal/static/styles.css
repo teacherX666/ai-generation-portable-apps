@@ -841,3 +841,59 @@ img.dm-hist-thumb { cursor: zoom-in; }
   border-bottom: 1px solid rgba(255, 255, 255, 0.2);
 }
 .global-banner a { color: #fff; font-weight: 700; text-decoration: underline; }
+
+/* ===== 导演台右侧栏 ===== */
+.director-sidebar {
+  position: fixed; top: 94px; right: 0; bottom: 0; width: 320px;
+  background: var(--surface); border-left: 1px solid var(--border);
+  z-index: 40; display: flex; flex-direction: column;
+  transition: width .2s ease;
+}
+body.director-collapsed .director-sidebar { width: 36px; }
+.director-toggle {
+  position: absolute; left: -14px; top: 16px; width: 14px; height: 48px;
+  border: 1px solid var(--border-strong); border-right: none; border-radius: 6px 0 0 6px;
+  background: var(--surface); color: var(--text); cursor: pointer; z-index: 2;
+}
+.director-header { padding: 14px 16px 8px; border-bottom: 1px solid var(--border); }
+.director-header h2 { font-size: 15px; margin: 0; }
+.director-body { padding: 12px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.director-field { display: flex; flex-direction: column; gap: 4px; }
+.director-field-label { font-size: 12px; color: #697386; }
+.director-field select, .director-field input, .director-field textarea {
+  width: 100%; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 6px;
+  background: var(--surface); color: var(--text); font-size: 13px; box-sizing: border-box;
+}
+.director-field textarea { resize: vertical; font-family: inherit; }
+.director-run {
+  padding: 9px 12px; border: none; border-radius: 6px; cursor: pointer;
+  background: #f59e0b; color: #fff; font-size: 13px; font-weight: 600;
+}
+.director-run:disabled { opacity: .5; cursor: not-allowed; }
+.director-status { font-size: 12px; margin: 0; }
+.director-error { color: #ef4444; }
+.director-result { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.director-result-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #697386; }
+.director-result-actions button {
+  margin-left: 6px; padding: 3px 8px; font-size: 11px; border: 1px solid var(--border-strong);
+  border-radius: 4px; background: var(--surface); color: var(--text); cursor: pointer;
+}
+.director-prompt {
+  margin: 8px 0 0; white-space: pre-wrap; word-break: break-word;
+  font-size: 12px; line-height: 1.6; background: transparent; color: var(--text);
+}
+.director-images { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.director-image-card { display: flex; flex-direction: column; gap: 4px; }
+.director-image-card img { width: 100%; border-radius: 6px; border: 1px solid var(--border); }
+.director-image-card button {
+  padding: 3px 6px; font-size: 11px; border: 1px solid var(--border-strong);
+  border-radius: 4px; background: var(--surface); color: var(--text); cursor: pointer;
+}
+/* 展开时给主体让位；窄屏改为悬浮不挤内容 */
+@media (min-width: 1200px) {
+  body.director-open { padding-right: 320px; }
+  body.director-collapsed { padding-right: 36px; }
+}
+@media (max-width: 1199px) {
+  body.director-open, body.director-collapsed { padding-right: 0; }
+}

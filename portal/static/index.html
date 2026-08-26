@@ -894,6 +894,66 @@
     <div id="previewDialogBody"></div>
   </dialog>
 
+  <aside id="director-sidebar" class="director-sidebar" v-scope="DirectorApp()" @vue:mounted="init()">
+    <button id="director-toggle" class="director-toggle" type="button"
+            @click="toggleCollapse()" title="折叠/展开导演台">▸</button>
+    <header class="director-header">
+      <h2>🎬 导演台</h2>
+    </header>
+    <div class="director-body" v-show="!collapsed">
+      <label class="director-field">
+        <span class="director-field-label">Skill</span>
+        <select v-model="skill">
+          <option v-for="s in skills" :key="s.id" :value="s.id">{{ s.label }}</option>
+        </select>
+      </label>
+      <label class="director-field" v-show="skill === 'text2image'">
+        <span class="director-field-label">比例</span>
+        <select v-model="ratio"><option v-for="r in ratios" :key="r" :value="r">{{ r }}</option></select>
+      </label>
+      <label class="director-field" v-show="skill === 'text2image'">
+        <span class="director-field-label">清晰度</span>
+        <select v-model="resolution"><option v-for="r in resolutions" :key="r" :value="r">{{ r }}</option></select>
+      </label>
+      <label class="director-field" v-show="skill === 'text2image'">
+        <span class="director-field-label">数量（1-4）</span>
+        <input type="number" v-model.number="count" min="1" max="4">
+      </label>
+      <label class="director-field" v-show="skill !== 'text2image'">
+        <span class="director-field-label">风格补充（可选）</span>
+        <input v-model="style" placeholder="如：电影感、赛博朋克">
+      </label>
+      <label class="director-field">
+        <span class="director-field-label">输入</span>
+        <textarea v-model="input" rows="6"
+          :placeholder="skill === 'text2image' ? '描述要生成的画面…' : '输入想优化的提示词或一句话想法…'"></textarea>
+      </label>
+      <button class="director-run" type="button" :disabled="running || !input.trim()" @click="run()">
+        {{ running ? '处理中…' : (skill === 'text2image' ? '生成图片' : '处理提示词') }}
+      </button>
+      <p class="director-status" v-show="statusText || error">
+        <span v-show="error" class="director-error">{{ error }}</span>
+        <span v-show="!error && statusText">{{ statusText }}</span>
+      </p>
+      <section class="director-result" v-show="resultText">
+        <div class="director-result-head">
+          <span>处理结果</span>
+          <span class="director-result-actions">
+            <button type="button" @click="copyPrompt()">复制</button>
+            <button type="button" @click="fillToImage()">填入文生图</button>
+          </span>
+        </div>
+        <pre class="director-prompt">{{ resultText }}</pre>
+      </section>
+      <section class="director-images" v-show="images.length">
+        <div class="director-image-card" v-for="(img, i) in images" :key="img.url">
+          <img :src="'/director' + img.url" :alt="'生成结果 ' + (i + 1)" loading="lazy">
+          <button type="button" @click="downloadImage(img, i)">下载</button>
+        </div>
+      </section>
+    </div>
+  </aside>
+
   <script src="https://unpkg.com/petite-vue@0.4.1/dist/petite-vue.iife.js"></script>
   <script src="/app.js"></script>
   <script src="/effects.js"></script>
