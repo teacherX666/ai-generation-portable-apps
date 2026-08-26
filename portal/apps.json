@@ -96,5 +96,20 @@
     "job_type": "dynamic",
     "metrics": ["images", "seconds"],
     "unit_label": "项"
+  },
+  {
+    "name": "director",
+    "display_name": "导演台",
+    "port_env": "DIRECTOR_PORT",
+    "port_default": 8895,
+    "mount": "component",
+    "component_factory": "DirectorApp",
+    "color": "#f59e0b",
+    "credential_scheme": "none",
+    "needs_ark_key": true,
+    "job_type": "image",
+    "metrics": ["images"],
+    "unit_label": "张",
+    "stats_combine": "images_or_seconds"
   }
 ]
