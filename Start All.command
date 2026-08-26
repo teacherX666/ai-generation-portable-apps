@@ -4,7 +4,7 @@ cd "$SCRIPT_DIR/portal"
 
 echo "Stopping previous instances (projects ports only)..."
 PROJECT_ROOT="$SCRIPT_DIR"
-for port in 8787 8797 8888 8891 8893 9089 9090; do
+for port in 8787 8797 8888 8891 8893 8900 9089 9090; do
   pids=$(lsof -ti :$port 2>/dev/null | sort -u)
   for pid in $pids; do
     # Only stop Python app.py processes launched from this project.
@@ -26,7 +26,7 @@ for port in 8787 8797 8888 8891 8893 9089 9090; do
 done
 
 sleep 1
-for port in 8787 8797 8888 8891 8893 9089 9090; do
+for port in 8787 8797 8888 8891 8893 8900 9089 9090; do
   pids=$(lsof -ti :$port 2>/dev/null | sort -u)
   for pid in $pids; do
     cmd=$(ps -p "$pid" -o command= 2>/dev/null)

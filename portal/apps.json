@@ -96,5 +96,19 @@
     "job_type": "dynamic",
     "metrics": ["images", "seconds"],
     "unit_label": "项"
+  },
+  {
+    "name": "rag-assistant",
+    "display_name": "报错问答助手",
+    "port_env": "RAG_ASSISTANT_PORT",
+    "port_default": 8900,
+    "mount": "iframe",
+    "iframe_url": "/rag-assistant/",
+    "color": "#ef4444",
+    "credential_scheme": "none",
+    "job_type": "dynamic",
+    "metrics": ["images"],
+    "unit_label": "次",
+    "stats_combine": "images_or_seconds"
   }
 ]
