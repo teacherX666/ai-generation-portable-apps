@@ -30,6 +30,7 @@
       <button class="app-tab" data-tab="volcengine-portrait">人像生成</button>
       <button class="app-tab" data-tab="infinite-canvas">无限画布</button>
       <button class="app-tab" data-tab="keys">密钥库</button>
+      <button class="app-tab" data-tab="rag-assistant">报错问答助手</button>
       <button class="app-tab" data-tab="stats">统计</button>
     </div>
   </div>
@@ -40,17 +41,17 @@
 
   <!-- SEEDANCE -->
   <div class="tab-panel active" id="tab-seedance">
-    <iframe id="iframe-seedance" src="/seedance/index.html" style="width:100%;height:calc(100vh - 48px);border:none;display:block" allow="fullscreen"></iframe>
+    <iframe id="iframe-seedance" src="/seedance/index.html" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
   </div>
 
   <!-- NANO BANANA -->
   <div class="tab-panel" id="tab-nb">
-    <iframe id="iframe-nb" src="/nano-banana/index.html" style="width:100%;height:calc(100vh - 48px);border:none;display:block" allow="fullscreen"></iframe>
+    <iframe id="iframe-nb" src="/nano-banana/index.html" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
   </div>
 
   <!-- FEISHU GENERATION AGENT -->
   <div class="tab-panel" id="tab-feishu-generation-agent">
-    <iframe id="iframe-feishu-generation-agent" data-app="feishu-generation-agent" style="width:100%;height:calc(100vh - 48px);border:none;display:block" allow="fullscreen"></iframe>
+    <iframe id="iframe-feishu-generation-agent" data-app="feishu-generation-agent" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
   </div>
 
   <!-- INFINITE CANVAS -->
@@ -58,7 +59,12 @@
        （portal/static/app.js:80），拼错会 null.classList 抛错并卡死整个 tab 栏。
        src 由 initConfiguredIframes() 从 /api/apps 注入，不写死。 -->
   <div class="tab-panel" id="tab-infinite-canvas">
-    <iframe id="iframe-infinite-canvas" data-app="infinite-canvas" style="width:100%;height:calc(100vh - 48px);border:none;display:block" allow="fullscreen"></iframe>
+    <iframe id="iframe-infinite-canvas" data-app="infinite-canvas" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
+  </div>
+
+  <!-- RAG ASSISTANT -->
+  <div class="tab-panel" id="tab-rag-assistant">
+    <iframe id="iframe-rag-assistant" data-app="rag-assistant" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
   </div>
 
   <!-- DREAMINA -->

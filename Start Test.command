@@ -6,12 +6,12 @@ echo "=== 测试环境启动 ==="
 echo ""
 
 # 停止旧的测试进程
-for port in 9190 9189 8788 8798 8890 8892; do
+for port in 9190 9189 8788 8798 8890 8892 8980; do
   pids=$(lsof -ti :$port 2>/dev/null | sort -u)
   for pid in $pids; do
     cmd=$(ps -p "$pid" -o command= 2>/dev/null)
     cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
-    if echo "$cmd" | grep -q "app.py"; then
+    if echo "$cmd" | grep -qE "app\.py|app_fastapi"; then
       case "$cwd" in
         "$DIR"/*)
           kill -9 "$pid" 2>/dev/null && echo "  已停止 $cwd (port $port, pid $pid)"
@@ -46,6 +46,7 @@ export SEEDANCE_PORT=8788
 export NANO_PORT=8798
 export DREAMINA_PORT=8890
 export VOLCENGINE_PORTRAIT_PORT=8892
+export RAG_ASSISTANT_PORT=8980
 export DATA_DIR="$DIR/portal/test-data"
 
 # Stage 2: sub-app engine switch. Set to `fastapi` to launch app_fastapi.py
@@ -55,6 +56,7 @@ export NANO_BANANA_ENGINE=fastapi
 export SEEDANCE_ENGINE=${SEEDANCE_ENGINE:-fastapi}
 export DREAMINA_ENGINE=${DREAMINA_ENGINE:-fastapi}
 export VOLCENGINE_PORTRAIT_ENGINE=${VOLCENGINE_PORTRAIT_ENGINE:-fastapi}
+export RAG_ASSISTANT_ENGINE=fastapi
 
 echo ""
 echo "端口分配:"
@@ -64,6 +66,7 @@ echo "  Seedance:          :8788"
 echo "  Nano Banana:       :8798"
 echo "  Dreamina:          :8890"
 echo "  Volcengine 人像:   :8892"
+echo "  报错问答助手:      :8980"
 echo ""
 echo "数据目录: $DATA_DIR"
 echo "子应用数据: seedance/test-data/  nano-banana/test-data/  dreamina/test-data/  volcengine-portrait/test-data/"

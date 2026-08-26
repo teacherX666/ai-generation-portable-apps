@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>报错问答助手</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      --page-bg: #f3f6fa; --surface: #ffffff; --border: #d9e0ea;
+      --text: #172033; --muted: #687386; --accent: #235fd6; --accent-hover: #194fb8;
+      --danger-soft: #fee2e2; --danger-text: #b91c1c;
+      --radius-md: 6px; --shadow-focus: 0 0 0 3px rgba(35, 95, 214, 0.22);
+      --font-size-sm: 12px; --font-size-base: 13px; --font-size-md: 15px;
+      --font-weight-medium: 600; --font-weight-bold: 720;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body { background: var(--page-bg); color: var(--text); font-size: var(--font-size-base); display: flex; flex-direction: column; }
+    header { flex-shrink: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 20px; font-size: var(--font-size-md); font-weight: var(--font-weight-bold); }
+    main { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { max-width: 78%; padding: 10px 14px; border-radius: var(--radius-md); line-height: 1.65; white-space: pre-wrap; font-size: var(--font-size-base); }
+    .msg.q { align-self: flex-end; background: var(--accent); color: #fff; }
+    .msg.a { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+    .msg.a.err { background: var(--danger-soft); border-color: #fca5a5; color: var(--danger-text); }
+    .msg img { max-width: 220px; max-height: 160px; border-radius: var(--radius-md); display: block; margin-top: 6px; }
+    .msg .note { margin-top: 8px; font-size: var(--font-size-sm); color: var(--muted); }
+    .msg strong { font-weight: 700; }
+    .msg code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
+    footer { flex-shrink: 0; background: var(--surface); border-top: 1px solid var(--border); padding: 10px 20px; display: flex; flex-direction: column; gap: 8px; }
+    .previews { display: flex; gap: 8px; flex-wrap: wrap; }
+    .previews:empty { display: none; }
+    .thumb { position: relative; width: 56px; height: 56px; border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+    .thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .thumb .x { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; line-height: 14px; text-align: center; background: rgba(0,0,0,.55); color: #fff; border-radius: 50%; font-size: 12px; cursor: pointer; }
+    .row { display: flex; gap: 10px; }
+    textarea { flex: 1; resize: none; height: 44px; padding: 11px 12px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: var(--font-size-base); font-family: inherit; }
+    textarea:focus { border-color: var(--accent); box-shadow: var(--shadow-focus); outline: none; }
+    button { padding: 0 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-secondary, #465267); font-size: var(--font-size-base); cursor: pointer; }
+    button.primary { border: none; background: var(--accent); color: #fff; font-weight: var(--font-weight-medium); }
+    button.primary:hover { background: var(--accent-hover); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    ::-webkit-scrollbar { width: 12px; height: 12px; }
+    ::-webkit-scrollbar-track { background: #eef2f7; }
+    ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 6px; }
+    ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+  </style>
+</head>
+<body>
+  <header>报错问答助手</header>
+  <main id="chat">
+    <div class="msg a">你好，我是公司内部的报错问答助手。粘贴报错信息、或直接 Ctrl+V 粘贴报错截图，我帮你排查。</div>
+  </main>
+  <footer>
+    <div class="previews" id="previews"></div>
+    <div class="row">
+      <button id="attach" type="button">识图</button>
+      <textarea id="q" placeholder="粘贴报错信息或描述问题…"></textarea>
+      <button class="primary" id="send">发送</button>
+      <input type="file" id="file" accept="image/*" hidden>
+    </div>
+  </footer>
+  <script>
+    const chat = document.getElementById('chat');
+    const input = document.getElementById('q');
+    const btn = document.getElementById('send');
+    const attachBtn = document.getElementById('attach');
+    const fileInput = document.getElementById('file');
+    const previews = document.getElementById('previews');
+    let images = [];
+
+    function renderPreviews() {
+      previews.innerHTML = '';
+      images.forEach(function (url, idx) {
+        const t = document.createElement('div');
+        t.className = 'thumb';
+        const img = document.createElement('img');
+        img.src = url;
+        const x = document.createElement('span');
+        x.className = 'x';
+        x.textContent = '×';
+        x.addEventListener('click', function () { images.splice(idx, 1); renderPreviews(); });
+        t.appendChild(img);
+        t.appendChild(x);
+        previews.appendChild(t);
+      });
+    }
+
+    function addImage(url) {
+      images.push(url);
+      renderPreviews();
+    }
+
+    attachBtn.addEventListener('click', function () { fileInput.click(); });
+    fileInput.addEventListener('change', function () {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = function () { addImage(r.result); fileInput.value = ''; };
+      r.readAsDataURL(f);
+    });
+    document.addEventListener('paste', function (e) {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      for (const it of items) {
+        if (it.type && it.type.indexOf('image') === 0) {
+          const blob = it.getAsFile();
+          const r = new FileReader();
+          r.onload = function () { addImage(r.result); };
+          r.readAsDataURL(blob);
+        }
+      }
+    });
+
+    function addMsg(html, cls) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + cls;
+      div.innerHTML = html;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+
+    function mdToHtml(md) {
+      let s = esc(md);
+      s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+      return s;
+    }
+
+    async function send() {
+      const question = input.value.trim();
+      if ((!question && !images.length) || btn.disabled) return;
+      btn.disabled = true;
+      let qHtml = '';
+      images.forEach(function (url) { qHtml += '<img src="' + url + '">'; });
+      if (question) qHtml += (qHtml ? '<br>' : '') + esc(question);
+      addMsg(qHtml, 'q');
+      const imgs = images.slice();
+      images = [];
+      renderPreviews();
+      input.value = '';
+      const a = addMsg('分析中…', 'a');
+      try {
+        const res = await fetch('api/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question, images: imgs })
+        });
+        const data = await res.json();
+        if (res.ok && data.answer) {
+          a.innerHTML = mdToHtml(data.answer);
+          a.classList.remove('err');
+          if (data.candidate_written) {
+            const note = document.createElement('div');
+            note.className = 'note';
+            note.textContent = '（已自动提交一条候选修复，等待后台审核）';
+            a.appendChild(note);
+          }
+        } else {
+          a.textContent = data.error || '出错了，请稍后重试。';
+          a.classList.add('err');
+        }
+      } catch (e) {
+        a.textContent = '网络异常：' + e.message;
+        a.classList.add('err');
+      } finally {
+        btn.disabled = false;
+        input.focus();
+      }
+    }
+
+    btn.addEventListener('click', send);
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+  </script>
+</body>
+</html>
