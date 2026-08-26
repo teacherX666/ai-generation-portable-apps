@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS production_tasks (
   status TEXT NOT NULL,
   last_error TEXT,
   active INTEGER NOT NULL DEFAULT 1,
+  deleted INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (source_app_token, source_table_id, source_record_id)
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS production_task_history (
   status TEXT NOT NULL,
   last_error TEXT,
   active INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -77,7 +79,7 @@ _BINDING_COLUMNS = """
 source_app_token, source_table_id, source_record_id, owner_user_id,
 source_location_json, source_url, display_text, progress, maker_open_id,
 maker_name, snapshot_json, run_id, thread_id, status, last_error, active,
-created_at, updated_at
+deleted, created_at, updated_at
 """
 
 
@@ -101,6 +103,7 @@ class ProductionTaskStore:
             await connection.executescript(_SCHEMA)
             await connection.execute("BEGIN IMMEDIATE")
             await cls._migrate_owners(connection)
+            await cls._migrate_deleted(connection)
             await connection.commit()
         except BaseException:
             await connection.rollback()
@@ -275,11 +278,13 @@ class ProductionTaskStore:
             cursor = await self._connection.execute(
                 f"""SELECT * FROM (
                     SELECT {_BINDING_COLUMNS} FROM production_tasks
-                    WHERE source_app_token = ? AND source_table_id = ? AND active = 0
+                    WHERE source_app_token = ? AND source_table_id = ?
+                      AND active = 0 AND deleted = 0
                     {owner_clause}
                     UNION ALL
                     SELECT {_BINDING_COLUMNS} FROM production_task_history
-                    WHERE source_app_token = ? AND source_table_id = ? AND active = 0
+                    WHERE source_app_token = ? AND source_table_id = ?
+                      AND active = 0 AND deleted = 0
                     {owner_clause}
                 ) ORDER BY updated_at DESC LIMIT ?""",
                 (
@@ -295,6 +300,101 @@ class ProductionTaskStore:
             rows = await cursor.fetchall()
             await cursor.close()
         return [_binding_from_row(row) for row in rows]
+
+    async def list_archived(
+        self,
+        app_token: str,
+        table_id: str,
+        *,
+        owner_user_id: str | None = None,
+        limit: int = 200,
+    ) -> list[ProductionBinding]:
+        if limit < 1:
+            return []
+        owner_clause = (
+            "AND owner_user_id = ?" if owner_user_id is not None else ""
+        )
+        owner_parameters: tuple[str, ...] = (
+            (owner_user_id,) if owner_user_id is not None else ()
+        )
+        async with self._lock:
+            cursor = await self._connection.execute(
+                f"""SELECT * FROM (
+                    SELECT {_BINDING_COLUMNS} FROM production_tasks
+                    WHERE source_app_token = ? AND source_table_id = ?
+                      AND active = 0 AND deleted = 1
+                    {owner_clause}
+                    UNION ALL
+                    SELECT {_BINDING_COLUMNS} FROM production_task_history
+                    WHERE source_app_token = ? AND source_table_id = ?
+                      AND active = 0 AND deleted = 1
+                    {owner_clause}
+                ) ORDER BY updated_at DESC LIMIT ?""",
+                (
+                    app_token,
+                    table_id,
+                    *owner_parameters,
+                    app_token,
+                    table_id,
+                    *owner_parameters,
+                    limit,
+                ),
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+        return [_binding_from_row(row) for row in rows]
+
+    async def archive(
+        self,
+        run_id: str,
+        *,
+        owner_user_id: str | None = None,
+    ) -> int:
+        owner_clause = (
+            " AND owner_user_id = ?" if owner_user_id is not None else ""
+        )
+        parameters: tuple[object, ...] = (
+            run_id,
+            *((owner_user_id,) if owner_user_id is not None else ()),
+        )
+        updated = 0
+        async with self._lock:
+            for table in ("production_tasks", "production_task_history"):
+                cursor = await self._connection.execute(
+                    f"UPDATE {table} SET deleted = 1, "
+                    "updated_at = CURRENT_TIMESTAMP "
+                    f"WHERE run_id = ? AND active = 0{owner_clause}",
+                    parameters,
+                )
+                updated += cursor.rowcount
+                await cursor.close()
+        return updated
+
+    async def restore(
+        self,
+        run_id: str,
+        *,
+        owner_user_id: str | None = None,
+    ) -> int:
+        owner_clause = (
+            " AND owner_user_id = ?" if owner_user_id is not None else ""
+        )
+        parameters: tuple[object, ...] = (
+            run_id,
+            *((owner_user_id,) if owner_user_id is not None else ()),
+        )
+        updated = 0
+        async with self._lock:
+            for table in ("production_tasks", "production_task_history"):
+                cursor = await self._connection.execute(
+                    f"UPDATE {table} SET deleted = 0, "
+                    "updated_at = CURRENT_TIMESTAMP "
+                    f"WHERE run_id = ? AND active = 0{owner_clause}",
+                    parameters,
+                )
+                updated += cursor.rowcount
+                await cursor.close()
+        return updated
 
     async def set_status(
         self,
@@ -477,6 +577,19 @@ class ProductionTaskStore:
                     "TEXT NOT NULL DEFAULT 'prime-local'"
                 )
 
+    @staticmethod
+    async def _migrate_deleted(connection: aiosqlite.Connection) -> None:
+        for table in ("production_tasks", "production_task_history"):
+            cursor = await connection.execute(f"PRAGMA table_info({table})")
+            rows = await cursor.fetchall()
+            await cursor.close()
+            columns = {str(row[1]) for row in rows}
+            if "deleted" not in columns:
+                await connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN deleted "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+
 
 def _app_token(location: BitableLocation) -> str:
     if not location.app_token:
@@ -509,6 +622,7 @@ def _binding_from_row(row: aiosqlite.Row) -> ProductionBinding:
         thread_id=row["thread_id"], status=TableTaskStatus(row["status"]),
         last_error=row["last_error"], created_at=row["created_at"],
         updated_at=row["updated_at"],
+        deleted=bool(row["deleted"]),
     )
 
 

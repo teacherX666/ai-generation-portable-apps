@@ -738,6 +738,73 @@ def create_app(
             )
         return payload
 
+    @app.get("/api/bitable/archived-runs")
+    async def list_archived_bitable_runs(request: Request) -> list[dict]:
+        active = get_bitable_service(request)
+        identity = current_identity(request)
+        archived_runs = getattr(active, "archived_runs", None)
+        if archived_runs is None:
+            return []
+        try:
+            bindings = await archived_runs(
+                **owner_argument(
+                    archived_runs, identity.owner_user_id
+                )
+            )
+        except Exception as exc:
+            raise_bitable_error(exc)
+        payload: list[dict] = []
+        for binding in bindings:
+            payload.append(
+                {
+                    "run_id": binding.run_id,
+                    "display_text": binding.display_text,
+                    "status": binding.status.value,
+                    "updated_at": binding.updated_at,
+                }
+            )
+        return payload
+
+    @app.post("/api/bitable/runs/{run_id}/archive")
+    async def archive_bitable_run(
+        run_id: str, request: Request
+    ) -> dict[str, str]:
+        active = get_bitable_service(request)
+        identity = current_identity(request)
+        archive_run = getattr(active, "archive_run", None)
+        if archive_run is None:
+            raise HTTPException(
+                status_code=404, detail="多维表格服务不支持归档"
+            )
+        try:
+            await archive_run(
+                run_id,
+                **owner_argument(archive_run, identity.owner_user_id),
+            )
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"run_id": run_id, "status": "archived"}
+
+    @app.post("/api/bitable/runs/{run_id}/restore")
+    async def restore_bitable_run(
+        run_id: str, request: Request
+    ) -> dict[str, str]:
+        active = get_bitable_service(request)
+        identity = current_identity(request)
+        restore_run = getattr(active, "restore_run", None)
+        if restore_run is None:
+            raise HTTPException(
+                status_code=404, detail="多维表格服务不支持恢复"
+            )
+        try:
+            await restore_run(
+                run_id,
+                **owner_argument(restore_run, identity.owner_user_id),
+            )
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"run_id": run_id, "status": "restored"}
+
     @app.post(
         "/api/bitable/tasks/{record_id}/claim",
         status_code=status.HTTP_202_ACCEPTED,

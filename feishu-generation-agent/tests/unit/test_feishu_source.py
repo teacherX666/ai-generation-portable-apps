@@ -279,6 +279,7 @@ async def test_request_json_does_not_refresh_twice_and_maps_errors():
     [
         (403, {"code": 0}, ErrorCategory.PERMISSION, False),
         (200, {"code": 99991672, "msg": "forbidden"}, ErrorCategory.PERMISSION, False),
+        (400, {"code": 131006, "msg": "permission denied"}, ErrorCategory.PERMISSION, False),
         (429, {"code": 1, "msg": "busy"}, ErrorCategory.TRANSIENT, True),
         (503, {"code": 1, "msg": "down"}, ErrorCategory.TRANSIENT, True),
         (400, {"code": 1770001, "msg": "invalid"}, ErrorCategory.DOCUMENT, False),

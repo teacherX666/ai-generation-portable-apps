@@ -50,45 +50,79 @@
 
     <section id="bitable-panel" class="bitable-panel panel" aria-label="多维表格任务">
       <div class="panel-heading">
-        <div>
-          <p class="eyebrow">BITABLE TASKS</p>
-          <h2>多维表格任务</h2>
-        </div>
+        <button
+          id="bitable-tasks-toggle"
+          class="collapse-toggle"
+          type="button"
+          aria-expanded="true"
+          aria-controls="bitable-tasks-body"
+        >
+          <span class="collapse-chevron" aria-hidden="true"></span>
+          <span class="collapse-heading">
+            <span class="eyebrow">BITABLE TASKS</span>
+            <span class="collapse-title">多维表格任务</span>
+          </span>
+        </button>
         <button id="scan-bitable-button" type="button" class="secondary">刷新任务</button>
       </div>
-      <div class="task-category-tabs" role="tablist" aria-label="任务类别">
-        <button
-          id="animation-category-tab"
-          class="task-category-tab is-active"
-          type="button"
-          role="tab"
-          aria-selected="true"
-          data-category="animation"
-        >动画类</button>
-        <button
-          id="portrait-category-tab"
-          class="task-category-tab"
-          type="button"
-          role="tab"
-          aria-selected="false"
-          data-category="portrait"
-        >真人类</button>
-        <button
-          id="image-category-tab"
-          class="task-category-tab"
-          type="button"
-          role="tab"
-          aria-selected="false"
-          data-category="image"
-        >图片类</button>
+      <div id="bitable-tasks-body" class="collapse-body">
+        <div class="task-category-tabs" role="tablist" aria-label="任务类别">
+          <button
+            id="animation-category-tab"
+            class="task-category-tab is-active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            data-category="animation"
+          >动画类</button>
+          <button
+            id="portrait-category-tab"
+            class="task-category-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            data-category="portrait"
+          >真人类</button>
+          <button
+            id="image-category-tab"
+            class="task-category-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            data-category="image"
+          >图片类</button>
+        </div>
+        <p id="bitable-status" class="mode-message">
+          点击扫描，读取需求附件可访问且进度符合扫描规则的记录。
+        </p>
+        <div id="bitable-task-list" class="bitable-task-list"></div>
       </div>
-      <p id="bitable-status" class="mode-message">
-        点击扫描，读取需求附件可访问且进度符合扫描规则的记录。
-      </p>
-      <div id="bitable-task-list" class="bitable-task-list"></div>
       <section class="recent-runs" aria-label="最近完成任务">
-        <h3>最近完成任务</h3>
-        <div id="recent-run-list" class="recent-run-list"></div>
+        <div class="recent-runs-heading">
+          <button
+            id="recent-runs-toggle"
+            class="collapse-toggle recent-runs-toggle"
+            type="button"
+            aria-expanded="true"
+            aria-controls="recent-run-list"
+          >
+            <span class="collapse-chevron" aria-hidden="true"></span>
+            <span class="collapse-title">最近完成任务</span>
+          </button>
+          <button
+            id="trash-button"
+            class="icon-button trash-button"
+            type="button"
+            aria-label="打开回收站"
+            title="回收站"
+          >
+            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+              <path d="M6 7h12l-1 13a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 7Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
+              <path d="M4 7h16M10 11v6M14 11v6M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+          </button>
+        </div>
+        <div id="recent-run-list" class="recent-run-list collapse-body"></div>
       </section>
     </section>
 
@@ -189,6 +223,20 @@
           <button id="planner-prompt-reset" type="button" class="secondary">恢复 Prime</button>
           <button id="planner-prompt-save" type="button" class="primary">保存个人版本</button>
         </div>
+      </section>
+    </div>
+
+    <div id="trash-modal" class="modal-overlay" hidden>
+      <section class="trash-modal" role="dialog" aria-modal="true" aria-labelledby="trash-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">TRASH</p>
+            <h2 id="trash-title">回收站</h2>
+          </div>
+          <button id="trash-close" type="button" class="quiet-button">关闭</button>
+        </div>
+        <p class="mode-message">删除的任务会保留在这里，可以随时恢复回最近完成任务。</p>
+        <div id="trash-list" class="trash-list"></div>
       </section>
     </div>
 

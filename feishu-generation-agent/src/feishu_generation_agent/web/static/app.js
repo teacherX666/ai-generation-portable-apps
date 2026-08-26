@@ -48,6 +48,10 @@
   const bitableTaskList = byId("bitable-task-list");
   const bitableStatus = byId("bitable-status");
   const recentRunList = byId("recent-run-list");
+  const trashButton = byId("trash-button");
+  const trashModal = byId("trash-modal");
+  const trashList = byId("trash-list");
+  const trashClose = byId("trash-close");
   const nextTaskButton = byId("next-task-button");
   const rerunButton = byId("rerun-button");
   const pollingNote = byId("polling-note");
@@ -317,6 +321,11 @@
         rerun.addEventListener("click", () => rerunBitableTask(run.run_id));
         actions.append(rerun);
       }
+      const remove = element("button", "danger", "删除");
+      remove.type = "button";
+      remove.disabled = state.busy;
+      remove.addEventListener("click", () => archiveBitableRun(run.run_id));
+      actions.append(remove);
       row.append(details, actions);
       return row;
     });
@@ -333,6 +342,73 @@
     } catch (error) {
       showError(error);
     }
+  }
+
+  async function archiveBitableRun(runId) {
+    if (state.busy) return;
+    try {
+      await api(
+        `/api/bitable/runs/${encodeURIComponent(runId)}/archive`,
+        { method: "POST" },
+      );
+      await loadRecentRuns();
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  function renderArchivedRuns(runs) {
+    const nodes = (runs || []).map((run) => {
+      const row = element("article", "trash-item");
+      const details = element("div", "");
+      details.append(
+        element("strong", "", run.display_text || run.run_id),
+        element("p", "bitable-task-meta", `状态：${run.status || "—"}`),
+      );
+      const actions = element("div", "trash-item-actions");
+      const restore = element("button", "secondary", "恢复");
+      restore.type = "button";
+      restore.disabled = state.busy;
+      restore.addEventListener("click", () => restoreArchivedRun(run.run_id));
+      actions.append(restore);
+      row.append(details, actions);
+      return row;
+    });
+    if (!nodes.length) nodes.push(element("p", "trash-empty", "回收站是空的。"));
+    trashList.replaceChildren(...nodes);
+  }
+
+  async function loadArchivedRuns() {
+    try {
+      const runs = await api("/api/bitable/archived-runs");
+      renderArchivedRuns(runs);
+    } catch (error) {
+      renderArchivedRuns([]);
+      showError(error);
+    }
+  }
+
+  async function restoreArchivedRun(runId) {
+    if (state.busy) return;
+    try {
+      await api(
+        `/api/bitable/runs/${encodeURIComponent(runId)}/restore`,
+        { method: "POST" },
+      );
+      await loadArchivedRuns();
+      await loadRecentRuns();
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  function openTrash() {
+    trashModal.hidden = false;
+    loadArchivedRuns();
+  }
+
+  function closeTrash() {
+    trashModal.hidden = true;
   }
 
   async function scanBitableTasks() {
@@ -1321,8 +1397,17 @@
     const blockingIngestIssues = ingestIssueRecords
       .filter((record) => record.severity === "blocking")
       .map((record) => record.display_message);
-    const issues = (view.approval.validation_issues || [])
+    let issues = (view.approval.validation_issues || [])
       .filter((issue) => !blockingIngestIssues.includes(issue));
+    const lastError = view.last_error;
+    if (lastError && lastError.message) {
+      issues = [
+        lastError.message,
+        ...issues.filter(
+          (issue) => issue !== "审批校验状态无效，请重新读取后再审批",
+        ),
+      ];
+    }
     const issueBox = byId("validation-issues");
     issueBox.textContent = issues.join("；");
     issueBox.hidden = issues.length === 0;
@@ -1559,6 +1644,22 @@
     plannerPromptSave.addEventListener("click", savePlannerPrompt);
     plannerPromptReset.addEventListener("click", resetPlannerPrompt);
   }
+  [
+    ["bitable-tasks-toggle", "bitable-tasks-body"],
+    ["recent-runs-toggle", "recent-run-list"],
+  ].forEach(([toggleId, bodyId]) => {
+    const toggle = byId(toggleId);
+    const body = byId(bodyId);
+    toggle.addEventListener("click", () => {
+      body.hidden = !body.hidden;
+      toggle.setAttribute("aria-expanded", String(!body.hidden));
+    });
+  });
+  trashButton.addEventListener("click", openTrash);
+  trashClose.addEventListener("click", closeTrash);
+  trashModal.addEventListener("click", (event) => {
+    if (event.target === trashModal) closeTrash();
+  });
   scanBitableButton.addEventListener("click", scanBitableTasks);
   directRunButton.addEventListener("click", startDirectRun);
   categoryTabs.forEach((tab) => {

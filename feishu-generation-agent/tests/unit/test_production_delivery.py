@@ -11,7 +11,10 @@ from feishu_generation_agent.domain.production_bitable import (
     ResultTableTarget,
 )
 from feishu_generation_agent.integrations.feishu_client import CreatedBitableApp
-from feishu_generation_agent.integrations.production_delivery import ProductionResultWriter
+from feishu_generation_agent.integrations.production_delivery import (
+    ProductionResultWriter,
+    make_result_table_target,
+)
 from feishu_generation_agent.integrations.production_routing import (
     ProductionRoutingDeliveryWriter,
 )
@@ -76,6 +79,41 @@ async def test_concurrent_first_target_creation_creates_one_shared_table(
 
     assert client.created_apps == 1
     assert first == second
+
+
+async def test_explicit_result_table_is_reused_without_creation(tmp_path) -> None:
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    repository = await Repository.open(tmp_path / "repository.sqlite3")
+
+    class Client:
+        def __init__(self) -> None:
+            self.created_apps = 0
+
+        async def create_bitable_app(self, name, folder_token):
+            self.created_apps += 1
+            raise AssertionError("explicit result table must not create a new app")
+
+    client = Client()
+    target = make_result_table_target(
+        app_token="app-existing",
+        table_id="tbl-existing",
+        url="https://tenant.feishu.cn/base/app-existing",
+    )
+    writer = ProductionResultWriter(
+        client=client,
+        store=store,
+        repository=repository,
+        result_folder_token="",
+        result_table=target,
+    )
+    try:
+        resolved = await writer._ensure_target()
+    finally:
+        await store.close()
+        await repository.close()
+
+    assert resolved == target
+    assert client.created_apps == 0
 
 
 async def test_target_creation_removes_only_completely_empty_default_records(

@@ -951,7 +951,14 @@ async def _complete_run_with_approval_edits(
             tasks=[edited_task],
         ),
     )
-    source = await runtime.get_run_view(run_id)
+    # resume_run 现在异步执行生成与交付，需轮询到终态再断言。
+    for _ in range(200):
+        source = await runtime.get_run_view(run_id)
+        if source["status"] in {"succeeded", "failed"}:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("run did not reach a terminal status after approval")
     assert source["status"] == "succeeded"
     snapshot = await graph.aget_state(
         {"configurable": {"thread_id": source["thread_id"]}}

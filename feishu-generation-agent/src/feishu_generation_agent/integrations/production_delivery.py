@@ -27,6 +27,19 @@ _DELIVERY_TASK_ID = "__production_delivery__"
 _CONTEXT_OPERATION = "production_delivery_context"
 
 
+def make_result_table_target(
+    app_token: str, table_id: str, url: str
+) -> ResultTableTarget:
+    """构造指向一张已建好结果表的共享目标（直接复用，不自动创建）。"""
+    return ResultTableTarget(
+        maker_open_id=_SHARED_RESULT_TARGET,
+        maker_name=_SHARED_RESULT_NAME,
+        app_token=app_token,
+        table_id=table_id,
+        url=url,
+    )
+
+
 class ProductionResultWriter:
     def __init__(
         self,
@@ -35,11 +48,13 @@ class ProductionResultWriter:
         store: ProductionTaskStore,
         repository: Repository,
         result_folder_token: str,
+        result_table: ResultTableTarget | None = None,
     ) -> None:
         self._client = client
         self._store = store
         self._repository = repository
         self._result_folder_token = result_folder_token
+        self._result_table = result_table
         self._target_creation_lock = asyncio.Lock()
 
     async def deliver(self, run_id: str, document: NormalizedDocument, plan: TaskPlan, artifacts: list[Artifact]) -> DeliveryRecord:
@@ -114,6 +129,8 @@ class ProductionResultWriter:
         )
 
     async def _ensure_target(self) -> ResultTableTarget:
+        if self._result_table is not None:
+            return self._result_table
         existing = await self._store.get_result_target(_SHARED_RESULT_TARGET)
         if existing is not None:
             return existing

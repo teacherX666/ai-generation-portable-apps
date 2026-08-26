@@ -235,11 +235,7 @@ async def probe(settings: Settings, *, network: bool = True) -> dict[str, Any]:
         settings,
         "lark_app_id",
         "lark_app_secret",
-        "lark_production_bitable_url",
-        "lark_production_table_id",
-        "lark_production_view_id",
-        "lark_result_folder_token",
-    )
+    ) and settings.production_bitable_configured
     if not production_configured:
         checks["production_bitable_schema"] = _result(False, message="缺少配置")
         checks["production_bitable_read"] = _result(False, message="缺少配置")

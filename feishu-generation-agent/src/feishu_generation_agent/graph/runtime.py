@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,6 +49,9 @@ from feishu_generation_agent.storage.files import FileStore
 from feishu_generation_agent.storage.repository import Repository
 
 from .nodes import approved_plan_from_state
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class RunNotFound(LookupError):
@@ -702,6 +706,7 @@ class GraphRuntime:
                 if record.severity is IngestIssueSeverity.BLOCKING
             )
         except Exception:
+            _LOGGER.exception("重建审批校验问题失败，无法生成校验列表")
             return ["审批校验状态无效，请重新读取后再审批"]
         return list(dict.fromkeys(issues))
 
@@ -738,15 +743,33 @@ class GraphRuntime:
                 raise RunValidationError("运行缺少有效提示词快照")
             self._validate_decision(state, decision)
             await self.repository.update_run_status(run_id, "resuming")
+            # 审批决定立即返回，生成与交付放到后台执行，避免 decision 接口
+            # 阻塞到整条生成链路结束（视频生成动辄数分钟），前端请求长时间
+            # 挂起被网关/浏览器判超时。
+            self._start_background(
+                self._resume_approved_run(
+                    run_id, run["thread_id"], decision
+                ),
+                name=f"approval-resume-{run_id}",
+            )
+
+    async def _resume_approved_run(
+        self,
+        run_id: str,
+        thread_id: str,
+        decision: ApprovalDecision,
+    ) -> None:
+        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
+        async with lock:
             try:
                 result = await self._graph_ainvoke(
                     Command(resume=decision.model_dump(mode="json")),
-                    config=self._config(run["thread_id"]),
+                    config=self._config(thread_id),
                 )
             except AgentError as exc:
-                await self._record_last_error(run_id, run["thread_id"], exc)
+                await self._record_last_error(run_id, thread_id, exc)
                 await self.repository.update_run_status(run_id, "failed")
-                raise RunValidationError(exc.detail.message) from None
+                return
             except Exception:
                 await self.repository.append_event(
                     run_id,
@@ -755,7 +778,7 @@ class GraphRuntime:
                     "Workflow approval resume failed",
                 )
                 await self.repository.update_run_status(run_id, "failed")
-                raise RunConflict("审批恢复失败") from None
+                return
             status = (
                 "waiting_approval"
                 if self._has_interrupt(result)

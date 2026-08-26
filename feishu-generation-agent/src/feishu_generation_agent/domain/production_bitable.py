@@ -62,6 +62,7 @@ class ProductionBinding(BaseModel):
     last_error: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    deleted: bool = False
 
 
 class ResultTableTarget(BaseModel):

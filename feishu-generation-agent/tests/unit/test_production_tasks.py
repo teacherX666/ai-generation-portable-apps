@@ -241,3 +241,43 @@ async def test_recent_history_survives_mixed_legacy_and_fresh_column_order(
         ]
     finally:
         await store.close()
+
+
+async def test_archive_and_restore_move_recent_run_between_trash(
+    tmp_path: Path,
+) -> None:
+    from feishu_generation_agent.domain.bitable import TableTaskStatus
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    try:
+        binding = await store.claim(
+            _location(),
+            _task(),
+            run_id="run-1",
+            thread_id="thread-1",
+            owner_user_id="user-a",
+        )
+        await store.release(
+            binding.run_id,
+            status=TableTaskStatus.COMPLETED,
+            owner_user_id="user-a",
+        )
+
+        assert [
+            item.run_id for item in await store.list_recent("appProd", "tblProd")
+        ] == ["run-1"]
+
+        assert await store.archive("run-1") == 1
+        assert await store.list_recent("appProd", "tblProd") == []
+        assert [
+            item.run_id
+            for item in await store.list_archived("appProd", "tblProd")
+        ] == ["run-1"]
+
+        assert await store.restore("run-1") == 1
+        assert [
+            item.run_id for item in await store.list_recent("appProd", "tblProd")
+        ] == ["run-1"]
+        assert await store.list_archived("appProd", "tblProd") == []
+    finally:
+        await store.close()

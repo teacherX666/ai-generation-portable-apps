@@ -47,6 +47,8 @@ class _Runtime:
 class _ProductionService:
     def __init__(self, *, task_type: str = "动画类") -> None:
         self.rerun_calls: list[str] = []
+        self.archive_calls: list[str] = []
+        self.restore_calls: list[str] = []
         self.rerun_error: Exception | None = None
         self.scan_error: Exception | None = None
         self.task_type = task_type
@@ -147,6 +149,30 @@ class _ProductionService:
             )
         ]
         return items if self.run_owners["run-old"] == owner_user_id else []
+
+    async def archived_runs(self, *, owner_user_id: str = "prime-local"):
+        from types import SimpleNamespace
+
+        return [
+            SimpleNamespace(
+                run_id="run-archived",
+                display_text="已删需求",
+                status=TableTaskStatus.COMPLETED,
+                updated_at="2026-07-22T12:00:00+00:00",
+            )
+        ]
+
+    async def archive_run(
+        self, run_id: str, *, owner_user_id: str = "prime-local"
+    ) -> None:
+        self._require_owner(run_id, owner_user_id)
+        self.archive_calls.append(run_id)
+
+    async def restore_run(
+        self, run_id: str, *, owner_user_id: str = "prime-local"
+    ) -> None:
+        self._require_owner(run_id, owner_user_id)
+        self.restore_calls.append(run_id)
 
     async def rerun(
         self, run_id: str, *, owner_user_id: str = "prime-local"
@@ -442,6 +468,33 @@ async def test_recent_runs_and_rerun_endpoints(tmp_path) -> None:
     assert rerun.status_code == 202
     assert rerun.json() == {"run_id": "run-new"}
     assert production.rerun_calls == ["run-old"]
+
+
+async def test_archive_restore_and_archived_runs_endpoints(tmp_path) -> None:
+    runtime = _Runtime(tmp_path)
+    production = _ProductionService()
+    production.run_owners["run-archived"] = "prime-local"
+    app = create_app(runtime=runtime, bitable_service=production)
+    transport = httpx.ASGITransport(app=app)
+
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        archived = await client.get("/api/bitable/archived-runs")
+        archive = await client.post("/api/bitable/runs/run-old/archive")
+        restore = await client.post("/api/bitable/runs/run-archived/restore")
+
+    assert archived.status_code == 200
+    assert archived.json()[0]["run_id"] == "run-archived"
+    assert archive.status_code == 200
+    assert archive.json() == {"run_id": "run-old", "status": "archived"}
+    assert restore.status_code == 200
+    assert restore.json() == {
+        "run_id": "run-archived",
+        "status": "restored",
+    }
+    assert production.archive_calls == ["run-old"]
+    assert production.restore_calls == ["run-archived"]
 
 
 async def test_production_routes_filter_lists_and_hide_wrong_owner(
