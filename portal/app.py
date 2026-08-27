@@ -143,6 +143,65 @@ def _sign_admin_header(username: str, is_admin: bool, ts: int) -> str:
     msg = f"{ts}:{'1' if is_admin else '0'}:{username}".encode("utf-8")
     return hmac.new(INTERNAL_TOKEN.encode("utf-8"), msg, hashlib.sha256).hexdigest()
 
+
+_METADATA_WHITELIST = {
+    "prompt", "text", "content", "aspect_ratio", "ratio", "duration",
+    "resolution", "image_size", "count", "mode", "style",
+    "negative_prompt", "seed", "generate_audio", "model",
+}
+_METADATA_BLOCKLIST_SUBSTR = ("key", "token", "secret", "password")
+_METADATA_MAX_BODY = 5 * 1024 * 1024
+
+
+def extract_job_metadata(content_type: str, body: bytes) -> dict:
+    """从任务创建请求体提取提示词与白名单参数。永不采集密钥类字段。
+    解析失败/超大 body 静默降级为空——采集绝不抛异常。"""
+    result: dict = {"prompt": "", "model": "", "params": {}}
+    try:
+        if not body or len(body) > _METADATA_MAX_BODY:
+            return result
+        fields: dict = {}
+        ctype = (content_type or "").split(";")[0].strip().lower()
+        if ctype == "application/json":
+            data = json.loads(body.decode("utf-8", errors="replace"))
+            if isinstance(data, dict):
+                fields = data
+        elif ctype == "multipart/form-data":
+            import cgi
+            import io
+            form = cgi.FieldStorage(
+                fp=io.BytesIO(body), headers={"Content-Type": content_type},
+                environ={"REQUEST_METHOD": "POST",
+                         "CONTENT_TYPE": content_type,
+                         "CONTENT_LENGTH": str(len(body))},
+                keep_blank_values=True,
+            )
+            for key in form.keys():
+                item = form[key]
+                if isinstance(item, list):
+                    item = item[0] if item else None
+                if item is None or getattr(item, "filename", None):
+                    continue
+                fields[key] = item.value
+        else:
+            return result
+        for key, value in fields.items():
+            k = str(key)
+            low = k.lower()
+            if any(blocked in low for blocked in _METADATA_BLOCKLIST_SUBSTR):
+                continue
+            if low in _METADATA_WHITELIST:
+                if isinstance(value, (str, int, float, bool)):
+                    if low == "prompt":
+                        result["prompt"] = str(value).strip()
+                    elif low == "model":
+                        result["model"] = str(value).strip()
+                    else:
+                        result["params"][low] = value
+        return result
+    except Exception:
+        return result
+
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "admin": {"use_apps", "view_stats_all", "manage_users", "manage_dreamina_accounts"},
     "user":  {"use_apps", "view_stats_own"},
