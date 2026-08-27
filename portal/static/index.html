@@ -139,7 +139,14 @@
             <div><span class="k">params:</span> {{ JSON.stringify(detail.params || {}, null, 2) }}</div>
           </div>
           <div v-show="detailTab==='ret'">
+            <dl class="hist-kv hist-ret-summary">
+              <dt>状态</dt><dd>{{ statusText(detail.status) }}</dd>
+              <dt>耗时</dt><dd>{{ detail.completed_at && detail.submitted_at ? Math.max(1, Math.round((detail.completed_at - detail.submitted_at) / 60)) + ' 分钟' : '—' }}</dd>
+              <dt>产出数量</dt><dd>{{ (detail.results && detail.results.length) || 0 }} 个</dd>
+              <dt>错误信息</dt><dd>{{ detail.error ? '见下方详情' : '无' }}</dd>
+            </dl>
             <div class="hist-errbox" v-if="detail.error">{{ detail.error }}</div>
+            <div class="hist-errbox" v-else-if="detail.status==='failed'">未记录详细错误（可能是旧任务，采集修复前的记录）</div>
             <div class="hist-results" v-if="detail.results && detail.results.length">
               <div class="hist-result-row" v-for="(r, i) in detail.results" :key="r.url">
                 <span class="hist-result-kind">{{ r.kind==='video' ? '视频' : '图片' }} {{ i + 1 }}</span>

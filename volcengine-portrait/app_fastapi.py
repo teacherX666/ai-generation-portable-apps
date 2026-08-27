@@ -31,6 +31,13 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 import app as legacy  # volcengine-portrait/app.py
 
+# uvicorn 路径不会执行 app.py 的 main()（那里才恢复 FILES），
+# 导致进程重启后旧下载 token 全部 404。这里在模块加载时恢复。
+_restored_files = legacy.load_files_map()
+if _restored_files:
+    legacy.FILES.update(_restored_files)
+    print(f"Restored {len(_restored_files)} download file mapping(s)", flush=True)
+
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response as FastResponse
