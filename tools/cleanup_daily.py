@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """每日定时清理（launchd: com.ai-portal-cleanup，每日 03:47）。
 
-默认 dry-run（只报告，不动任何文件）；加 --apply 才真执行。四个职责：
+默认 dry-run（只报告，不动任何文件）；加 --apply 才真执行。五个职责：
 
   1. outputs 产物按龄清理（--outputs-retention，默认 14 天）：
      文件已在飞书多维表格同步过的（feishu-output-sync 的 synced 表，
@@ -18,6 +18,7 @@
   4. 日志截断：feishu agent access log > 100MB、portal 子应用日志 > 50MB
      直接截断。日志由进程持有 append fd（launchd 重定向/Popen stdout），
      截断后继续写入不受影响（O_APPEND 每次写都落在文件末尾）。
+  5. 历史记录剪枝：history.json 超 30 天/超 10000 条的条目移除。
 
 统计保护：usage.json / activity_log.json / users.json 一律不碰；
 state/workspaces 之外的其他 state 内容不碰；cloudflared 隧道日志
@@ -315,6 +316,40 @@ def truncate_logs(apply: bool) -> list[str]:
     return done
 
 
+# ── 5. 历史记录剪枝（只碰 history.json；usage.json 等统计文件一律不碰） ──
+
+HISTORY_PATH = REPO_ROOT / "portal" / "state" / "history.json"
+HISTORY_RETENTION_DAYS = 30
+HISTORY_MAX_ENTRIES = 10000
+
+
+def prune_history(apply: bool) -> int:
+    """剪掉超龄/超量的任务历史记录。与统计无关，独立于 usage.json。"""
+    if not HISTORY_PATH.exists():
+        return 0
+    try:
+        data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return 0
+        before = len(data)
+        cutoff = dt.datetime.now().timestamp() - HISTORY_RETENTION_DAYS * 86400
+        data = {k: v for k, v in data.items()
+                if isinstance(v, dict) and float(v.get("submitted_at") or 0) >= cutoff}
+        if len(data) > HISTORY_MAX_ENTRIES:
+            items = sorted(data.items(),
+                           key=lambda kv: float(kv[1].get("submitted_at") or 0))
+            data = dict(items[-HISTORY_MAX_ENTRIES:])
+        removed = before - len(data)
+        if removed and apply:
+            tmp = HISTORY_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(HISTORY_PATH)
+        return removed
+    except Exception as exc:
+        print(f"      history 剪枝失败（忽略）: {exc}")
+        return 0
+
+
 # ── main ───────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -332,7 +367,7 @@ def main() -> int:
     print()
 
     synced = load_synced_fingerprints()
-    print(f"[1/4] outputs 产物（> {args.outputs_retention} 天）")
+    print(f"[1/5] outputs 产物（> {args.outputs_retention} 天）")
     print(f"      飞书已同步指纹表：{len(synced)} 条（命中 → 直接删；未命中 → 回收站）")
     hits = collect_outputs(dt.date.today() - dt.timedelta(days=args.outputs_retention))
     if hits:
@@ -345,7 +380,7 @@ def main() -> int:
         print("      无超龄文件")
     print()
 
-    print(f"[2/4] workspaces 草稿参考素材（preset.json 超 {args.workspace_days} 天未编辑）")
+    print(f"[2/5] workspaces 草稿参考素材（preset.json 超 {args.workspace_days} 天未编辑）")
     ws_hits = collect_workspace_media(args.workspace_days)
     if ws_hits:
         ws_total = sum(sz for _, sz in ws_hits)
@@ -356,18 +391,23 @@ def main() -> int:
         print("      无超龄 workspace")
     print()
 
-    print("[3/4] download_files.json 失效 token 剪枝")
+    print("[3/5] download_files.json 失效 token 剪枝")
     pruned = prune_download_maps(args.apply)
     print(f"      共移除 {pruned} 个失效条目")
     print()
 
-    print("[4/4] 日志截断")
+    print("[4/5] 日志截断")
     truncated = truncate_logs(args.apply)
     if truncated:
         for t in truncated:
             print(f"      截断: {t}")
     else:
         print("      无超限日志")
+    print()
+
+    print("[5/5] 历史记录剪枝（history.json）")
+    hist_removed = prune_history(args.apply)
+    print(f"      移除 {hist_removed} 条超龄/超量记录" + ("" if args.apply else "（dry-run）"))
     print()
 
     print(f"=== 完成（{mode}）===")
