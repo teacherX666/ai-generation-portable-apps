@@ -31,6 +31,7 @@
       <button class="app-tab" data-tab="infinite-canvas">无限画布</button>
       <button class="app-tab" data-tab="keys">密钥库</button>
       <button class="app-tab" data-tab="rag-assistant">报错问答助手</button>
+      <button class="app-tab" data-tab="history">历史记录</button>
       <button class="app-tab" data-tab="stats">统计</button>
     </div>
   </div>
@@ -65,6 +66,87 @@
   <!-- RAG ASSISTANT -->
   <div class="tab-panel" id="tab-rag-assistant">
     <iframe id="iframe-rag-assistant" data-app="rag-assistant" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
+  </div>
+
+  <!-- HISTORY -->
+  <div class="tab-panel" id="tab-history" v-scope="HistoryApp()" @vue:mounted="init()">
+    <div class="portal-content history-content">
+      <section class="hist-panel">
+        <header class="hist-filters">
+          <select class="ctrl" v-if="isAdmin" v-model="userFilter" @change="reload()">
+            <option value="">全部用户</option>
+            <option v-for="u in userList" :key="u" :value="u">{{ u }}</option>
+          </select>
+          <div class="seg"><button type="button" :class="{active: kind==='all'}" @click="kind='all';reload()">全部</button><button type="button" :class="{active: kind==='image'}" @click="kind='image';reload()">图片</button><button type="button" :class="{active: kind==='video'}" @click="kind='video';reload()">视频</button></div>
+          <div class="seg"><button type="button" :class="{active: status==='all'}" @click="status='all';reload()">全部状态</button><button type="button" :class="{active: status==='done'}" @click="status='done';reload()">成功</button><button type="button" :class="{active: status==='failed'}" @click="status='failed';reload()">失败</button><button type="button" :class="{active: status==='running'}" @click="status='running';reload()">生成中</button></div>
+          <div class="seg"><button type="button" :class="{active: days===7}" @click="days=7;reload()">近7天</button><button type="button" :class="{active: days===30}" @click="days=30;reload()">近30天</button><button type="button" :class="{active: days===90}" @click="days=90;reload()">近90天</button></div>
+          <input class="ctrl hist-search" v-model="q" placeholder="搜索提示词 / 任务编号" @keyup.enter="reload()">
+          <button class="ctrl" type="button" @click="reload()">刷新</button>
+        </header>
+        <div class="hist-grid" v-if="items.length">
+          <div class="hist-card" v-for="it in items" :key="it.app + ':' + it.job_id" @click="openDetail(it)">
+            <div class="hist-media" :class="it.kind">
+              <img v-if="it.kind==='image' && it.thumb_url" :src="'/' + it.app + it.thumb_url" loading="lazy">
+              <video v-else-if="it.kind==='video' && it.thumb_url" :src="'/' + it.app + it.thumb_url" preload="metadata" muted playsinline></video>
+              <div v-else class="hist-media-empty">{{ it.status==='failed' ? '无产出' : '生成中' }}</div>
+              <span class="hist-kind" :class="it.kind">{{ it.kind==='video' ? '视频' : '图片' }}</span>
+              <span class="hist-dur" v-if="it.kind==='video' && it.duration">0:{{ Math.max(1, Math.round(it.duration)) }}</span>
+            </div>
+            <div class="hist-card-body">
+              <div class="hist-card-t1">{{ it.prompt || '（无提示词）' }}</div>
+              <div class="hist-card-t2"><span>{{ it.username }} · {{ shortTime(it.submitted_at) }}</span><span class="pill" :class="it.status">{{ statusText(it.status) }}</span></div>
+            </div>
+          </div>
+        </div>
+        <p v-else class="hist-empty">{{ q ? '没有匹配的记录' : '暂无历史——任务完成后会出现在这里' }}</p>
+        <button class="hist-more" type="button" v-if="items.length < total" @click="loadMore()">加载更多（{{ total - items.length }}）</button>
+      </section>
+    </div>
+
+    <!-- 详情弹窗 -->
+    <div class="hist-modal-mask" v-if="detail" @click.self="detail=null">
+      <div class="hist-modal">
+        <div class="hist-modal-media">
+          <img v-if="detail.kind==='image' && detail.thumb_url" :src="'/' + detail.app + detail.thumb_url">
+          <video v-else-if="detail.kind==='video' && detail.thumb_url" :src="'/' + detail.app + detail.thumb_url" controls preload="metadata"></video>
+          <div v-else class="hist-media-empty">无产出预览</div>
+          <button type="button" class="hist-dl-main" v-if="detail.thumb_url" @click="downloadItem({url: detail.thumb_url, kind: detail.kind}, 0)">下载</button>
+        </div>
+        <div class="hist-modal-body">
+          <div class="hist-modal-head">
+            <span class="hist-modal-title">{{ detail.prompt || '（无提示词）' }}</span>
+            <span class="pill" :class="detail.status">{{ statusText(detail.status) }}</span>
+          </div>
+          <dl class="hist-kv">
+            <dt>用户</dt><dd>{{ detail.username }}</dd>
+            <dt>应用</dt><dd>{{ detail.display_name }}</dd>
+            <dt>模型</dt><dd>{{ detail.model || '—' }}</dd>
+            <dt>任务编号</dt><dd class="mono">{{ detail.job_id }}</dd>
+            <dt>提交时间</dt><dd>{{ fullTime(detail.submitted_at) }}</dd>
+            <dt>完成时间</dt><dd>{{ detail.completed_at ? fullTime(detail.completed_at) : '—' }}</dd>
+          </dl>
+          <div class="hist-tabs">
+            <button type="button" :class="{active: detailTab==='req'}" @click="detailTab='req'">请求</button>
+            <button type="button" :class="{active: detailTab==='ret'}" @click="detailTab='ret'">返回</button>
+          </div>
+          <div class="hist-codebox" v-show="detailTab==='req'">
+            <div><span class="k">prompt:</span> {{ detail.prompt || '—' }}</div>
+            <div><span class="k">params:</span> {{ JSON.stringify(detail.params || {}, null, 2) }}</div>
+          </div>
+          <div v-show="detailTab==='ret'">
+            <div class="hist-errbox" v-if="detail.error">{{ detail.error }}</div>
+            <div class="hist-results" v-if="detail.results && detail.results.length">
+              <div class="hist-result-row" v-for="(r, i) in detail.results" :key="r.url">
+                <span class="hist-result-kind">{{ r.kind==='video' ? '视频' : '图片' }} {{ i + 1 }}</span>
+                <button type="button" @click="downloadItem(r, i)">下载</button>
+              </div>
+            </div>
+            <p v-else class="hist-result-none">无结果产出</p>
+          </div>
+          <button type="button" class="hist-modal-close" @click="detail=null">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- DREAMINA -->

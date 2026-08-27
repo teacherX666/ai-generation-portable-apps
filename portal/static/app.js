@@ -2194,6 +2194,87 @@ function VolcenginePortraitApp() {
   };
 }
 
+// ============ 历史记录（全局任务历史，方案二媒体卡片） ============
+function HistoryApp() {
+  return {
+    items: [], total: 0, offset: 0,
+    isAdmin: false, userList: [], userFilter: "",
+    kind: "all", status: "all", days: 30, q: "",
+    detail: null, detailTab: "req",
+    async init() {
+      try {
+        const me = await api("/api/platform/me", "GET");
+        this.isAdmin = !!(me && me.role === "admin");
+        if (this.isAdmin) {
+          const u = await api("/api/platform/history-users", "GET");
+          this.userList = (u && u.users) || [];
+        }
+      } catch (e) { /* 权限信息拿不到时按普通用户渲染 */ }
+      this.reload();
+    },
+    async reload() {
+      this.offset = 0;
+      const params = new URLSearchParams({
+        days: this.days, kind: this.kind, status: this.status,
+        q: this.q, limit: 60, offset: 0,
+      });
+      if (this.isAdmin && this.userFilter) params.set("user", this.userFilter);
+      const res = await api("/api/platform/history?" + params.toString(), "GET");
+      if (!res || !res.ok) { this.items = []; this.total = 0; return; }
+      this.items = res.items || [];
+      this.total = res.total || 0;
+      this.detail = null;
+    },
+    async loadMore() {
+      this.offset += 60;
+      const params = new URLSearchParams({
+        days: this.days, kind: this.kind, status: this.status,
+        q: this.q, limit: 60, offset: this.offset,
+      });
+      if (this.isAdmin && this.userFilter) params.set("user", this.userFilter);
+      const res = await api("/api/platform/history?" + params.toString(), "GET");
+      if (res && res.ok) this.items = this.items.concat(res.items || []);
+    },
+    openDetail(it) { this.detail = it; this.detailTab = "req"; },
+    statusText(s) {
+      return { done: "已成功", failed: "已失败", running: "生成中", queued: "排队中", pending: "排队中" }[s] || s;
+    },
+    shortTime(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts * 1000);
+      const now = new Date();
+      const sameDay = d.toDateString() === now.toDateString();
+      const pad = (n) => String(n).padStart(2, "0");
+      return sameDay ? `${pad(d.getHours())}:${pad(d.getMinutes())}`
+                     : `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    },
+    fullTime(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts * 1000);
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    },
+    async downloadItem(r, index) {
+      const url = "/" + this.detail.app + r.url;
+      const ext = r.kind === "video" ? ".mp4" : ".png";
+      const filename = `${this.detail.app}-${index}${ext}`;
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl; a.download = filename; a.style.display = "none";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+      } catch (e) {
+        this.detailTab = "ret";
+      }
+    },
+  };
+}
+window.HistoryApp = HistoryApp;
+
 // ============ 导演台（右侧栏） ============
 function DirectorApp() {
   return {
@@ -2341,6 +2422,7 @@ PetiteVue.createApp({
   StatsApp,
   KeysApp,
   DirectorApp,
+  HistoryApp,
   openPreview
 }).mount();
 
