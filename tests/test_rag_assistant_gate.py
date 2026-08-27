@@ -83,6 +83,56 @@ class SemanticGateTests(unittest.TestCase):
             self.assertEqual(decision.label, "unrelated", text)
             self.assertFalse(decision.allow_scan, text)
 
+    def test_observed_one_plus_one_scores_are_classified_as_unrelated(self):
+        """回归线上真实边界分数，避免 1+1 再落入 uncertain。"""
+        class ObservedScoreEmbeddings:
+            def embed_documents(self, texts):
+                error_score = 0.5720777504543549
+                unrelated_score = 0.6336104414158139
+                error = [error_score, math.sqrt(1.0 - error_score**2)]
+                unrelated = [unrelated_score, math.sqrt(1.0 - unrelated_score**2)]
+                split = len(semantic_gate.ERROR_REPORT_UTTERANCES)
+                return [error] * split + [unrelated] * (len(texts) - split)
+
+            def embed_query(self, text):
+                return [1.0, 0.0]
+
+        gate = semantic_gate.SemanticGate(
+            ObservedScoreEmbeddings(),
+            margin=0.08,
+            unrelated_margin=0.05,
+            top_k=3,
+        )
+        decision = gate.decide("1+1")
+        self.assertEqual(decision.label, "unrelated")
+        self.assertFalse(decision.allow_scan)
+        self.assertAlmostEqual(decision.error_score, 0.5720777504543549)
+        self.assertAlmostEqual(decision.unrelated_score, 0.6336104414158139)
+
+    def test_unrelated_margin_does_not_relax_error_scan_margin(self):
+        class BorderlineErrorEmbeddings:
+            def embed_documents(self, texts):
+                error_score = 0.65
+                unrelated_score = 0.58
+                error = [error_score, math.sqrt(1.0 - error_score**2)]
+                unrelated = [unrelated_score, math.sqrt(1.0 - unrelated_score**2)]
+                split = len(semantic_gate.ERROR_REPORT_UTTERANCES)
+                return [error] * split + [unrelated] * (len(texts) - split)
+
+            def embed_query(self, text):
+                return [1.0, 0.0]
+
+        gate = semantic_gate.SemanticGate(
+            BorderlineErrorEmbeddings(),
+            margin=0.08,
+            unrelated_margin=0.05,
+            top_k=1,
+        )
+        decision = gate.decide("疑似报错")
+        self.assertEqual(decision.label, "uncertain")
+        self.assertFalse(decision.allow_scan)
+        self.assertAlmostEqual(decision.margin_score, 0.07)
+
     def test_example_embeddings_are_cached(self):
         embeddings = FakeEmbeddings()
         gate = semantic_gate.SemanticGate(embeddings, margin=0.08, top_k=3)

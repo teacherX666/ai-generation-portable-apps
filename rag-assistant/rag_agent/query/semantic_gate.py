@@ -125,6 +125,7 @@ class SemanticGate:
         self,
         embeddings: EmbeddingsLike,
         margin: float = 0.08,
+        unrelated_margin: float = 0.05,
         top_k: int = 3,
         min_error_score: float = 0.55,
         min_unrelated_score: float = 0.60,
@@ -132,6 +133,8 @@ class SemanticGate:
     ) -> None:
         self._embeddings = embeddings
         self.margin = margin
+        # 拒绝无关输入可以使用稍低的独立分差；这不会放宽允许源码扫描的门槛。
+        self.unrelated_margin = unrelated_margin
         self.top_k = max(1, top_k)
         self.min_error_score = min_error_score
         self.min_unrelated_score = min_unrelated_score
@@ -201,7 +204,10 @@ class SemanticGate:
                     allow_scan=True,
                     reason="error_route_matched",
                 )
-            if unrelated_score >= self.min_unrelated_score and margin_score <= -self.margin:
+            if (
+                unrelated_score >= self.min_unrelated_score
+                and margin_score <= -self.unrelated_margin
+            ):
                 return GateDecision(
                     label="unrelated",
                     error_score=error_score,
