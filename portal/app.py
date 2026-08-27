@@ -204,6 +204,38 @@ def extract_job_metadata(content_type: str, body: bytes) -> dict:
     except Exception:
         return result
 
+
+_STATUS_DONE = {"succeeded", "done", "completed", "success"}
+_STATUS_FAILED = {"failed", "cancelled", "canceled", "error"}
+_STATUS_RUNNING = {"running", "processing", "generating", "uploading"}
+
+
+def normalize_history_status(status: str) -> str:
+    s = (status or "").lower()
+    if s in _STATUS_DONE:
+        return "done"
+    if s in _STATUS_FAILED:
+        return "failed"
+    if s in _STATUS_RUNNING:
+        return "running"
+    return "queued"
+
+
+def history_result_items(data: dict, kind: str) -> list[dict]:
+    """从子应用 /api/jobs/{id} 响应提取结果清单（最多 4 条，供弹窗下载）。"""
+    nested = data.get("job") if isinstance(data.get("job"), dict) else {}
+    raw = data.get("results") or nested.get("results") or []
+    items = []
+    for r in raw[:4]:
+        if not isinstance(r, dict):
+            continue
+        url = r.get("url") or r.get("download_url") or r.get("path") or ""
+        if not url:
+            continue
+        item_kind = "video" if kind == "video" else "image"
+        items.append({"url": str(url), "kind": item_kind})
+    return items
+
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "admin": {"use_apps", "view_stats_all", "manage_users", "manage_dreamina_accounts"},
     "user":  {"use_apps", "view_stats_own"},
@@ -895,6 +927,9 @@ def _prune_old_usage_jsonl(today: str):
 class UsageTracker:
     def __init__(self):
         self._lock = threading.Lock()
+        # 历史记录独立锁：history_upsert 会被 register_job（已持 self._lock）
+        # 调用，threading.Lock 不可重入，同锁会死锁。
+        self._history_lock = threading.Lock()
         self._data = self._load()
         self._pending_jobs: list[dict] = []
         # Debounced persistence: hot paths (record/register_job/inc_daily_jobs/
@@ -1073,7 +1108,7 @@ class UsageTracker:
         except Exception:
             pass
 
-    def register_job(self, app: str, job_id: str, username: str, job_type: str = "image", duration_per_item: int = 0):
+    def register_job(self, app: str, job_id: str, username: str, job_type: str = "image", duration_per_item: int = 0, metadata: dict | None = None):
         with self._lock:
             self._pending_jobs.append({
                 "app": app, "job_id": job_id, "username": username,
@@ -1086,6 +1121,21 @@ class UsageTracker:
             if len(owners) > 5000:
                 kept = sorted(owners.items(), key=lambda kv: kv[1].get("ts", 0))[-3000:]
                 self._data["job_owners"] = dict(kept)
+            # 历史记录 pending 落库（采集失败不影响统计）
+            meta = metadata or {}
+            self.history_upsert({
+                "app": app, "job_id": job_id, "username": username,
+                "kind": "video" if job_type == "video" else "image",
+                "prompt": str(meta.get("prompt", "")).strip()[:2000],
+                "model": str(meta.get("model", ""))[:200],
+                "params": meta.get("params") if isinstance(meta.get("params"), dict) else {},
+                "status": "pending",
+                "submitted_at": time.time(),
+                "completed_at": None,
+                "duration": 0,
+                "results": [],
+                "error": "",
+            })
             self._save()
 
     def get_job_owner(self, app: str, job_id: str) -> str:
@@ -1102,14 +1152,15 @@ class UsageTracker:
         except (json.JSONDecodeError, OSError):
             return {}
 
-    def get_history(self) -> dict:
+    def history_records(self) -> dict:
+        """任务级历史记录（区别于统计页按天 get_history）。"""
         return self._load_history()
 
     def history_upsert(self, record: dict) -> None:
         """写/更新一条历史记录；同次写入顺带剪枝（>N 天 + 总量上限）。
         任何异常吞掉——历史采集失败绝不影响统计与代理。"""
         try:
-            with self._lock:
+            with self._history_lock:
                 data = self._load_history()
                 key = f"{record['app']}:{record['job_id']}"
                 data[key] = record
@@ -1151,6 +1202,17 @@ class UsageTracker:
                             self.finalize_job(job["app"], job["job_id"], "failed")
                         except Exception:
                             pass
+                        # 历史记录：子应用重启导致任务丢失 → 标失败
+                        try:
+                            hist = self.history_records()
+                            rec = hist.get(f"{job['app']}:{job['job_id']}")
+                            if rec:
+                                rec["status"] = "failed"
+                                rec["completed_at"] = time.time()
+                                rec["error"] = "任务丢失（子应用可能已重启）"
+                                self.history_upsert(rec)
+                        except Exception:
+                            pass
                         done_ids.append(job["job_id"])
                     elif resp.status == 200:
                         data = json.loads(resp.read())
@@ -1190,6 +1252,7 @@ class UsageTracker:
                             # failure). Skip the stat write entirely — no phantom
                             # image, no meaningless 0-row — but still drop it from
                             # pending below so we stop polling it.
+                            per_item = 0
                             if done > 0:
                                 if job_type == "video":
                                     # Prefer per-item duration the subapp reports directly.
@@ -1200,6 +1263,21 @@ class UsageTracker:
                                     self._add_user_stat(job["date"], job["username"], job["app"], 0, done * per_item)
                                 else:
                                     self._add_user_stat(job["date"], job["username"], job["app"], done, 0)
+                            # 历史记录终态更新（采集失败不影响统计）
+                            try:
+                                hist = self.history_records()
+                                rec = hist.get(f"{job['app']}:{job['job_id']}")
+                                if rec:
+                                    rec["status"] = normalize_history_status(status)
+                                    rec["completed_at"] = time.time()
+                                    rec["duration"] = int(done * per_item) if per_item else 0
+                                    rec["results"] = history_result_items(data, job_type)
+                                    rec["error"] = str(
+                                        data.get("error") or nested.get("error") or ""
+                                    )[:500]
+                                    self.history_upsert(rec)
+                            except Exception:
+                                pass
                             done_ids.append(job["job_id"])
                     conn.close()
                 except Exception:
@@ -1210,6 +1288,17 @@ class UsageTracker:
                     # finalize_job 幂等：若任务之后真的成功并回调，也不会重复回滚。
                     try:
                         self.finalize_job(job["app"], job["job_id"], "failed")
+                    except Exception:
+                        pass
+                    # 历史记录：2 小时超时 → 标失败
+                    try:
+                        hist = self.history_records()
+                        rec = hist.get(f"{job['app']}:{job['job_id']}")
+                        if rec:
+                            rec["status"] = "failed"
+                            rec["completed_at"] = time.time()
+                            rec["error"] = "任务超时（2 小时未完成）"
+                            self.history_upsert(rec)
                     except Exception:
                         pass
                     done_ids.append(job["job_id"])
@@ -2278,7 +2367,12 @@ class Handler(SimpleHTTPRequestHandler):
             if is_job and resp.status in (200, 201):
                 jid_header = resp.getheader("X-Job-Id", "").strip()
                 if jid_header:
-                    tracker.register_job(app_name, jid_header, user["username"], job_type)
+                    metadata = {}
+                    if method == "POST" and body:
+                        metadata = extract_job_metadata(
+                            self.headers.get("Content-Type", ""), body)
+                    tracker.register_job(app_name, jid_header, user["username"],
+                                         job_type, metadata=metadata)
                     tracker.inc_daily_jobs(app_name)
 
             content_type = resp.getheader("Content-Type", "")
