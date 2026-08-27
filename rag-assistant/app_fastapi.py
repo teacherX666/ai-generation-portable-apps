@@ -61,6 +61,7 @@ retriever = KbRetriever(
 semantic_gate = SemanticGate(
     embeddings=embeddings,
     margin=settings.semantic_gate_margin,
+    unrelated_margin=settings.semantic_gate_unrelated_margin,
     top_k=settings.semantic_gate_top_k,
     min_error_score=settings.semantic_gate_min_error_score,
     min_unrelated_score=settings.semantic_gate_min_unrelated_score,
