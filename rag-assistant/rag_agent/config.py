@@ -60,7 +60,13 @@ class Settings:
 
     # 检索
     retrieval_top_k: int = 5
-    retrieval_min_similarity: float = 0.0
+    retrieval_candidate_k: int = 20
+    # 向量相似度最低门槛；低于此值且没有明确关键词命中就丢弃。
+    retrieval_min_similarity: float = 0.52
+    # 混合分数 = 向量分 * 权重 + 关键词分 * 权重。
+    retrieval_min_hybrid_score: float = 0.38
+    retrieval_vector_weight: float = 0.55
+    retrieval_keyword_weight: float = 0.45
 
     # 数据 / 状态目录
     data_dir: Path = field(default_factory=lambda: BASE_DIR / "data")
@@ -99,4 +105,10 @@ def load_settings() -> Settings:
         semantic_gate_top_k=int(s.get("semantic_gate_top_k", 3)),
         unrelated_reply=s.get("unrelated_reply", Settings.unrelated_reply),
         code_scan_root=Path(s.get("code_scan_root") or str(BASE_DIR.parent)),
+        retrieval_top_k=int(s.get("retrieval_top_k", 5)),
+        retrieval_candidate_k=int(s.get("retrieval_candidate_k", 20)),
+        retrieval_min_similarity=float(s.get("retrieval_min_similarity", 0.52)),
+        retrieval_min_hybrid_score=float(s.get("retrieval_min_hybrid_score", 0.38)),
+        retrieval_vector_weight=float(s.get("retrieval_vector_weight", 0.55)),
+        retrieval_keyword_weight=float(s.get("retrieval_keyword_weight", 0.45)),
     )

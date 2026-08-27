@@ -52,6 +52,11 @@ retriever = KbRetriever(
     status_path=settings.sync_status_path,
     embeddings=embeddings,
     top_k=settings.retrieval_top_k,
+    candidate_k=settings.retrieval_candidate_k,
+    min_similarity=settings.retrieval_min_similarity,
+    min_hybrid_score=settings.retrieval_min_hybrid_score,
+    vector_weight=settings.retrieval_vector_weight,
+    keyword_weight=settings.retrieval_keyword_weight,
 )
 semantic_gate = SemanticGate(
     embeddings=embeddings,
