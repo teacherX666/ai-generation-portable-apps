@@ -222,8 +222,8 @@ def _answer_question(question: str, image_data_urls: list[str]):
     start = time.time()
     gate_decision = None
     try:
-        # 图片先做视觉摘要，让 KB 检索和后续语义闸门都能看到截图中的报错信息。
-        # 所有输入一律先查 KB；这里不再用关键词或语义规则提前拦截。
+        # 图片先做视觉摘要，让语义闸门和后续 KB 都能看到截图中的报错信息。
+        # 闸门只在这里提前拦截“明确无关”；报错或不确定内容仍继续查 KB。
         try:
             prep = prepare_query(
                 text=question,
@@ -258,6 +258,50 @@ def _answer_question(question: str, image_data_urls: list[str]):
                 }
             prep = prepare_query(text=question, image_data_urls=[], summarizer=lambda _urls: "")
 
+        # KB 前只短路明确无关内容，以节省检索和生成调用。error_report、uncertain
+        # 与 gate_error 一律继续查 KB，避免新型或描述不完整的真实报错被提前挡住。
+        gate_decision = semantic_gate.decide(prep.context_text_for_generation)
+        logger.info(
+            "pre-KB semantic route: label=%s reason=%s error=%.4f unrelated=%.4f",
+            gate_decision.label,
+            gate_decision.reason,
+            gate_decision.error_score,
+            gate_decision.unrelated_score,
+        )
+        if gate_decision.label == "unrelated":
+            user_visible = settings.unrelated_reply
+            confidence = "KB 前语义判断为无关"
+            try:
+                append_query_log(
+                    settings.query_log_path,
+                    user_id="web",
+                    query=question,
+                    image_count=len(image_data_urls),
+                    retrieved_titles=[],
+                    answer=strip_coverage_tag(user_visible),
+                    latency_ms=int((time.time() - start) * 1000),
+                    metadata={
+                        "coverage": "未查询",
+                        "confidence": confidence,
+                        "candidate_written": False,
+                        "gate_label": gate_decision.label,
+                        "gate_reason": gate_decision.reason,
+                        "gate_error_score": gate_decision.error_score,
+                        "gate_unrelated_score": gate_decision.unrelated_score,
+                        "gate_margin": gate_decision.margin_score,
+                        "short_circuited": True,
+                    },
+                )
+            except Exception:
+                logger.exception("append_query_log failed (non-fatal)")
+            return {
+                "answer": user_visible,
+                "coverage": "未查询",
+                "confidence": confidence,
+                "candidate_written": False,
+                "retrieved_titles": [],
+            }
+
         chunks = retriever.retrieve(prep.query_for_retrieval)
         messages = build_messages(
             query_text=prep.context_text_for_generation,
@@ -279,22 +323,10 @@ def _answer_question(question: str, image_data_urls: list[str]):
     if coverage in ("完全命中", "部分命中"):
         user_visible = raw_answer
     else:
-        # Semantic Router 只放在 KB 未命中之后、昂贵源码扫描之前。它使用
-        # “报错示例 / 无关示例”的 embedding 相似度路由；只有明确命中
-        # error_report 才允许扫码，uncertain 和服务异常都失败关闭。
-        gate_decision = semantic_gate.decide(prep.context_text_for_generation)
-        logger.info(
-            "post-KB semantic route: label=%s reason=%s error=%.4f unrelated=%.4f",
-            gate_decision.label,
-            gate_decision.reason,
-            gate_decision.error_score,
-            gate_decision.unrelated_score,
-        )
+        # 复用 KB 前已经得到的语义决定，不再重复调用 embedding。只有明确命中
+        # error_report 才允许扫码；uncertain 和服务异常都失败关闭。
         if not gate_decision.allow_scan:
-            if gate_decision.label == "unrelated":
-                user_visible = settings.unrelated_reply
-                confidence = "KB 后语义判断为无关"
-            elif gate_decision.label == "uncertain":
+            if gate_decision.label == "uncertain":
                 user_visible = (
                     "KB 里没有找到足够匹配的条目，且暂时无法确认这是一个明确的报错问题。"
                     "请补充完整错误文本、错误码、任务状态或更清晰的截图。"

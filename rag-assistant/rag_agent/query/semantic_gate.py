@@ -1,4 +1,4 @@
-"""KB 未命中后的轻量语义路由，只决定是否允许扫描源码。
+"""轻量语义路由：提前拦截明确无关输入，并控制是否允许扫描源码。
 
 实现遵循 aurelio-labs/semantic-router 的核心模式：为每条 Route 配置示例话术，
 用同一个 embedding 模型编码示例和查询，再按余弦相似度、top-k 聚合与阈值选路。
@@ -224,5 +224,5 @@ class SemanticGate:
             )
         except Exception:
             self._retry_after_monotonic = time.monotonic() + self.failure_cooldown_seconds
-            logger.exception("post-KB semantic route failed; block source scan")
+            logger.exception("semantic route failed; continue KB but block source scan")
             return self._failure_decision("gate_exception")
