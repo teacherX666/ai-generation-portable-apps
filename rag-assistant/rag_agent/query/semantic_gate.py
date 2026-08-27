@@ -62,6 +62,12 @@ _ERROR_RE = re.compile(
 _ARITHMETIC_RE = re.compile(r"^[\d\s+\-*/()%=^.,，。]+$")
 _CHINESE_ARITHMETIC_RE = re.compile(r"等于几|的三次方|的平方|的立方|算一下|多少$|几加几|几乘几")
 _GREETING_RE = re.compile(r"^(你好|您好|hi|hello|hey|在吗|在不在|在么)\s*[!！?？。.]*$", re.IGNORECASE)
+# 生成提示词不是报错：没有错误词时直接拦截，避免把普通创作需求送进 KB
+# 和源码扫描。真正的“生成失败/报错”仍会先被 _ERROR_RE 放行。
+_GENERATION_PROMPT_RE = re.compile(
+    r"生成(?:视频|图片|图像)|参考图|镜头|画面|短发|场景|角色|台词|特效",
+    re.IGNORECASE,
+)
 
 
 def prescreen_error(text: str) -> str | None:
@@ -85,6 +91,8 @@ def prescreen_error(text: str) -> str | None:
             return "unrelated"
     if _ERROR_RE.search(t):
         return "error"
+    if _GENERATION_PROMPT_RE.search(t):
+        return "unrelated"
     return None
 
 

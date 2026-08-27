@@ -96,6 +96,15 @@ class SemanticGateTests(unittest.TestCase):
     def test_prescreen_unknown_falls_back_to_semantic_gate(self):
         self.assertIsNone(semantic_gate.prescreen_error("我的脚本好像有点问题"))
 
+    def test_generation_prompt_is_not_an_error(self):
+        self.assertEqual(
+            semantic_gate.prescreen_error("生成视频禁止出现台词和文字，参考图一转写镜头固定"),
+            "unrelated",
+        )
+
+    def test_generation_failure_still_counts_as_error(self):
+        self.assertEqual(semantic_gate.prescreen_error("生成视频失败，返回 500"), "error")
+
 
 class QueryPreprocessorTests(unittest.TestCase):
     def test_text_and_image_summary_reaches_retrieval_and_generation(self):
