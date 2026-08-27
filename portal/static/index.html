@@ -81,6 +81,7 @@
           <div class="seg"><button type="button" :class="{active: status==='all'}" @click="status='all';reload()">全部状态</button><button type="button" :class="{active: status==='done'}" @click="status='done';reload()">成功</button><button type="button" :class="{active: status==='failed'}" @click="status='failed';reload()">失败</button><button type="button" :class="{active: status==='running'}" @click="status='running';reload()">生成中</button></div>
           <div class="seg"><button type="button" :class="{active: days===7}" @click="days=7;reload()">近7天</button><button type="button" :class="{active: days===30}" @click="days=30;reload()">近30天</button><button type="button" :class="{active: days===90}" @click="days=90;reload()">近90天</button></div>
           <input class="ctrl hist-search" v-model="q" placeholder="搜索提示词 / 任务编号" @keyup.enter="reload()">
+          <button class="ctrl" type="button" @click="reload()">查询</button>
           <button class="ctrl" type="button" @click="reload()">刷新</button>
         </header>
         <div class="hist-grid" v-if="items.length">
@@ -99,7 +100,11 @@
           </div>
         </div>
         <p v-else class="hist-empty">{{ q ? '没有匹配的记录' : '暂无历史——任务完成后会出现在这里' }}</p>
-        <button class="hist-more" type="button" v-if="items.length < total" @click="loadMore()">加载更多（{{ total - items.length }}）</button>
+        <div class="hist-pager" v-if="totalPages > 1">
+          <button type="button" :disabled="page <= 1" @click="goPage(page - 1)">‹ 上一页</button>
+          <span>第 {{ page }} / {{ totalPages }} 页（共 {{ total }} 条）</span>
+          <button type="button" :disabled="page >= totalPages" @click="goPage(page + 1)">下一页 ›</button>
+        </div>
       </section>
     </div>
 
@@ -129,7 +134,7 @@
             <button type="button" :class="{active: detailTab==='req'}" @click="detailTab='req'">请求</button>
             <button type="button" :class="{active: detailTab==='ret'}" @click="detailTab='ret'">返回</button>
           </div>
-          <div class="hist-codebox" v-show="detailTab==='req'">
+          <div class="hist-codebox hist-codebox-scroll" v-show="detailTab==='req'">
             <div><span class="k">prompt:</span> {{ detail.prompt || '—' }}</div>
             <div><span class="k">params:</span> {{ JSON.stringify(detail.params || {}, null, 2) }}</div>
           </div>

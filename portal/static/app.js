@@ -2197,10 +2197,13 @@ function VolcenginePortraitApp() {
 // ============ 历史记录（全局任务历史，方案二媒体卡片） ============
 function HistoryApp() {
   return {
-    items: [], total: 0, offset: 0,
+    items: [], total: 0, page: 1, pageSize: 60,
     isAdmin: false, userList: [], userFilter: "",
     kind: "all", status: "all", days: 30, q: "",
     detail: null, detailTab: "req",
+    get totalPages() {
+      return Math.max(1, Math.ceil(this.total / this.pageSize));
+    },
     async init() {
       try {
         const me = await api("/api/platform/me", "GET");
@@ -2213,27 +2216,26 @@ function HistoryApp() {
       this.reload();
     },
     async reload() {
-      this.offset = 0;
+      this.page = 1;
+      await this._fetch();
+    },
+    async goPage(p) {
+      if (p < 1 || p > this.totalPages) return;
+      this.page = p;
+      await this._fetch();
+    },
+    async _fetch() {
       const params = new URLSearchParams({
         days: this.days, kind: this.kind, status: this.status,
-        q: this.q, limit: 60, offset: 0,
+        q: this.q, limit: this.pageSize, offset: (this.page - 1) * this.pageSize,
       });
       if (this.isAdmin && this.userFilter) params.set("user", this.userFilter);
       const res = await api("/api/platform/history?" + params.toString(), "GET");
       if (!res || !res.ok) { this.items = []; this.total = 0; return; }
       this.items = res.items || [];
       this.total = res.total || 0;
+      if (this.page > this.totalPages) { this.page = this.totalPages; return this._fetch(); }
       this.detail = null;
-    },
-    async loadMore() {
-      this.offset += 60;
-      const params = new URLSearchParams({
-        days: this.days, kind: this.kind, status: this.status,
-        q: this.q, limit: 60, offset: this.offset,
-      });
-      if (this.isAdmin && this.userFilter) params.set("user", this.userFilter);
-      const res = await api("/api/platform/history?" + params.toString(), "GET");
-      if (res && res.ok) this.items = this.items.concat(res.items || []);
     },
     openDetail(it) { this.detail = it; this.detailTab = "req"; },
     statusText(s) {
