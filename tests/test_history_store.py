@@ -50,8 +50,8 @@ def test_history_cap(tmp_path, monkeypatch):
                                        submitted_at=now + i))
     data = json.loads((tmp_path / "history.json").read_text(encoding="utf-8"))
     assert len(data) == 5
-    # 保留的是最新 5 条
-    assert "a:j3" not in data and "a:j7" in data
+    # 保留的是最新 5 条（j3..j7）
+    assert "a:j2" not in data and "a:j3" in data and "a:j7" in data
 
 
 def test_history_upsert_survives_corrupt_file(tmp_path, monkeypatch):
