@@ -239,19 +239,51 @@ class QueryPreprocessorTests(unittest.TestCase):
 
 
 class AskPipelineOrderingTests(unittest.TestCase):
-    def test_kb_runs_before_the_only_semantic_gate(self):
+    def test_semantic_gate_runs_before_kb_and_source_scan(self):
         source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
         ask_source = source[source.index("def _answer_question") :]
+        gate_pos = ask_source.index("gate_decision = semantic_gate.decide")
+        unrelated_pos = ask_source.index('if gate_decision.label == "unrelated"')
         retrieve_pos = ask_source.index("chunks = retriever.retrieve")
         chat_pos = ask_source.index("raw_answer = chat")
         coverage_pos = ask_source.index('if coverage in ("完全命中", "部分命中")')
-        gate_pos = ask_source.index("gate_decision = semantic_gate.decide")
         scan_pos = ask_source.index("analysis = scan_and_analyze")
+        self.assertLess(gate_pos, unrelated_pos)
+        self.assertLess(unrelated_pos, retrieve_pos)
         self.assertLess(retrieve_pos, chat_pos)
         self.assertLess(chat_pos, coverage_pos)
-        self.assertLess(coverage_pos, gate_pos)
-        self.assertLess(gate_pos, scan_pos)
+        self.assertLess(coverage_pos, scan_pos)
+
+    def test_only_clear_unrelated_input_short_circuits_kb(self):
+        source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
+        ask_source = source[source.index("def _answer_question") :]
+        unrelated_branch = ask_source[
+            ask_source.index('if gate_decision.label == "unrelated"') :
+            ask_source.index("chunks = retriever.retrieve")
+        ]
+        self.assertIn('"short_circuited": True', unrelated_branch)
+        self.assertIn('"coverage": "未查询"', unrelated_branch)
+        self.assertIn("return {", unrelated_branch)
+        self.assertNotIn("retriever.retrieve", unrelated_branch)
+        self.assertNotIn("scan_and_analyze", unrelated_branch)
+
+    def test_gate_decision_is_reused_after_kb_miss(self):
+        source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
+        ask_source = source[source.index("def _answer_question") :]
+        self.assertEqual(ask_source.count("semantic_gate.decide("), 1)
         self.assertIn("if not gate_decision.allow_scan", ask_source)
+        self.assertIn('if gate_decision.label == "uncertain"', ask_source)
+
+    def test_uncertain_and_gate_error_are_not_pre_kb_short_circuited(self):
+        source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
+        ask_source = source[source.index("def _answer_question") :]
+        pre_kb = ask_source[
+            ask_source.index("gate_decision = semantic_gate.decide") :
+            ask_source.index("chunks = retriever.retrieve")
+        ]
+        self.assertNotIn('gate_decision.label == "uncertain"', pre_kb)
+        self.assertNotIn('gate_decision.label == "gate_error"', pre_kb)
+        self.assertNotIn("if not gate_decision.allow_scan", pre_kb)
 
     def test_old_rule_and_agent_gates_are_removed(self):
         source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
@@ -263,16 +295,6 @@ class AskPipelineOrderingTests(unittest.TestCase):
         self.assertNotIn("allow_retrieval", source)
         self.assertNotIn("prescreen_error", gate_source)
         self.assertFalse((RAG_DIR / "rag_agent" / "query" / "scan_gate.py").exists())
-
-    def test_gate_is_skipped_when_kb_hits(self):
-        source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
-        ask_source = source[source.index("def _answer_question") :]
-        hit_branch = ask_source[
-            ask_source.index('if coverage in ("完全命中", "部分命中")') :
-            ask_source.index("gate_decision = semantic_gate.decide")
-        ]
-        self.assertIn("user_visible = raw_answer", hit_branch)
-        self.assertIn("else:", hit_branch)
 
     def test_image_summary_empty_never_reaches_source_scan(self):
         source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
