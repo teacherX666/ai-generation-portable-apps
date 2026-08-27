@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -29,13 +30,89 @@ BLACKLIST_DIR_NAMES = {
     ".idea", ".vscode",
 }
 
+# 即使密钥文件被放在 state/ 以外，也不能进入发给模型的源码包。
+# providers.json 等普通配置仍可按后缀规则参与分析。
+SENSITIVE_FILE_NAMES = {
+    "secret.json", "secrets.json",
+    "credential.json", "credentials.json",
+    "token.json", "tokens.json",
+    "key.json", "keys.json", "api_key.json", "api_keys.json",
+    "private_key.json", "private_keys.json",
+}
+SENSITIVE_FILE_NAME_RE = re.compile(
+    r"(?:^|[._-])(secret|secrets|credential|credentials|token|tokens|"
+    r"api[_-]?key|private[_-]?key)(?:[._-]|$)",
+    re.IGNORECASE,
+)
+SENSITIVE_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".jks"}
+_BLACKLIST_DIR_NAMES_CASEFOLD = {name.casefold() for name in BLACKLIST_DIR_NAMES}
+_SENSITIVE_FILE_NAMES_CASEFOLD = {name.casefold() for name in SENSITIVE_FILE_NAMES}
+
+# 文件名禁区之外，再对源码中的常见密钥赋值做脱敏。这样即便某个旧的
+# app.py 把 API Key 写死，也只会把代码逻辑交给模型，不会把真实值发出去。
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?im)(?P<prefix>^[ \t]*(?:[\w.-]*(?:api[_-]?key|app[_-]?secret|"
+    r"access[_-]?token|refresh[_-]?token|private[_-]?key|secret|token)"
+    r"[\w.-]*|[\"'][^\"']*(?:api[_-]?key|app[_-]?secret|"
+    r"access[_-]?token|refresh[_-]?token|private[_-]?key|secret|token)"
+    r"[^\"']*[\"'])\s*[:=]\s*[\"'])"
+    r"(?P<value>.*?)(?P<suffix>[\"']\s*(?:,|$))"
+)
+_SENSITIVE_QUOTED_VALUE_RE = re.compile(
+    r"(?i)(?P<prefix>[\"'][^\"']*(?:api[_-]?key|app[_-]?secret|"
+    r"access[_-]?token|refresh[_-]?token|private[_-]?key|secret|token)"
+    r"[^\"']*[\"']\s*:\s*[\"'])"
+    r"(?P<value>.*?)(?P<suffix>[\"'])"
+)
+_SECRET_TOKEN_RE = re.compile(r"(?i)(?<![A-Za-z0-9])(?:sk|key|token)-[A-Za-z0-9._~-]{16,}")
+
 MAX_SINGLE_FILE_BYTES = 200 * 1024
 
 PRIORITY_ORDER = [".py", ".js", ".command", ".bat", ".sh", ".html", ".md"]
 
 
+def _is_sensitive_file_name(name: str) -> bool:
+    lowered = name.casefold()
+    return (
+        lowered in _SENSITIVE_FILE_NAMES_CASEFOLD
+        or lowered.startswith(".env")
+        or lowered.endswith(tuple(SENSITIVE_SUFFIXES))
+        or bool(SENSITIVE_FILE_NAME_RE.search(name))
+    )
+
+
 def _is_blacklisted(rel_path: Path) -> bool:
-    return any(part in BLACKLIST_DIR_NAMES for part in rel_path.parts)
+    """判断相对路径是否属于源码扫描禁区。
+
+    这里是只读扫描的最后一道文件级保险：不要只依赖 state/ 目录名，
+    因为 code_scan_root 可能被用户配置成其他目录，密钥也可能被误放到
+    config/、private/ 等位置。
+    """
+    if any(part.casefold() in _BLACKLIST_DIR_NAMES_CASEFOLD for part in rel_path.parts):
+        return True
+    return _is_sensitive_file_name(rel_path.name)
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    """只允许读取 root 内的真实文件，拒绝越界 symlink。"""
+    try:
+        path.resolve(strict=False).relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _redact_sensitive_content(content: str) -> str:
+    """只在发送给模型的副本中脱敏，不改动磁盘上的源文件。"""
+    content = _SENSITIVE_ASSIGNMENT_RE.sub(
+        lambda m: f"{m.group('prefix')}[REDACTED]{m.group('suffix')}",
+        content,
+    )
+    content = _SENSITIVE_QUOTED_VALUE_RE.sub(
+        lambda m: f"{m.group('prefix')}[REDACTED]{m.group('suffix')}",
+        content,
+    )
+    return _SECRET_TOKEN_RE.sub("[REDACTED]", content)
 
 
 def _priority(suffix: str) -> int:
@@ -51,12 +128,21 @@ def _estimate_tokens(text: str) -> int:
 
 
 def pack_repository(root: Path, max_tokens: int) -> str:
-    """把 root 目录下的源码打包成 XML 字符串。"""
-    root = root.resolve()
+    """只读打包 root 下的安全源码，供现场分析模型阅读。
+
+    函数只执行 stat/read_text，不会创建、修改、删除或改权限任何文件。
+    state/、密钥文件、环境变量文件、证书和 symlink 都不会进入结果。
+    """
+    root = root.expanduser().resolve()
+    if root.name.casefold() in _BLACKLIST_DIR_NAMES_CASEFOLD or _is_sensitive_file_name(root.name):
+        raise ValueError(f"禁止把敏感目录作为源码扫描根目录: {root.name}")
     files: list[tuple[Path, str]] = []  # (rel_path, content)
 
     for path in sorted(root.rglob("*")):
-        if not path.is_file():
+        # 不跟随 symlink，避免通过链接读到仓库外或密钥目录里的文件。
+        if path.is_symlink() or not path.is_file():
+            continue
+        if not _is_within_root(path, root):
             continue
         rel = path.relative_to(root)
         if _is_blacklisted(rel):
@@ -86,7 +172,7 @@ def pack_repository(root: Path, max_tokens: int) -> str:
             logger.warning("read %s failed: %s", rel, e)
             continue
 
-        files.append((rel, content))
+        files.append((rel, _redact_sensitive_content(content)))
 
     # 按优先级 + 路径排序
     files.sort(key=lambda x: (_priority(x[0].suffix), str(x[0])))
