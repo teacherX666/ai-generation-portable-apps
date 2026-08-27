@@ -92,3 +92,49 @@ def test_query_history_pagination(tmp_path, monkeypatch):
         username="u", is_admin=False, days=30, kind="all", status="all",
         q="", user_filter="", limit=2, offset=2)
     assert items2[0]["job_id"] == "j2"
+
+
+def test_history_users_route_not_swallowed_by_prefix(tmp_path, monkeypatch):
+    """GET /api/platform/history-users 必须命中 users 端点而非 history 前缀。
+    路由顺序回归：startswith('/api/platform/history') 曾把该路径吞掉。"""
+    import http.client
+    import json
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    tracker = _make_tracker(tmp_path, monkeypatch)
+    tracker.history_upsert({"app": "a", "job_id": "j1", "username": "alice",
+                            "kind": "image", "prompt": "p", "model": "",
+                            "params": {}, "status": "done",
+                            "submitted_at": time.time(), "completed_at": time.time(),
+                            "duration": 0, "results": [], "error": ""})
+
+    captured = {}
+
+    class AdminHandler(portal.Handler):
+        def _current_user(self):
+            return {"username": "admin", "role": "admin"}
+
+        def _json(self, status, payload):
+            captured.update(payload)
+            body = b"{}"
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AdminHandler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/api/platform/history-users")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        body = json.loads(resp.read().decode())
+        assert body.get("users") == ["alice"]  # users 端点返回用户列表
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()

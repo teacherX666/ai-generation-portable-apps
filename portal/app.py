@@ -1717,12 +1717,14 @@ class Handler(SimpleHTTPRequestHandler):
             self._platform_stats_export(user)
         elif path == "/api/platform/activity":
             self._platform_activity(user)
+        # 注意顺序：history-users 必须先于 startswith("/api/platform/history")
+        # 判断，否则被前缀匹配吞掉，前端用户下拉永远只有「全部用户」。
+        elif path == "/api/platform/history-users":
+            self._platform_history_users(user)
         elif path.startswith("/api/platform/history"):
             self._platform_history(user)
         elif path == "/api/platform/me":
             self._json(200, {"ok": True, "username": user["username"], "role": user["role"]})
-        elif path == "/api/platform/history-users":
-            self._platform_history_users(user)
         elif self._try_company_key_route(path, "GET", user):
             pass
         elif path == "/api/feishu/config":
