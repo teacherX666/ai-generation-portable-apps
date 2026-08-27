@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""报错问答助手前置语义闸门的无网络回归测试。"""
+"""报错问答助手 KB 后语义闸门的无网络回归测试。"""
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -33,49 +34,104 @@ preprocessor = _load_module(
 class FakeEmbeddings:
     def __init__(self):
         self.document_calls = 0
+        self.query_calls = 0
         self.fail_query = False
 
     def embed_documents(self, texts):
         self.document_calls += 1
-        markers = ("Traceback", "Error", "报错", "失败", "异常", "超时", "500", "部署", "程序崩了", "接口请求")
+        error_markers = (
+            "Traceback", "Error", "报错", "失败", "异常", "超时", "500",
+            "崩", "卡住", "没有反应", "白屏", "不能生成", "余额不足",
+            "不合法", "不支持", "TaskTypeConstraint", "ModelNotOpen",
+            "CreditPreDeductNotEnough", "duration not valid",
+        )
         return [
-            [1.0, 0.0] if any(m in t for m in markers) else [0.0, 1.0]
-            for t in texts
+            [1.0, 0.0] if any(marker in text for marker in error_markers) else [0.0, 1.0]
+            for text in texts
         ]
 
     def embed_query(self, text):
+        self.query_calls += 1
         if self.fail_query:
             raise RuntimeError("embedding unavailable")
-        markers = ("NameError", "Error", "报错", "失败", "异常", "超时", "500")
-        if any(m in text for m in markers):
+        error_markers = (
+            "Traceback", "NameError", "Error", "报错", "失败", "异常", "超时",
+            "500", "卡住", "没有反应", "白屏", "不能生成", "TaskTypeConstraint",
+        )
+        if any(marker in text for marker in error_markers):
             return [1.0, 0.0]
         return [0.0, 1.0]
 
 
 class SemanticGateTests(unittest.TestCase):
-    def test_error_input_allows_retrieval_and_scan(self):
+    def test_error_route_is_the_only_route_that_allows_scan(self):
         gate = semantic_gate.SemanticGate(FakeEmbeddings(), margin=0.08, top_k=3)
-        decision = gate.decide("NameError: name 'x' is not defined")
-        self.assertEqual(decision.label, "error_report")
-        self.assertTrue(decision.allow_retrieval)
-        self.assertTrue(decision.allow_scan)
+        for text in (
+            "NameError: name 'x' is not defined",
+            "HTTP 500",
+            "TaskTypeConstraint",
+            "点击提交后没有反应，任务一直卡住",
+        ):
+            decision = gate.decide(text)
+            self.assertEqual(decision.label, "error_report", text)
+            self.assertTrue(decision.allow_scan, text)
 
-    def test_unrelated_input_short_circuits_before_retrieval(self):
+    def test_unrelated_route_blocks_scan(self):
         gate = semantic_gate.SemanticGate(FakeEmbeddings(), margin=0.08, top_k=3)
-        decision = gate.decide("今天天气怎么样")
+        for text in ("你好", "1+1", "今天天气怎么样", "帮我写一首诗"):
+            decision = gate.decide(text)
+            self.assertEqual(decision.label, "unrelated", text)
+            self.assertFalse(decision.allow_scan, text)
+
+    def test_observed_one_plus_one_scores_are_classified_as_unrelated(self):
+        """回归线上真实边界分数，避免 1+1 再落入 uncertain。"""
+        class ObservedScoreEmbeddings:
+            def embed_documents(self, texts):
+                error_score = 0.5720777504543549
+                unrelated_score = 0.6336104414158139
+                error = [error_score, math.sqrt(1.0 - error_score**2)]
+                unrelated = [unrelated_score, math.sqrt(1.0 - unrelated_score**2)]
+                split = len(semantic_gate.ERROR_REPORT_UTTERANCES)
+                return [error] * split + [unrelated] * (len(texts) - split)
+
+            def embed_query(self, text):
+                return [1.0, 0.0]
+
+        gate = semantic_gate.SemanticGate(
+            ObservedScoreEmbeddings(),
+            margin=0.08,
+            unrelated_margin=0.05,
+            top_k=3,
+        )
+        decision = gate.decide("1+1")
         self.assertEqual(decision.label, "unrelated")
-        self.assertFalse(decision.allow_retrieval)
         self.assertFalse(decision.allow_scan)
+        self.assertAlmostEqual(decision.error_score, 0.5720777504543549)
+        self.assertAlmostEqual(decision.unrelated_score, 0.6336104414158139)
 
-    def test_gate_failure_allows_kb_but_blocks_expensive_source_scan(self):
-        embeddings = FakeEmbeddings()
-        embeddings.fail_query = True
-        gate = semantic_gate.SemanticGate(embeddings, margin=0.08, top_k=3)
-        decision = gate.decide("服务启动失败")
-        self.assertEqual(decision.label, "gate_error")
-        self.assertTrue(decision.allow_retrieval)
+    def test_unrelated_margin_does_not_relax_error_scan_margin(self):
+        class BorderlineErrorEmbeddings:
+            def embed_documents(self, texts):
+                error_score = 0.65
+                unrelated_score = 0.58
+                error = [error_score, math.sqrt(1.0 - error_score**2)]
+                unrelated = [unrelated_score, math.sqrt(1.0 - unrelated_score**2)]
+                split = len(semantic_gate.ERROR_REPORT_UTTERANCES)
+                return [error] * split + [unrelated] * (len(texts) - split)
+
+            def embed_query(self, text):
+                return [1.0, 0.0]
+
+        gate = semantic_gate.SemanticGate(
+            BorderlineErrorEmbeddings(),
+            margin=0.08,
+            unrelated_margin=0.05,
+            top_k=1,
+        )
+        decision = gate.decide("疑似报错")
+        self.assertEqual(decision.label, "uncertain")
         self.assertFalse(decision.allow_scan)
-        self.assertEqual(decision.reason, "gate_exception")
+        self.assertAlmostEqual(decision.margin_score, 0.07)
 
     def test_example_embeddings_are_cached(self):
         embeddings = FakeEmbeddings()
@@ -83,50 +139,167 @@ class SemanticGateTests(unittest.TestCase):
         gate.decide("NameError: boom")
         gate.decide("今天天气怎么样")
         self.assertEqual(embeddings.document_calls, 1)
+        self.assertEqual(embeddings.query_calls, 2)
 
-    def test_prescreen_unrelated_short_circuits_without_embedding(self):
-        self.assertEqual(semantic_gate.prescreen_error("1+1"), "unrelated")
-        self.assertEqual(semantic_gate.prescreen_error("2的三次方"), "unrelated")
-        self.assertEqual(semantic_gate.prescreen_error("你好"), "unrelated")
+    def test_minimum_absolute_score_prevents_low_confidence_margin_match(self):
+        class LowConfidenceEmbeddings:
+            def embed_documents(self, texts):
+                error = [0.5, math.sqrt(0.75)]
+                unrelated = [0.3, math.sqrt(0.91)]
+                split = len(semantic_gate.ERROR_REPORT_UTTERANCES)
+                return [error] * split + [unrelated] * (len(texts) - split)
 
-    def test_prescreen_error_short_circuits_without_embedding(self):
-        self.assertEqual(semantic_gate.prescreen_error("接口返回 500"), "error")
-        self.assertEqual(semantic_gate.prescreen_error("Traceback (most recent call last)"), "error")
+            def embed_query(self, text):
+                return [1.0, 0.0]
 
-    def test_prescreen_unknown_falls_back_to_semantic_gate(self):
-        self.assertIsNone(semantic_gate.prescreen_error("我的脚本好像有点问题"))
+        gate = semantic_gate.SemanticGate(
+            LowConfidenceEmbeddings(), margin=0.08, top_k=1, min_error_score=0.55
+        )
+        decision = gate.decide("有个不确定的问题")
+        self.assertEqual(decision.label, "uncertain")
+        self.assertFalse(decision.allow_scan)
+        self.assertLess(decision.error_score, 0.55)
+        self.assertGreater(decision.margin_score, 0.08)
+
+    def test_close_route_scores_are_uncertain_and_block_scan(self):
+        class CloseEmbeddings:
+            def embed_documents(self, texts):
+                split = len(semantic_gate.ERROR_REPORT_UTTERANCES)
+                return [[0.70, 0.714142]] * split + [[0.68, 0.733212]] * (len(texts) - split)
+
+            def embed_query(self, text):
+                return [1.0, 0.0]
+
+        gate = semantic_gate.SemanticGate(CloseEmbeddings(), margin=0.08, top_k=1)
+        decision = gate.decide("帮我看看这个")
+        self.assertEqual(decision.label, "uncertain")
+        self.assertFalse(decision.allow_scan)
+
+    def test_invalid_embedding_fails_closed(self):
+        class InvalidEmbeddings:
+            def embed_documents(self, texts):
+                return [[1.0, 0.0] for _ in texts]
+
+            def embed_query(self, text):
+                return []
+
+        gate = semantic_gate.SemanticGate(InvalidEmbeddings(), margin=0.08)
+        decision = gate.decide("我的脚本好像有点问题")
+        self.assertEqual(decision.label, "gate_error")
+        self.assertFalse(decision.allow_scan)
+
+    def test_gate_failure_cooldown_avoids_repeated_embedding_calls(self):
+        class FailingEmbeddings:
+            def __init__(self):
+                self.document_calls = 0
+                self.query_calls = 0
+
+            def embed_documents(self, texts):
+                self.document_calls += 1
+                raise RuntimeError("service down")
+
+            def embed_query(self, text):
+                self.query_calls += 1
+                raise RuntimeError("service down")
+
+        embeddings = FailingEmbeddings()
+        gate = semantic_gate.SemanticGate(
+            embeddings, margin=0.08, failure_cooldown_seconds=60
+        )
+        first = gate.decide("我的脚本好像有点问题")
+        second = gate.decide("另一个问题")
+        self.assertEqual(first.reason, "gate_exception")
+        self.assertEqual(second.reason, "gate_recent_failure")
+        self.assertFalse(first.allow_scan)
+        self.assertFalse(second.allow_scan)
+        self.assertEqual(embeddings.document_calls, 1)
+        self.assertEqual(embeddings.query_calls, 0)
 
 
 class QueryPreprocessorTests(unittest.TestCase):
     def test_text_and_image_summary_reaches_retrieval_and_generation(self):
         prepared = preprocessor.prepare_query(
-            text="任务失败",
-            image_data_urls=["data:image/png;base64,abc"],
-            summarizer=lambda _urls: "InvalidParameter: duration not valid",
+            "帮我看看",
+            ["data:image/png;base64,abc"],
+            lambda _urls: "截图显示接口返回 500",
         )
-        self.assertIn("InvalidParameter", prepared.query_for_retrieval)
-        self.assertIn("InvalidParameter", prepared.context_text_for_generation)
-        self.assertEqual(prepared.image_summary, "InvalidParameter: duration not valid")
+        self.assertIn("帮我看看", prepared.query_for_retrieval)
+        self.assertIn("接口返回 500", prepared.query_for_retrieval)
+        self.assertIn("接口返回 500", prepared.context_text_for_generation)
 
     def test_text_only_does_not_call_vision_summarizer(self):
-        def should_not_run(_urls):
-            raise AssertionError("纯文本不应调用视觉模型")
-
-        prepared = preprocessor.prepare_query("接口返回 500", [], should_not_run)
-        self.assertEqual(prepared.query_for_retrieval, "接口返回 500")
+        calls = []
+        prepared = preprocessor.prepare_query(
+            "接口返回 500",
+            [],
+            lambda urls: calls.append(urls) or "不应调用",
+        )
+        self.assertEqual(calls, [])
         self.assertEqual(prepared.context_text_for_generation, "接口返回 500")
 
 
 class AskPipelineOrderingTests(unittest.TestCase):
-    def test_gate_runs_before_kb_retrieval(self):
+    def test_semantic_gate_runs_before_kb_and_source_scan(self):
         source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
-        ask_source = source[source.index("async def ask") :]
-        gate_pos = ask_source.index("semantic_gate.decide")
-        retrieve_pos = ask_source.index("retriever.retrieve")
+        ask_source = source[source.index("def _answer_question") :]
+        gate_pos = ask_source.index("gate_decision = semantic_gate.decide")
+        unrelated_pos = ask_source.index('if gate_decision.label == "unrelated"')
+        retrieve_pos = ask_source.index("chunks = retriever.retrieve")
         chat_pos = ask_source.index("raw_answer = chat")
-        self.assertLess(gate_pos, retrieve_pos)
-        self.assertLess(gate_pos, chat_pos)
-        self.assertIn("if not gate_decision.allow_retrieval", ask_source)
+        coverage_pos = ask_source.index('if coverage in ("完全命中", "部分命中")')
+        scan_pos = ask_source.index("analysis = scan_and_analyze")
+        self.assertLess(gate_pos, unrelated_pos)
+        self.assertLess(unrelated_pos, retrieve_pos)
+        self.assertLess(retrieve_pos, chat_pos)
+        self.assertLess(chat_pos, coverage_pos)
+        self.assertLess(coverage_pos, scan_pos)
+
+    def test_only_clear_unrelated_input_short_circuits_kb(self):
+        source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
+        ask_source = source[source.index("def _answer_question") :]
+        unrelated_branch = ask_source[
+            ask_source.index('if gate_decision.label == "unrelated"') :
+            ask_source.index("chunks = retriever.retrieve")
+        ]
+        self.assertIn('"short_circuited": True', unrelated_branch)
+        self.assertIn('"coverage": "未查询"', unrelated_branch)
+        self.assertIn("return {", unrelated_branch)
+        self.assertNotIn("retriever.retrieve", unrelated_branch)
+        self.assertNotIn("scan_and_analyze", unrelated_branch)
+
+    def test_gate_decision_is_reused_after_kb_miss(self):
+        source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
+        ask_source = source[source.index("def _answer_question") :]
+        self.assertEqual(ask_source.count("semantic_gate.decide("), 1)
+        self.assertIn("if not gate_decision.allow_scan", ask_source)
+        self.assertIn('if gate_decision.label == "uncertain"', ask_source)
+
+    def test_uncertain_and_gate_error_are_not_pre_kb_short_circuited(self):
+        source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
+        ask_source = source[source.index("def _answer_question") :]
+        pre_kb = ask_source[
+            ask_source.index("gate_decision = semantic_gate.decide") :
+            ask_source.index("chunks = retriever.retrieve")
+        ]
+        self.assertNotIn('gate_decision.label == "uncertain"', pre_kb)
+        self.assertNotIn('gate_decision.label == "gate_error"', pre_kb)
+        self.assertNotIn("if not gate_decision.allow_scan", pre_kb)
+
+    def test_old_rule_and_agent_gates_are_removed(self):
+        source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
+        gate_source = (RAG_DIR / "rag_agent" / "query" / "semantic_gate.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("prescreen_error", source)
+        self.assertNotIn("decide_scan_after_kb", source)
+        self.assertNotIn("allow_retrieval", source)
+        self.assertNotIn("prescreen_error", gate_source)
+        self.assertFalse((RAG_DIR / "rag_agent" / "query" / "scan_gate.py").exists())
+
+    def test_image_summary_empty_never_reaches_source_scan(self):
+        source = (RAG_DIR / "app_fastapi.py").read_text(encoding="utf-8")
+        self.assertIn("not prep.image_summary.strip()", source)
+        self.assertIn("截图里暂时没有识别到错误文字", source)
 
 
 if __name__ == "__main__":

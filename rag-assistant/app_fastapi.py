@@ -23,7 +23,7 @@ from rag_agent.query.log import append_query_log
 from rag_agent.query.preprocessor import prepare_query
 from rag_agent.query.prompt import build_messages, parse_coverage_tag, strip_coverage_tag
 from rag_agent.query.retriever import KbRetriever
-from rag_agent.query.semantic_gate import GateDecision, SemanticGate, prescreen_error
+from rag_agent.query.semantic_gate import SemanticGate
 from rag_agent.self_learn.analyzer import format_scan_answer, scan_and_analyze
 from rag_agent.self_learn.candidate_writer import write_candidate_if_new
 from rag_agent.sync.lark_fetcher import fetch_kb_markdown
@@ -52,11 +52,20 @@ retriever = KbRetriever(
     status_path=settings.sync_status_path,
     embeddings=embeddings,
     top_k=settings.retrieval_top_k,
+    candidate_k=settings.retrieval_candidate_k,
+    min_similarity=settings.retrieval_min_similarity,
+    min_hybrid_score=settings.retrieval_min_hybrid_score,
+    vector_weight=settings.retrieval_vector_weight,
+    keyword_weight=settings.retrieval_keyword_weight,
 )
 semantic_gate = SemanticGate(
     embeddings=embeddings,
     margin=settings.semantic_gate_margin,
+    unrelated_margin=settings.semantic_gate_unrelated_margin,
     top_k=settings.semantic_gate_top_k,
+    min_error_score=settings.semantic_gate_min_error_score,
+    min_unrelated_score=settings.semantic_gate_min_unrelated_score,
+    failure_cooldown_seconds=settings.semantic_gate_failure_cooldown_seconds,
 )
 
 
@@ -213,36 +222,55 @@ def _answer_question(question: str, image_data_urls: list[str]):
     start = time.time()
     gate_decision = None
     try:
-        # 图片必须先做视觉摘要，之后才能把“文字 + 图片摘要”交给前置闸门。
-        # 纯文本则在这里直接完成一次低成本语义路由，避免无关输入触发 KB/LLM。
-        prep = prepare_query(
-            text=question,
-            image_data_urls=image_data_urls,
-            summarizer=lambda urls: summarize_error_screenshots(settings, urls),
+        # 图片先做视觉摘要，让语义闸门和后续 KB 都能看到截图中的报错信息。
+        # 闸门只在这里提前拦截“明确无关”；报错或不确定内容仍继续查 KB。
+        try:
+            prep = prepare_query(
+                text=question,
+                image_data_urls=image_data_urls,
+                summarizer=lambda urls: summarize_error_screenshots(settings, urls),
+            )
+        except Exception:
+            # 视觉服务偶发失败时：有文字就继续查 KB；纯图片无法提取问题时，
+            # 直接提示补充文字，且绝不进入源码扫描。
+            logger.exception("image summarization failed")
+            if not question:
+                user_visible = "截图识别暂时失败，请把截图中的错误文字粘贴过来，或稍后重试。"
+                return {
+                    "answer": user_visible,
+                    "coverage": "未命中",
+                    "confidence": "图片识别失败",
+                    "candidate_written": False,
+                    "retrieved_titles": [],
+                }
+            prep = prepare_query(text=question, image_data_urls=[], summarizer=lambda _urls: "")
+        # 视觉接口有时返回 HTTP 200 但 content 为空。纯图片没有可检索文本时
+        # 不猜测、不扫码；同时有文字时退回文字继续查 KB。
+        if image_data_urls and not prep.image_summary.strip():
+            if not question:
+                user_visible = "截图里暂时没有识别到错误文字，请把报错文本粘贴过来，或重新上传清晰截图。"
+                return {
+                    "answer": user_visible,
+                    "coverage": "未命中",
+                    "confidence": "图片摘要为空",
+                    "candidate_written": False,
+                    "retrieved_titles": [],
+                }
+            prep = prepare_query(text=question, image_data_urls=[], summarizer=lambda _urls: "")
+
+        # KB 前只短路明确无关内容，以节省检索和生成调用。error_report、uncertain
+        # 与 gate_error 一律继续查 KB，避免新型或描述不完整的真实报错被提前挡住。
+        gate_decision = semantic_gate.decide(prep.context_text_for_generation)
+        logger.info(
+            "pre-KB semantic route: label=%s reason=%s error=%.4f unrelated=%.4f",
+            gate_decision.label,
+            gate_decision.reason,
+            gate_decision.error_score,
+            gate_decision.unrelated_score,
         )
-        prescreen = prescreen_error(prep.query_for_retrieval)
-        if prescreen == "unrelated":
-            gate_decision = GateDecision(
-                label="unrelated",
-                error_score=0.0,
-                unrelated_score=0.0,
-                allow_retrieval=False,
-                allow_scan=False,
-                reason="prescreen_unrelated",
-            )
-        elif prescreen == "error":
-            gate_decision = GateDecision(
-                label="error_report",
-                error_score=0.0,
-                unrelated_score=0.0,
-                allow_retrieval=True,
-                allow_scan=True,
-                reason="prescreen_error",
-            )
-        else:
-            gate_decision = semantic_gate.decide(prep.query_for_retrieval)
-        if not gate_decision.allow_retrieval:
+        if gate_decision.label == "unrelated":
             user_visible = settings.unrelated_reply
+            confidence = "KB 前语义判断为无关"
             try:
                 append_query_log(
                     settings.query_log_path,
@@ -250,11 +278,11 @@ def _answer_question(question: str, image_data_urls: list[str]):
                     query=question,
                     image_count=len(image_data_urls),
                     retrieved_titles=[],
-                    answer=user_visible,
+                    answer=strip_coverage_tag(user_visible),
                     latency_ms=int((time.time() - start) * 1000),
                     metadata={
-                        "coverage": "无关",
-                        "confidence": "无关",
+                        "coverage": "未查询",
+                        "confidence": confidence,
                         "candidate_written": False,
                         "gate_label": gate_decision.label,
                         "gate_reason": gate_decision.reason,
@@ -265,11 +293,11 @@ def _answer_question(question: str, image_data_urls: list[str]):
                     },
                 )
             except Exception:
-                logger.exception("append_query_log failed for gate short-circuit (non-fatal)")
+                logger.exception("append_query_log failed (non-fatal)")
             return {
                 "answer": user_visible,
-                "coverage": "无关",
-                "confidence": "无关",
+                "coverage": "未查询",
+                "confidence": confidence,
                 "candidate_written": False,
                 "retrieved_titles": [],
             }
@@ -294,34 +322,44 @@ def _answer_question(question: str, image_data_urls: list[str]):
 
     if coverage in ("完全命中", "部分命中"):
         user_visible = raw_answer
-    elif gate_decision is not None and not gate_decision.allow_scan:
-        # 闸门服务异常时仍允许 KB 回答，但绝不触发全仓源码扫描。
-        user_visible = (
-            "KB 里没有找到足够匹配的条目，当前无法进一步进行源码分析，"
-            "请补充完整报错文本或稍后重试。"
-        )
-        confidence = "闸门异常"
     else:
-        analysis = scan_and_analyze(
-            query_text=question,
-            top_kb_titles=retrieved_titles[:3],
-            settings=settings,
-        )
-        user_visible = format_scan_answer(
-            analysis, show_kb_candidate=settings.show_kb_candidate_to_user
-        )
-        confidence = analysis.confidence
-        # 照文档：置信度低只答「请联系管理员」，不写候选池。
-        if analysis.confidence != "低" and analysis.kb_candidate_section:
-            try:
-                candidate_written = write_candidate_if_new(
-                    api_client,
-                    settings.lark_kb_pending_doc_id,
-                    analysis,
-                    question,
+        # 复用 KB 前已经得到的语义决定，不再重复调用 embedding。只有明确命中
+        # error_report 才允许扫码；uncertain 和服务异常都失败关闭。
+        if not gate_decision.allow_scan:
+            if gate_decision.label == "uncertain":
+                user_visible = (
+                    "KB 里没有找到足够匹配的条目，且暂时无法确认这是一个明确的报错问题。"
+                    "请补充完整错误文本、错误码、任务状态或更清晰的截图。"
                 )
-            except Exception:
-                logger.exception("write_candidate_if_new failed (non-fatal)")
+                confidence = "KB 后语义判断不确定"
+            else:
+                user_visible = (
+                    "KB 里没有找到足够匹配的条目，当前无法安全进行源码分析。"
+                    "请稍后重试，或补充完整报错文本。"
+                )
+                confidence = "语义闸门异常"
+        else:
+            analysis = scan_and_analyze(
+                # 图片摘要已进入 context，KB 未命中时源码兜底也必须看到这份摘要。
+                query_text=prep.context_text_for_generation,
+                top_kb_titles=retrieved_titles[:3],
+                settings=settings,
+            )
+            user_visible = format_scan_answer(
+                analysis, show_kb_candidate=settings.show_kb_candidate_to_user
+            )
+            confidence = analysis.confidence
+            # 照文档：置信度低只答「请联系管理员」，不写候选池。
+            if analysis.confidence != "低" and analysis.kb_candidate_section:
+                try:
+                    candidate_written = write_candidate_if_new(
+                        api_client,
+                        settings.lark_kb_pending_doc_id,
+                        analysis,
+                        question,
+                    )
+                except Exception:
+                    logger.exception("write_candidate_if_new failed (non-fatal)")
 
     try:
         append_query_log(
