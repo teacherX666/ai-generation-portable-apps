@@ -169,8 +169,10 @@ def extract_job_metadata(content_type: str, body: bytes) -> dict:
         elif ctype == "multipart/form-data":
             import cgi
             import io
+            # 只走 environ 的 CONTENT_TYPE：headers 参数用普通 dict 时
+            # 内部大小写不敏感查找会静默失效，导致 multipart 被当 urlencoded
             form = cgi.FieldStorage(
-                fp=io.BytesIO(body), headers={"Content-Type": content_type},
+                fp=io.BytesIO(body),
                 environ={"REQUEST_METHOD": "POST",
                          "CONTENT_TYPE": content_type,
                          "CONTENT_LENGTH": str(len(body))},
