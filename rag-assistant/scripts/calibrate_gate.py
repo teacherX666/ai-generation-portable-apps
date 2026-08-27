@@ -28,6 +28,12 @@ SAMPLES = [
     ("报错", "接口请求返回 500，帮忙看下"),
     ("边界", "我的 python 脚本报错，能帮我看看吗"),
     ("边界", "这里有个 bug"),
+    ("报错", "TaskTypeConstraint"),
+    ("报错", "ModelNotOpen"),
+    ("报错", "quota exceeded"),
+    ("报错", "账号欠费"),
+    ("无关", "生成一张图片，不要出现错误文字"),
+    ("无关", "连接飞书机器人"),
 ]
 
 
@@ -38,7 +44,14 @@ def main() -> None:
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     )
-    gate = SemanticGate(embeddings, margin=-999.0, top_k=settings.semantic_gate_top_k)
+    # 标定脚本要展示真实分数分布，不能被生产阈值提前截断；
+    # 这里只关闭判定门槛，不影响生产配置。
+    gate = SemanticGate(
+        embeddings,
+        margin=-999.0,
+        top_k=settings.semantic_gate_top_k,
+        min_error_score=-1.0,
+    )
     print(f"model={settings.openai_embedding_model} base_url={settings.openai_base_url}")
     print(f"{'期望':<4} | {'error':>8} | {'unrelated':>9} | {'diff':>7} | {'判定':<12} | 输入")
     for expect, text in SAMPLES:

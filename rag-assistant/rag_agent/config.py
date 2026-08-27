@@ -44,6 +44,12 @@ class Settings:
     # 扫码前语义闸门（复用 embedding，避免无关输入触发扫码）
     semantic_gate_margin: float = 0.08
     semantic_gate_top_k: int = 3
+    # 相似度绝对下限，避免两个类别都不相似时仅靠分差误放行。
+    semantic_gate_min_error_score: float = 0.55
+    # 无关类也要达到绝对分数并且明显领先，才允许直接拦截。
+    semantic_gate_min_unrelated_score: float = 0.60
+    # embedding 服务失败后的冷却期，避免每个请求重复撞失败服务。
+    semantic_gate_failure_cooldown_seconds: float = 30.0
     unrelated_reply: str = (
         "您提交的内容看起来不是报错信息。本助手只解答报错类问题，请粘贴报错文本或截图；"
         "若确实是报错但知识库未命中，会自动进入候选池。"
@@ -103,6 +109,11 @@ def load_settings() -> Settings:
         deepseek_api_key=s["deepseek_api_key"],
         semantic_gate_margin=float(s.get("semantic_gate_margin", 0.08)),
         semantic_gate_top_k=int(s.get("semantic_gate_top_k", 3)),
+        semantic_gate_min_error_score=float(s.get("semantic_gate_min_error_score", 0.55)),
+        semantic_gate_min_unrelated_score=float(s.get("semantic_gate_min_unrelated_score", 0.60)),
+        semantic_gate_failure_cooldown_seconds=float(
+            s.get("semantic_gate_failure_cooldown_seconds", 30.0)
+        ),
         unrelated_reply=s.get("unrelated_reply", Settings.unrelated_reply),
         code_scan_root=Path(s.get("code_scan_root") or str(BASE_DIR.parent)),
         retrieval_top_k=int(s.get("retrieval_top_k", 5)),
