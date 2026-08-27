@@ -24,6 +24,7 @@ from rag_agent.query.preprocessor import prepare_query
 from rag_agent.query.prompt import build_messages, parse_coverage_tag, strip_coverage_tag
 from rag_agent.query.retriever import KbRetriever
 from rag_agent.query.semantic_gate import GateDecision, SemanticGate, prescreen_error
+from rag_agent.query.scan_gate import decide_scan_after_kb
 from rag_agent.self_learn.analyzer import format_scan_answer, scan_and_analyze
 from rag_agent.self_learn.candidate_writer import write_candidate_if_new
 from rag_agent.sync.lark_fetcher import fetch_kb_markdown
@@ -62,6 +63,9 @@ semantic_gate = SemanticGate(
     embeddings=embeddings,
     margin=settings.semantic_gate_margin,
     top_k=settings.semantic_gate_top_k,
+    min_error_score=settings.semantic_gate_min_error_score,
+    min_unrelated_score=settings.semantic_gate_min_unrelated_score,
+    failure_cooldown_seconds=settings.semantic_gate_failure_cooldown_seconds,
 )
 
 
@@ -217,14 +221,43 @@ async def ask(request: Request):
 def _answer_question(question: str, image_data_urls: list[str]):
     start = time.time()
     gate_decision = None
+    scan_gate_decision = None
     try:
         # 图片必须先做视觉摘要，之后才能把“文字 + 图片摘要”交给前置闸门。
         # 纯文本则在这里直接完成一次低成本语义路由，避免无关输入触发 KB/LLM。
-        prep = prepare_query(
-            text=question,
-            image_data_urls=image_data_urls,
-            summarizer=lambda urls: summarize_error_screenshots(settings, urls),
-        )
+        try:
+            prep = prepare_query(
+                text=question,
+                image_data_urls=image_data_urls,
+                summarizer=lambda urls: summarize_error_screenshots(settings, urls),
+            )
+        except Exception:
+            # 视觉服务偶发失败时：有文字就继续按文字判断，避免整条请求直接 502；
+            # 纯图片无法安全判断时不猜测、不扫源码，提示用户补充错误文字。
+            logger.exception("image summarization failed")
+            if not question:
+                user_visible = "截图识别暂时失败，请把截图中的错误文字粘贴过来，或稍后重试。"
+                return {
+                    "answer": user_visible,
+                    "coverage": "未命中",
+                    "confidence": "图片识别失败",
+                    "candidate_written": False,
+                    "retrieved_titles": [],
+                }
+            prep = prepare_query(text=question, image_data_urls=[], summarizer=lambda _urls: "")
+        # 视觉接口有时返回 HTTP 200 但 content 为空。空摘要不能被当成“无关”，
+        # 否则纯错误截图会被静默拦截；有文字时退回文字，纯图片时请用户补充。
+        if image_data_urls and not prep.image_summary.strip():
+            if not question:
+                user_visible = "截图里暂时没有识别到错误文字，请把报错文本粘贴过来，或重新上传清晰截图。"
+                return {
+                    "answer": user_visible,
+                    "coverage": "未命中",
+                    "confidence": "图片摘要为空",
+                    "candidate_written": False,
+                    "retrieved_titles": [],
+                }
+            prep = prepare_query(text=question, image_data_urls=[], summarizer=lambda _urls: "")
         prescreen = prescreen_error(prep.query_for_retrieval)
         if prescreen == "unrelated":
             gate_decision = GateDecision(
@@ -299,34 +332,69 @@ def _answer_question(question: str, image_data_urls: list[str]):
 
     if coverage in ("完全命中", "部分命中"):
         user_visible = raw_answer
-    elif gate_decision is not None and not gate_decision.allow_scan:
-        # 闸门服务异常时仍允许 KB 回答，但绝不触发全仓源码扫描。
+    elif gate_decision is not None and gate_decision.label == "gate_error":
+        # 前置 embedding 闸门自身出故障时，仍保留 KB 结果，但不允许后续
+        # agent 覆盖安全边界打开源码扫描。分类基础设施异常时必须失败关闭。
         user_visible = (
-            "KB 里没有找到足够匹配的条目，当前无法进一步进行源码分析，"
-            "请补充完整报错文本或稍后重试。"
+            "KB 里没有找到足够匹配的条目，当前无法安全进行源码分析。"
+            "请稍后重试，或补充完整报错文本。"
         )
-        confidence = "闸门异常"
+        confidence = "前置闸门异常"
     else:
-        analysis = scan_and_analyze(
-            query_text=question,
-            top_kb_titles=retrieved_titles[:3],
+        # KB 未命中不等于一定要扫源码：先用短小的准入 agent 判断用户是否真的在
+        # 反馈故障。只有 error_report 才允许打包源码；unrelated/uncertain/gate_error
+        # 都停在这里，避免闲聊或分类服务故障触发昂贵操作。
+        scan_gate = decide_scan_after_kb(
+            query_text=prep.context_text_for_generation,
+            chunks=chunks,
+            coverage=coverage,
+            chat_fn=chat,
             settings=settings,
         )
-        user_visible = format_scan_answer(
-            analysis, show_kb_candidate=settings.show_kb_candidate_to_user
+        scan_gate_decision = scan_gate
+        logger.info(
+            "post-KB scan gate: label=%s reason=%s",
+            scan_gate.label,
+            scan_gate.reason,
         )
-        confidence = analysis.confidence
-        # 照文档：置信度低只答「请联系管理员」，不写候选池。
-        if analysis.confidence != "低" and analysis.kb_candidate_section:
-            try:
-                candidate_written = write_candidate_if_new(
-                    api_client,
-                    settings.lark_kb_pending_doc_id,
-                    analysis,
-                    question,
+        if not scan_gate.allow_scan:
+            if scan_gate.label == "unrelated":
+                user_visible = settings.unrelated_reply
+                confidence = "KB 后判断为无关"
+            elif scan_gate.label == "uncertain":
+                user_visible = (
+                    "KB 里没有找到足够匹配的条目，且暂时无法确认这是一个明确的报错问题。"
+                    "请补充完整错误文本、错误码、任务状态或更清晰的截图。"
                 )
-            except Exception:
-                logger.exception("write_candidate_if_new failed (non-fatal)")
+                confidence = "KB 后判断不确定"
+            else:
+                user_visible = (
+                    "KB 里没有找到足够匹配的条目，当前无法安全进行源码分析。"
+                    "请稍后重试，或补充完整报错文本。"
+                )
+                confidence = "扫描准入判断失败"
+        else:
+            analysis = scan_and_analyze(
+                # 图片摘要已进入 context，KB 未命中时源码兜底也必须看到这份摘要。
+                query_text=prep.context_text_for_generation,
+                top_kb_titles=retrieved_titles[:3],
+                settings=settings,
+            )
+            user_visible = format_scan_answer(
+                analysis, show_kb_candidate=settings.show_kb_candidate_to_user
+            )
+            confidence = analysis.confidence
+            # 照文档：置信度低只答「请联系管理员」，不写候选池。
+            if analysis.confidence != "低" and analysis.kb_candidate_section:
+                try:
+                    candidate_written = write_candidate_if_new(
+                        api_client,
+                        settings.lark_kb_pending_doc_id,
+                        analysis,
+                        question,
+                    )
+                except Exception:
+                    logger.exception("write_candidate_if_new failed (non-fatal)")
 
     try:
         append_query_log(
@@ -347,6 +415,8 @@ def _answer_question(question: str, image_data_urls: list[str]):
                 "gate_unrelated_score": gate_decision.unrelated_score if gate_decision else None,
                 "gate_margin": gate_decision.margin_score if gate_decision else None,
                 "short_circuited": False,
+                "scan_gate_label": scan_gate_decision.label if scan_gate_decision else None,
+                "scan_gate_reason": scan_gate_decision.reason if scan_gate_decision else None,
             },
         )
     except Exception:
