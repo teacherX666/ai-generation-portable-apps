@@ -2197,7 +2197,7 @@ function VolcenginePortraitApp() {
 // ============ 历史记录（全局任务历史，方案二媒体卡片） ============
 function HistoryApp() {
   return {
-    items: [], total: 0, page: 1, pageSize: 60,
+    items: [], total: 0, page: 1, pageSize: 20,
     isAdmin: false, userList: [], userFilter: "",
     kind: "all", status: "all", days: 30, q: "",
     detail: null, detailTab: "req",
