@@ -45,6 +45,9 @@ if hasattr(subprocess, "CREATE_NO_WINDOW"):
 STATE_DIR = _DATA_BASE / "state"
 USAGE_PATH = STATE_DIR / "usage.json"
 USAGE_JSONL_RETENTION_DAYS = 30
+HISTORY_PATH = STATE_DIR / "history.json"
+HISTORY_CAP = 10000
+HISTORY_DAYS = 30
 USERS_PATH = STATE_DIR / "users.json"
 SESSIONS_PATH = STATE_DIR / "sessions.json"
 USER_KEYS_PATH = STATE_DIR / "user_keys.json"
@@ -1028,6 +1031,42 @@ class UsageTracker:
         with self._lock:
             o = self._data.get("job_owners", {}).get(f"{app}:{job_id}")
             return o.get("username", "") if isinstance(o, dict) else ""
+
+    # ── 历史记录（任务级留档，与统计计数互不干扰） ──────────────────────
+    def _load_history(self) -> dict:
+        if not HISTORY_PATH.exists():
+            return {}
+        try:
+            return json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def get_history(self) -> dict:
+        return self._load_history()
+
+    def history_upsert(self, record: dict) -> None:
+        """写/更新一条历史记录；同次写入顺带剪枝（>N 天 + 总量上限）。
+        任何异常吞掉——历史采集失败绝不影响统计与代理。"""
+        try:
+            with self._lock:
+                data = self._load_history()
+                key = f"{record['app']}:{record['job_id']}"
+                data[key] = record
+                cutoff = time.time() - HISTORY_DAYS * 86400
+                data = {k: v for k, v in data.items()
+                        if float(v.get("submitted_at") or 0) >= cutoff}
+                if len(data) > HISTORY_CAP:
+                    sorted_items = sorted(
+                        data.items(),
+                        key=lambda kv: float(kv[1].get("submitted_at") or 0),
+                    )
+                    data = dict(sorted_items[-HISTORY_CAP:])
+                HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+                tmp = HISTORY_PATH.with_suffix(".tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(HISTORY_PATH)
+        except Exception:
+            pass
 
     def _job_poll_loop(self):
         while True:
