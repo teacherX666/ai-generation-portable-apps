@@ -97,9 +97,17 @@ class SemanticGateTests(unittest.TestCase):
         self.assertIsNone(semantic_gate.prescreen_error("我的脚本好像有点问题"))
 
     def test_generation_prompt_is_not_an_error(self):
+        # 不再因为“生成视频/参考图/台词”等业务词提前拦截，交给成熟的语义闸门。
+        self.assertIsNone(
+            semantic_gate.prescreen_error("生成视频禁止出现台词和文字，参考图一转写镜头固定")
+        )
+
+    def test_generation_prompt_with_error_still_counts_as_error(self):
         self.assertEqual(
-            semantic_gate.prescreen_error("生成视频禁止出现台词和文字，参考图一转写镜头固定"),
-            "unrelated",
+            semantic_gate.prescreen_error(
+                "生成视频：短发女人，禁止台词和文字；但提交后返回 duration not valid"
+            ),
+            "error",
         )
 
     def test_generation_failure_still_counts_as_error(self):
