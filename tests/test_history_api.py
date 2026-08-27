@@ -132,9 +132,12 @@ def test_history_users_route_not_swallowed_by_prefix(tmp_path, monkeypatch):
         conn.request("GET", "/api/platform/history-users")
         resp = conn.getresponse()
         assert resp.status == 200
-        body = json.loads(resp.read().decode())
-        assert body.get("users") == ["alice"]  # users 端点返回用户列表
+        resp.read()
         conn.close()
     finally:
         server.shutdown()
         server.server_close()
+    # _json 桩把真实载荷收进 captured——users 端点必须返回用户列表
+    # （若被 history 前缀吞掉，captured 里会是 items/total 结构）
+    assert captured.get("users") == ["alice"]
+    assert "items" not in captured
