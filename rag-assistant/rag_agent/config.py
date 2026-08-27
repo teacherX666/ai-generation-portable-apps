@@ -42,7 +42,10 @@ class Settings:
     deepseek_model: str = "deepseek-chat"
 
     # 扫码前语义闸门（复用 embedding，避免无关输入触发扫码）
+    # 允许扫码的报错类分差保持严格。
     semantic_gate_margin: float = 0.08
+    # 仅用于拒绝明显无关输入，不会降低允许扫码的门槛。
+    semantic_gate_unrelated_margin: float = 0.05
     semantic_gate_top_k: int = 3
     # 相似度绝对下限，避免两个类别都不相似时仅靠分差误放行。
     semantic_gate_min_error_score: float = 0.55
@@ -51,8 +54,8 @@ class Settings:
     # embedding 服务失败后的冷却期，避免每个请求重复撞失败服务。
     semantic_gate_failure_cooldown_seconds: float = 30.0
     unrelated_reply: str = (
-        "您提交的内容看起来不是报错信息。本助手只解答报错类问题，请粘贴报错文本或截图；"
-        "若确实是报错但知识库未命中，会自动进入候选池。"
+        "这不是报错问题，所以我没有扫描源码。"
+        "本助手只处理软件报错；请粘贴报错文字、错误码，或者上传报错截图。"
     )
 
     # 自学习
@@ -108,6 +111,9 @@ def load_settings() -> Settings:
         vision_model=s.get("vision_model", "gpt-4o"),
         deepseek_api_key=s["deepseek_api_key"],
         semantic_gate_margin=float(s.get("semantic_gate_margin", 0.08)),
+        semantic_gate_unrelated_margin=float(
+            s.get("semantic_gate_unrelated_margin", 0.05)
+        ),
         semantic_gate_top_k=int(s.get("semantic_gate_top_k", 3)),
         semantic_gate_min_error_score=float(s.get("semantic_gate_min_error_score", 0.55)),
         semantic_gate_min_unrelated_score=float(s.get("semantic_gate_min_unrelated_score", 0.60)),
