@@ -1133,6 +1133,7 @@ class UsageTracker:
                 "submitted_at": time.time(),
                 "completed_at": None,
                 "duration": 0,
+                "thumb_url": "",
                 "results": [],
                 "error": "",
             })
@@ -1155,6 +1156,36 @@ class UsageTracker:
     def history_records(self) -> dict:
         """任务级历史记录（区别于统计页按天 get_history）。"""
         return self._load_history()
+
+    def history_update_terminal(self, app: str, job_id: str, status: str,
+                                data: dict, job_type: str) -> None:
+        """轮询到终态时更新历史记录：状态/结果清单/缩略图/时长/错误。"""
+        try:
+            rec = self.history_records().get(f"{app}:{job_id}")
+            if not rec:
+                return
+            nested = data.get("job") if isinstance(data.get("job"), dict) else {}
+            done = int(data.get("done") or nested.get("done") or 0)
+            per_item = (int(data.get("duration") or 0)
+                        or int(data.get("duration_seconds") or 0)
+                        or int(nested.get("duration") or 0)
+                        or 0)
+            results = history_result_items(data, job_type)
+            errors = data.get("errors") or nested.get("errors") or []
+            error_text = str(data.get("error") or nested.get("error") or "").strip()
+            if not error_text and isinstance(errors, list) and errors:
+                first = errors[0]
+                error_text = str(first.get("message") or first.get("error") or first
+                                 if isinstance(first, dict) else first).strip()
+            rec["status"] = normalize_history_status(status)
+            rec["completed_at"] = time.time()
+            rec["duration"] = int(done * per_item) if done > 0 and per_item else 0
+            rec["thumb_url"] = results[0]["url"] if results else ""
+            rec["results"] = results
+            rec["error"] = error_text[:500]
+            self.history_upsert(rec)
+        except Exception:
+            pass
 
     def query_history(self, *, username: str, is_admin: bool,
                       days: int = 30, kind: str = "all", status: str = "all",
@@ -1294,20 +1325,8 @@ class UsageTracker:
                                 else:
                                     self._add_user_stat(job["date"], job["username"], job["app"], done, 0)
                             # 历史记录终态更新（采集失败不影响统计）
-                            try:
-                                hist = self.history_records()
-                                rec = hist.get(f"{job['app']}:{job['job_id']}")
-                                if rec:
-                                    rec["status"] = normalize_history_status(status)
-                                    rec["completed_at"] = time.time()
-                                    rec["duration"] = int(done * per_item) if per_item else 0
-                                    rec["results"] = history_result_items(data, job_type)
-                                    rec["error"] = str(
-                                        data.get("error") or nested.get("error") or ""
-                                    )[:500]
-                                    self.history_upsert(rec)
-                            except Exception:
-                                pass
+                            self.history_update_terminal(
+                                job["app"], job["job_id"], status, data, job_type)
                             done_ids.append(job["job_id"])
                     conn.close()
                 except Exception:

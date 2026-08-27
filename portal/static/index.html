@@ -88,7 +88,7 @@
             <div class="hist-media" :class="it.kind">
               <img v-if="it.kind==='image' && it.thumb_url" :src="'/' + it.app + it.thumb_url" loading="lazy">
               <video v-else-if="it.kind==='video' && it.thumb_url" :src="'/' + it.app + it.thumb_url" preload="metadata" muted playsinline></video>
-              <div v-else class="hist-media-empty">{{ it.status==='failed' ? '无产出' : '生成中' }}</div>
+              <div v-else class="hist-media-empty">{{ it.status==='failed' ? '无产出' : (it.status==='done' ? '无预览' : '生成中') }}</div>
               <span class="hist-kind" :class="it.kind">{{ it.kind==='video' ? '视频' : '图片' }}</span>
               <span class="hist-dur" v-if="it.kind==='video' && it.duration">0:{{ Math.max(1, Math.round(it.duration)) }}</span>
             </div>

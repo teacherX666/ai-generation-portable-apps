@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,6 +61,42 @@ def test_result_items_extraction():
     nested = {"job": {"results": [{"url": "/outputs/c.mp4"}]}}
     assert portal.history_result_items(nested, "video") == [
         {"url": "/outputs/c.mp4", "kind": "video"}]
+
+
+def test_history_update_terminal_sets_thumb_and_error(tmp_path, monkeypatch):
+    tracker = _make_tracker(tmp_path, monkeypatch)
+    tracker.history_upsert({"app": "seedance", "job_id": "j1", "username": "u",
+                            "kind": "video", "prompt": "p", "model": "m",
+                            "params": {}, "status": "pending",
+                            "submitted_at": time.time(), "completed_at": None,
+                            "duration": 0, "thumb_url": "", "results": [],
+                            "error": ""})
+    data = {"status": "succeeded", "done": 1, "duration": 17,
+            "results": [{"download_url": "/api/download/tok"}],
+            "errors": [{"message": "boom"}]}
+    tracker.history_update_terminal("seedance", "j1", "succeeded", data, "video")
+    rec = tracker.history_records()["seedance:j1"]
+    assert rec["status"] == "done"
+    assert rec["thumb_url"] == "/api/download/tok"
+    assert rec["results"] == [{"url": "/api/download/tok", "kind": "video"}]
+    assert rec["duration"] == 17
+
+
+def test_history_update_terminal_empty_results_clears_thumb(tmp_path, monkeypatch):
+    tracker = _make_tracker(tmp_path, monkeypatch)
+    tracker.history_upsert({"app": "seedance", "job_id": "j2", "username": "u",
+                            "kind": "video", "prompt": "p", "model": "m",
+                            "params": {}, "status": "pending",
+                            "submitted_at": time.time(), "completed_at": None,
+                            "duration": 0, "thumb_url": "", "results": [],
+                            "error": ""})
+    tracker.history_update_terminal("seedance", "j2", "failed",
+                                    {"status": "failed", "done": 0,
+                                     "error": "上游炸了"}, "video")
+    rec = tracker.history_records()["seedance:j2"]
+    assert rec["status"] == "failed"
+    assert rec["thumb_url"] == ""
+    assert rec["error"] == "上游炸了"
 
 
 def test_history_write_failure_never_breaks_stats(tmp_path, monkeypatch):
