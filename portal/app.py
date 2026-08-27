@@ -1156,6 +1156,36 @@ class UsageTracker:
         """任务级历史记录（区别于统计页按天 get_history）。"""
         return self._load_history()
 
+    def query_history(self, *, username: str, is_admin: bool,
+                      days: int = 30, kind: str = "all", status: str = "all",
+                      q: str = "", user_filter: str = "",
+                      limit: int = 60, offset: int = 0) -> tuple[list, int]:
+        """返回 (items, total)。admin 全量，普通用户强制只看本人。"""
+        data = self._load_history()
+        cutoff = time.time() - max(1, min(int(days), 365)) * 86400
+        rows = []
+        for rec in data.values():
+            if not isinstance(rec, dict):
+                continue
+            if float(rec.get("submitted_at") or 0) < cutoff:
+                continue
+            if not is_admin and rec.get("username") != username:
+                continue
+            if user_filter and rec.get("username") != user_filter:
+                continue
+            if kind != "all" and rec.get("kind") != kind:
+                continue
+            if status != "all" and rec.get("status") != status:
+                continue
+            if q:
+                hay = f"{rec.get('prompt', '')} {rec.get('job_id', '')}".lower()
+                if q.lower() not in hay:
+                    continue
+            rows.append(rec)
+        rows.sort(key=lambda r: float(r.get("submitted_at") or 0), reverse=True)
+        total = len(rows)
+        return rows[offset:offset + limit], total
+
     def history_upsert(self, record: dict) -> None:
         """写/更新一条历史记录；同次写入顺带剪枝（>N 天 + 总量上限）。
         任何异常吞掉——历史采集失败绝不影响统计与代理。"""
@@ -1668,6 +1698,12 @@ class Handler(SimpleHTTPRequestHandler):
             self._platform_stats_export(user)
         elif path == "/api/platform/activity":
             self._platform_activity(user)
+        elif path.startswith("/api/platform/history"):
+            self._platform_history(user)
+        elif path == "/api/platform/me":
+            self._json(200, {"ok": True, "username": user["username"], "role": user["role"]})
+        elif path == "/api/platform/history-users":
+            self._platform_history_users(user)
         elif self._try_company_key_route(path, "GET", user):
             pass
         elif path == "/api/feishu/config":
@@ -2237,6 +2273,53 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
         merged.sort(key=lambda x: x.get("created_at") or x.get("time") or "", reverse=True)
         self._json(200, {"ok": True, "activity": merged[:50]})
+
+    def _platform_history(self, user: dict):
+        """任务级历史记录查询：admin 全量（可按人筛），普通用户仅本人。"""
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+
+        def _first(key: str, default: str) -> str:
+            vals = qs.get(key)
+            return vals[0] if vals else default
+
+        is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
+        try:
+            limit = max(1, min(int(_first("limit", "60")), 200))
+        except ValueError:
+            limit = 60
+        try:
+            offset = max(0, int(_first("offset", "0")))
+        except ValueError:
+            offset = 0
+        try:
+            days = int(_first("days", "30"))
+        except ValueError:
+            days = 30
+        items, total = tracker.query_history(
+            username=user.get("username", ""),
+            is_admin=is_admin,
+            days=days,
+            kind=_first("kind", "all"),
+            status=_first("status", "all"),
+            q=_first("q", ""),
+            user_filter=_first("user", ""),
+            limit=limit,
+            offset=offset,
+        )
+        out = []
+        for rec in items:
+            spec = SPEC_BY_NAME.get(rec.get("app", ""))
+            out.append({**rec,
+                        "display_name": spec.display_name if spec else rec.get("app", "")})
+        self._json(200, {"ok": True, "total": total, "items": out})
+
+    def _platform_history_users(self, user: dict):
+        if not (auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"):
+            self._json(403, {"ok": False, "error": "forbidden"})
+            return
+        users = sorted({r.get("username", "") for r in tracker.history_records().values()
+                        if isinstance(r, dict) and r.get("username")})
+        self._json(200, {"ok": True, "users": users})
 
     # ── Proxy ─────────────────────────────────────────────────────────────────
 
