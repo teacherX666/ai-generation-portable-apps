@@ -721,3 +721,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-color: #dc2626;
   color: var(--surface);
 }
+
+/* 活动详情长 JSON 不撑宽布局 */
+.workspace { min-width: 0; max-width: 100%; grid-template-columns: minmax(0, 1fr); }
+.resultPanel { min-width: 0; max-width: 100%; }
+.activity-panel-inner { min-width: 0; max-width: 100%; }
+.activity-records { min-width: 0; max-width: 100%; }
+.act-item { min-width: 0; max-width: 100%; }
+.act-detail { min-width: 0; max-width: 100%; }
+.act-detail pre { max-width: 100%; overflow-x: auto; overflow-y: auto; white-space: pre; word-break: normal; }
+.act-detail-meta { overflow-wrap: anywhere; }

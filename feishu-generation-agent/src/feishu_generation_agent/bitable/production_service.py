@@ -31,6 +31,7 @@ _ACTIVE_STATUSES = {
     "created": TableTaskStatus.PROCESSING,
     "running": TableTaskStatus.PROCESSING,
     "waiting_approval": TableTaskStatus.WAITING_APPROVAL,
+    "waiting_review": TableTaskStatus.REVIEWING,
     "resuming": TableTaskStatus.GENERATING,
     "waiting_provider": TableTaskStatus.GENERATING,
     "delivering": TableTaskStatus.WRITING_BACK,
@@ -183,6 +184,32 @@ class ProductionBitableService:
             location.table_id,
             owner_user_id=owner_user_id,
         )
+
+    async def archived_runs(self, *, owner_user_id: str = "prime-local"):
+        location = await self._table_location()
+        return await self._store.list_archived(
+            location.app_token or "",
+            location.table_id,
+            owner_user_id=owner_user_id,
+        )
+
+    async def archive_run(
+        self, run_id: str, *, owner_user_id: str = "prime-local"
+    ) -> None:
+        updated = await self._store.archive(
+            run_id, owner_user_id=owner_user_id
+        )
+        if updated == 0:
+            raise RunNotFound("多维表格运行不存在")
+
+    async def restore_run(
+        self, run_id: str, *, owner_user_id: str = "prime-local"
+    ) -> None:
+        updated = await self._store.restore(
+            run_id, owner_user_id=owner_user_id
+        )
+        if updated == 0:
+            raise RunNotFound("多维表格运行不存在")
 
     async def result_table_url(
         self, run_id: str, *, owner_user_id: str = "prime-local"

@@ -11,10 +11,15 @@ from PIL import Image
 
 from feishu_generation_agent.domain.document import (
     MediaAsset,
+    VideoReferenceAnalysis,
+    VideoReferenceKind,
     VisionDescription,
 )
 from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
 from feishu_generation_agent.integrations.vision import ClaudeVisionAnalyzer
+from feishu_generation_agent.integrations.video_reference import (
+    ExtractedVideoFrame,
+)
 from feishu_generation_agent.storage.repository import Repository
 
 
@@ -190,6 +195,47 @@ async def test_analyze_uses_strict_visible_content_system_prompt(
     assert "人物身份" in prompt
     assert "visible_text" in prompt and "逐项抄录" in prompt
     assert "uncertainties" in prompt and "只能" in prompt
+
+
+async def test_analyze_video_classifies_semantics_and_picks_representative_frame(
+    repository: Repository,
+    tmp_path: Path,
+):
+    frames: list[ExtractedVideoFrame] = []
+    for index in range(3):
+        frame = tmp_path / f"frame-{index + 1}.png"
+        Image.new("RGB", (32, 32), "blue").save(frame, format="PNG")
+        frames.append(
+            ExtractedVideoFrame(index=index + 1, path=frame, mime_type="image/png")
+        )
+    asset = MediaAsset(
+        asset_id="video-1",
+        source_block_id="video-block",
+        origin="feishu_video",
+        local_path=tmp_path / "video.mp4",
+        mime_type="video/mp4",
+        size=100,
+        sha256="video-sha",
+    )
+    model = FakeVisionModel(
+        {
+            "asset_id": "ignored",
+            "kind": VideoReferenceKind.CAMERA_MOVEMENT.value,
+            "summary": "缓慢推近镜头",
+            "representative_frame_index": 9,
+            "uncertainties": [],
+        }
+    )
+    analyzer = ClaudeVisionAnalyzer(model, repository, prompt_version="vision-v1")
+
+    result = await analyzer.analyze_video(asset, frames)
+
+    assert model.calls == 1
+    assert model.structured_schema is VideoReferenceAnalysis
+    assert result.asset_id == "video-1"
+    assert result.kind == VideoReferenceKind.CAMERA_MOVEMENT
+    assert result.representative_frame_index == 3
+    assert len(model.last_messages[1]["content"]) == 4
 
 
 async def test_cache_key_is_exact_and_only_stores_description_json(

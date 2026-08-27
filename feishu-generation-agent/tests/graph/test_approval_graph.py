@@ -651,7 +651,12 @@ async def test_single_asset_and_vision_failures_do_not_block_other_asset(
         config=config,
     )
 
-    assert result["status"] == "succeeded"
+    assert _interrupt_payload(result)["action"] == "review_artifacts"
+    confirmed = await graph.ainvoke(
+        Command(resume={"action": "confirm"}),
+        config=config,
+    )
+    assert confirmed["status"] == "succeeded"
     assert services.video_generator.submit_calls == 1
     assert services.delivery_writer.deliver_calls == 1
 
@@ -841,18 +846,23 @@ async def test_approve_revalidates_then_executes_generation(
         config=config,
     )
 
-    assert result["status"] == "succeeded"
-    assert result["approval_decision"]["action"] == "approve"
-    assert result["approval_revision"] == 7
-    assert [task["task_id"] for task in result["approved_tasks"]] == [
+    assert _interrupt_payload(result)["action"] == "review_artifacts"
+    confirmed = await graph.ainvoke(
+        Command(resume={"action": "confirm"}),
+        config=config,
+    )
+    assert confirmed["status"] == "succeeded"
+    assert confirmed["approval_decision"]["action"] == "approve"
+    assert confirmed["approval_revision"] == 7
+    assert [task["task_id"] for task in confirmed["approved_tasks"]] == [
         "task-video"
     ]
-    json.dumps(result, ensure_ascii=False)
+    json.dumps(confirmed, ensure_ascii=False)
     assert fake_services.image_generator.submit_calls == 0
     assert fake_services.video_generator.submit_calls == 1
     assert fake_services.video_generator.poll_calls == 0
     assert fake_services.delivery_writer.deliver_calls == 1
-    assert result["delivery_record"]["status"] == "succeeded"
+    assert confirmed["delivery_record"]["status"] == "succeeded"
     assert await fake_services.repository.count_operations() == 1
     events = await fake_services.repository.list_events("run-approve")
     assert ("human_approval", "started") in [
@@ -861,6 +871,41 @@ async def test_approve_revalidates_then_executes_generation(
     assert ("revalidate_approval", "completed") in [
         (event["node"], event["status"]) for event in events
     ]
+
+
+async def test_artifact_review_adjust_replans_and_clears_generated_state(
+    fake_services: GraphServices,
+):
+    graph = build_graph(fake_services, InMemorySaver())
+    config = _config("thread-artifact-adjust")
+    first = await graph.ainvoke(
+        _input("run-artifact-adjust", "thread-artifact-adjust"),
+        config=config,
+    )
+    plan = _interrupt_payload(first)["task_plan"]
+
+    approved = await graph.ainvoke(
+        Command(
+            resume={
+                "action": "approve",
+                "selected_task_ids": ["task-video"],
+                "tasks": plan["tasks"],
+            }
+        ),
+        config=config,
+    )
+    assert _interrupt_payload(approved)["action"] == "review_artifacts"
+
+    replanned = await graph.ainvoke(
+        Command(resume={"action": "adjust", "feedback": "换成雨夜氛围"}),
+        config=config,
+    )
+    assert _interrupt_payload(replanned)["action"] == "review_plan"
+    assert await fake_services.repository.count_operations() == 0
+    assert await fake_services.repository.list_artifacts(
+        "run-artifact-adjust"
+    ) == []
+    assert fake_services.delivery_writer.deliver_calls == 0
 
 
 async def test_reincluded_excluded_asset_survives_real_graph_execution(
@@ -955,13 +1000,18 @@ async def test_reincluded_excluded_asset_survives_real_graph_execution(
         config=config,
     )
 
-    assert result["status"] == "succeeded"
+    assert _interrupt_payload(result)["action"] == "review_artifacts"
+    confirmed = await graph.ainvoke(
+        Command(resume={"action": "confirm"}),
+        config=config,
+    )
+    assert confirmed["status"] == "succeeded"
     assert services.video_generator.submit_calls == 1
     assert services.delivery_writer.deliver_calls == 1
-    assert result["approved_plan"]["excluded_assets"] == []
+    assert confirmed["approved_plan"]["excluded_assets"] == []
     assert [
         item["asset_id"]
-        for item in result["approved_plan"]["tasks"][0]["reference_images"]
+        for item in confirmed["approved_plan"]["tasks"][0]["reference_images"]
     ] == ["asset-1", "asset-2"]
 
 
@@ -1045,10 +1095,15 @@ async def test_delivery_failure_is_terminal_without_discarding_artifacts(
         config=config,
     )
 
+    assert _interrupt_payload(result)["action"] == "review_artifacts"
+    confirmed = await graph.ainvoke(
+        Command(resume={"action": "confirm"}),
+        config=config,
+    )
     assert delivery.deliver_calls == 1
-    assert result["status"] == "delivery_failed"
-    assert len(result["artifacts"]) == 1
-    assert result["delivery_record"] is None
+    assert confirmed["status"] == "delivery_failed"
+    assert len(confirmed["artifacts"]) == 1
+    assert confirmed["delivery_record"] is None
 
 
 async def test_approve_replans_if_source_revision_changed(
@@ -1266,9 +1321,14 @@ async def test_sqlite_checkpoint_resumes_after_saver_lifecycle(
             ),
             config=config,
         )
+        assert _interrupt_payload(result)["action"] == "review_artifacts"
+        confirmed = await second_graph.ainvoke(
+            Command(resume={"action": "confirm"}),
+            config=config,
+        )
 
-    assert result["status"] == "succeeded"
-    assert result["approval_decision"]["action"] == "approve"
+    assert confirmed["status"] == "succeeded"
+    assert confirmed["approval_decision"]["action"] == "approve"
     assert resume_source.ingest_calls == 0
     assert resume_source.revision_calls == 1
     assert resume_vision.calls == 0

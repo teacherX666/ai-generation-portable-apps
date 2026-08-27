@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     lark_image_bitable_url: str | None = None
     lark_image_table_id: str | None = None
     lark_image_view_id: str | None = None
+    # 结果表可以直接指定一张已建好的多维表格（Base 链接 + 表 ID），
+    # 也可以只给文件夹 token 让应用自动创建「统一结果表」。两者二选一。
+    lark_result_bitable_url: str | None = None
+    lark_result_table_id: str | None = None
     lark_result_folder_token: str | None = None
     lark_include_completed_for_test: bool = False
     lark_local_operator_open_id: str | None = None
@@ -113,15 +117,25 @@ class Settings(BaseSettings):
 
     @property
     def production_bitable_configured(self) -> bool:
-        return all(
+        source_configured = all(
             isinstance(value, str) and bool(value.strip())
             for value in (
                 self.lark_production_bitable_url,
                 self.lark_production_table_id,
                 self.lark_production_view_id,
-                self.lark_result_folder_token,
             )
         )
+        folder_configured = (
+            isinstance(self.lark_result_folder_token, str)
+            and bool(self.lark_result_folder_token.strip())
+        )
+        explicit_table_configured = (
+            isinstance(self.lark_result_bitable_url, str)
+            and bool(self.lark_result_bitable_url.strip())
+            and isinstance(self.lark_result_table_id, str)
+            and bool(self.lark_result_table_id.strip())
+        )
+        return source_configured and (folder_configured or explicit_table_configured)
 
     def ensure_paths(self) -> None:
         for path in (

@@ -24,6 +24,7 @@
     referenceUploads: ReferenceUploadState.createState(),
     referenceMutations: ReferenceMutationState.createState(),
     plannerPrompt: PlannerPromptState?.createPlannerPromptState?.() || null,
+    artifactPreviewSignature: null,
   };
   const byId = (id) => document.getElementById(id);
   const errorMessage = byId("error-message");
@@ -32,6 +33,12 @@
   const cancelButton = byId("cancel-button");
   const approveButton = byId("approve-button");
   const retryDeliveryButton = byId("retry-delivery-button");
+  const confirmArtifactsButton = byId("confirm-artifacts-button");
+  const adjustArtifactsButton = byId("adjust-artifacts-button");
+  const cancelArtifactsButton = byId("cancel-artifacts-button");
+  const artifactReview = byId("artifact-review");
+  const artifactList = byId("artifact-list");
+  const artifactReviewFeedback = byId("artifact-review-feedback");
   const deleteRunButton = byId("delete-run-button");
   const conflictBox = byId("review-conflict");
   const conflictText = byId("review-conflict-text");
@@ -48,6 +55,10 @@
   const bitableTaskList = byId("bitable-task-list");
   const bitableStatus = byId("bitable-status");
   const recentRunList = byId("recent-run-list");
+  const trashButton = byId("trash-button");
+  const trashModal = byId("trash-modal");
+  const trashList = byId("trash-list");
+  const trashClose = byId("trash-close");
   const nextTaskButton = byId("next-task-button");
   const rerunButton = byId("rerun-button");
   const pollingNote = byId("polling-note");
@@ -317,6 +328,11 @@
         rerun.addEventListener("click", () => rerunBitableTask(run.run_id));
         actions.append(rerun);
       }
+      const remove = element("button", "danger", "删除");
+      remove.type = "button";
+      remove.disabled = state.busy;
+      remove.addEventListener("click", () => archiveBitableRun(run.run_id));
+      actions.append(remove);
       row.append(details, actions);
       return row;
     });
@@ -333,6 +349,73 @@
     } catch (error) {
       showError(error);
     }
+  }
+
+  async function archiveBitableRun(runId) {
+    if (state.busy) return;
+    try {
+      await api(
+        `/api/bitable/runs/${encodeURIComponent(runId)}/archive`,
+        { method: "POST" },
+      );
+      await loadRecentRuns();
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  function renderArchivedRuns(runs) {
+    const nodes = (runs || []).map((run) => {
+      const row = element("article", "trash-item");
+      const details = element("div", "");
+      details.append(
+        element("strong", "", run.display_text || run.run_id),
+        element("p", "bitable-task-meta", `状态：${run.status || "—"}`),
+      );
+      const actions = element("div", "trash-item-actions");
+      const restore = element("button", "secondary", "恢复");
+      restore.type = "button";
+      restore.disabled = state.busy;
+      restore.addEventListener("click", () => restoreArchivedRun(run.run_id));
+      actions.append(restore);
+      row.append(details, actions);
+      return row;
+    });
+    if (!nodes.length) nodes.push(element("p", "trash-empty", "回收站是空的。"));
+    trashList.replaceChildren(...nodes);
+  }
+
+  async function loadArchivedRuns() {
+    try {
+      const runs = await api("/api/bitable/archived-runs");
+      renderArchivedRuns(runs);
+    } catch (error) {
+      renderArchivedRuns([]);
+      showError(error);
+    }
+  }
+
+  async function restoreArchivedRun(runId) {
+    if (state.busy) return;
+    try {
+      await api(
+        `/api/bitable/runs/${encodeURIComponent(runId)}/restore`,
+        { method: "POST" },
+      );
+      await loadArchivedRuns();
+      await loadRecentRuns();
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  function openTrash() {
+    trashModal.hidden = false;
+    loadArchivedRuns();
+  }
+
+  function closeTrash() {
+    trashModal.hidden = true;
   }
 
   async function scanBitableTasks() {
@@ -476,18 +559,23 @@
 
   function updateActionAvailability() {
     const canReview = state.view && state.view.status === "waiting_approval";
+    const canReviewArtifacts = state.view && state.view.status === "waiting_review";
     const conflict = ReviewState.conflictMessage(state.review);
     rejectButton.disabled = state.busy || !canReview;
     cancelButton.disabled = state.busy || !canReview;
     approveButton.disabled = state.busy || !ReviewState.canApprove(state.review);
     retryDeliveryButton.disabled = state.busy || state.view?.status !== "delivery_failed";
+    confirmArtifactsButton.disabled = state.busy || !canReviewArtifacts;
+    adjustArtifactsButton.disabled = state.busy || !canReviewArtifacts;
+    cancelArtifactsButton.disabled = state.busy || !canReviewArtifacts;
+    artifactReviewFeedback.disabled = state.busy || !canReviewArtifacts;
     const terminal = TERMINAL_RUN_STATUSES.has(state.view?.status);
     nextTaskButton.disabled = state.busy || !terminal;
     rerunButton.disabled = state.busy
       || state.runMode !== "bitable"
       || !RERUNNABLE_RUN_STATUSES.has(state.view?.status);
     const deletable = [
-      "waiting_approval", "succeeded", "completed_with_errors",
+      "waiting_approval", "waiting_review", "succeeded", "completed_with_errors",
       "delivery_failed", "failed", "cancelled",
     ].includes(state.view?.status);
     deleteRunButton.disabled = state.busy || !deletable;
@@ -1271,6 +1359,56 @@
     return card;
   }
 
+  function renderArtifactReview(view) {
+    const artifacts = Array.isArray(view.artifacts) ? view.artifacts : [];
+    // 成片预览里的 <video> 重建成本高，而审批页每 1 秒轮询一次。若成片与
+    // 状态都没变就跳过重绘，否则视频元素会被反复销毁重建，导致卡顿/一直加载。
+    const signature = JSON.stringify({
+      status: view.status,
+      artifacts: artifacts.map((artifact) => [
+        artifact.artifact_id,
+        artifact.preview_url,
+        artifact.kind,
+        artifact.size,
+      ]),
+    });
+    if (signature === state.artifactPreviewSignature) {
+      return;
+    }
+    state.artifactPreviewSignature = signature;
+
+    if (view.status !== "waiting_review") {
+      artifactReview.hidden = true;
+      artifactList.replaceChildren();
+      return;
+    }
+    artifactReview.hidden = false;
+    artifactList.replaceChildren(...artifacts.map((artifact) => {
+      const card = element("figure", "artifact-card");
+      const label = artifact.kind === "video" ? "视频" : "图片";
+      const size = typeof artifact.size === "number"
+        ? `${(artifact.size / 1024 / 1024).toFixed(1)} MB`
+        : "—";
+      card.append(element("figcaption", "", `${label} · ${size}`));
+      if (artifact.kind === "video") {
+        const video = document.createElement("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.playsInline = true;
+        video.muted = true;
+        video.src = agentUrl(artifact.preview_url);
+        card.prepend(video);
+      } else {
+        const image = document.createElement("img");
+        image.alt = artifact.artifact_id;
+        image.loading = "lazy";
+        image.src = agentUrl(artifact.preview_url);
+        card.prepend(image);
+      }
+      return card;
+    }));
+  }
+
   function render(view, { refreshTasks = true } = {}) {
     state.view = view;
     byId("status-badge").textContent = view.status;
@@ -1321,8 +1459,17 @@
     const blockingIngestIssues = ingestIssueRecords
       .filter((record) => record.severity === "blocking")
       .map((record) => record.display_message);
-    const issues = (view.approval.validation_issues || [])
+    let issues = (view.approval.validation_issues || [])
       .filter((issue) => !blockingIngestIssues.includes(issue));
+    const lastError = view.last_error;
+    if (lastError && lastError.message) {
+      issues = [
+        lastError.message,
+        ...issues.filter(
+          (issue) => issue !== "审批校验状态无效，请重新读取后再审批",
+        ),
+      ];
+    }
     const issueBox = byId("validation-issues");
     issueBox.textContent = issues.join("；");
     issueBox.hidden = issues.length === 0;
@@ -1349,6 +1496,7 @@
     if (refreshTasks) {
       taskList.replaceChildren(...(view.approval.tasks || []).map(renderTask));
     }
+    renderArtifactReview(view);
     updateActionAvailability();
   }
 
@@ -1389,6 +1537,7 @@
       state.runMode = "bitable";
       state.review = ReviewState.createReviewState();
       state.referenceMutations = ReferenceMutationState.createState();
+      state.artifactPreviewSignature = null;
       await poll(true);
       document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
     } catch (error) {
@@ -1415,6 +1564,10 @@
     byId("document-title").textContent = "等待选择多维表格任务";
     byId("document-summary").textContent = "";
     byId("delivery-target").hidden = true;
+    artifactReview.hidden = true;
+    artifactList.replaceChildren();
+    artifactReviewFeedback.value = "";
+    state.artifactPreviewSignature = null;
     [
       "validation-issues",
       "blocking-ingest-issues",
@@ -1445,6 +1598,7 @@
       state.review = ReviewState.createReviewState();
       state.referenceUploads = ReferenceUploadState.createState();
       state.referenceMutations = ReferenceMutationState.createState();
+      state.artifactPreviewSignature = null;
       await poll(true);
       startPolling();
       document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
@@ -1491,9 +1645,38 @@
     }
   }
 
+  async function submitArtifactReview(action) {
+    if (!state.runId || state.busy) return;
+    const body = { action };
+    if (action === "adjust") {
+      body.feedback = artifactReviewFeedback.value;
+      if (!body.feedback || !body.feedback.trim()) {
+        showError(new Error("请填写调整意见"));
+        return;
+      }
+    }
+    setBusy(true);
+    clearError();
+    try {
+      await api(`/api/runs/${state.runId}/artifact-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      await poll(true);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   byId("reject-button").addEventListener("click", () => submitDecision("reject"));
   byId("cancel-button").addEventListener("click", () => submitDecision("cancel"));
   byId("approve-button").addEventListener("click", () => submitDecision("approve"));
+  confirmArtifactsButton.addEventListener("click", () => submitArtifactReview("confirm"));
+  adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));
+  cancelArtifactsButton.addEventListener("click", () => submitArtifactReview("cancel"));
   nextTaskButton.addEventListener("click", resetForNextTask);
   rerunButton.addEventListener("click", () => rerunBitableTask());
   retryDeliveryButton.addEventListener("click", async () => {
@@ -1559,6 +1742,22 @@
     plannerPromptSave.addEventListener("click", savePlannerPrompt);
     plannerPromptReset.addEventListener("click", resetPlannerPrompt);
   }
+  [
+    ["bitable-tasks-toggle", "bitable-tasks-body"],
+    ["recent-runs-toggle", "recent-run-list"],
+  ].forEach(([toggleId, bodyId]) => {
+    const toggle = byId(toggleId);
+    const body = byId(bodyId);
+    toggle.addEventListener("click", () => {
+      body.hidden = !body.hidden;
+      toggle.setAttribute("aria-expanded", String(!body.hidden));
+    });
+  });
+  trashButton.addEventListener("click", openTrash);
+  trashClose.addEventListener("click", closeTrash);
+  trashModal.addEventListener("click", (event) => {
+    if (event.target === trashModal) closeTrash();
+  });
   scanBitableButton.addEventListener("click", scanBitableTasks);
   directRunButton.addEventListener("click", startDirectRun);
   categoryTabs.forEach((tab) => {

@@ -364,6 +364,24 @@ class VisionDescription(BaseModel):
     uncertainties: list[str]
 
 
+class VideoReferenceKind(StrEnum):
+    CHARACTER = "character"
+    CAMERA_MOVEMENT = "camera_movement"
+    EDITING_STYLE = "editing_style"
+    SCENE_STYLE = "scene_style"
+    OTHER = "other"
+
+
+class VideoReferenceAnalysis(BaseModel):
+    """视觉模型对「文档中参考视频」的语义判断。"""
+
+    asset_id: str
+    kind: VideoReferenceKind
+    summary: str = ""
+    representative_frame_index: int = Field(default=1, ge=1)
+    uncertainties: list[str] = Field(default_factory=list)
+
+
 class NormalizedDocument(BaseModel):
     document_id: str
     title: str
@@ -375,3 +393,4 @@ class NormalizedDocument(BaseModel):
     media_assets: list[MediaAsset]
     ingest_issue_records: list[IngestIssueRecord] = Field(default_factory=list)
     ingest_issues: list[str] = Field(default_factory=list)
+    video_semantics: list[VideoReferenceAnalysis] = Field(default_factory=list)

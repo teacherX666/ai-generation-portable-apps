@@ -151,6 +151,39 @@ async def test_completed_with_errors_releases_production_task_as_failed(
     assert active == []
 
 
+async def test_service_archive_and_restore_recent_runs(tmp_path) -> None:
+    service, store = await _production_service(
+        tmp_path,
+        bitable=_MixedCategoryBitable(),
+        sources=_category_sources(),
+    )
+    try:
+        binding = await store.claim(
+            _location(),
+            _task(),
+            run_id="run-1",
+            thread_id="thread-1",
+            owner_user_id="prime-local",
+        )
+        await store.release(
+            binding.run_id,
+            status=TableTaskStatus.COMPLETED,
+            owner_user_id="prime-local",
+        )
+
+        assert [item.run_id for item in await service.recent_runs()] == ["run-1"]
+
+        await service.archive_run("run-1")
+        assert await service.recent_runs() == []
+        assert [item.run_id for item in await service.archived_runs()] == ["run-1"]
+
+        await service.restore_run("run-1")
+        assert [item.run_id for item in await service.recent_runs()] == ["run-1"]
+        assert await service.archived_runs() == []
+    finally:
+        await store.close()
+
+
 async def test_portrait_claim_uses_the_portrait_source_location(tmp_path) -> None:
     service, store = await _production_service(
         tmp_path,

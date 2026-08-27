@@ -20,6 +20,8 @@ _TOKEN_INVALID_CODE = 99991663
 _PERMISSION_CODES = frozenset(
     {
         _TOKEN_INVALID_CODE,
+        # 131006: node permission denied, tenant needs read permission.
+        131006,
         99991664,
         99991668,
         99991670,

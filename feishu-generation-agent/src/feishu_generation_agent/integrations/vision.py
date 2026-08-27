@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from feishu_generation_agent.domain.document import (
     MediaAsset,
+    VideoReferenceAnalysis,
     VisionDescription,
 )
 from feishu_generation_agent.domain.errors import (
@@ -18,6 +19,9 @@ from feishu_generation_agent.domain.errors import (
     ErrorDetail,
 )
 from feishu_generation_agent.storage.repository import Repository
+from feishu_generation_agent.integrations.video_reference import (
+    ExtractedVideoFrame,
+)
 
 
 _SYSTEM_PROMPT = """你是严格的图片观察与转录工具。
@@ -33,6 +37,15 @@ _MAX_VISION_PIXELS = 1_150_000
 _MAX_VISION_SOURCE_BYTES = 1_500_000
 _VISION_JPEG_QUALITY = 90
 _VISION_STRUCTURE_ATTEMPTS = 3
+_VIDEO_SYSTEM_PROMPT = """你是严格的视频参考语义分析工具。
+1. 只根据给定的连续帧判断这段参考视频主要表达哪一类信息。
+2. 类别只能是：character（人物形象/角色外观）、camera_movement（运镜方式）、
+   editing_style（剪辑节奏/转场方式）、scene_style（场景或画风）、other（其他）。
+3. summary 用中文概括这段视频能被后续生成任务直接参考的画面要点。
+4. representative_frame_index 选择最能代表该语义的帧序号（从 1 开始）。
+5. 不确定的内容只能写入 uncertainties，不得混入 summary。
+6. 严格按给定结构返回结果，不要附加解释或原始响应。
+"""
 
 
 class _ModelRefusal(RuntimeError):
@@ -151,6 +164,82 @@ class ClaudeVisionAnalyzer:
         if shared_description is None:
             raise self._error_for(asset, _ModelRefusal())
         return shared_description.model_copy(update={"asset_id": asset.asset_id})
+
+    async def analyze_video(
+        self,
+        asset: MediaAsset,
+        frames: list[ExtractedVideoFrame],
+    ) -> VideoReferenceAnalysis:
+        """判断参考视频的语义类型，并选出最有代表性的帧。"""
+        if asset.download_error is not None:
+            raise self._download_error(asset)
+        if not frames:
+            raise self._error_for(asset, _AssetReadFailure("missing_video_frame"))
+
+        content: list[dict[str, Any]] = []
+        for frame in frames:
+            try:
+                frame_bytes = frame.path.read_bytes()
+            except OSError as exc:
+                raise self._error_for(asset, _AssetReadFailure(type(exc).__name__)) from exc
+            model_bytes, model_mime_type = await asyncio.to_thread(
+                _prepare_model_image,
+                frame_bytes,
+                frame.mime_type,
+            )
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": model_mime_type,
+                        "data": base64.b64encode(model_bytes).decode("ascii"),
+                    },
+                }
+            )
+        content.append(
+            {
+                "type": "text",
+                "text": (
+                    f"请分析这段参考视频的语义；asset_id 仅为结构占位字段，"
+                    f"请设为 {asset.asset_id!r}。"
+                    f"帧序号从 1 到 {len(frames)}。"
+                ),
+            }
+        )
+        messages = [
+            {"role": "system", "content": _VIDEO_SYSTEM_PROMPT},
+            {"role": "user", "content": content},
+        ]
+        structured_model = self._model.with_structured_output(
+            VideoReferenceAnalysis
+        )
+        description: VideoReferenceAnalysis | None = None
+        validation_error: ValidationError | ValueError | TypeError | None = None
+        for _ in range(_VISION_STRUCTURE_ATTEMPTS):
+            try:
+                result = await structured_model.ainvoke(messages)
+                if result is None or (
+                    isinstance(result, dict) and result.get("refusal")
+                ):
+                    raise _ModelRefusal
+                description = VideoReferenceAnalysis.model_validate(result)
+                break
+            except (ValidationError, ValueError, TypeError) as exc:
+                validation_error = exc
+        if description is None:
+            if validation_error is not None:
+                raise self._error_for(asset, validation_error)
+            raise self._error_for(asset, _ModelRefusal())
+        return description.model_copy(
+            update={
+                "asset_id": asset.asset_id,
+                "representative_frame_index": min(
+                    max(description.representative_frame_index, 1),
+                    len(frames),
+                ),
+            }
+        )
 
     async def _analyze_and_cache(
         self,
