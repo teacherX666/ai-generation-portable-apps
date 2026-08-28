@@ -170,6 +170,7 @@ export function applyShotSize(size) {
   state.controls.update();
   currentShotSize = size;
   updateCameraHud();
+  markDirty();
 }
 
 export function updateCameraHud() {
@@ -202,6 +203,7 @@ export function fitOverlay() {
 export function applyAspect(aspect) {
   currentAspect = aspect;
   fitOverlay();
+  markDirty();
 }
 
 export function initCameraPanel() {
@@ -688,7 +690,7 @@ export async function loadProjectList() {
 }
 
 export async function loadProject(id) {
-  saveTimer && clearTimeout(saveTimer);
+  if (saveTimer) saveNow();   // saveNow 内部会 clearTimeout 并同步序列化；PUT 的 id+body 在 fetch 时已快照，项目被替换后仍安全写旧 id
   try {
     project = await api('api/projects/' + id);
   } catch (err) {
@@ -698,6 +700,7 @@ export async function loadProject(id) {
   const sel = document.getElementById('project-select');
   sel.value = id;
   switchShot(project.shots[0] ? project.shots[0].id : null);
+  document.getElementById('save-state').textContent = '已保存';
 }
 
 export async function createProject(name) {
@@ -767,49 +770,49 @@ export function onViewportUp() {
   state.controls.enabled = true;    // 空处按下不关轨道，这里恢复只是幂等兜底
 }
 
-// 页面关闭前强制保存（keepalive 让请求在页面卸载后仍送达）
+// 页面关闭前强制保存。未用 keepalive（64KB body 上限对多镜头项目 JSON 可能不够）——
+// 通常 2s 防抖已经存过，这里是兜底，浏览器可能中止该请求，损失上限 = 最后 2s 编辑
 window.addEventListener('pagehide', () => {
   if (saveTimer) { clearTimeout(saveTimer); saveNow(); }
 });
 
 // 接线（Task 8 起：项目驱动数据流）
-const el = document.getElementById('viewport');
-initScene();
-initCameraPanel();
-initObjectPanel();
-switchPanel('object');
-state.controls.addEventListener('change', updateCameraHud);
-updateCameraHud();
-el.addEventListener('pointerdown', onViewportDown);
-window.addEventListener('pointermove', onViewportMove);
-window.addEventListener('pointerup', onViewportUp);
-function tick() {
-  requestAnimationFrame(tick);
-  state.controls.update();
-  updateLabels();
-  state.renderer.render(state.scene, state.camera);
-}
-tick();
-window.addEventListener('resize', () => {
-  state.camera.aspect = el.clientWidth / el.clientHeight;
-  state.camera.updateProjectionMatrix();
-  state.renderer.setSize(el.clientWidth, el.clientHeight);
-});
-// WebGL 兜底 + 项目加载入口
-function initApp() {
-  const probe = document.createElement('canvas');
-  const gl = probe.getContext('webgl2') || probe.getContext('webgl');
-  if (!gl) {
-    const el = document.getElementById('webgl-error');
-    el.hidden = false;
-    el.innerHTML = `<div><h2>无法使用 3D 视口</h2>
-      <p>当前浏览器不支持 WebGL（可能被禁用或显卡驱动问题）。</p>
-      <p>建议：换用最新版 Chrome / Edge，或在系统设置里开启「硬件加速」。</p></div>`;
-    return;
+const _glProbe = document.createElement('canvas');
+if (!_glProbe.getContext('webgl2')) {
+  const el = document.getElementById('webgl-error');
+  el.hidden = false;
+  el.innerHTML = `<div><h2>无法使用 3D 视口</h2>
+    <p>当前浏览器不支持 WebGL2（可能被禁用或显卡驱动问题）。</p>
+    <p>建议：换用最新版 Chrome / Edge，或在系统设置里开启「硬件加速」。</p></div>`;
+} else {
+  const el = document.getElementById('viewport');
+  initScene();
+  initCameraPanel();
+  initObjectPanel();
+  switchPanel('object');
+  state.controls.addEventListener('change', () => { updateCameraHud(); markDirty(); });
+  updateCameraHud();
+  el.addEventListener('pointerdown', onViewportDown);
+  window.addEventListener('pointermove', onViewportMove);
+  window.addEventListener('pointerup', onViewportUp);
+  function tick() {
+    requestAnimationFrame(tick);
+    state.controls.update();
+    updateLabels();
+    state.renderer.render(state.scene, state.camera);
   }
-  loadProjectList().catch((err) => toast('加载项目列表失败：' + err.message, true));
+  tick();
+  window.addEventListener('resize', () => {
+    state.camera.aspect = el.clientWidth / el.clientHeight;
+    state.camera.updateProjectionMatrix();
+    state.renderer.setSize(el.clientWidth, el.clientHeight);
+  });
+  // 项目加载入口（WebGL 检测已前置到接线块顶部）
+  function initApp() {
+    loadProjectList().catch((err) => toast('加载项目列表失败：' + err.message, true));
+  }
+  initApp();
 }
-initApp();
 // 顶部工具栏：项目 / 镜头 / 导出
 document.getElementById('project-select').onchange = (e) => loadProject(e.target.value);
 document.getElementById('btn-project-new').onclick = () => createProject('未命名项目');
@@ -833,6 +836,7 @@ document.getElementById('shot-notes').onchange = (e) => {
 };
 document.getElementById('btn-export').onclick = async () => {
   if (!project) return;
+  await saveNow();   // 导出前冲刷防抖窗口内的编辑（相机/景别/画幅等）
   const shots = project.shots.filter((s) => s.render);
   if (!shots.length) return toast('还没有渲染过快照，先渲染再导出', true);
   await _blobDownload(`api/projects/${project.id}/export.zip`, sanitizeFilename(project.name) + '-分镜快照.zip');
