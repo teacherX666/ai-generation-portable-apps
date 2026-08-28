@@ -845,7 +845,7 @@ export async function sendRenderToCanvas() {
     const res = await fetch('/infinite-canvas/api/v1/assets', { method: 'POST', body: fd });
     if (!res.ok) {
       let msg = 'HTTP ' + res.status;
-      try { msg = (await res.json()).error || msg; } catch (_) { /* 非 JSON 响应 */ }
+      try { msg = (await res.json()).message || msg; } catch (_) { /* 非 JSON 响应 */ }
       throw new Error(msg);
     }
     document.getElementById('render-status').textContent = '已送画布 ✓';
