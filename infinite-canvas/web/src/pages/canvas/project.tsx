@@ -24,7 +24,7 @@ import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION, type GraphMediaType, type GraphModelMetadata, type GraphParameterValue } from "@/features/graph/contracts";
 import { compileGraphJob, CompileJobError } from "@/features/graph/compile-job";
 import { graphPortsForModel } from "@/features/graph/model-capabilities";
-import { safeMediaDisplayName } from "@/features/graph/media-collection";
+import { nextMediaCollectionTitle, safeMediaDisplayName } from "@/features/graph/media-collection";
 import { parameterControls } from "@/components/model-picker";
 import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphConnectionRejectionMessage, graphConnectionTransientKey, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
 import { nodeRegistry } from "@/features/nodes/registry";
@@ -657,7 +657,11 @@ export default function CanvasProjectPage() {
             const current = useCanvasStore.getState().openProject(id);
             if (!current) return undefined;
             const nodeType = mediaType === "image" ? CanvasNodeType.Image : mediaType === "video" ? CanvasNodeType.Video : CanvasNodeType.Audio;
-            const title = mediaType === "image" ? "参考图片" : mediaType === "video" ? "参考视频" : "参考音频";
+            // 按媒体类型顺延编号（上游 14608d3）：参考图片1/2/3…，自定义标题不参与计数
+            const title = nextMediaCollectionTitle(
+                current.nodes.flatMap((node) => (node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === mediaType ? [node.title] : [])),
+                mediaType,
+            );
             const node: CanvasNodeData = {
                 id: nanoid(),
                 type: nodeType,

@@ -1,4 +1,5 @@
 import { GRAPH_SCHEMA_VERSION, STANDARD_MODEL_INPUT_PORTS, assertSafeGraphInputPorts, assertSafeGraphPortId, assertSafeLegacyGraphInputPortIds, deriveResultAssetId, graphInputPortDescriptor, isGraphNodeRole, isGraphPortValueType, type CanvasGraphNodeMetadata, type GraphInputPortDescriptor, type GraphMediaType, type GraphParameterValue, type GraphPortValueType } from "@/features/graph/contracts";
+import { DEFAULT_MEDIA_COLLECTION_TITLES, isBareDefaultMediaCollectionTitle, mediaCollectionTitleNumber } from "@/features/graph/media-collection";
 import type { NodeDefinition } from "@/features/nodes/types";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { normalizeNodeScale } from "@/lib/canvas/node-scale";
@@ -33,7 +34,7 @@ export type CanvasNodePortResolver = {
 export function normalizeCanvasProject(project: CanvasProjectInput, portResolver?: CanvasNodePortResolver): CanvasProject {
     const cloned = cloneJsonValue(project) as CanvasProjectInput;
     assertSupportedSchema(cloned);
-    const nodes = cloned.nodes.map(normalizeNode);
+    const nodes = normalizeMediaCollectionTitles(cloned.nodes.map(normalizeNode));
     return {
         ...cloned,
         graphSchemaVersion: GRAPH_SCHEMA_VERSION,
@@ -461,4 +462,25 @@ function inferLegacyPorts(from: CanvasNodeData, to: CanvasNodeData) {
     }
     if (source?.role === "model" && target?.role === "result") return { fromPortId: "result", toPortId: "result" };
     return null;
+}
+
+/** 两遍扫描：先按媒体类型统计已编号族的最大编号，再把裸默认名从其后顺延补号。幂等。 */
+function normalizeMediaCollectionTitles(nodes: CanvasNodeData[]): CanvasNodeData[] {
+    const counters = new Map<GraphMediaType, number>();
+    for (const node of nodes) {
+        const graph = node.metadata?.graph;
+        if (graph?.role !== "media-collection" || typeof node.title !== "string") continue;
+        const number = mediaCollectionTitleNumber(node.title, graph.mediaType);
+        counters.set(graph.mediaType, Math.max(counters.get(graph.mediaType) ?? 0, number ?? 0));
+    }
+    let changed = false;
+    const titled = nodes.map((node) => {
+        const graph = node.metadata?.graph;
+        if (graph?.role !== "media-collection" || !isBareDefaultMediaCollectionTitle(node.title, graph.mediaType)) return node;
+        const counter = (counters.get(graph.mediaType) ?? 0) + 1;
+        counters.set(graph.mediaType, counter);
+        changed = true;
+        return { ...node, title: `${DEFAULT_MEDIA_COLLECTION_TITLES[graph.mediaType]}${counter}` };
+    });
+    return changed ? titled : nodes;
 }
