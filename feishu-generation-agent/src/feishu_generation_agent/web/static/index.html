@@ -136,13 +136,20 @@
           </div>
           <span id="status-badge" class="status-badge">尚未创建</span>
         </div>
+        <div id="run-guidance" class="run-guidance" role="status" aria-live="polite">
+          <strong>还没有进行中的任务</strong>
+          <span>从上方粘贴飞书文档，或在多维表格任务中选择一条开始。</span>
+        </div>
         <dl class="run-meta">
-          <div><dt>当前节点</dt><dd id="current-node">—</dd></div>
-          <div><dt>当前状态</dt><dd id="run-status">—</dd></div>
-          <div><dt>thread ID</dt><dd id="thread-id">—</dd></div>
+          <div><dt>当前阶段</dt><dd id="current-node">—</dd></div>
+          <div><dt>任务状态</dt><dd id="run-status">—</dd></div>
+          <div><dt>任务编号</dt><dd id="thread-id">—</dd></div>
           <div><dt>累计耗时</dt><dd id="run-duration">—</dd></div>
         </dl>
-        <ol id="event-list" class="event-list"></ol>
+        <details class="workflow-details">
+          <summary>查看技术执行轨迹</summary>
+          <ol id="event-list" class="event-list"></ol>
+        </details>
         <p id="langsmith-warning" class="privacy-warning" hidden>
           LangSmith 追踪已开启：工作流输入和输出会发送到外部追踪服务。
         </p>
@@ -220,15 +227,18 @@
     </main>
 
     <footer class="action-bar ui-shell__footer">
-      <span id="polling-note">每 1 秒自动刷新运行状态</span>
+      <div class="action-status">
+        <strong id="action-title">等待任务</strong>
+        <span id="polling-note">请选择一条任务开始处理</span>
+      </div>
       <div class="action-buttons">
-        <button id="next-task-button" type="button" class="secondary" disabled>开始下一任务</button>
-        <button id="rerun-button" type="button" class="secondary" disabled>重跑此任务</button>
-        <button id="retry-delivery-button" type="button" class="secondary">仅重试交付</button>
-        <button id="delete-run-button" type="button" class="quiet-button">删除本地运行</button>
-        <button id="reject-button" type="button" class="secondary">退回重新规划</button>
-        <button id="cancel-button" type="button" class="danger">全部取消</button>
-        <button id="approve-button" type="button" class="primary">批准所选任务</button>
+        <button id="next-task-button" type="button" class="primary" disabled hidden>开始下一任务</button>
+        <button id="rerun-button" type="button" class="secondary" disabled hidden>重新运行</button>
+        <button id="retry-delivery-button" type="button" class="primary" hidden>重新写入结果表</button>
+        <button id="reject-button" type="button" class="secondary" hidden>退回修改计划</button>
+        <button id="approve-button" type="button" class="primary" hidden>批准并开始生成</button>
+        <button id="cancel-button" type="button" class="danger" hidden>取消本次任务</button>
+        <button id="delete-run-button" type="button" class="quiet-button" hidden>移到回收站</button>
       </div>
     </footer>
 

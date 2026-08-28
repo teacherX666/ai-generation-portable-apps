@@ -62,6 +62,8 @@
   const nextTaskButton = byId("next-task-button");
   const rerunButton = byId("rerun-button");
   const pollingNote = byId("polling-note");
+  const actionTitle = byId("action-title");
+  const runGuidance = byId("run-guidance");
   const plannerPromptEntry = byId("planner-prompt-entry");
   const plannerPromptButton = byId("planner-prompt-button");
   const plannerPromptMode = byId("planner-prompt-mode");
@@ -77,6 +79,28 @@
   const RERUNNABLE_RUN_STATUSES = new Set([
     "succeeded", "completed_with_errors", "failed", "cancelled",
   ]);
+  const RUN_STATUS_UI = {
+    planning: { label: "正在生成计划", tone: "running", action: "系统正在读取文档并拆解任务，请稍候。" },
+    running: { label: "正在执行", tone: "running", action: "任务正在处理中，页面会自动更新进度。" },
+    resuming: { label: "正在恢复", tone: "running", action: "正在恢复上次中断的任务，请稍候。" },
+    waiting_approval: { label: "等待你审核", tone: "attention", action: "检查并修改下方计划，确认无误后批准生成。" },
+    waiting_provider: { label: "正在生成内容", tone: "running", action: "生成服务正在工作，可以留在此页等待自动更新。" },
+    waiting_review: { label: "等待验收成片", tone: "attention", action: "预览生成结果，满意后确认写入结果表。" },
+    delivering: { label: "正在写入结果表", tone: "running", action: "内容已生成，正在回写飞书，请不要重复提交。" },
+    succeeded: { label: "已完成", tone: "success", action: "任务已完成并交付，可以继续处理下一条任务。" },
+    completed_with_errors: { label: "部分完成", tone: "warning", action: "部分内容生成失败，可查看错误后重新运行。" },
+    delivery_failed: { label: "写入结果表失败", tone: "danger", action: "生成内容已保留，请重新写入结果表，不需要重新生成。" },
+    failed: { label: "执行失败", tone: "danger", action: "查看页面中的失败原因，修正后可重新运行。" },
+    cancelled: { label: "已取消", tone: "muted", action: "本次任务已取消，可以重新运行或开始下一条。" },
+  };
+
+  function statusUi(status) {
+    return RUN_STATUS_UI[status] || {
+      label: status || "尚未创建",
+      tone: "muted",
+      action: "从上方选择任务开始处理。",
+    };
+  }
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -215,6 +239,9 @@
 
   function setBusy(value) {
     state.busy = value;
+    directRunButton.disabled = value;
+    directRunUrl.disabled = value;
+    directRunMode.disabled = value;
     scanBitableButton.disabled = value || !state.modes.bitable;
     categoryTabs.forEach((tab) => {
       tab.disabled = value || !state.modes.bitable;
@@ -560,6 +587,8 @@
   function updateActionAvailability() {
     const canReview = state.view && state.view.status === "waiting_approval";
     const canReviewArtifacts = state.view && state.view.status === "waiting_review";
+    const status = state.view?.status;
+    const statusInfo = statusUi(status);
     const conflict = ReviewState.conflictMessage(state.review);
     rejectButton.disabled = state.busy || !canReview;
     cancelButton.disabled = state.busy || !canReview;
@@ -579,6 +608,14 @@
       "delivery_failed", "failed", "cancelled",
     ].includes(state.view?.status);
     deleteRunButton.disabled = state.busy || !deletable;
+    nextTaskButton.hidden = !terminal;
+    rerunButton.hidden = state.runMode !== "bitable" || !RERUNNABLE_RUN_STATUSES.has(status);
+    retryDeliveryButton.hidden = status !== "delivery_failed";
+    rejectButton.hidden = !canReview;
+    approveButton.hidden = !canReview;
+    cancelButton.hidden = !canReview;
+    deleteRunButton.hidden = !deletable;
+    actionTitle.textContent = statusInfo.label;
     byId("reject-feedback").disabled = state.busy || !canReview;
     taskList.querySelectorAll("input, textarea, select, button").forEach((control) => {
       control.disabled = state.busy || !canReview || Boolean(conflict);
@@ -1411,8 +1448,16 @@
 
   function render(view, { refreshTasks = true } = {}) {
     state.view = view;
-    byId("status-badge").textContent = view.status;
-    byId("run-status").textContent = view.status;
+    const statusInfo = statusUi(view.status);
+    const statusBadge = byId("status-badge");
+    statusBadge.textContent = statusInfo.label;
+    statusBadge.dataset.tone = statusInfo.tone;
+    byId("run-status").textContent = statusInfo.label;
+    runGuidance.dataset.tone = statusInfo.tone;
+    runGuidance.replaceChildren(
+      element("strong", "", statusInfo.label),
+      element("span", "", statusInfo.action),
+    );
     byId("thread-id").textContent = view.thread_id;
     const latestEvent = (view.events || []).at(-1);
     byId("current-node").textContent = BitableState.runStage(view) || latestEvent?.node || "—";
@@ -1520,7 +1565,7 @@
         pollingNote.textContent = "任务已结束，可开始下一任务或重跑。";
         await loadRecentRuns();
       } else {
-        pollingNote.textContent = "每 1 秒自动刷新运行状态";
+        pollingNote.textContent = statusUi(serverView.status).action;
       }
     } catch (error) {
       showError(error);
@@ -1557,7 +1602,13 @@
     state.referenceMutations = ReferenceMutationState.createState();
     state.bitable = BitableState.resetRunContext(state.bitable);
     byId("status-badge").textContent = "尚未创建";
+    byId("status-badge").dataset.tone = "muted";
     byId("run-status").textContent = "—";
+    runGuidance.dataset.tone = "muted";
+    runGuidance.replaceChildren(
+      element("strong", "", "还没有进行中的任务"),
+      element("span", "", "从上方粘贴飞书文档，或在多维表格任务中选择一条开始。"),
+    );
     byId("thread-id").textContent = "—";
     byId("current-node").textContent = "—";
     byId("run-duration").textContent = "—";
@@ -1760,6 +1811,9 @@
   });
   scanBitableButton.addEventListener("click", scanBitableTasks);
   directRunButton.addEventListener("click", startDirectRun);
+  directRunUrl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") startDirectRun();
+  });
   categoryTabs.forEach((tab) => {
     tab.addEventListener("click", () => selectBitableCategory(tab.dataset.category));
   });
