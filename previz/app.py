@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import cgi
+import functools
 import io
 import json
 import os
@@ -387,7 +388,10 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    Handler.directory = str(STATIC_DIR)  # 静态文件目录
+    # SimpleHTTPRequestHandler.__init__ 只认构造参数 directory（默认 os.getcwd()），
+    # 类属性 Handler.directory 是死代码（Python 3.7+）——用 partial 显式传入，
+    # 保证静态目录与启动 CWD 无关（portal 以 cwd=previz/ 拉起）
+    Handler = functools.partial(Handler, directory=str(STATIC_DIR))  # noqa: N806
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"previz serving {STATIC_DIR} on {HOST}:{PORT} (CORS={CORS})", flush=True)
     server.serve_forever()

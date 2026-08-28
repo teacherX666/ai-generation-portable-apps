@@ -81,6 +81,7 @@ export const PROP_TYPES = [
 
 export const CHARACTER_COLORS = ['#f59e0b', '#3b82f6', '#22c55e', '#a855f7'];
 
+// 仅供未显式赋色的默认创建循环用；场景内创建者（Task 5/7 的 +人物按钮）应显式赋色
 let _colorIndex = 0;
 
 export function newId(prefix) {
