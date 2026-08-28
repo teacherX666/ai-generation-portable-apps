@@ -37,6 +37,13 @@ STATIC_DIR = ROOT / "static"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import daily_report as _daily_report_module
+from cat_skins.service import (
+    CatDailyLimitError,
+    CatGenerationBusyError,
+    CatGenerationError,
+    CatSkinGenerator,
+    CatSkinManager,
+)
 
 _POPEN_EXTRA: dict[str, Any] = {}
 if hasattr(subprocess, "CREATE_NO_WINDOW"):
@@ -51,6 +58,11 @@ HISTORY_DAYS = 30
 USERS_PATH = STATE_DIR / "users.json"
 SESSIONS_PATH = STATE_DIR / "sessions.json"
 USER_KEYS_PATH = STATE_DIR / "user_keys.json"
+CAT_SKINS_DIR = ROOT / "cat_skins"
+CAT_SKINS_PATH = STATE_DIR / "cat_skins.json"
+CAT_ANATOMY_PATH = CAT_SKINS_DIR / "cat-anatomy-v1.json"
+CAT_PROMPT_PATH = CAT_SKINS_DIR / "generation-prompt-v1.md"
+CAT_CLASSIC_PATH = CAT_SKINS_DIR / "classic-black-v1.json"
 
 SESSION_MAX_AGE = 86400 * 30  # 30 days
 
@@ -1609,11 +1621,19 @@ auth = AuthManager()
 key_manager = KeyManager()
 manager = AppManager()
 tracker = UsageTracker()
+cat_skin_generator = CatSkinGenerator(
+    CAT_SKINS_DIR,
+    key_loader=lambda: _daily_report_module._load_deepseek_key(STATE_DIR),
+)
+cat_skin_manager = CatSkinManager(CAT_SKINS_PATH, CAT_CLASSIC_PATH, cat_skin_generator)
 
 
 # ─── HTTP Handler ──────────────────────────────────────────────────────────────
 
 _AUTH_EXEMPT = {"/login", "/api/auth/login", "/api/auth/register"}
+# 登录页在认证前就需要 UI Core。这里只公开无业务数据的共享样式目录；
+# 其他 Portal 静态资源仍然经过认证，避免意外扩大匿名访问范围。
+_AUTH_EXEMPT_PREFIXES = ("/ui/",)
 
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
@@ -1707,7 +1727,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/auth/first-run":
             self._json(200, {"ok": True, "first_run": auth.first_run(), "signup_enabled": auth.signup_enabled()})
             return
-        if path in _AUTH_EXEMPT or path == "/login":
+        if path in _AUTH_EXEMPT or path == "/login" or path.startswith(_AUTH_EXEMPT_PREFIXES):
             self._serve_portal(path if path != "/login" else "/login.html")
             return
         user = self._require_auth(path)
@@ -1744,6 +1764,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._report_csv_download(user, date)
         elif path == "/api/auth/me":
             self._json(200, {"ok": True, "username": user["username"], "role": user["role"]})
+        elif path == "/api/cat/wardrobe":
+            self._json(200, cat_skin_manager.wardrobe(user))
         elif path == "/api/users":
             if not auth.has_permission(user, "manage_users"):
                 self._json(403, {"ok": False, "error": "forbidden"})
@@ -1796,6 +1818,15 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", "12")
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
+            return
+        if path == "/api/cat/open":
+            self._cat_open(user)
+            return
+        if path == "/api/cat/equip":
+            self._cat_equip(user)
+            return
+        if path == "/api/cat/release":
+            self._cat_release(user)
             return
         if path == "/api/auth/create-user":
             if not auth.has_permission(user, "manage_users"):
@@ -1895,6 +1926,59 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     # ── Auth endpoint handlers ────────────────────────────────────────────────
+
+    def _cat_open(self, user: dict):
+        try:
+            skin = cat_skin_manager.open_gift(user)
+        except CatDailyLimitError as exc:
+            self._json(409, {"ok": False, "code": "daily_limit", "error": str(exc)})
+            return
+        except CatGenerationBusyError as exc:
+            self._json(409, {"ok": False, "code": "generating", "error": str(exc)})
+            return
+        except CatGenerationError as exc:
+            print(f"  [cat-skin] generation failed for {user['username']}: {exc}", flush=True)
+            self._json(502, {"ok": False, "code": "generation_failed", "error": "猫咪生成失败，本次机会未消耗，请稍后重试"})
+            return
+        except Exception as exc:
+            print(f"  [cat-skin] unexpected error for {user['username']}: {exc}", flush=True)
+            self._json(500, {"ok": False, "code": "generation_failed", "error": "猫咪生成失败，本次机会未消耗"})
+            return
+        wardrobe = cat_skin_manager.wardrobe(user)
+        self._json(200, {"ok": True, "skin": skin, "can_open": wardrobe["can_open"], "equipped_skin_id": skin["id"]})
+
+    def _cat_equip(self, user: dict):
+        body = self._read_json()
+        if body is None:
+            return
+        skin_id = str(body.get("skin_id") or "").strip()
+        if not skin_id:
+            self._json(400, {"ok": False, "error": "skin_id required"})
+            return
+        try:
+            result = cat_skin_manager.equip(user, skin_id)
+        except KeyError as exc:
+            self._json(404, {"ok": False, "error": str(exc).strip("'")})
+            return
+        self._json(200, result)
+
+    def _cat_release(self, user: dict):
+        body = self._read_json()
+        if body is None:
+            return
+        skin_id = str(body.get("skin_id") or "").strip()
+        if not skin_id:
+            self._json(400, {"ok": False, "error": "skin_id required"})
+            return
+        try:
+            result = cat_skin_manager.release(user, skin_id)
+        except PermissionError as exc:
+            self._json(403, {"ok": False, "error": str(exc)})
+            return
+        except KeyError as exc:
+            self._json(404, {"ok": False, "error": str(exc).strip("'")})
+            return
+        self._json(200, result)
 
     def _auth_login(self):
         body = self._read_json()
