@@ -102,7 +102,7 @@ def _parse_yaml_tags(yaml_path: Path) -> dict:
         if ":" in stripped and not stripped.startswith(("#", "-")):
             key = stripped.split(":", 1)[0].strip()
             value = stripped.split(":", 1)[1].strip()
-            if not key or " " in key or key in structural or not value:
+            if not key or key in structural or not value:
                 continue
             if "反向" in current_major or "负面" in current_major:
                 negative.append(key)
