@@ -6,8 +6,8 @@
 
 协议与上游 server/ai_creation_canvas/adapters/ark_assets.py 对齐：
 TOS SigV4 PUT 传对象 → TOS 预签名 GET URL → OpenAPI v4 签名 CreateAsset
-→ GetAsset 轮询状态。全部同步实现（httpx.Client + time.sleep），
-因为我们的子应用后端是同步的 stdlib 风格。
+→ 立即返回 processing，状态由 GET /assets/{id} 轮询时刷新（上游 66aecc3）。
+全部同步实现（httpx.Client），因为我们的子应用后端是同步的 stdlib 风格。
 
 配置：infinite-canvas/state/asset-library.json（gitignored），
 模板见 infinite-canvas/config/asset-library.example.json。
@@ -21,7 +21,6 @@ import hmac
 import json
 import os
 import re
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -293,25 +292,10 @@ def upload_image(cfg: dict, path: str, mime: str, size: int, filename: str) -> t
     asset_id = result.get("Id")
     if not isinstance(asset_id, str) or _ARK_ASSET_ID.fullmatch(asset_id) is None:
         raise LibraryInvalid("素材库响应无效。")
-    return asset_id, poll_status(cfg, asset_id)
-
-
-def poll_status(cfg: dict, asset_id: str) -> str:
-    """轮询 GetAsset 直到离开 Processing。30 次 × 1 秒后仍 Processing 就如实返回。"""
-    for attempt in range(30):
-        data = _openapi_call(cfg, "GetAsset",
-                             {"Id": asset_id, "ProjectName": cfg["project_name"]})
-        result = data.get("Result")
-        if not isinstance(result, dict) or result.get("Id") != asset_id:
-            raise LibraryInvalid("素材库状态响应无效。")
-        status = _STATUSES.get(result.get("Status"))
-        if status is None:
-            raise LibraryInvalid("素材库状态响应无效。")
-        if status != "processing":
-            return status
-        if attempt + 1 < 30:
-            time.sleep(1)
-    return "processing"
+    # 上游 66aecc3：CreateAsset 注册成功即返回 processing，不再同步轮询 30 秒。
+    # 状态由 GET /assets/{id} 每次被轮询时刷新（app_fastapi.py api_get_asset，
+    # 前端面板 5s settleProcessing），失败素材留在列表里可见而不是瞬间报错。
+    return asset_id, "processing"
 
 
 def get_asset_status(cfg: dict, asset_id: str) -> str:
