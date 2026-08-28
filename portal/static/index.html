@@ -30,6 +30,7 @@
       <button id="tab-btn-dreamina" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-dreamina" tabindex="-1" data-tab="dreamina">Dreamina</button>
       <button id="tab-btn-volcengine-portrait" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-volcengine-portrait" tabindex="-1" data-tab="volcengine-portrait">人像生成</button>
       <button id="tab-btn-infinite-canvas" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-infinite-canvas" tabindex="-1" data-tab="infinite-canvas">无限画布</button>
+      <button id="tab-btn-previz" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-previz" tabindex="-1" data-tab="previz">分镜布局</button>
       <button id="tab-btn-keys" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-keys" tabindex="-1" data-tab="keys">密钥库</button>
       <button id="tab-btn-rag-assistant" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-rag-assistant" tabindex="-1" data-tab="rag-assistant">报错问答助手</button>
       <button id="tab-btn-history" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-history" tabindex="-1" data-tab="history">历史记录</button>
@@ -63,6 +64,11 @@
        src 由 initConfiguredIframes() 从 /api/apps 注入，不写死。 -->
   <div class="tab-panel iframe-panel" id="tab-infinite-canvas" role="tabpanel" aria-labelledby="tab-btn-infinite-canvas" hidden>
     <iframe class="portal-iframe" id="iframe-infinite-canvas" data-app="infinite-canvas" data-fallback-src="/infinite-canvas/" src="/infinite-canvas/" allow="fullscreen"></iframe>
+  </div>
+
+  <!-- PREVIZ 分镜布局 -->
+  <div class="tab-panel iframe-panel" id="tab-previz" role="tabpanel" aria-labelledby="tab-btn-previz" hidden>
+    <iframe class="portal-iframe" id="iframe-previz" data-app="previz" data-fallback-src="/previz/index.html" src="/previz/index.html" allow="fullscreen"></iframe>
   </div>
 
   <!-- RAG ASSISTANT -->
