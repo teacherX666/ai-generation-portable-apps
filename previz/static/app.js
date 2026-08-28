@@ -716,24 +716,31 @@ export async function createProject(name) {
 
 // ============ 渲染管线 ============
 export function captureShot(width, height) {
+  if (!state.renderer) return toast('3D 视口不可用', true);
   const renderer = state.renderer, camera = state.camera;
   const oldSize = new THREE.Vector2();
   renderer.getSize(oldSize);
   const oldPR = renderer.getPixelRatio();
   const oldAspect = camera.aspect;
-  const hidden = hideEditHelpers();
-  renderer.setPixelRatio(1);
-  renderer.setSize(width, height, false);   // false：不改 canvas CSS 尺寸
-  camera.aspect = width / height;
-  camera.updateProjectionMatrix();
-  renderer.render(state.scene, camera);
-  const dataUrl = renderer.domElement.toDataURL('image/png');
-  restoreEditHelpers(hidden);
-  camera.aspect = oldAspect;
-  camera.updateProjectionMatrix();
-  renderer.setPixelRatio(oldPR);
-  renderer.setSize(oldSize.x, oldSize.y, false);
-  return dataUrl;
+  let hidden;
+  try {
+    hidden = hideEditHelpers();
+    renderer.setPixelRatio(1);
+    renderer.setSize(width, height, false);   // false：不改 canvas CSS 尺寸
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    renderer.render(state.scene, camera);
+    const dataUrl = renderer.domElement.toDataURL('image/png');
+    return dataUrl;
+  } finally {
+    // 任何异常（含超大缓冲分配失败）都必须恢复原状态
+    if (hidden) restoreEditHelpers(hidden);
+    camera.aspect = oldAspect;
+    camera.updateProjectionMatrix();
+    renderer.setPixelRatio(oldPR);
+    renderer.setSize(oldSize.x, oldSize.y, false);
+    renderer.render(state.scene, camera);   // 恢复后立刻重渲一帧，避免 setSize 重分配造成的黑闪
+  }
 }
 
 // 【ADAPT】Task 5 重构后 jointBalls Group 已不存在（球挂在关节下、经 setJointBallsVisible 切换）
@@ -774,6 +781,7 @@ function makeThumbnail(dataUrl, w = 320) {
       c.getContext('2d').drawImage(img, 0, 0, w, h);
       resolve(c.toDataURL('image/jpeg', 0.82));
     };
+    img.onerror = () => resolve(null);   // 加载失败不卡死「渲染中…」，调用方跳过缩略图
     img.src = dataUrl;
   });
 }
@@ -796,7 +804,7 @@ export async function renderShot() {
     const fd = new FormData();
     fd.append('shot_id', shot.id);
     fd.append('render', dataUrlToBlob(dataUrl), 'render.png');
-    fd.append('thumb', dataUrlToBlob(thumb), 'thumb.png');
+    if (thumb) fd.append('thumb', dataUrlToBlob(thumb), 'thumb.png');
     const res = await api(`api/projects/${project.id}/shots/${shot.id}/render`, { method: 'POST', body: fd });
     shot.render = String(res.render_url).split('/').pop();
     shot.thumbnail = res.thumbnail || shot.thumbnail;
