@@ -151,6 +151,90 @@ export function updateLabels() {
   }
 }
 
+// ============ 相机与景别 ============
+import { shotDistance, ASPECTS, aspectRatio } from './core.js';
+
+const SHOT_ORDER = ['远景', '全景', '中景', '近景', '特写'];
+let currentAspect = '16:9';
+let currentShotSize = '中景';
+
+export function currentShot() { return currentShotSize; }
+
+export function applyShotSize(size) {
+  const distance = shotDistance(size);
+  const dir = new THREE.Vector3().subVectors(state.camera.position, state.controls.target);
+  if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+  dir.normalize();
+  state.camera.position.copy(state.controls.target).addScaledVector(dir, distance);
+  state.controls.update();
+  currentShotSize = size;
+  updateCameraHud();
+}
+
+export function updateCameraHud() {
+  const dir = new THREE.Vector3().subVectors(state.camera.position, state.controls.target);
+  const horiz = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
+  const azimuth = Math.round(Math.atan2(dir.x, dir.z) * 180 / Math.PI);
+  const elevation = Math.round(Math.atan2(dir.y, horiz) * 180 / Math.PI);
+  document.getElementById('camera-hud').textContent =
+    `方位 ${azimuth}° · 俯仰 ${elevation}° · ${currentShotSize}`;
+}
+
+// 辅助线框 = 视口内「最大内接框」，按当前画幅计算
+export function fitOverlay() {
+  const el = document.getElementById('viewport');
+  const ratio = aspectRatio(currentAspect);          // 宽/高
+  const vr = el.clientWidth / el.clientHeight;
+  const overlay = document.getElementById('frame-overlay');
+  if (ratio > vr) {                                  // 目标比视口宽 → 限制宽度
+    overlay.style.width = '100%';
+    overlay.style.height = (100 * vr / ratio) + '%';
+  } else {                                           // 目标比视口窄 → 限制高度
+    overlay.style.height = '100%';
+    overlay.style.width = (100 * ratio / vr) + '%';
+  }
+  overlay.style.inset = 'auto';
+  overlay.style.left = '50%'; overlay.style.top = '50%';
+  overlay.style.transform = 'translate(-50%,-50%)';
+}
+
+export function applyAspect(aspect) {
+  currentAspect = aspect;
+  fitOverlay();
+}
+
+export function initCameraPanel() {
+  const chips = document.getElementById('shot-size-chips');
+  for (const size of SHOT_ORDER) {
+    const c = document.createElement('span');
+    c.className = 'chip' + (size === '中景' ? ' active' : '');
+    c.textContent = size;
+    c.onclick = () => {
+      chips.querySelectorAll('.chip').forEach((x) => x.classList.remove('active'));
+      c.classList.add('active');
+      applyShotSize(size);
+    };
+    chips.appendChild(c);
+  }
+  const sel = document.getElementById('cam-aspect');
+  for (const [name] of ASPECTS) {
+    const o = document.createElement('option');
+    o.value = name; o.textContent = name;
+    sel.appendChild(o);
+  }
+  sel.value = currentAspect;
+  sel.onchange = () => applyAspect(sel.value);
+  const guides = document.getElementById('cam-guides');
+  // 初始同步：checkbox 默认勾选，但 .on 类未挂 → 进页面就有辅助线
+  document.getElementById('frame-overlay').classList.toggle('on', guides.checked);
+  guides.onchange = (e) => {
+    document.getElementById('frame-overlay').classList.toggle('on', e.target.checked);
+  };
+  fitOverlay();
+  window.addEventListener('resize', fitOverlay);
+  applyAspect(currentAspect);
+}
+
 // ============ 选中与地面拖拽 ============
 export function pickAt(clientX, clientY) {
   const el = state.renderer.domElement;
@@ -206,6 +290,9 @@ export function onViewportUp() {
 // 接线（本任务的最小闭环；Task 7 替换 select stub，Task 8 替换临时木人为项目驱动）
 const el = document.getElementById('viewport');
 initScene();
+initCameraPanel();
+state.controls.addEventListener('change', updateCameraHud);
+updateCameraHud();
 const charA = newCharacter('A', '主角');
 const charB = newCharacter('B', '配角');
 charB.position = [1.5, 0, 0]; charB.color = '#3b82f6';
