@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from './vendor/OrbitControls.js';
-import { JOINTS, jointAngles, POSE_PRESETS, newCharacter, newId } from './core.js';
+import { JOINTS, jointAngles, POSE_PRESETS, newCharacter, newId, PROP_TYPES } from './core.js';
 
 // ============ 全局状态 ============
 const state = {
@@ -27,6 +27,7 @@ export function initScene() {
   el.appendChild(state.renderer.domElement);
   state.controls = new OrbitControls(state.camera, state.renderer.domElement);
   state.controls.target.set(0, 1, 0);
+  state.camera.position.set(0, 3.2, 12);
   state.controls.update();
   state.scene.add(new THREE.AmbientLight(0xffffff, 0.85));
   const dir = new THREE.DirectionalLight(0xffffff, 1.3);
@@ -235,6 +236,242 @@ export function initCameraPanel() {
   applyAspect(currentAspect);
 }
 
+// ============ 道具 ============
+const _propMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.85 });
+
+function propGeometry(type) {
+  const def = PROP_TYPES.find((p) => p.type === type) || PROP_TYPES[0];
+  const [kind, params] = def.geo;
+  switch (kind) {
+    case 'box': return new THREE.BoxGeometry(...params);
+    case 'cylinder': return new THREE.CylinderGeometry(...params);
+    case 'door': { // 门框：三根柱拼装（顶梁 + 左右柱），params=[w,h,d]
+      const [w, h, d] = params;
+      const g = new THREE.BoxGeometry(w, d, d);        // 顶梁
+      const side = new THREE.BoxGeometry(d, h, d);
+      const group = new THREE.Group();
+      const top = new THREE.Mesh(g, _propMat); top.position.y = h / 2; group.add(top);
+      const l = new THREE.Mesh(side, _propMat); l.position.set(-w / 2, h / 2 - d / 2, 0); group.add(l);
+      const r = new THREE.Mesh(side, _propMat); r.position.set(w / 2, h / 2 - d / 2, 0); group.add(r);
+      return group;
+    }
+    case 'steps': { // 台阶：三层渐窄
+      const [w, h, d] = params;
+      const group = new THREE.Group();
+      for (let i = 0; i < 3; i++) {
+        const s = new THREE.Mesh(new THREE.BoxGeometry(w * (1 - i * 0.2), h, d), _propMat);
+        s.position.set(0, h / 2 + i * h, -i * d * 0.8);
+        group.add(s);
+      }
+      return group;
+    }
+    case 'cone': { // 山形
+      const [r, h] = params;
+      return new THREE.ConeGeometry(r, h, 4);
+    }
+    case 'table': { // 桌子：桌面 + 四腿
+      const [w, h, d] = params;
+      const group = new THREE.Group();
+      const top = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), _propMat);
+      top.position.y = h; group.add(top);
+      const legGeo = new THREE.BoxGeometry(0.07, h, 0.07);
+      for (const [x, z] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+        const leg = new THREE.Mesh(legGeo, _propMat);
+        leg.position.set(x * (w / 2 - 0.05), h / 2, z * (d / 2 - 0.05));
+        group.add(leg);
+      }
+      return group;
+    }
+    default: return new THREE.BoxGeometry(...params);
+  }
+}
+
+export function addProp(data) {
+  const group = new THREE.Group();
+  group.add(propGeometry(data.type));
+  group.position.set(data.position[0], data.position[1], data.position[2]);
+  group.rotation.y = (data.rotation_y || 0) * Math.PI / 180;
+  const s = data.scale || [1, 1, 1];
+  group.scale.set(s[0], s[1], s[2]);
+  state.scene.add(group);
+  state.props.set(data.id, { group, data });
+  return group;
+}
+
+// ============ 对象面板 ============
+const _JOINT_LABELS = {
+  spine: '躯干', neck: '脖子', left_shoulder: '左肩', left_elbow: '左肘', left_wrist: '左腕',
+  right_shoulder: '右肩', right_elbow: '右肘', right_wrist: '右腕',
+  left_hip: '左髋', left_knee: '左膝', left_ankle: '左踝',
+  right_hip: '右髋', right_knee: '右膝', right_ankle: '右踝',
+};
+
+export function select(kindAndId) {
+  state.selected = kindAndId;
+  const detail = document.getElementById('object-detail');
+  const empty = document.getElementById('object-empty');
+  const isChar = kindAndId && kindAndId.kind === 'char';
+  const isProp = kindAndId && kindAndId.kind === 'prop';
+  detail.hidden = !kindAndId;
+  empty.hidden = !!kindAndId;
+  // 关节白球只显示给选中的木人（Task 5 契约：setJointBallsVisible）
+  for (const [id, { group }] of state.mannequins) {
+    setJointBallsVisible(group, !!(isChar && kindAndId.id === id));
+  }
+  if (!kindAndId) { renderJointRows(null); return; }
+  const rec = isChar ? state.mannequins.get(kindAndId.id) : state.props.get(kindAndId.id);
+  if (!rec) return;
+  const d = rec.data;
+  document.getElementById('obj-type').textContent = isChar ? `人物 ${d.id}` : `道具·${(PROP_TYPES.find((p) => p.type === d.type) || {}).label || d.type}`;
+  document.getElementById('obj-label').value = d.label || '';
+  document.getElementById('row-color').hidden = !isChar;
+  if (isChar) {
+    const sel = document.getElementById('obj-color');
+    sel.innerHTML = '';
+    for (const c of CHARACTER_COLORS) {
+      const o = document.createElement('option');
+      o.value = c; o.textContent = c; o.style.color = c;
+      sel.appendChild(o);
+    }
+    sel.value = d.color;
+    document.getElementById('pose-row').hidden = false;
+    const poseSel = document.getElementById('obj-pose');
+    poseSel.innerHTML = '';
+    for (const name of Object.keys(POSE_PRESETS)) {
+      const o = document.createElement('option');
+      o.value = name; o.textContent = name;
+      poseSel.appendChild(o);
+    }
+    poseSel.value = d.pose;
+    renderJointRows(rec);
+  } else {
+    document.getElementById('pose-row').hidden = true;
+  }
+  document.getElementById('obj-rotation').value = d.rotation_y || 0;
+  document.getElementById('obj-rotation-val').textContent = (d.rotation_y || 0) + '°';
+  document.getElementById('obj-scale').value = isChar ? (d.scale || 1) : ((d.scale || [1, 1, 1])[0]);
+  document.getElementById('obj-scale-val').textContent = isChar ? String(d.scale || 1) : String((d.scale || [1, 1, 1])[0]);
+}
+
+function renderJointRows(rec) {
+  const wrap = document.getElementById('joint-rows');
+  wrap.innerHTML = '';
+  if (!rec) return;
+  wrap.innerHTML = '<div class="muted">关节微调（弧度）</div>';
+  const d = rec.data;
+  for (const j of JOINTS) {
+    const row = document.createElement('div');
+    row.className = 'joint-row';
+    row.innerHTML = `<label>${_JOINT_LABELS[j] || j}</label><input type="range" min="-3" max="3" step="0.02" value="0">`;
+    const input = row.querySelector('input');
+    const off = (d.joints && d.joints[j]) || [0, 0, 0];
+    input.value = off[0];
+    input.oninput = () => {
+      if (!d.joints) d.joints = {};
+      d.joints[j] = [Number(input.value), 0, 0];   // v1 只调 X 轴（前后摆）
+      applyPose(rec.group, d.pose, d.joints);
+      markDirty();
+    };
+    wrap.appendChild(row);
+  }
+}
+
+// 面板事件绑定（接线块调用一次）
+export function initObjectPanel() {
+  const $ = (id) => document.getElementById(id);
+  $('obj-label').onchange = (e) => {
+    const s = state.selected;
+    if (!s || s.kind !== 'char') return;
+    const d = state.mannequins.get(s.id).data;
+    d.label = e.target.value;
+    state.mannequins.get(s.id).labelEl.textContent = d.label || d.id;
+    markDirty();
+  };
+  $('obj-color').onchange = (e) => {
+    const s = state.selected;
+    if (!s || s.kind !== 'char') return;
+    const rec = state.mannequins.get(s.id);
+    rec.data.color = e.target.value;
+    // Task 5 重构后 jointBalls Group 已删除、球挂在关节下且初始不可见；
+    // 换色遍历：除关节白球（_jointMat）外的所有 mesh 换新材质
+    rec.group.traverse((o) => {
+      if (o.isMesh && o.material !== _jointMat) {
+        o.material = new THREE.MeshStandardMaterial({ color: e.target.value, roughness: 0.75 });
+      }
+    });
+    markDirty();
+  };
+  $('obj-rotation').oninput = (e) => {
+    const s = state.selected;
+    if (!s) return;
+    const rec = s.kind === 'char' ? state.mannequins.get(s.id) : state.props.get(s.id);
+    rec.data.rotation_y = Number(e.target.value);
+    rec.group.rotation.y = Number(e.target.value) * Math.PI / 180;
+    document.getElementById('obj-rotation-val').textContent = e.target.value + '°';
+    markDirty();
+  };
+  $('obj-scale').oninput = (e) => {
+    const s = state.selected;
+    if (!s) return;
+    const v = Number(e.target.value);
+    const rec = s.kind === 'char' ? state.mannequins.get(s.id) : state.props.get(s.id);
+    if (s.kind === 'char') {
+      rec.data.scale = v;
+      rec.group.scale.setScalar(v);
+    } else {
+      rec.data.scale = [v, v, v];
+      rec.group.scale.set(v, v, v);
+    }
+    document.getElementById('obj-scale-val').textContent = String(v);
+    markDirty();
+  };
+  $('obj-pose').onchange = (e) => {
+    const s = state.selected;
+    if (!s || s.kind !== 'char') return;
+    const rec = state.mannequins.get(s.id);
+    rec.data.pose = e.target.value;
+    applyPose(rec.group, rec.data.pose, rec.data.joints);
+    markDirty();
+  };
+  $('btn-obj-delete').onclick = () => {
+    const s = state.selected;
+    if (!s) return;
+    if (s.kind === 'char') removeMannequin(s.id);
+    else removeProp(s.id);
+    select(null);
+    markDirty();
+  };
+  // 面板 tab 切换
+  $('ptab-object').onclick = () => switchPanel('object');
+  $('ptab-camera').onclick = () => switchPanel('camera');
+}
+
+function switchPanel(which) {
+  document.getElementById('ptab-object').classList.toggle('active', which === 'object');
+  document.getElementById('ptab-camera').classList.toggle('active', which === 'camera');
+  document.getElementById('panel-object').hidden = which !== 'object';
+  document.getElementById('panel-camera').hidden = which !== 'camera';
+}
+
+export function removeMannequin(id) {
+  const rec = state.mannequins.get(id);
+  if (!rec) return;
+  state.scene.remove(rec.group);
+  rec.labelEl.remove();
+  state.mannequins.delete(id);
+}
+
+export function removeProp(id) {
+  const rec = state.props.get(id);
+  if (!rec) return;
+  state.scene.remove(rec.group);
+  state.props.delete(id);
+}
+
+// markDirty：数据流层（Task 8）定义，这里先挂全局占位
+window.__markDirty = () => {};
+function markDirty() { window.__markDirty(); }
+
 // ============ 选中与地面拖拽 ============
 export function pickAt(clientX, clientY) {
   const el = state.renderer.domElement;
@@ -287,19 +524,20 @@ export function onViewportUp() {
   state.controls.enabled = true;    // 空处按下不关轨道，这里恢复只是幂等兜底
 }
 
-// 接线（本任务的最小闭环；Task 7 替换 select stub，Task 8 替换临时木人为项目驱动）
+// 接线（Task 7 起：道具 + 对象面板；Task 8 替换临时人物/道具为项目驱动）
 const el = document.getElementById('viewport');
 initScene();
 initCameraPanel();
+initObjectPanel();
+switchPanel('object');
 state.controls.addEventListener('change', updateCameraHud);
-updateCameraHud();
+// 临时人物与道具（Task 8 改为项目驱动）
 const charA = newCharacter('A', '主角');
 const charB = newCharacter('B', '配角');
 charB.position = [1.5, 0, 0]; charB.color = '#3b82f6';
 addMannequin(charA);
-addMannequin(charB);  // 两个不同色木人
-// Task 7 才会实现真正的选中面板，这里先放 stub 防止点击报错
-function select(x) { console.log('selected:', x); }
+addMannequin(charB);
+addProp({ id: 'p1', type: 'box', position: [2.5, 0, -1], rotation_y: 0, scale: [1, 1, 1] });
 el.addEventListener('pointerdown', onViewportDown);
 window.addEventListener('pointermove', onViewportMove);
 window.addEventListener('pointerup', onViewportUp);
@@ -315,3 +553,23 @@ window.addEventListener('resize', () => {
   state.camera.updateProjectionMatrix();
   state.renderer.setSize(el.clientWidth, el.clientHeight);
 });
+// 顶部工具栏
+document.getElementById('btn-add-char').onclick = () => {
+  const c = newCharacter(String.fromCharCode(65 + state.mannequins.size), '人物' + (state.mannequins.size + 1));
+  c.id = 'char-' + newId('');
+  c.color = CHARACTER_COLORS[state.mannequins.size % CHARACTER_COLORS.length];
+  addMannequin(c);
+  markDirty();
+};
+document.getElementById('btn-add-prop').onclick = () => {
+  addProp({ id: newId('prop-'), type: 'box', position: [0, 0, 0], rotation_y: 0, scale: [1, 1, 1] });
+  markDirty();
+};
+// Task 9/10 挂载点
+document.getElementById('btn-render').onclick = () => window.__renderShot && window.__renderShot();
+document.getElementById('btn-to-canvas').onclick = () => window.__toCanvas && window.__toCanvas();
+document.getElementById('btn-render-download').onclick = () => window.__downloadRender && window.__downloadRender();
+document.getElementById('btn-render-canvas').onclick = () => window.__sendRender && window.__sendRender();
+document.getElementById('btn-render-close').onclick = () => {
+  document.getElementById('render-modal').hidden = true;
+};
