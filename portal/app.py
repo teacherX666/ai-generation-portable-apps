@@ -222,14 +222,24 @@ def normalize_history_status(status: str) -> str:
 
 
 def history_result_items(data: dict, kind: str) -> list[dict]:
-    """从子应用 /api/jobs/{id} 响应提取结果清单（最多 4 条，供弹窗下载）。"""
+    """从子应用 /api/jobs/{id} 响应提取结果清单（最多 4 条，供弹窗下载）。
+
+    各子应用 results 结构不同：seedance/portrait 顶层有 download_url；
+    nano-banana 是 run 级结果，URL 嵌套在 result["images"][i]["download_url"]。
+    """
     nested = data.get("job") if isinstance(data.get("job"), dict) else {}
     raw = data.get("results") or nested.get("results") or []
     items = []
     for r in raw[:4]:
         if not isinstance(r, dict):
             continue
-        url = r.get("url") or r.get("download_url") or r.get("path") or ""
+        url = (r.get("url") or r.get("download_url") or r.get("path")
+               or r.get("image_url") or "")
+        if not url and isinstance(r.get("images"), list) and r["images"]:
+            first = r["images"][0]
+            if isinstance(first, dict):
+                url = (first.get("download_url") or first.get("image_url")
+                       or first.get("url") or "")
         if not url:
             continue
         item_kind = "video" if kind == "video" else "image"

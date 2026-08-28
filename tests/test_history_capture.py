@@ -63,6 +63,20 @@ def test_result_items_extraction():
         {"url": "/outputs/c.mp4", "kind": "video"}]
 
 
+def test_result_items_extraction_nested_nano_banana():
+    """nano-banana run 级结果：URL 在 result.images[i].download_url。"""
+    data = {"results": [
+        {"index": 1, "task_id": "t1", "status": "succeeded",
+         "images": [{"image_url": "https://cdn/1.png",
+                     "download_url": "/api/download/tok1"}]},
+        {"index": 2, "task_id": "t2", "status": "succeeded",
+         "images": [{"download_url": "/api/download/tok2"}]},
+    ]}
+    items = portal.history_result_items(data, "image")
+    assert items == [{"url": "/api/download/tok1", "kind": "image"},
+                     {"url": "/api/download/tok2", "kind": "image"}]
+
+
 def test_history_update_terminal_sets_thumb_and_error(tmp_path, monkeypatch):
     tracker = _make_tracker(tmp_path, monkeypatch)
     tracker.history_upsert({"app": "seedance", "job_id": "j1", "username": "u",

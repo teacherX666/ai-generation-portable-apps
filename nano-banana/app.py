@@ -267,8 +267,35 @@ MAX_SEED = 2147483647
 
 JOBS: dict[str, dict[str, Any]] = {}
 FILES: dict[str, Path] = {}
+FILES_MAP_PATH = STATE_DIR / "download_files.json"
 LOCK = threading.Lock()
 STATE_LOCK = threading.Lock()
+
+
+def load_files_map() -> dict[str, Path]:
+    """Load persisted download-token → file-path mapping from disk."""
+    try:
+        if FILES_MAP_PATH.exists():
+            data = json.loads(FILES_MAP_PATH.read_text(encoding="utf-8"))
+            result: dict[str, Path] = {}
+            for token, path_str in data.items():
+                p = Path(path_str)
+                if p.exists():
+                    result[token] = p
+            return result
+    except Exception:
+        pass
+    return {}
+
+
+def save_files_map() -> None:
+    """Persist the current FILES mapping to disk atomically."""
+    try:
+        with LOCK:
+            data = {token: str(p) for token, p in FILES.items()}
+        _atomic_write(FILES_MAP_PATH, json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
 
 # JOBS is in-memory and used to be unbounded: every job stayed forever, so a
 # service machine running for weeks only grew. We evict *finished* jobs once
@@ -1721,6 +1748,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             token = uuid.uuid4().hex
             with LOCK:
                 FILES[token] = Path(local_path)
+                save_files_map()
             file_token_results.append({
                 "image_url": image_url,
                 "download_url": f"/api/download/{token}",
@@ -1812,6 +1840,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                 token = uuid.uuid4().hex
                 with LOCK:
                     FILES[token] = Path(local_path)
+                    save_files_map()
                 file_token_results.append({
                     "image_url": image_url,
                     "download_url": f"/api/download/{token}",
@@ -1866,6 +1895,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             token = uuid.uuid4().hex
             with LOCK:
                 FILES[token] = Path(local_path)
+                save_files_map()
             file_token_results.append({
                 "image_url": image_url,
                 "download_url": f"/api/download/{token}",
@@ -1935,6 +1965,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         token = uuid.uuid4().hex
         with LOCK:
             FILES[token] = Path(local_path)
+            save_files_map()
         file_token_results.append({
             "image_url": image_url,
             "download_url": f"/api/download/{token}",
@@ -2431,6 +2462,11 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Restore persisted download token → file mappings (survives server restart)
+    restored = load_files_map()
+    if restored:
+        FILES.update(restored)
+        print(f"Restored {len(restored)} download file mapping(s)")
     port = int(os.environ.get("PORT", "8797"))
     host = os.environ.get("HOST", "127.0.0.1")
     server = ThreadingHTTPServer((host, port), Handler)
