@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 
 import type { JobState, ModelOperation, ModelSpec } from "@/api/contracts";
 import { fetchModels } from "@/api/models";
+import { uploadMediaAsset } from "@/api/assets";
 import { DraggableCanvasNode } from "@/components/canvas/draggable-canvas-node";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
@@ -23,6 +24,7 @@ import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION, type GraphMediaType, type GraphModelMetadata, type GraphParameterValue } from "@/features/graph/contracts";
 import { compileGraphJob, CompileJobError } from "@/features/graph/compile-job";
 import { graphPortsForModel } from "@/features/graph/model-capabilities";
+import { safeMediaDisplayName } from "@/features/graph/media-collection";
 import { parameterControls } from "@/components/model-picker";
 import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphConnectionRejectionMessage, graphConnectionTransientKey, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
 import { nodeRegistry } from "@/features/nodes/registry";
@@ -651,9 +653,9 @@ export default function CanvasProjectPage() {
 
     const addMediaCollectionNode = useCallback(
         (mediaType: GraphMediaType, position?: Position) => {
-            if (readOnly) return;
+            if (readOnly) return undefined;
             const current = useCanvasStore.getState().openProject(id);
-            if (!current) return;
+            if (!current) return undefined;
             const nodeType = mediaType === "image" ? CanvasNodeType.Image : mediaType === "video" ? CanvasNodeType.Video : CanvasNodeType.Audio;
             const title = mediaType === "image" ? "参考图片" : mediaType === "video" ? "参考视频" : "参考音频";
             const node: CanvasNodeData = {
@@ -670,6 +672,7 @@ export default function CanvasProjectPage() {
             };
             updateProject(id, { nodes: [...current.nodes, node] });
             setSelectedNodeIds(new Set([node.id]));
+            return node.id;
         },
         [id, readOnly, updateProject],
     );
@@ -690,6 +693,47 @@ export default function CanvasProjectPage() {
             return found;
         },
         [id, readOnly, updateProject],
+    );
+
+    // 拖文件进画布（上游 49cf8cd 的拖拽部分）：按媒体类型分组上传，
+    // 在落点创建对应素材节点并填进素材（同类型多文件合进一个节点）。
+    const handleCanvasDrop = useCallback(
+        async (event: React.DragEvent<HTMLDivElement>) => {
+            if (readOnly) return;
+            const files = Array.from(event.dataTransfer.files ?? []);
+            const byType = new Map<GraphMediaType, File[]>();
+            for (const file of files) {
+                if (file.type.startsWith("image/")) byType.set("image", [...(byType.get("image") ?? []), file]);
+                else if (file.type.startsWith("video/")) byType.set("video", [...(byType.get("video") ?? []), file]);
+                else if (file.type.startsWith("audio/")) byType.set("audio", [...(byType.get("audio") ?? []), file]);
+            }
+            if (byType.size === 0) return;
+            event.preventDefault();
+            const position = clientToWorld(event.clientX, event.clientY);
+            let created = 0;
+            let failed = 0;
+            for (const [mediaType, group] of byType) {
+                try {
+                    const assets = await Promise.all(group.map((file) => uploadMediaAsset(file, mediaType)));
+                    const items = assets.map((asset, index) => ({
+                        id: nanoid(),
+                        assetId: asset.id,
+                        displayName: safeMediaDisplayName(group[index]?.name ?? "素材", mediaType),
+                        mimeType: asset.mime_type,
+                        bytes: asset.size_bytes,
+                    }));
+                    const nodeId = addMediaCollectionNode(mediaType, { x: position.x + created * 24, y: position.y + created * 24 });
+                    if (nodeId) {
+                        updateMediaCollection(nodeId, (current) => [...current, ...items]);
+                        created += 1;
+                    }
+                } catch {
+                    failed += group.length;
+                }
+            }
+            setCanvasCommandMessage(created > 0 ? (failed > 0 ? `已创建 ${created} 个节点，${failed} 个文件上传失败。` : `已创建 ${created} 个节点。`) : "拖入的文件上传失败，请检查格式与大小。");
+        },
+        [addMediaCollectionNode, clientToWorld, readOnly, updateMediaCollection],
     );
 
     const addComfyWorkflowNode = useCallback((position?: Position) => {
@@ -758,9 +802,11 @@ export default function CanvasProjectPage() {
     const libraryTargets = useMemo(() => {
         if (!project) return [];
         // itemCount 供面板目标选择器展示（上游 6307ed3）
-        return project.nodes
-            .filter((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image")
-            .map((node) => ({ nodeId: node.id, label: node.title || node.id, itemCount: node.metadata.graph.items.length }));
+        return project.nodes.flatMap((node) => {
+            const graph = node.metadata?.graph;
+            if (graph?.role !== "media-collection" || graph.mediaType !== "image") return [];
+            return [{ nodeId: node.id, label: node.title || node.id, itemCount: graph.items.length }];
+        });
     }, [project]);
 
     if (!project) {
@@ -866,6 +912,7 @@ export default function CanvasProjectPage() {
                             clearPendingConnection();
                         }}
                         onContextMenu={readOnly ? undefined : openCanvasContextMenu}
+                        onDrop={readOnly ? undefined : handleCanvasDrop}
                     >
                         <svg className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible" width="1" height="1" aria-label="画布连接">
                             {resolvedConnections.map(({ connection, connectionKey, active: connectionActive, reason }) => {
