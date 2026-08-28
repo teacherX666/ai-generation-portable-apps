@@ -238,6 +238,60 @@ function makeDrop(container, name, label, accept, formId) {
 }
 
 // ============================================================
+// 参考视频时长校验（上游 7c37c93）
+// Ark 要求参考视频 4–30 秒；提交前实测时长，超范围本地拦截而不是等排队后被拒。
+// ============================================================
+const REFERENCE_VIDEO_MIN_SECONDS = 4;
+const REFERENCE_VIDEO_MAX_SECONDS = 30;
+const videoDurationCache = new Map();
+
+function measureVideoDuration(url) {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    const timer = window.setTimeout(() => {
+      video.src = '';
+      resolve(null);
+    }, 8000);
+    video.preload = 'metadata';
+    video.onloadedmetadata = () => {
+      window.clearTimeout(timer);
+      const duration = Number.isFinite(video.duration) ? video.duration : null;
+      video.src = '';
+      resolve(duration);
+    };
+    video.onerror = () => {
+      window.clearTimeout(timer);
+      video.src = '';
+      resolve(null);
+    };
+    video.src = url;
+  });
+}
+
+async function validateReferenceVideoDurations() {
+  const inputs = document.querySelectorAll('#sd-videoRefs input[type="file"]');
+  for (const input of inputs) {
+    const file = input.files && input.files[0];
+    if (!file) continue;
+    const cacheKey = file.name + ':' + file.size + ':' + (file.lastModified || 0);
+    let seconds = videoDurationCache.get(cacheKey);
+    if (seconds === undefined) {
+      const url = URL.createObjectURL(file);
+      try {
+        seconds = await measureVideoDuration(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      videoDurationCache.set(cacheKey, seconds);
+    }
+    if (seconds === null) continue;
+    if (seconds < REFERENCE_VIDEO_MIN_SECONDS || seconds > REFERENCE_VIDEO_MAX_SECONDS) {
+      throw new Error(`参考视频时长需在 4–30 秒之间（当前 ${seconds.toFixed(1)} 秒），请更换或剪辑后重试。`);
+    }
+  }
+}
+
+// ============================================================
 // PROVIDER CONFIG HELPER
 // ============================================================
 function providersFromConfig(providers) {
@@ -990,6 +1044,15 @@ function SeedanceApp() {
         if (eventsEl) eventsEl.textContent = '';
       }
       setOwnerState('eventsText', '');
+
+      // 参考视频时长校验：超 4–30 秒范围立即拦截（实测本地文件，不消耗生成配额）
+      try {
+        await validateReferenceVideoDurations();
+      } catch (err) {
+        setOwnerState('submitting', false);
+        setOwnerState('statusText', err.message || '参考视频时长不合规');
+        return;
+      }
 
       const data = new FormData(document.getElementById('sd-form'));
       if (Object.keys(this.savedMedia).length) {
