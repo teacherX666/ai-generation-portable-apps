@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import type { JobState, ModelOperation, ModelSpec } from "@/api/contracts";
 import { fetchModels } from "@/api/models";
 import { uploadMediaAsset } from "@/api/assets";
+import { safeApiPath } from "@/api/client";
 import { DraggableCanvasNode } from "@/components/canvas/draggable-canvas-node";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
@@ -36,6 +37,47 @@ import { useGenerationJob, type PendingRef } from "@/features/generation/use-gen
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType } from "@/types/canvas";
 import type { CanvasNodeData, ContextMenuState, Position, ViewportTransform } from "@/types/canvas";
+
+// Seedance 参考视频必须 4–30 秒；提交前实测时长，超范围快速失败（上游 7c37c93）
+const REFERENCE_VIDEO_MIN_SECONDS = 4;
+const REFERENCE_VIDEO_MAX_SECONDS = 30;
+const videoDurationCache = new Map<string, number | null>();
+
+function measureVideoDuration(url: string): Promise<number | null> {
+    return new Promise((resolve) => {
+        const video = document.createElement("video");
+        const timer = window.setTimeout(() => {
+            video.src = "";
+            resolve(null);
+        }, 8000);
+        video.preload = "metadata";
+        video.onloadedmetadata = () => {
+            window.clearTimeout(timer);
+            const duration = Number.isFinite(video.duration) ? video.duration : null;
+            video.src = "";
+            resolve(duration);
+        };
+        video.onerror = () => {
+            window.clearTimeout(timer);
+            video.src = "";
+            resolve(null);
+        };
+        video.src = url;
+    });
+}
+
+async function validateReferenceVideoDurations(inputs: Record<string, readonly string[]>) {
+    for (const assetId of inputs.reference_video ?? []) {
+        if (!videoDurationCache.has(assetId)) {
+            videoDurationCache.set(assetId, await measureVideoDuration(safeApiPath(`/api/v1/assets/${encodeURIComponent(assetId)}/content`)));
+        }
+        const seconds = videoDurationCache.get(assetId) ?? null;
+        if (seconds === null) continue;
+        if (seconds < REFERENCE_VIDEO_MIN_SECONDS || seconds > REFERENCE_VIDEO_MAX_SECONDS) {
+            throw new CompileJobError(`参考视频时长需在 4–30 秒之间（当前 ${seconds.toFixed(1)} 秒），请更换或剪辑后重试。`);
+        }
+    }
+}
 
 export default function CanvasProjectPage() {
     const { id = "" } = useParams();
@@ -553,6 +595,7 @@ export default function CanvasProjectPage() {
 
     const runModelNode = useCallback(
         (nodeId: string) => {
+            void (async () => {
             if (readOnly) return;
             const current = useCanvasStore.getState().openProject(id);
             const sourceNode = current?.nodes.find((node) => node.id === nodeId);
@@ -565,6 +608,7 @@ export default function CanvasProjectPage() {
             }
             try {
                 const frozen = compileGraphJob(current.nodes, current.connections, nodeId, model);
+                if (frozen.inputs.reference_video?.length) await validateReferenceVideoDurations(frozen.inputs);
                 updateProject(id, {
                     nodes: current.nodes.map((node) =>
                         node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: "loading" as const, prompt: frozen.prompt, params: { ...frozen.params }, assetIds: Object.values(frozen.inputs).flat() } } : node,
@@ -577,6 +621,7 @@ export default function CanvasProjectPage() {
             } catch (error) {
                 setModelMessages((messages) => ({ ...messages, [nodeId]: error instanceof CompileJobError ? error.message : "无法编译这个模型任务。" }));
             }
+            })();
         },
         [generation, id, models, readOnly, updateProject],
     );

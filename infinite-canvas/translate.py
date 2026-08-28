@@ -188,7 +188,7 @@ async def _fetch_catalog(app: str) -> list:
                         "service_id": app,
                         "display_name": display,
                         "operations": ["video.generate", "video.image_to_video"],
-                        "input_media": ["text", "image"],
+                        "input_media": ["text", "image", "video"],
                         "parameter_schema": _video_schema(cfg.get("defaults") or {}, entry),
                         "input_ports": [
                             _prompt_port(),
@@ -199,6 +199,10 @@ async def _fetch_catalog(app: str) -> list:
                             # 按此端口把选中的人像加进参考集合。
                             {"port_id": "reference_images", "media_type": "image",
                              "min_items": 0, "max_items": 9, "asset_kind": "library"},
+                            # 参考视频端口（上游 fd7fcc0）：0-3 条，画布视频素材
+                            # 节点接此端口，提交时翻译成 media.ref_video_N。
+                            {"port_id": "reference_video", "media_type": "video",
+                             "min_items": 0, "max_items": 3},
                         ],
                     })
     except Exception:
@@ -358,6 +362,10 @@ async def api_create_job(request: Request):
             for index, asset_id in enumerate(refs[:9], start=1):
                 row = _resolve_asset(user["user_id"], asset_id, "image")
                 media[f"ref_image_{index}"] = {"data_url": _data_url(row["path"], row["mime_type"])}
+            videos = inputs.get("reference_video") or []
+            for index, asset_id in enumerate(videos[:3], start=1):
+                row = _resolve_asset(user["user_id"], asset_id, "video")
+                media[f"ref_video_{index}"] = {"data_url": _data_url(row["path"], row["mime_type"])}
     except store.NotFoundError:
         return _err(400, "invalid_request", "引用的素材不存在。")
 
