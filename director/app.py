@@ -277,7 +277,8 @@ def optimize_prompt(text: str, mode: str) -> dict[str, Any]:
     }
     try:
         result = request_json(
-            "POST", f"{DEEPSEEK_BASE}/chat/completions", api_key, body, timeout=120,
+            # 推理模型长指令延迟可达 2-3 分钟（上游 c5d1c10 同款放宽 30s→180s）
+            "POST", f"{DEEPSEEK_BASE}/chat/completions", api_key, body, timeout=180,
         )
         content = (result.get("choices") or [{}])[0].get("message", {}).get("content", "")
         if not content.strip():
