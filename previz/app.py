@@ -38,6 +38,17 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _FILE_RE = re.compile(r"^s_[A-Za-z0-9_-]{1,64}_(render|thumb)\.png$")
 MAX_RENDER_BYTES = 20 * 1024 * 1024
 
+
+def _zip_entry_name(name: str) -> str:
+    """zip 归档名消毒：去路径分隔/前导点，非字符合并，防 zip-slip。
+
+    注意 lstrip 必须连 `_` 一起剥：`[\\/]→_` 先执行时 `../../evil` 会先变
+    `.._.._evil`，只 lstrip(".") 后首字符仍是下划线，遍历残留点没除净。
+    """
+    clean = re.sub(r"[\\/]", "_", str(name)).lstrip("._")
+    clean = re.sub(r"[^\w一-鿿-]+", "_", clean)[:60]
+    return clean or "shot"
+
 DEFAULT_CAMERA = {"position": [0, 3.2, 12], "target": [0, 1.0, 0], "fov": 50,
                   "shot_size": "中景", "azimuth": 0, "elevation": 15}
 
@@ -93,7 +104,7 @@ def validate_project(data: Any) -> dict[str, Any] | None:
             "notes": str(shot.get("notes") or ""),
         })
     return {
-        "id": data["id"],
+        "id": str(data["id"]),
         "name": data["name"][:60],
         "created_at": str(data.get("created_at") or ""),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -167,13 +178,17 @@ def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: Any) 
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
 
 
 def _read_json_body(handler: SimpleHTTPRequestHandler) -> Any:
-    n = int(handler.headers.get("Content-Length") or 0)
+    try:
+        n = int(handler.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        n = 0
     if n <= 0 or n > 10 * 1024 * 1024:
         return None
     try:
@@ -189,10 +204,12 @@ def _client_ip(handler: SimpleHTTPRequestHandler) -> str:
 
 def _serve_file(handler: SimpleHTTPRequestHandler, path: Path, content_type: str,
                 attachment: str = "") -> None:
-    if not path.exists() or not path.is_file():
-        json_response(handler, 404, {"error": "文件不存在"})
-        return
-    body = path.read_bytes()
+    # 渲染图读写可能并发（_handle_render 正在写同一文件），exists+read 一起上锁
+    with _LOCK:
+        if not path.exists() or not path.is_file():
+            json_response(handler, 404, {"error": "文件不存在"})
+            return
+        body = path.read_bytes()
     handler.send_response(200)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(body)))
@@ -251,7 +268,10 @@ class Handler(SimpleHTTPRequestHandler):
                 for shot in p["shots"]:
                     f = PROJECTS_DIR / pid / str(shot.get("render") or "")
                     if _FILE_RE.fullmatch(f.name) and f.exists():
-                        zf.write(f, arcname=f"{shot['order']:02d}-{shot['name']}.png")
+                        try:
+                            zf.write(f, arcname=f"{shot['order']:02d}-{_zip_entry_name(shot['name'])}.png")
+                        except FileNotFoundError:
+                            continue  # render 与 export 之间文件被删，跳过该镜头
         body = buf.getvalue()
         # 中文文件名不能直接进 Content-Disposition（latin-1 头编码会炸）：
         # ASCII 回退名 + RFC 5987 filename*（percent-encoded）双保险。
@@ -303,7 +323,7 @@ class Handler(SimpleHTTPRequestHandler):
         if render is None or not render.file:
             json_response(self, 400, {"error": "缺少渲染图"})
             return
-        render_bytes = render.file.read()
+        render_bytes = render.file.read(MAX_RENDER_BYTES + 1)
         if not render_bytes or len(render_bytes) > MAX_RENDER_BYTES:
             json_response(self, 413, {"error": "渲染图为空或超过 20MB"})
             return
@@ -354,6 +374,10 @@ class Handler(SimpleHTTPRequestHandler):
             json_response(self, 200, {"ok": True})
         else:
             json_response(self, 404, {"error": "项目不存在"})
+
+    def log_message(self, fmt: str, *args: Any) -> None:  # noqa: N802
+        if not CORS:
+            super().log_message(fmt, *args)
 
 
 if __name__ == "__main__":

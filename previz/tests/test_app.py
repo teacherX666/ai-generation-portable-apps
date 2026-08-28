@@ -4,10 +4,13 @@
 测试只 import 模块（app.py 被 import 时不得启动服务器——server 启动放
 `if __name__ == "__main__` 块内）。
 """
+import cgi
+import io
 import json
 import shutil
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 import app as previz
@@ -74,3 +77,117 @@ class TestProjectCRUD(unittest.TestCase):
         assert previz.valid_id("p_abc-123_x") is True
         assert previz.valid_id("../etc") is False
         assert previz.valid_id("") is False
+
+
+FIXTURE = Path(__file__).resolve().parent / "_render_fixture.png"
+
+
+def _mk_shot(pid="p_test01", sid="shot1"):
+    p = _mk(pid)
+    p["shots"].append({
+        "id": sid, "name": "镜头1", "order": 0, "aspect": "16:9",
+        "camera": previz.DEFAULT_CAMERA, "characters": [], "props": [],
+        "thumbnail": "", "render": "", "notes": "",
+    })
+    previz.save_project(p)
+    return p
+
+
+class _FakeHandler:
+    """json_response 落点：记录状态码，body 进 BytesIO。"""
+
+    def __init__(self):
+        self.wfile = io.BytesIO()
+        self.status = 0
+
+    def send_response(self, status):
+        self.status = status
+
+    def send_header(self, k, v):
+        pass
+
+    def end_headers(self):
+        pass
+
+
+def _make_form(shot_id="shot1", with_render=True, with_thumb=True):
+    """构造 multipart FieldStorage（走 cgi 标准解析，与真实请求同路径）。"""
+    boundary = "----previz-boundary-42"
+
+    def field(name, filename, ctype, data):
+        return (f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                f"Content-Type: {ctype}\r\n\r\n").encode() + data + b"\r\n"
+
+    body = (f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="shot_id"\r\n\r\n{shot_id}\r\n').encode()
+    if with_render:
+        body += field("render", "render.png", "image/png", FIXTURE.read_bytes())
+    if with_thumb:
+        body += field("thumb", "thumb.png", "image/png", FIXTURE.read_bytes())
+    body += f"--{boundary}--\r\n".encode()
+    env = {"REQUEST_METHOD": "POST",
+           "CONTENT_TYPE": f"multipart/form-data; boundary={boundary}",
+           "CONTENT_LENGTH": str(len(body))}
+    # 不能传 headers=env：headers 给定后 cgi 不再从 environ 反填，且它按
+    # 小写 content-type 查字典（普通 dict 大小写敏感）→ multipart 被当整包
+    # 单字段吞掉。省略 headers 让 cgi 自行反填小写键，与 do_POST 同解析路径。
+    return cgi.FieldStorage(fp=io.BytesIO(body), environ=env)
+
+
+class TestRenderAndFiles(unittest.TestCase):
+    def setUp(self):
+        shutil.rmtree(PROJECTS_DIR, ignore_errors=True)
+        PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+        self.handler = _FakeHandler()
+
+    def _handle(self, pid, form):
+        previz.Handler._handle_render(self.handler, pid, form)
+        return self.handler
+
+    def test_render_saves_png_and_updates_shot(self):
+        _mk_shot()
+        self._handle("p_test01", _make_form())
+        assert (PROJECTS_DIR / "p_test01" / "s_shot1_render.png").exists()
+        assert (PROJECTS_DIR / "p_test01" / "s_shot1_thumb.png").exists()
+        p = previz.load_project("p_test01")
+        assert p["shots"][0]["render"] == "s_shot1_render.png"
+        assert p["shots"][0]["thumbnail"] == "s_shot1_thumb.png"
+
+    def test_render_unknown_shot_400(self):
+        _mk_shot()
+        self._handle("p_test01", _make_form(shot_id="nope"))
+        assert self.handler.status == 400
+
+    def test_render_missing_file_400(self):
+        _mk_shot()
+        self._handle("p_test01", _make_form(with_render=False))
+        assert self.handler.status == 400
+
+    def test_render_unknown_project_404(self):
+        self._handle("p_missing", _make_form())
+        assert self.handler.status == 404
+
+    def test_export_zip_contains_named_pngs(self):
+        _mk_shot()
+        self._handle("p_test01", _make_form())
+        p = previz.load_project("p_test01")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for shot in p["shots"]:
+                f = PROJECTS_DIR / "p_test01" / str(shot.get("render") or "")
+                if previz._FILE_RE.fullmatch(f.name) and f.exists():
+                    zf.write(f, arcname=f"{shot['order']:02d}-{previz._zip_entry_name(shot['name'])}.png")
+        buf.seek(0)
+        with zipfile.ZipFile(buf) as zf:
+            assert zf.namelist() == ["00-镜头1.png"]
+
+    def test_file_regex_rejects_traversal(self):
+        assert previz._FILE_RE.fullmatch("../p_test01/project.json") is None
+        assert previz._FILE_RE.fullmatch("s_a_render.png") is not None
+        assert previz._FILE_RE.fullmatch("project.json") is None
+
+    def test_zip_entry_name_sanitizes(self):
+        assert previz._zip_entry_name("../../evil") == "evil"
+        assert previz._zip_entry_name("a/b\\c") == "a_b_c"
+        assert previz._zip_entry_name("") == "shot"
