@@ -97,18 +97,22 @@ export function buildMannequin(color) {
     left_hip: leftLeg.hipJ, left_knee: leftLeg.kneeJ, left_ankle: leftLeg.ankleJ,
     right_hip: rightLeg.hipJ, right_knee: rightLeg.kneeJ, right_ankle: rightLeg.ankleJ,
   });
-  // 关节白球（选中人物时显示，供点选微调）
-  const jointBalls = new THREE.Group();
+  // 关节白球（选中人物时显示，供点选微调；球只挂各自关节，不共用父组——
+  // three 的 add 会先 removeFromParent，共挂会把球全堆到局部原点）
+  const balls = [];
   for (const j of Object.values(joints)) {
     const ball = part(_jointGeo, _jointMat);
     ball.userData.jointName = null;
+    ball.visible = false;
     j.add(ball);
-    jointBalls.add(ball);
+    balls.push(ball);
   }
-  jointBalls.visible = false;
-  root.add(jointBalls);
-  root.userData = { joints, jointBalls };
+  root.userData = { joints, balls };
   return root;
+}
+
+export function setJointBallsVisible(group, visible) {
+  for (const ball of group.userData.balls) ball.visible = visible;
 }
 
 export function applyPose(root, pose, offsets) {
@@ -179,6 +183,7 @@ export function onViewportDown(e) {
   const hit = pickAt(e.clientX, e.clientY);
   if (!hit) { select(null); return; }
   select(hit);
+  state.controls.enabled = false;   // 命中对象时禁用轨道，避免拖拽与转相机打架
   const group = hit.kind === 'char' ? state.mannequins.get(hit.id).group : state.props.get(hit.id).group;
   const p = groundPoint(e.clientX, e.clientY);
   if (p) dragState = { group, offset: p.clone().sub(group.position) };
@@ -195,6 +200,7 @@ export function onViewportMove(e) {
 
 export function onViewportUp() {
   if (dragState) { dragState = null; /* Task 8 接 data flow 钩子 */ }
+  state.controls.enabled = true;    // 空处按下不关轨道，这里恢复只是幂等兜底
 }
 
 // 接线（本任务的最小闭环；Task 7 替换 select stub，Task 8 替换临时木人为项目驱动）

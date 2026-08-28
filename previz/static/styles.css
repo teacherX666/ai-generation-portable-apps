@@ -1,6 +1,7 @@
 /* 分镜布局 —— 三栏：镜头列表 200px / 视口 1fr / 面板 260px */
 :root { --bg:#0f172a; --panel:#1e293b; --line:#334155; --text:#e2e8f0; --muted:#94a3b8; --accent:#0ea5e9; --danger:#ef4444; }
 * { box-sizing:border-box; }
+[hidden] { display:none !important; }
 html,body { margin:0; height:100%; background:var(--bg); color:var(--text);
   font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
 body { display:grid; grid-template:"top top top" 44px "shots view panel" 1fr / 200px 1fr 260px; height:100vh; }
