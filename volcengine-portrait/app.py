@@ -35,6 +35,7 @@ _PORTAL_DIR = str(ROOT.parent / "portal")
 if _PORTAL_DIR not in sys.path:
     sys.path.insert(0, _PORTAL_DIR)
 from ark_errors import translate_ark_error  # noqa: E402
+from error_explainer import explain_error  # noqa: E402
 OUTPUT_DIR = _DATA_BASE / "outputs"
 STATE_DIR = _DATA_BASE / "state"
 LOG_DIR = _DATA_BASE / "logs"
@@ -1920,11 +1921,19 @@ def _run_virtual_job_impl(job_id, job):
                     detail = f"{code}: {message}" if code else message
                     summary = f"Run {idx}: {zh} 原始错误：{detail}"
                 else:
-                    # Compose from whatever pieces Ark provided so nothing gets
-                    # swallowed: message alone, code alone, or both together.
+                    # 本地规则未命中 → doubao-seed 模型兜底（三级降级：规则→模型→原文）
+                    explanation = None
+                    if (code or message) and api_key:
+                        try:
+                            explanation = explain_error(job_id, code, message, api_key)
+                        except Exception:
+                            explanation = None
                     detail_bits = [b for b in (code, message) if b]
                     detail = ": ".join(detail_bits) if len(detail_bits) == 2 else (detail_bits[0] if detail_bits else "")
-                    summary = f"Run {idx}: {t_status}" + (f" — {detail}" if detail else "")
+                    if explanation:
+                        summary = f"Run {idx}: {explanation}" + (f" 原始错误：{detail}" if detail else "")
+                    else:
+                        summary = f"Run {idx}: {t_status}" + (f" — {detail}" if detail else "")
                 with JOBS_LOCK:
                     job["errors"].append(summary)
                     job["done"] += 1
