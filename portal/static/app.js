@@ -44,11 +44,14 @@ function jobStatusBadgeTone(status) {
 // looped forever rendering "unknown". This distinguishes:
 //   {kind:'ok', job}   HTTP 200 + a job object carrying a status field
 //   {kind:'gone'}      HTTP 404 — job no longer exists (sub-app restarted)
+//   {kind:'unauthorized'} HTTP 401 — Portal 会话过期；立即停轮询（上游 1470fa3），
+//                       别让 15 次退避把日志刷满
 //   {kind:'error'}     network error / 5xx / non-JSON — transient, retry with backoff
 async function dmPollOnce(url) {
   try {
     const res = await fetch(url, { method: 'GET', headers: { 'X-Workspace-Id': workspaceId() } });
     if (res.status === 404) return { kind: 'gone' };
+    if (res.status === 401) return { kind: 'unauthorized' };
     if (!res.ok) return { kind: 'error' };
     const body = await res.json();
     const job = body && body.job ? body.job : body;
@@ -470,6 +473,12 @@ function DreaminaApp() {
         if (r.kind === 'gone') {
           card.className = 'ui-job-status-card is-failed';
           card.innerHTML = '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--danger">任务已失效</span></div><div class="ui-job-status-card__error">服务可能重启过，请查看历史记录或重新提交</div>';
+          stop();
+          break;
+        }
+        if (r.kind === 'unauthorized') {
+          card.className = 'ui-job-status-card is-failed';
+          card.innerHTML = '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--danger">登录已过期</span></div><div class="ui-job-status-card__error">会话已过期，请重新登录后刷新页面，任务仍在后台运行</div>';
           stop();
           break;
         }
