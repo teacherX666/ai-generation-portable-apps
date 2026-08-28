@@ -41,6 +41,12 @@ _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _DEFAULT_GROUP_NAME = "canvas-aigc-default"
 _PRESIGNED_EXPIRES = 43200
 _STATUSES = {"Processing": "processing", "Active": "active", "Failed": "failed"}
+_GROUP_LIST_MAX = 200
+_GROUP_LIST_PAGE = 100
+_ASSET_LIST_MAX = 250
+_ASSET_LIST_PAGE = 50
+_GROUP_ID_DATE = re.compile(r"^group-(\d{8})\d{6}-[A-Za-z0-9]+$")
+_ASSET_TYPES = {"Image": "image", "Video": "video", "Audio": "audio"}
 
 
 class LibraryError(Exception):
@@ -108,6 +114,15 @@ def _group_id() -> str | None:
 
 def _save_group_id(group_id: str) -> None:
     GROUP_STATE_PATH.write_text(json.dumps({"group_id": group_id}))
+
+
+def _group_id_date(group_id: str) -> str | None:
+    """从方舟分组 id（group-YYYYMMDDHHMMSS-rand）提取创建日期 YYYY-MM-DD。"""
+    match = _GROUP_ID_DATE.match(group_id)
+    if match is None:
+        return None
+    digits = match.group(1)
+    return f"{digits[0:4]}-{digits[4:6]}-{digits[6:8]}"
 
 
 # -------------------------------------------------------------------- 签名
@@ -242,6 +257,29 @@ def _openapi_call(cfg: dict, action: str, payload: dict) -> dict:
 
 # ---------------------------------------------------------------- 素材操作
 
+def _clean_name(value: str, *, label: str) -> str:
+    """清洗用户提供的名字：去控制字符、strip、限长。空则 ValueError。"""
+    cleaned = "".join(ch for ch in value if ord(ch) >= 32 and ord(ch) != 127).strip()[:64]
+    if not cleaned:
+        raise ValueError(f"{label}无效。")
+    return cleaned
+
+
+def _media_type_of_asset(item: dict) -> str:
+    """从 ListAssets 项的 AssetType / URL 扩展名推导 media_type（缺省 image）。"""
+    media = _ASSET_TYPES.get(item.get("AssetType") or "")
+    if media is not None:
+        return media
+    url = item.get("URL")
+    if isinstance(url, str) and url:
+        lower = url.split("?", 1)[0].lower()
+        if lower.endswith((".mp4", ".webm", ".mov")):
+            return "video"
+        if lower.endswith((".mp3", ".wav", ".m4a")):
+            return "audio"
+    return "image"
+
+
 def ensure_default_group(cfg: dict) -> str:
     """已有持久化的分组直接复用，否则创建 AIGC 分组并落盘。"""
     existing = _group_id()
@@ -260,14 +298,22 @@ def ensure_default_group(cfg: dict) -> str:
     return identifier
 
 
-def upload_image(cfg: dict, path: str, mime: str, size: int, filename: str) -> tuple[str, str]:
-    """上传一张人像图到素材库。返回 (upstream_asset_id, status)。"""
+def upload_image(cfg: dict, path: str, mime: str, size: int, filename: str,
+                 group_id: str | None = None) -> tuple[str, str]:
+    """上传一张人像图到素材库。返回 (upstream_asset_id, status)。
+
+    group_id 缺省时走 ensure_default_group 的持久化默认组；显式传入时
+    必须匹配 _GROUP_ID，由调用方（前端组选择器）决定传哪个组。
+    """
     if mime not in _IMAGE_MIMES or not (1 <= size <= _MAX_IMAGE_BYTES):
         raise ValueError("素材库只接受 10MB 以内的 PNG/JPEG/WebP 图片。")
     blob = Path(path).read_bytes()
     if len(blob) != size:
         raise ValueError("素材文件在上传过程中发生了变化。")
-    group_id = ensure_default_group(cfg)
+    if group_id is None:
+        group_id = ensure_default_group(cfg)
+    elif _GROUP_ID.fullmatch(group_id) is None:
+        raise ValueError("素材库分组标识无效。")
 
     object_key = f"refmedia/{uuid.uuid4().hex}{_IMAGE_MIMES[mime]}"
     signed = _tos_signed_put(cfg, object_key, mime, blob)
@@ -316,3 +362,140 @@ def delete_asset(cfg: dict, asset_id: str) -> None:
         raise ValueError("素材库素材标识无效。")
     _openapi_call(cfg, "DeleteAsset",
                   {"Id": asset_id, "ProjectName": cfg["project_name"]})
+
+
+# -------------------------------------------------------------- 分组管理
+# 语义对齐上游 96878f1/dc5cb6a/b59accb/7c25820/d13711d/9645ab1/5ad0d58/141a68c。
+# 不做上游的 mj 前缀/按人授权/清理扫描（Portal 形态无这些需求）。
+
+def list_groups(cfg: dict) -> list[dict]:
+    """列出全部 AIGC 分组（方舟返回顺序即展示顺序，一般新在前）。
+
+    循环翻页 PageSize=100 直到某页不满或达到 cap 200，避免存量分组
+    超过首页时前端「只能看到一部分、删不掉更早的组」。
+    """
+    groups: list[dict] = []
+    for page in range(1, 51):
+        data = _openapi_call(cfg, "ListAssetGroups",
+                             {"Filter": {"GroupType": "AIGC"}, "PageNumber": page,
+                              "PageSize": _GROUP_LIST_PAGE,
+                              "ProjectName": cfg["project_name"]})
+        result = data.get("Result")
+        if not isinstance(result, dict) or not isinstance(result.get("Items"), list):
+            raise LibraryInvalid("素材库分组列表响应无效。")
+        items = result["Items"]
+        for item in items:
+            if not isinstance(item, dict):
+                raise LibraryInvalid("素材库分组列表响应无效。")
+            identifier = item.get("Id") or item.get("GroupId")
+            name = item.get("Name")
+            if not isinstance(identifier, str) or _GROUP_ID.fullmatch(identifier) is None:
+                raise LibraryInvalid("素材库分组列表响应无效。")
+            if not isinstance(name, str) or not name:
+                raise LibraryInvalid("素材库分组列表响应无效。")
+            groups.append({"group_id": identifier, "name": name,
+                           "created_at": _group_id_date(identifier) or ""})
+        if len(items) < _GROUP_LIST_PAGE or len(groups) >= _GROUP_LIST_MAX:
+            break
+    return groups
+
+
+def create_group(cfg: dict, name: str) -> str:
+    """在方舟侧创建 AIGC 分组，返回组 id。"""
+    cleaned = _clean_name(name, label="素材组名字")
+    data = _openapi_call(cfg, "CreateAssetGroup",
+                         {"Name": cleaned, "ProjectName": cfg["project_name"],
+                          "GroupType": "AIGC"})
+    result = data.get("Result")
+    if not isinstance(result, dict):
+        raise LibraryInvalid("素材库分组响应无效。")
+    identifier = result.get("Id") or result.get("GroupId")
+    if not isinstance(identifier, str) or _GROUP_ID.fullmatch(identifier) is None:
+        raise LibraryInvalid("素材库分组响应无效。")
+    return identifier
+
+
+def rename_group(cfg: dict, group_id: str, name: str) -> None:
+    """改方舟侧分组名。默认组改名由调用方拦截（避免本地持久化悬空）。"""
+    if _GROUP_ID.fullmatch(group_id) is None:
+        raise ValueError("素材库分组标识无效。")
+    cleaned = _clean_name(name, label="素材组名字")
+    _openapi_call(cfg, "UpdateAssetGroup",
+                  {"Id": group_id, "Name": cleaned, "ProjectName": cfg["project_name"]})
+
+
+def delete_group(cfg: dict, group_id: str) -> None:
+    """删除方舟侧分组（组内素材一并删除，DeleteAssetGroup 即删）。"""
+    if _GROUP_ID.fullmatch(group_id) is None:
+        raise ValueError("素材库分组标识无效。")
+    _openapi_call(cfg, "DeleteAssetGroup",
+                  {"Id": group_id, "ProjectName": cfg["project_name"]})
+
+
+def list_group_assets(cfg: dict, group_id: str) -> list[dict]:
+    """列出组内全部素材（含处理中与失败项），最多 250 个（5 页 × 50）。
+
+    Failed 项的 Result.Items[i].Error.Message 提取进 error_message（b59accb）。
+    """
+    if _GROUP_ID.fullmatch(group_id) is None:
+        raise ValueError("素材库分组标识无效。")
+    items: list[dict] = []
+    for page in range(1, 6):
+        data = _openapi_call(cfg, "ListAssets",
+                             {"Filter": {"GroupType": "AIGC", "GroupIds": [group_id],
+                                         "Statuses": ["Processing", "Active", "Failed"]},
+                              "PageNumber": page, "PageSize": _ASSET_LIST_PAGE,
+                              "ProjectName": cfg["project_name"]})
+        result = data.get("Result")
+        if not isinstance(result, dict) or not isinstance(result.get("Items"), list):
+            raise LibraryInvalid("素材库列表响应无效。")
+        page_items = result["Items"]
+        for item in page_items:
+            if not isinstance(item, dict):
+                raise LibraryInvalid("素材库列表响应无效。")
+            identifier = item.get("Id")
+            status = _STATUSES.get(item.get("Status"))
+            if not isinstance(identifier, str) or _ARK_ASSET_ID.fullmatch(identifier) is None:
+                raise LibraryInvalid("素材库列表响应无效。")
+            if status is None:
+                raise LibraryInvalid("素材库列表响应无效。")
+            name = item.get("Name")
+            error_message = None
+            if status == "failed":
+                error = item.get("Error")
+                if isinstance(error, dict) and isinstance(error.get("Message"), str) and error["Message"]:
+                    error_message = error["Message"]
+            items.append({"asset_id": identifier,
+                          "name": name if isinstance(name, str) and name else identifier,
+                          "status": status,
+                          "media_type": _media_type_of_asset(item),
+                          "error_message": error_message})
+        if len(page_items) < _ASSET_LIST_PAGE:
+            break
+        if len(items) >= _ASSET_LIST_MAX:
+            break
+    return items
+
+
+def update_asset(cfg: dict, asset_id: str, name: str) -> None:
+    """改方舟侧素材名字。"""
+    if _ARK_ASSET_ID.fullmatch(asset_id) is None:
+        raise ValueError("素材库素材标识无效。")
+    cleaned = _clean_name(name, label="素材名字")
+    _openapi_call(cfg, "UpdateAsset",
+                  {"Id": asset_id, "Name": cleaned, "ProjectName": cfg["project_name"]})
+
+
+def get_asset_url(cfg: dict, asset_id: str) -> str:
+    """取方舟侧素材的公开访问 URL（每次调用重新取预签名 URL，用完即失效）。"""
+    if _ARK_ASSET_ID.fullmatch(asset_id) is None:
+        raise ValueError("素材库素材标识无效。")
+    data = _openapi_call(cfg, "GetAsset",
+                         {"Id": asset_id, "ProjectName": cfg["project_name"]})
+    result = data.get("Result")
+    if not isinstance(result, dict) or result.get("Id") != asset_id:
+        raise LibraryInvalid("素材库状态响应无效。")
+    url = result.get("URL")
+    if not isinstance(url, str) or not url:
+        raise LibraryInvalid("素材库状态响应无效。")
+    return url

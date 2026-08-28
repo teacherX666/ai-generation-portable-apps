@@ -271,6 +271,7 @@ def insert_asset(user_id: str, asset_id: str, media_type: str, mime_type: str,
         "media_type": media_type,
         "mime_type": mime_type,
         "size_bytes": size_bytes,
+        "upstream_asset_id": upstream_asset_id,
     }
 
 
