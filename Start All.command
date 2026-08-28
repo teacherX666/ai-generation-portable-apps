@@ -63,6 +63,18 @@ if [ -z "$PYTHON" ]; then
 fi
 echo "Using: $PYTHON ($($PYTHON --version))"
 
+# Keep manual startup on the same production engines as launchd.  The RAG
+# assistant's app.py is intentionally only a compatibility stub; its real
+# service is app_fastapi:app and needs the shared .venv uvicorn runner.  Without
+# these flags the Portal falls back to stdlib mode and that tab appears to
+# vanish because the assistant exits immediately.
+export SEEDANCE_ENGINE=${SEEDANCE_ENGINE:-fastapi}
+export NANO_BANANA_ENGINE=${NANO_BANANA_ENGINE:-fastapi}
+export DREAMINA_ENGINE=${DREAMINA_ENGINE:-fastapi}
+export VOLCENGINE_PORTRAIT_ENGINE=${VOLCENGINE_PORTRAIT_ENGINE:-fastapi}
+export INFINITE_CANVAS_ENGINE=${INFINITE_CANVAS_ENGINE:-fastapi}
+export RAG_ASSISTANT_ENGINE=${RAG_ASSISTANT_ENGINE:-fastapi}
+
 echo "Starting AI Generation Portal on port 9090 (HTTPS)..."
 echo "  Local:  https://127.0.0.1:9090"
 echo "  HTTP → HTTPS:  http://127.0.0.1:9089"

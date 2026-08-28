@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portal UI Core Preview</title>
+  <link rel="stylesheet" href="../portal-ui-core.css">
+</head>
+<body class="ui-page">
+  <main class="ui-console" style="max-width:1100px;margin:0 auto">
+    <div class="ui-split">
+      <div>
+        <h1 class="ui-heading" style="font-size:var(--ui-font-size-xl)">企业 AI 创作工作台</h1>
+        <p class="ui-caption">Portal UI Core 组件预览（无构建依赖）</p>
+      </div>
+      <div class="ui-inline">
+        <span class="ui-badge ui-badge--success">运行正常</span>
+        <button class="ui-btn ui-btn--primary">新建任务</button>
+      </div>
+    </div>
+    <section class="ui-workbench">
+      <div class="ui-panel ui-workbench__input">
+        <div class="ui-panel__header"><h2 class="ui-heading">输入与参数</h2><span class="ui-badge ui-badge--info">创作工作台</span></div>
+        <div class="ui-panel__body ui-stack">
+          <label class="ui-field"><span class="ui-field__label">提示词</span><textarea class="ui-textarea" placeholder="描述你想生成的内容"></textarea></label>
+          <label class="ui-field"><span class="ui-field__label">模型</span><select class="ui-select"><option>Seedance 2.0</option><option>Nano Banana</option></select></label>
+          <div class="ui-inline"><button class="ui-btn ui-btn--primary">开始生成</button><button class="ui-btn ui-btn--secondary">保存草稿</button></div>
+          <div class="ui-alert ui-alert--info">状态和风险提示使用局部语义色，不覆盖整个工作区。</div>
+        </div>
+      </div>
+      <div class="ui-panel ui-workbench__output">
+        <div class="ui-panel__header"><h2 class="ui-heading">生成结果</h2><span class="ui-caption">结果优先展示</span></div>
+        <div class="ui-panel__body ui-stack">
+          <div class="ui-empty">暂无结果<br><span class="ui-caption">提交任务后，素材和生成结果会出现在这里</span></div>
+          <div class="ui-inline"><span class="ui-badge ui-badge--neutral">排队中</span><span class="ui-badge ui-badge--warning">待审核</span><span class="ui-badge ui-badge--danger">失败可重试</span></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

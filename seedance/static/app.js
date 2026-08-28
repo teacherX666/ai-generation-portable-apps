@@ -71,6 +71,25 @@ function escHtml(s) {
   return s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
 }
 
+function jobStatusLabel(status) {
+  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消' };
+  return map[String(status || '').toLowerCase()] || String(status || '未知');
+}
+
+function jobStatusClass(status) {
+  const s = String(status || '').toLowerCase();
+  if (['succeeded', 'success', 'completed'].includes(s)) return 'is-success';
+  if (['failed', 'failure'].includes(s)) return 'is-failed';
+  if (['pending', 'queued'].includes(s)) return 'is-pending';
+  if (s === 'querying') return 'is-querying';
+  return 'is-running';
+}
+
+function jobStatusBadgeTone(status) {
+  const state = jobStatusClass(status);
+  return state === 'is-success' ? 'success' : state === 'is-failed' ? 'danger' : state === 'is-pending' ? 'warning' : 'info';
+}
+
 // ============================================================
 // FILE DROP / PREVIEW HELPERS
 // ============================================================
@@ -1114,13 +1133,12 @@ function SeedanceApp() {
       if (resultsEl) {
         const recentEvents = (job.events || []).slice(-8);
         const eventsHtml = recentEvents.length
-          ? recentEvents.map(e =>
-              '<div style="font-size:11px;color:#d1e0ff;padding:2px 0">'
-              + '<span style="color:#697386">' + escHtml(e.time) + '</span> '
+          ? '<div class="ui-job-status-card__events">' + recentEvents.map(e =>
+              '<div><span class="ui-job-status-card__event-time">' + escHtml(e.time) + '</span>'
               + escHtml(e.message)
               + '</div>'
-            ).join('')
-          : '<div style="color:#697386;font-size:11px">等待服务器响应...</div>';
+            ).join('') + '</div>'
+          : '<div class="ui-job-status-card__events">等待服务器响应...</div>';
 
         // 友好错误提示：识别错误类型，显示用户友好的消息
         let errorHint = '';
@@ -1142,11 +1160,10 @@ function SeedanceApp() {
         }
 
         resultsEl.innerHTML =
-          '<article class="result" style="border-color:#4f46e5;background:#101828;color:#e2e8f0;grid-column:1/-1">'
-          + '<div class="meta" style="color:#818cf8;font-weight:600;margin-bottom:6px">'
-          + escHtml(job.status) + ' · ' + (job.done || 0) + '/' + (job.total || 0)
-          + (errorHint ? '<br><span style="color:#fca5a5;font-size:12px;font-weight:400">' + errorHint + '</span>' : '')
-          + '</div>'
+          '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">'
+          + '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--' + jobStatusBadgeTone(job.status) + '">'
+          + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0) + '</div>'
+          + (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '')
           + eventsHtml
           + '</article>';
 
@@ -1157,21 +1174,16 @@ function SeedanceApp() {
           // through the portal proxy → Chrome's per-host cap and portal's
           // buffer-then-forward path combine into ERR_TOO_MANY_RETRIES.
           resultsEl.innerHTML +=
-            '<article class="result">'
-            + '<div class="video-lazy" data-src="' + url + '" tabindex="0" role="button" aria-label="播放视频"'
-            + ' style="max-height:200px;min-height:120px;background:#0f172a;border:1px solid #334155;border-radius:6px;'
-            + 'display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative">'
-            + '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;color:#94a3b8">'
-            + '<div style="width:40px;height:40px;border-radius:50%;background:#334155;display:flex;align-items:center;justify-content:center;font-size:18px;color:#e2e8f0">▶</div>'
-            + '<div style="font-size:11px">点击加载视频</div>'
-            + '</div></div>'
-            + '<a href="' + url + '" class="dl-btn" data-url="' + url + '" data-filename="' + escHtml(r.filename || 'video') + '">下载</a>'
-            + '<div class="meta">Run ' + (r.index || '') + ' · ' + (r.task_id || '') + '</div>'
+            '<article class="result ui-result-card">'
+            + '<div class="video-lazy ui-media-placeholder" data-src="' + url + '" tabindex="0" role="button" aria-label="播放视频">'
+            + '<div><div class="ui-media-placeholder__icon">▶</div><div class="ui-caption">点击加载视频</div></div></div>'
+            + '<a href="' + url + '" class="dl-btn ui-result-card__download" data-url="' + url + '" data-filename="' + escHtml(r.filename || 'video') + '">下载</a>'
+            + '<div class="ui-result-card__meta">Run ' + (r.index || '') + ' · ' + (r.task_id || '') + '</div>'
             + '</article>';
         }
 
         for (const err of job.errors || []) {
-          resultsEl.innerHTML += '<article class="result" style="color:#ef4444">' + escHtml(err) + '</article>';
+          resultsEl.innerHTML += '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(err) + '</article>';
         }
       }
     },
@@ -1611,13 +1623,13 @@ PetiteVue.createApp({ SeedanceApp }).mount();
     var style = document.createElement('style');
     style.textContent =
       '#_dlProgWrap{position:fixed;left:16px;bottom:16px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none}' +
-      '#_dlProgWrap .dlp{background:#17191f;color:#e2e8f0;border-radius:8px;padding:10px 12px;min-width:240px;max-width:340px;box-shadow:0 4px 16px rgba(0,0,0,.35);font-size:12px;pointer-events:auto}' +
+      '#_dlProgWrap .dlp{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:240px;max-width:340px;box-shadow:var(--shadow-md);font-size:12px;pointer-events:auto}' +
       '#_dlProgWrap .dlp .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px}' +
-      '#_dlProgWrap .dlp .track{height:6px;background:#2d3340;border-radius:3px;overflow:hidden}' +
-      '#_dlProgWrap .dlp .fill{height:100%;width:0;background:#3b82f6;transition:width .15s ease}' +
-      '#_dlProgWrap .dlp .txt{margin-top:5px;color:#94a3b8;font-size:11px}' +
-      '#_dlProgWrap .dlp.done .fill{background:#22c55e}' +
-      '#_dlProgWrap .dlp.fail .fill{background:#ef4444}';
+      '#_dlProgWrap .dlp .track{height:6px;background:var(--surface-sunken);border-radius:3px;overflow:hidden}' +
+      '#_dlProgWrap .dlp .fill{height:100%;width:0;background:var(--accent);transition:width .15s ease}' +
+      '#_dlProgWrap .dlp .txt{margin-top:5px;color:var(--muted);font-size:11px}' +
+      '#_dlProgWrap .dlp.done .fill{background:var(--success)}' +
+      '#_dlProgWrap .dlp.fail .fill{background:var(--danger)}';
     document.head.appendChild(style);
     container = document.createElement('div');
     container.id = '_dlProgWrap';

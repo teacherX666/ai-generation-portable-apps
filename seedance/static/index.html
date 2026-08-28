@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Seedance</title>
+  <link rel="stylesheet" href="ui/portal-ui-core.css">
   <link rel="stylesheet" href="styles.css">
-  <script src="https://unpkg.com/petite-vue"></script>
+  <script src="https://unpkg.com/petite-vue@0.4.1/dist/petite-vue.iife.js"></script>
 </head>
-<body>
+<body class="ui-page">
   <div id="sd-app" v-scope="SeedanceApp()" @vue:mounted="init()">
     <div class="app-tabs" v-if="tabs.length">
       <div v-for="t in tabs" :key="t.id"
@@ -26,8 +27,8 @@
       </div>
       <div class="app-tab plus" @click="newTab()">+ 新主题</div>
     </div>
-    <main class="app">
-      <aside class="sidebar">
+    <main class="app ui-shell__body">
+      <aside class="sidebar ui-sidebar">
         <h1 v-if="!inPortal" style="font-size:24px;margin-bottom:16px">
           Seedance
           <span class="app-status-dot" :class="appStatus"></span>
@@ -150,8 +151,8 @@
         </form>
       </aside>
 
-      <section class="workspace">
-        <div class="promptPanel">
+      <section class="workspace ui-workbench">
+        <div class="promptPanel ui-panel ui-workbench__input">
           <h2>Prompt <button type="button" @click="optimizePrompt()" :disabled="optimizing" class="optimizeBtn">{{ optimizing ? '⏳ 优化中...' : '✨ 优化' }}</button></h2>
           <textarea name="prompt" form="sd-form" spellcheck="false" placeholder="输入提示词，@ref_image1 引用参考图..."></textarea>
           <div v-if="optimizedPrompt" class="optimizeResult">
@@ -165,7 +166,7 @@
           <p v-if="optimizeError" class="hint" style="color:#ef4444">{{ optimizeError }}</p>
         </div>
 
-        <div class="uploadPanel">
+        <div class="uploadPanel ui-panel">
           <h2>首尾帧</h2>
           <div class="uploadGrid two">
             <label class="drop">首帧<input form="sd-form" name="first_frame" type="file" accept="image/*"><span>未上传</span></label>
@@ -179,10 +180,14 @@
           <div class="uploadGrid three" id="sd-audioRefs"></div>
         </div>
 
-        <div class="resultPanel">
-          <div class="sub-tabs" style="margin-bottom:10px">
-            <button type="button" class="tabBtn" :class="{ isActive: wsTab === 'jobs' }" @click="switchJobsTab()">任务</button>
-            <button type="button" class="tabBtn" :class="{ isActive: wsTab === 'activity' }" @click="switchActivityTab()">活动</button>
+        <div class="resultPanel ui-panel ui-workbench__output">
+          <div class="workspace-nav-grid">
+            <button type="button" class="tabBtn workspace-nav-btn" :class="{ isActive: wsTab === 'jobs' }" @click="switchJobsTab()">任务</button>
+            <button type="button" class="tabBtn workspace-nav-btn" :class="{ isActive: wsTab === 'activity' }" @click="switchActivityTab()">活动</button>
+            <template v-if="wsTab === 'activity' && activityDetail">
+              <button type="button" class="btn-small workspace-nav-btn" @click="activityDetail=null">← 返回列表</button>
+              <button type="button" class="btn-small ui-btn ui-btn--primary workspace-nav-btn" @click="restoreActivity()">恢复参数</button>
+            </template>
           </div>
           <div v-show="wsTab==='jobs'">
             <!-- Active polling display (during job execution) -->
@@ -208,7 +213,7 @@
                   <!-- Lazy video: render a lightweight click-to-play placeholder instead of a live <video>.
                        Dozens of live <video controls> in the history list pin decoder/buffer memory and
                        crash the tab over time. Click swaps in the real element on demand. -->
-                  <div v-if="!r._play" @click="r._play = true" style="width:120px;height:68px;border-radius:4px;background:#0f172a;color:#cbd5e1;flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px">▶ 播放</div>
+                  <div v-if="!r._play" @click="r._play = true" style="width:120px;height:68px;border-radius:4px;background:var(--surface-sunken);color:var(--text-secondary);border:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px">▶ 播放</div>
                   <video v-else :src="appPath + r.download_url" controls autoplay muted playsinline style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
                   <span style="font-size:11px;color:#697386;flex:1">{{ r.filename || 'video' }}</span>
                   <button @click="_blobDownload(appPath + r.download_url, r.filename || 'video')" style="background:#2563eb;color:#fff;border:1px solid #2563eb;font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer">下载</button>
@@ -239,10 +244,6 @@
               </div>
             </div>
             <div v-else-if="activityDetail" class="act-detail">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                <button type="button" class="btn-small" @click="activityDetail=null">← 返回列表</button>
-                <button type="button" class="btn-small" style="background:#17191f;color:#fff" @click="restoreActivity()">恢复参数</button>
-              </div>
               <div class="act-detail-meta">
                 <span :class="activityDetail.status">{{ activityDetail.status }}</span> · {{ activityDetail.created_at }}
               </div>

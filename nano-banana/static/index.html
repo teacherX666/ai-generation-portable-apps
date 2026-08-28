@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>图像生成模块</title>
+  <link rel="stylesheet" href="ui/portal-ui-core.css">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="ui-page">
   <div id="nb-app" v-scope="NanoBananaApp()" @vue:mounted="init()">
 
     <!-- Standalone page chrome (hidden in Portal proxy) -->
@@ -31,9 +32,9 @@
       </div>
       <div class="app-tab plus" @click="newTab()">+ 新主题</div>
     </div>
-    <main class="app">
+    <main class="app ui-shell__body">
       <!-- ====== SIDEBAR ====== -->
-      <aside class="sidebar">
+      <aside class="sidebar ui-sidebar">
 
         <form id="nb-form" @submit.prevent="submit">
 
@@ -223,26 +224,30 @@
       </aside>
 
       <!-- ====== WORKSPACE ====== -->
-      <section class="workspace">
+      <section class="workspace ui-workbench">
 
         <!-- Prompt -->
-        <div class="panel">
+        <div class="panel ui-panel ui-workbench__input">
           <h2>Prompt</h2>
           <textarea name="prompt" form="nb-form" spellcheck="false" placeholder="输入提示词。多图参考可写：参考 Image 1 的人物..."></textarea>
         </div>
 
         <!-- Reference Images -->
-        <div class="panel">
+        <div class="panel ui-panel">
           <h2>参考图</h2>
           <p class="hint" v-if="maxReferenceImages < 14">当前模型最多支持 {{ maxReferenceImages }} 张参考图。</p>
           <div class="uploadGrid refs" id="nb-imageRefs"></div>
         </div>
 
         <!-- Jobs / Activity -->
-        <div class="panel">
-          <div class="sub-tabs" style="margin-bottom:10px">
-            <button type="button" class="sub-tab" :class="{ isActive: wsTab === 'jobs' }" @click="wsTab='jobs'">任务</button>
-            <button type="button" class="sub-tab" :class="{ isActive: wsTab === 'activity' }" @click="wsTab='activity'; loadActivity()">活动</button>
+        <div class="panel ui-panel ui-workbench__output">
+          <div class="workspace-nav-grid">
+            <button type="button" class="sub-tab workspace-nav-btn" :class="{ isActive: wsTab === 'jobs' }" @click="wsTab='jobs'">任务</button>
+            <button type="button" class="sub-tab workspace-nav-btn" :class="{ isActive: wsTab === 'activity' }" @click="wsTab='activity'; loadActivity()">活动</button>
+            <template v-if="wsTab === 'activity' && activityDetail">
+              <button type="button" class="btn-small workspace-nav-btn" @click="activityDetail=null">← 返回列表</button>
+              <button type="button" class="btn-small ui-btn ui-btn--primary workspace-nav-btn" @click="restoreActivity()">恢复参数</button>
+            </template>
           </div>
 
           <!-- Jobs Tab -->
@@ -272,10 +277,6 @@
               </div>
             </div>
             <div v-else-if="activityDetail" class="act-detail">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                <button type="button" class="btn-small" @click="activityDetail=null">← 返回列表</button>
-                <button type="button" class="btn-small" style="background:#17191f;color:#fff" @click="restoreActivity()">恢复参数</button>
-              </div>
               <div class="act-detail-meta">
                 <span :class="activityDetail.status">{{ activityDetail.status }}</span> · {{ activityDetail.created_at }}
               </div>
