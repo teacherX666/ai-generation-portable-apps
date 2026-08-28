@@ -470,9 +470,245 @@ export function removeProp(id) {
   state.props.delete(id);
 }
 
-// markDirty：数据流层（Task 8）定义，这里先挂全局占位
-window.__markDirty = () => {};
-function markDirty() { window.__markDirty(); }
+// markDirty：对象面板改动入口，Task 8 起转调数据流层 setDirty
+function markDirty() { setDirty(); }
+
+// ============ 项目数据流 ============
+import { emptyProject, newShot, sanitizeFilename, dataUrlToBlob } from './core.js';
+
+let project = null;        // 当前项目 JSON（内存态）
+let activeShotId = null;
+let saveTimer = null;
+let lastRender = null;     // Task 9 渲染结果 {dataUrl, shotId, width, height}
+
+// toast：Task 10 实现真实版本，这里先挂占位
+window.__previzToast = null;
+function toast(msg, isErr) {
+  if (window.__previzToast) { window.__previzToast(msg, isErr); return; }
+  console.warn('toast:', msg);
+}
+
+export function setDirty() {
+  const el = document.getElementById('save-state');
+  el.textContent = '未保存…';
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 2000);
+}
+window.__markDirty = setDirty;
+
+export function currentShotData() {
+  return project && project.shots.find((s) => s.id === activeShotId) || null;
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+  return data;
+}
+
+function round3(v) { return Math.round(v * 1000) / 1000; }
+
+function serializeSceneInto(shot) {
+  shot.characters = [...state.mannequins.values()].map((rec) => {
+    const d = rec.data;
+    return {
+      ...d,
+      position: [round3(rec.group.position.x), round3(rec.group.position.y), round3(rec.group.position.z)],
+    };
+  });
+  shot.props = [...state.props.values()].map((rec) => {
+    const d = rec.data;
+    return { ...d, position: [round3(rec.group.position.x), 0, round3(rec.group.position.z)] };
+  });
+  const dir = new THREE.Vector3().subVectors(state.camera.position, state.controls.target);
+  const horiz = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
+  shot.camera = {
+    position: [round3(state.camera.position.x), round3(state.camera.position.y), round3(state.camera.position.z)],
+    target: [round3(state.controls.target.x), round3(state.controls.target.y), round3(state.controls.target.z)],
+    fov: state.camera.fov,
+    shot_size: currentShot(),
+    azimuth: Math.round(Math.atan2(dir.x, dir.z) * 180 / Math.PI),
+    elevation: Math.round(Math.atan2(dir.y, horiz) * 180 / Math.PI),
+  };
+  shot.aspect = currentAspect;
+}
+
+function clearSceneActors() {
+  for (const id of [...state.mannequins.keys()]) removeMannequin(id);
+  for (const id of [...state.props.keys()]) removeProp(id);
+}
+
+function loadShotIntoScene(shot) {
+  clearSceneActors();
+  for (const c of shot.characters) {
+    const base = newCharacter(c.id, c.label);
+    addMannequin({ ...base, ...c });
+  }
+  for (const p of shot.props) addProp({ ...p });
+  state.camera.position.set(...(shot.camera.position || [0, 3.2, 12]));
+  state.controls.target.set(...(shot.camera.target || [0, 1, 0]));
+  state.camera.fov = shot.camera.fov || 50;
+  state.camera.updateProjectionMatrix();
+  state.controls.update();
+  currentShotSize = shot.camera.shot_size || '中景';
+  currentAspect = shot.aspect || '16:9';
+  const sel = document.getElementById('cam-aspect');
+  if (sel.value !== currentAspect) sel.value = currentAspect;
+  applyAspect(currentAspect);
+  document.querySelectorAll('#shot-size-chips .chip').forEach((c) =>
+    c.classList.toggle('active', c.textContent === currentShotSize));
+  updateCameraHud();
+  select(null);
+  document.getElementById('shot-notes').value = shot.notes || '';
+  renderShotList();
+}
+
+export function switchShot(id) {
+  const old = currentShotData();
+  if (old && old.id !== id) serializeSceneInto(old);
+  activeShotId = id;
+  const shot = currentShotData();
+  if (!shot) {   // 新项目还没有镜头：清空场景即可
+    clearSceneActors();
+    renderShotList();
+    return;
+  }
+  loadShotIntoScene(shot);
+}
+
+async function saveNow() {
+  clearTimeout(saveTimer);
+  const shot = currentShotData();
+  if (shot) serializeSceneInto(shot);
+  if (!project) return;
+  try {
+    await api('api/projects/' + project.id, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(project),
+    });
+    document.getElementById('save-state').textContent = '已保存 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  } catch (err) {
+    document.getElementById('save-state').textContent = '保存失败';
+    toast('保存失败：' + err.message, true);
+  }
+}
+
+export function renderShotList() {
+  const wrap = document.getElementById('shot-items');
+  wrap.innerHTML = '';
+  if (!project) return;
+  const shots = [...project.shots].sort((a, b) => a.order - b.order);
+  for (const shot of shots) {
+    const item = document.createElement('div');
+    item.className = 'shot-item' + (shot.id === activeShotId ? ' active' : '');
+    const img = document.createElement('img');
+    img.src = shot.thumbnail
+      ? `api/files/${project.id}/${shot.thumbnail}`
+      : 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="160" height="52"><rect width="160" height="52" fill="%230f172a"/></svg>';
+    item.appendChild(img);
+    const name = document.createElement('div');
+    name.className = 'shot-name';
+    name.textContent = `${shot.order + 1} · ${shot.name}`;
+    item.appendChild(name);
+    const actions = document.createElement('div');
+    actions.className = 'shot-actions';
+    for (const [label, fn] of [
+      ['复制', () => duplicateShot(shot.id)],
+      ['↑', () => moveShot(shot.id, -1)],
+      ['↓', () => moveShot(shot.id, 1)],
+      ['删', () => deleteShot(shot.id)],
+    ]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.onclick = (e) => { e.stopPropagation(); fn(); };
+      actions.appendChild(b);
+    }
+    item.appendChild(actions);
+    item.onclick = () => switchShot(shot.id);
+    wrap.appendChild(item);
+  }
+}
+
+function duplicateShot(id) {
+  const src = project.shots.find((s) => s.id === id);
+  if (!src) return;
+  const copy = JSON.parse(JSON.stringify(src));
+  copy.id = newId('s_');
+  copy.name = src.name + ' 副本';
+  copy.render = ''; copy.thumbnail = '';
+  project.shots.splice(project.shots.indexOf(src) + 1, 0, copy);
+  reorder();
+  switchShot(copy.id);
+  setDirty();
+}
+
+function deleteShot(id) {
+  if (project.shots.length <= 1) return toast('至少保留一个镜头', true);
+  if (!confirm('删除这个镜头？')) return;
+  const idx = project.shots.findIndex((s) => s.id === id);
+  project.shots.splice(idx, 1);
+  reorder();
+  switchShot(project.shots[Math.min(idx, project.shots.length - 1)].id);
+  setDirty();
+}
+
+function moveShot(id, delta) {
+  const idx = project.shots.findIndex((s) => s.id === id);
+  const target = idx + delta;
+  if (target < 0 || target >= project.shots.length) return;
+  const [shot] = project.shots.splice(idx, 1);
+  project.shots.splice(target, 0, shot);
+  reorder();
+  renderShotList();
+  setDirty();
+}
+
+function reorder() {
+  project.shots.forEach((s, i) => { s.order = i; });
+}
+
+export async function loadProjectList() {
+  const { projects } = await api('api/projects');
+  const sel = document.getElementById('project-select');
+  sel.innerHTML = '';
+  for (const p of projects) {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = `${p.name}（${p.shot_count} 镜头）`;
+    sel.appendChild(o);
+  }
+  if (!projects.length) {
+    await createProject('未命名项目');
+    return;
+  }
+  const target = project ? project.id : projects[0].id;
+  await loadProject(target || projects[0].id);
+}
+
+export async function loadProject(id) {
+  saveTimer && clearTimeout(saveTimer);
+  try {
+    project = await api('api/projects/' + id);
+  } catch (err) {
+    toast('项目读取失败：' + err.message + '（若数据损坏，服务端已自动备份）', true);
+    return loadProjectList();
+  }
+  const sel = document.getElementById('project-select');
+  sel.value = id;
+  switchShot(project.shots[0] ? project.shots[0].id : null);
+}
+
+export async function createProject(name) {
+  const p = await api('api/projects', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  await loadProjectList();
+  await loadProject(p.id);
+  return p;
+}
 
 // ============ 选中与地面拖拽 ============
 export function pickAt(clientX, clientY) {
@@ -522,11 +758,21 @@ export function onViewportMove(e) {
 }
 
 export function onViewportUp() {
-  if (dragState) { dragState = null; /* Task 8 接 data flow 钩子 */ }
+  if (dragState) {
+    const shot = currentShotData();
+    if (shot) serializeSceneInto(shot);
+    dragState = null;
+    setDirty();
+  }
   state.controls.enabled = true;    // 空处按下不关轨道，这里恢复只是幂等兜底
 }
 
-// 接线（Task 7 起：道具 + 对象面板；Task 8 替换临时人物/道具为项目驱动）
+// 页面关闭前强制保存（keepalive 让请求在页面卸载后仍送达）
+window.addEventListener('pagehide', () => {
+  if (saveTimer) { clearTimeout(saveTimer); saveNow(); }
+});
+
+// 接线（Task 8 起：项目驱动数据流）
 const el = document.getElementById('viewport');
 initScene();
 initCameraPanel();
@@ -534,13 +780,6 @@ initObjectPanel();
 switchPanel('object');
 state.controls.addEventListener('change', updateCameraHud);
 updateCameraHud();
-// 临时人物与道具（Task 8 改为项目驱动）
-const charA = newCharacter('A', '主角');
-const charB = newCharacter('B', '配角');
-charB.position = [1.5, 0, 0]; charB.color = '#3b82f6';
-addMannequin(charA);
-addMannequin(charB);
-addProp({ id: 'p1', type: 'box', position: [2.5, 0, -1], rotation_y: 0, scale: [1, 1, 1] });
 el.addEventListener('pointerdown', onViewportDown);
 window.addEventListener('pointermove', onViewportMove);
 window.addEventListener('pointerup', onViewportUp);
@@ -556,7 +795,64 @@ window.addEventListener('resize', () => {
   state.camera.updateProjectionMatrix();
   state.renderer.setSize(el.clientWidth, el.clientHeight);
 });
-// 顶部工具栏
+// WebGL 兜底 + 项目加载入口
+function initApp() {
+  const probe = document.createElement('canvas');
+  const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+  if (!gl) {
+    const el = document.getElementById('webgl-error');
+    el.hidden = false;
+    el.innerHTML = `<div><h2>无法使用 3D 视口</h2>
+      <p>当前浏览器不支持 WebGL（可能被禁用或显卡驱动问题）。</p>
+      <p>建议：换用最新版 Chrome / Edge，或在系统设置里开启「硬件加速」。</p></div>`;
+    return;
+  }
+  loadProjectList().catch((err) => toast('加载项目列表失败：' + err.message, true));
+}
+initApp();
+// 顶部工具栏：项目 / 镜头 / 导出
+document.getElementById('project-select').onchange = (e) => loadProject(e.target.value);
+document.getElementById('btn-project-new').onclick = () => createProject('未命名项目');
+document.getElementById('btn-project-delete').onclick = async () => {
+  if (!project) return;
+  if (!confirm(`删除项目「${project.name}」？不可恢复`)) return;
+  await api('api/projects/' + project.id, { method: 'DELETE' });
+  toast('项目已删除');
+  project = null;
+  await loadProjectList();
+};
+document.getElementById('btn-shot-new').onclick = () => {
+  const shot = newShot('镜头' + (project.shots.length + 1), project.shots.length);
+  project.shots.push(shot);
+  switchShot(shot.id);
+  setDirty();
+};
+document.getElementById('shot-notes').onchange = (e) => {
+  const shot = currentShotData();
+  if (shot) { shot.notes = e.target.value; setDirty(); }
+};
+document.getElementById('btn-export').onclick = async () => {
+  if (!project) return;
+  const shots = project.shots.filter((s) => s.render);
+  if (!shots.length) return toast('还没有渲染过快照，先渲染再导出', true);
+  await _blobDownload(`api/projects/${project.id}/export.zip`, sanitizeFilename(project.name) + '-分镜快照.zip');
+};
+
+async function _blobDownload(url, filename) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (err) {
+    toast('下载失败：' + err.message, true);
+  }
+}
+// 对象工具
 document.getElementById('btn-add-char').onclick = () => {
   const c = newCharacter(String.fromCharCode(65 + state.mannequins.size), '人物' + (state.mannequins.size + 1));
   c.id = 'char-' + newId('');
