@@ -94,6 +94,10 @@ APPS = _AppsView(SPECS)
 PORTAL_PORT = int(os.environ.get("PORTAL_PORT", "9090"))
 REDIRECT_PORT = int(os.environ.get("REDIRECT_PORT", "9089"))
 
+# 视频缩略图缓存目录与 ffmpeg 并发上限（历史记录卡片抽帧用）
+THUMB_DIR = STATE_DIR / "thumbnails"
+_THUMB_SEM = threading.Semaphore(2)
+
 
 def _default_allowed_origins() -> frozenset[str]:
     """Origins allowed to make credentialed cross-origin requests.
@@ -1735,6 +1739,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._platform_history(user)
         elif path == "/api/platform/me":
             self._json(200, {"ok": True, "username": user["username"], "role": user["role"]})
+        elif path == "/api/platform/thumb":
+            self._platform_thumb(user)
         elif self._try_company_key_route(path, "GET", user):
             pass
         elif path == "/api/feishu/config":
@@ -2304,6 +2310,73 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
         merged.sort(key=lambda x: x.get("created_at") or x.get("time") or "", reverse=True)
         self._json(200, {"ok": True, "activity": merged[:50]})
+
+    def _platform_thumb(self, user: dict):
+        """服务端视频缩略图（上游 77c4802+cfe65c3 方案 A）：把媒体 URL 直接喂给
+        ffmpeg 抽帧。ffmpeg 的 http demuxer 支持 Range 寻址，能自己找到 MP4
+        尾部的 moov atom，无需整片下载；抽出的 480 宽 JPEG 按 sha1(app+url)
+        落盘缓存终身复用（原子写入）。失败返回 404，前端 <img onerror>
+        回退到 <video preload=metadata>。"""
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        app = (qs.get("app", [None])[0] or "").strip()
+        url = (qs.get("url", [None])[0] or "").strip()
+        if app not in APPS or not url or len(url) > 512:
+            self._json(400, {"ok": False, "error": "bad request"})
+            return
+        # 只接受子应用媒体路径：以 / 开头、白名单字符、无路径穿越。
+        if not re.fullmatch(r"/[A-Za-z0-9._/-]+", url) or ".." in url:
+            self._json(400, {"ok": False, "error": "bad request"})
+            return
+        port = APPS[app].get("port")
+        if not port:
+            self._json(404, {"ok": False})
+            return
+        key = hashlib.sha1(f"{app}\0{url}".encode("utf-8")).hexdigest()
+        THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        cached = THUMB_DIR / f"{key}.jpg"
+        if not cached.is_file():
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                print("  [thumb] ffmpeg not found", flush=True)
+                self._json(404, {"ok": False})
+                return
+            source = f"http://127.0.0.1:{port}{url}"
+            tmp = THUMB_DIR / f".{key}.jpg.tmp"
+            try:
+                with _THUMB_SEM:
+                    proc = subprocess.run(
+                        [ffmpeg, "-hide_banner", "-loglevel", "error",
+                         "-i", source, "-ss", "0.2", "-frames:v", "1",
+                         "-vf", "scale=480:-2", "-f", "mjpeg", "pipe:1"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=90)
+                if proc.returncode != 0 or len(proc.stdout) < 64:
+                    print(f"  [thumb] ffmpeg failed for {app}{url}: {proc.stderr[:300]!r}", flush=True)
+                    self._json(404, {"ok": False})
+                    return
+                tmp.write_bytes(proc.stdout)
+                os.replace(tmp, cached)
+                try:
+                    os.chmod(cached, 0o600)
+                except OSError:
+                    pass
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                tmp.unlink(missing_ok=True)
+                print(f"  [thumb] ffmpeg failed for {app}{url}: {exc}", flush=True)
+                self._json(404, {"ok": False})
+                return
+        try:
+            content = cached.read_bytes()
+        except OSError:
+            self._json(404, {"ok": False})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(content)
 
     def _platform_history(self, user: dict):
         """任务级历史记录查询：admin 全量（可按人筛），普通用户仅本人。"""

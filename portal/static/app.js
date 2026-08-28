@@ -2331,6 +2331,12 @@ function HistoryApp() {
       this.detail = null;
     },
     openDetail(it) { this.detail = it; this.detailTab = "req"; },
+    // 视频卡片走服务端抽帧缩略图端点；图片直接用原 URL
+    thumbFor(it) {
+      if (!it || !it.thumb_url) return "";
+      if (it.kind !== "video") return "/" + it.app + it.thumb_url;
+      return "/api/platform/thumb?app=" + encodeURIComponent(it.app) + "&url=" + encodeURIComponent(it.thumb_url);
+    },
     statusText(s) {
       return { done: "已成功", failed: "已失败", running: "生成中", queued: "排队中", pending: "排队中" }[s] || s;
     },

@@ -1136,7 +1136,8 @@ body.director-collapsed .director-body { display: none !important; }
 .hist-card { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); cursor: pointer; transition: border-color .15s, transform .15s; }
 .hist-card:hover { border-color: #0e9f96; transform: translateY(-2px); }
 .hist-media { position: relative; height: 140px; background: #eef1f6; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-.hist-media img, .hist-media video { width: 100%; height: 100%; object-fit: cover; }
+.hist-media img, .hist-media video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.hist-media .hist-thumb-frame { z-index: 1; }
 .hist-media-empty { font-size: 12px; color: #8b98ab; }
 .hist-kind { position: absolute; left: 6px; top: 6px; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 5px; border: 1px solid; }
 .hist-kind.image { color: #0e9f96; border-color: rgba(14,159,150,.4); background: rgba(14,159,150,.1); }
