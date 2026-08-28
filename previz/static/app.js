@@ -794,6 +794,7 @@ export async function renderShot() {
   const { width, height } = renderSizeFor(currentAspect, quality, customW);
   toast('渲染中…');
   const dataUrl = captureShot(width, height);
+  if (!dataUrl) return;   // captureShot 内部已 toast 提示
   const thumb = await makeThumbnail(dataUrl);
   document.getElementById('render-img').src = dataUrl;
   document.getElementById('render-title').textContent = `${shot.order + 1} · ${shot.name} · ${width}×${height}`;
