@@ -143,8 +143,11 @@ async def _fetch_catalog(app: str) -> list:
         return cached[1]
     models: list = []
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        # 这些都是本机回环调用，绝不能继承 launchd / shell 的 HTTP(S)_PROXY。
+        # 否则 127.0.0.1 会被送进公司代理并返回空 503，表现为模型目录为空。
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
             resp = await client.get(f"http://127.0.0.1:{APPS[app]}/api/config")
+        resp.raise_for_status()
         payload = resp.json()
         providers = payload.get("providers") or {}
         for provider, cfg in providers.items():
@@ -199,9 +202,14 @@ async def _fetch_catalog(app: str) -> list:
                         ],
                     })
     except Exception:
-        # 子应用没起来时返回空目录而不是 500 —— 画布仍可用来拖节点画草图。
-        models = []
-    _catalog_cache[app] = (time.time(), models)
+        # 子应用启动中的短暂失败不能把一次空目录缓存 60 秒，否则图片/视频
+        # 生成按钮会一直禁用到缓存过期。已有成功目录时返回旧值；没有旧值时
+        # 返回空列表但不缓存，让下一次前端重试可以立即恢复。
+        return cached[1] if cached and cached[1] else []
+    # 只有成功解析到模型才进入 TTL 缓存。配置接口临时返回空 providers 时也
+    # 不应把一个坏状态固化；前端会继续重试。
+    if models:
+        _catalog_cache[app] = (time.time(), models)
     return models
 
 
@@ -368,7 +376,9 @@ async def api_create_job(request: Request):
         # 提交是同步等待上游建任务的：seedance 带参考图时要把图片逐张传 TOS
         # 再交方舟（seedance/app.py:1427-1455），慢的时候要几分钟 ——
         # 超时放宽到 10 分钟，与上游 702104c「generation timeouts to ten minutes」一致。
-        async with httpx.AsyncClient(timeout=600) as client:
+        # 上游 Seedance / Nano Banana 在本机回环端口；绕开系统代理，避免
+        # 任务提交被代理截成 503。
+        async with httpx.AsyncClient(timeout=600, trust_env=False) as client:
             resp = await client.post(f"http://127.0.0.1:{APPS[app]}/api/jobs/json",
                                      content=json.dumps(body), headers=headers)
         upstream = resp.json()
@@ -457,7 +467,7 @@ def _ingest_results(job: dict, upstream: dict) -> tuple[list, int]:
                 blob = Path(local).read_bytes()
             if blob is None and item.get("download_url"):
                 try:
-                    with httpx.Client(timeout=60) as client:
+                    with httpx.Client(timeout=60, trust_env=False) as client:
                         resp = client.get(f"http://127.0.0.1:{APPS[app]}{item['download_url']}")
                     if resp.status_code == 200:
                         blob = resp.content
@@ -492,7 +502,7 @@ async def _refresh(job: dict) -> dict:
         return job
     app = job["app"]
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
             resp = await client.get(f"http://127.0.0.1:{APPS[app]}/api/jobs/{job['upstream_id']}")
     except Exception:
         return job

@@ -18,6 +18,25 @@ async function api(url, method, body) {
 
 function escHtml(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''; }
 
+function jobStatusLabel(status) {
+  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消' };
+  return map[String(status || '').toLowerCase()] || String(status || '未知');
+}
+
+function jobStatusClass(status) {
+  const s = String(status || '').toLowerCase();
+  if (['succeeded', 'success', 'completed'].includes(s)) return 'is-success';
+  if (['failed', 'failure'].includes(s)) return 'is-failed';
+  if (['pending', 'queued'].includes(s)) return 'is-pending';
+  if (s === 'querying') return 'is-querying';
+  return 'is-running';
+}
+
+function jobStatusBadgeTone(status) {
+  const state = jobStatusClass(status);
+  return state === 'is-success' ? 'success' : state === 'is-failed' ? 'danger' : state === 'is-pending' ? 'warning' : 'info';
+}
+
 // Status-aware single poll for the Dreamina tab, mirroring seedance's
 // pollJobOnce (seedance/static/app.js). The portal-wide api() returns null on
 // network errors, but a truthy {ok:false, error:...} JSON body on HTTP 404/5xx
@@ -95,16 +114,78 @@ function openPreview(kind, url) {
 }
 
 // === Tab Switching (vanilla) ===
-document.querySelectorAll('.app-tab').forEach(btn => btn.addEventListener('click', () => {
-  document.querySelectorAll('.app-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-}));
+// Keep the visual class, hidden state, and ARIA state in sync. This matters for
+// native Portal panels as well as iframes: a panel that is merely visually
+// hidden can still retain focus and create a second scroll context.
+function activatePortalTab(btn, { focus = false } = {}) {
+  if (!btn) return;
+  const panel = document.getElementById('tab-' + btn.dataset.tab);
+  if (!panel) return;
+  document.querySelectorAll('.app-tab').forEach(t => {
+    const active = t === btn;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', active ? 'true' : 'false');
+    t.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    const active = p === panel;
+    p.classList.toggle('active', active);
+    p.hidden = !active;
+  });
+  if (focus) btn.focus();
+}
+
+const portalTabButtons = Array.from(document.querySelectorAll('.app-tab'));
+
+// Fixed overlays must follow the real stacked header height. The title row can
+// wrap on narrow screens and the application tab strip can change height as
+// modules are added, so a hard-coded top offset eventually places the director
+// toggle underneath navigation.
+function syncPortalHeaderHeight() {
+  if (typeof document.querySelector !== 'function') return;
+  const header = document.querySelector('.topbar-stack');
+  if (!header) return;
+  document.documentElement.style.setProperty('--portal-header-height', `${Math.ceil(header.getBoundingClientRect().height)}px`);
+}
+syncPortalHeaderHeight();
+if (typeof window.addEventListener === 'function') {
+  window.addEventListener('resize', syncPortalHeaderHeight, { passive: true });
+}
+if ('ResizeObserver' in window && typeof document.querySelector === 'function') {
+  const portalHeader = document.querySelector('.topbar-stack');
+  if (portalHeader) new ResizeObserver(syncPortalHeaderHeight).observe(portalHeader);
+}
+
+portalTabButtons.forEach(btn => {
+  btn.addEventListener('click', () => activatePortalTab(btn));
+  btn.addEventListener('keydown', e => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const index = portalTabButtons.indexOf(btn);
+    const nextIndex = e.key === 'Home' ? 0
+      : e.key === 'End' ? portalTabButtons.length - 1
+      : (index + (e.key === 'ArrowRight' ? 1 : -1) + portalTabButtons.length) % portalTabButtons.length;
+    activatePortalTab(portalTabButtons[nextIndex], { focus: true });
+  });
+});
+
+// Defensive normalization for older cached HTML where `hidden` was absent.
+const initialPortalTab = document.querySelector('.app-tab.active') || portalTabButtons[0];
+if (initialPortalTab) activatePortalTab(initialPortalTab);
 
 // Iframe URLs are supplied by the Portal's app registry so they stay relative
 // to whichever origin, protocol, and hostname serves this Portal instance.
 async function initConfiguredIframes() {
+  // Keep a working local route even if the registry request is temporarily
+  // unavailable (for example during a backend restart). The registry remains
+  // the source of truth when it responds, but a failed request must not turn
+  // a valid module tab into a blank iframe.
+  document.querySelectorAll('iframe[data-app]').forEach(iframe => {
+    if (!iframe.getAttribute('src')) {
+      const fallback = iframe.dataset.fallbackSrc;
+      if (fallback) iframe.src = fallback;
+    }
+  });
   const res = await api('/api/apps');
   if (!res?.ok || !Array.isArray(res.apps)) return;
   document.querySelectorAll('iframe[data-app]').forEach(iframe => {
@@ -368,11 +449,10 @@ function DreaminaApp() {
       if (!jobId) return;
       const el = document.getElementById('dm-jobsList');
       const card = document.createElement('div');
-      card.className = 'result';
+      card.className = 'result ui-job-status-card is-running';
       const cardId = 'card-' + jobId.slice(0, 8);
       card.id = cardId;
-      card.style.cssText = 'border-color:#4f46e5;background:#101828;color:#e2e8f0;grid-column:1/-1';
-      card.innerHTML = `<div class="meta">Job ${jobId.slice(0, 8)} - 提交中...</div>`;
+      card.innerHTML = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--info">处理中</span> · Job ${jobId.slice(0, 8)}</div>`;
       el.prepend(card);
       // Guard against stacked loops: loadJobs() can run repeatedly (login poll,
       // manual refresh) and must not spawn a second poller for the same job.
@@ -381,7 +461,6 @@ function DreaminaApp() {
       this._pollingJobs.add(jobId);
       const stop = () => {
         this._pollingJobs.delete(jobId);
-        card.style.cssText = '';
         card.id = '';
       };
       let fails = 0;
@@ -389,18 +468,21 @@ function DreaminaApp() {
       while (true) {
         const r = await dmPollOnce(`/dreamina/api/jobs/${jobId}`);
         if (r.kind === 'gone') {
-          card.innerHTML = '<div class="meta" style="color:#fca5a5">任务已失效（服务可能重启过），请查看历史记录或重新提交</div>';
+          card.className = 'ui-job-status-card is-failed';
+          card.innerHTML = '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--danger">任务已失效</span></div><div class="ui-job-status-card__error">服务可能重启过，请查看历史记录或重新提交</div>';
           stop();
           break;
         }
         if (r.kind === 'error') {
           fails++;
           if (fails >= 15) {
-            card.innerHTML = '<div class="meta" style="color:#fca5a5">网络不稳定，已停止轮询（任务可能仍在后台运行，请稍后在历史记录中查看）</div>';
+            card.className = 'ui-job-status-card is-failed';
+            card.innerHTML = '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--danger">轮询已停止</span></div><div class="ui-job-status-card__error">网络不稳定，任务可能仍在后台运行，请稍后在历史记录中查看</div>';
             stop();
             break;
           }
-          card.innerHTML = `<div class="meta" style="color:#fbbf24">网络连接中断，正在重试 (${fails}/15)...</div>`;
+          card.className = 'ui-job-status-card is-pending';
+          card.innerHTML = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--warning">连接重试中</span> · ${fails}/15</div>`;
           await new Promise(res => setTimeout(res, backoff));
           backoff = Math.min(backoff * 1.5, 10000);
           continue;
@@ -408,11 +490,13 @@ function DreaminaApp() {
         fails = 0;
         backoff = 2500;
         const job = r.job;
-        const events = (job.events || []).slice(-6).map(e => `<div style="font-size:11px;color:#d1e0ff;padding:2px 0"><span style="color:#697386">${escHtml(e.time)}</span> ${escHtml(e.message)}</div>`).join('');
-        let html = `<div class="meta" style="color:#818cf8;font-weight:600;margin-bottom:6px">${job.task_type || ''} · ${job.status || 'unknown'} · ${job.done || 0}/${job.total || 0}</div>`;
-        if (events) html += events;
-        else html += '<div style="color:#697386;font-size:11px">等待服务器响应...</div>';
-        if (job.status === 'failed') html += `<div class="meta" style="color:#ef4444">${escHtml(job.error || '生成失败')}</div>`;
+        const events = (job.events || []).slice(-6).map(e => `<div><span class="ui-job-status-card__event-time">${escHtml(e.time)}</span> ${escHtml(e.message)}</div>`).join('');
+        const status = String(job.status || '').toLowerCase();
+        card.className = `ui-job-status-card ${jobStatusClass(status)}`;
+        let html = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--${jobStatusBadgeTone(status)}">${jobStatusLabel(status)}</span> · ${job.task_type || ''} · ${job.done || 0}/${job.total || 0}</div>`;
+        if (events) html += `<div class="ui-job-status-card__events">${events}</div>`;
+        else html += '<div class="ui-job-status-card__events">等待服务器响应...</div>';
+        if (job.status === 'failed') html += `<div class="ui-job-status-card__error">${escHtml(job.error || '生成失败')}</div>`;
         const allFiles = [];
         for (const r of job.results || []) { if (r.files) allFiles.push(...r.files); }
         if (job.result?.files) allFiles.push(...job.result.files);
@@ -983,13 +1067,13 @@ window.openPreview = openPreview;
     const style = document.createElement('style');
     style.textContent = `
       #_dlProgWrap{position:fixed;left:16px;bottom:16px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
-      #_dlProgWrap .dlp{background:#17191f;color:#e2e8f0;border-radius:8px;padding:10px 12px;min-width:240px;max-width:340px;box-shadow:0 4px 16px rgba(0,0,0,.35);font-size:12px;pointer-events:auto}
+      #_dlProgWrap .dlp{background:var(--surface,#fff);color:var(--text,#172033);border:1px solid var(--border,#d9e0ea);border-radius:8px;padding:10px 12px;min-width:240px;max-width:340px;box-shadow:var(--shadow-md,0 8px 22px rgba(20,32,51,.08));font-size:12px;pointer-events:auto}
       #_dlProgWrap .dlp .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px}
-      #_dlProgWrap .dlp .track{height:6px;background:#2d3340;border-radius:3px;overflow:hidden}
-      #_dlProgWrap .dlp .fill{height:100%;width:0;background:#3b82f6;transition:width .15s ease}
-      #_dlProgWrap .dlp .txt{margin-top:5px;color:#94a3b8;font-size:11px}
-      #_dlProgWrap .dlp.done .fill{background:#22c55e}
-      #_dlProgWrap .dlp.fail .fill{background:#ef4444}
+      #_dlProgWrap .dlp .track{height:6px;background:var(--surface-sunken,#eef2f7);border-radius:3px;overflow:hidden}
+      #_dlProgWrap .dlp .fill{height:100%;width:0;background:var(--accent,#235fd6);transition:width .15s ease}
+      #_dlProgWrap .dlp .txt{margin-top:5px;color:var(--muted,#687386);font-size:11px}
+      #_dlProgWrap .dlp.done .fill{background:var(--success,#10b981)}
+      #_dlProgWrap .dlp.fail .fill{background:var(--danger,#ef4444)}
     `;
     document.head.appendChild(style);
     container = document.createElement('div');
@@ -2300,6 +2384,8 @@ function DirectorApp() {
     images: [],
     collapsed: false,
     async init() {
+      document.body.classList.toggle("director-collapsed", this.collapsed);
+      document.body.classList.toggle("director-open", !this.collapsed);
       try {
         const cfg = await api("/director/api/config", "GET");
         if (cfg && cfg.ok) {
@@ -2458,6 +2544,7 @@ PetiteVue.createApp({
       const st = await res.json();
       if (!st || st.ok === false) return;
       const msgs = [];
+      let severity = 'warning';
       const host = location.hostname;
       if (st.lan_ip && host !== st.lan_ip && host !== 'localhost' && !host.startsWith('127.')) {
         const base = `${location.protocol}//${st.lan_ip}:${st.portal_port || location.port || 9090}/`;
@@ -2466,14 +2553,19 @@ PetiteVue.createApp({
       if (typeof st.disk_free_gb === 'number') {
         if (st.disk_free_gb < 10) {
           msgs.push(`🟥 服务器磁盘仅剩 ${st.disk_free_gb.toFixed(1)} GB，新任务可能失败，请尽快联系管理员清理`);
+          severity = 'danger';
         } else if (st.disk_free_gb < 20) {
           msgs.push(`🟨 服务器磁盘剩余 ${st.disk_free_gb.toFixed(1)} GB，建议管理员尽快清理`);
         }
       }
       if (msgs.length) {
         banner.innerHTML = msgs.join('&nbsp;&nbsp;&nbsp;');
+        banner.classList.toggle('is-danger', severity === 'danger');
+        banner.classList.toggle('ui-banner--danger', severity === 'danger');
+        banner.classList.toggle('ui-banner--warning', severity !== 'danger');
         banner.style.display = 'block';
       } else {
+        banner.classList.remove('is-danger', 'ui-banner--danger', 'ui-banner--warning');
         banner.style.display = 'none';
       }
     } catch (e) { /* banner is best-effort */ }

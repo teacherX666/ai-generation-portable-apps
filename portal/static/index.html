@@ -4,85 +4,91 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Generation Portal</title>
+  <link rel="stylesheet" href="/ui/portal-ui-core.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body>
+<body class="ui-shell">
   <!-- 顶部两条栏包进统一 sticky 容器：整块一起吸顶，切换栏永远紧贴标题栏下方，
        不再依赖写死的 top 偏移量（标题栏高度变化时也不会错位）。 -->
-  <div class="topbar-stack">
+  <div class="topbar-stack ui-shell__header">
     <div class="portal-bar">
       <div class="portal-bar-left">
         <span class="portal-title">AI Generation Portal</span>
         <span class="portal-lan" id="lanInfo">detecting...</span>
       </div>
-      <div style="display:flex;align-items:center;gap:12px">
+      <div class="ui-inline portal-bar-right">
         <div class="portal-bar-stats" id="barStats"></div>
-        <span id="userLabel" style="font-size:12px;color:#94a3b8"></span>
-        <button id="logoutBtn" style="display:none;font-size:12px;padding:3px 10px;background:#334155;color:#e2e8f0;border:1px solid #475569;border-radius:5px;cursor:pointer">退出</button>
+        <span id="userLabel" class="portal-user-label"></span>
+        <button id="logoutBtn" class="portal-logout ui-btn ui-btn--strong" style="display:none">退出</button>
       </div>
     </div>
 
-    <div class="app-tabs-bar">
-      <button class="app-tab active" data-tab="seedance">Seedance</button>
-      <button class="app-tab" data-tab="nb">图像生成模块</button>
-      <button class="app-tab" data-tab="feishu-generation-agent">飞书任务 Agent</button>
-      <button class="app-tab" data-tab="dreamina">Dreamina</button>
-      <button class="app-tab" data-tab="volcengine-portrait">人像生成</button>
-      <button class="app-tab" data-tab="infinite-canvas">无限画布</button>
-      <button class="app-tab" data-tab="keys">密钥库</button>
-      <button class="app-tab" data-tab="rag-assistant">报错问答助手</button>
-      <button class="app-tab" data-tab="history">历史记录</button>
-      <button class="app-tab" data-tab="stats">统计</button>
+    <div class="app-tabs-bar ui-tabs" role="tablist" aria-label="应用模块">
+      <button id="tab-btn-seedance" class="app-tab ui-tab active" role="tab" aria-selected="true" aria-controls="tab-seedance" tabindex="0" data-tab="seedance">Seedance</button>
+      <button id="tab-btn-nb" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-nb" tabindex="-1" data-tab="nb">图像生成模块</button>
+      <button id="tab-btn-feishu-generation-agent" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-feishu-generation-agent" tabindex="-1" data-tab="feishu-generation-agent">飞书任务 Agent</button>
+      <button id="tab-btn-dreamina" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-dreamina" tabindex="-1" data-tab="dreamina">Dreamina</button>
+      <button id="tab-btn-volcengine-portrait" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-volcengine-portrait" tabindex="-1" data-tab="volcengine-portrait">人像生成</button>
+      <button id="tab-btn-infinite-canvas" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-infinite-canvas" tabindex="-1" data-tab="infinite-canvas">无限画布</button>
+      <button id="tab-btn-keys" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-keys" tabindex="-1" data-tab="keys">密钥库</button>
+      <button id="tab-btn-rag-assistant" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-rag-assistant" tabindex="-1" data-tab="rag-assistant">报错问答助手</button>
+      <button id="tab-btn-history" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-history" tabindex="-1" data-tab="history">历史记录</button>
+      <button id="tab-btn-stats" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-stats" tabindex="-1" data-tab="stats">统计</button>
     </div>
   </div>
 
   <!-- 全局横幅：IP 变化提示 / 磁盘预警。数据来自 /api/platform/status
        （lan_ip/portal_port 已有；disk_free_gb 由后端 Phase 2 补充后自动激活）。 -->
-  <div id="globalBanner" class="global-banner" style="display:none"></div>
+  <div class="ui-portal-content ui-shell__body">
+  <div id="globalBanner" class="global-banner ui-banner" style="display:none"></div>
 
   <!-- SEEDANCE -->
-  <div class="tab-panel active" id="tab-seedance">
-    <iframe id="iframe-seedance" src="/seedance/index.html" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
+  <div class="tab-panel iframe-panel active" id="tab-seedance" role="tabpanel" aria-labelledby="tab-btn-seedance">
+    <iframe class="portal-iframe" id="iframe-seedance" src="/seedance/index.html" allow="fullscreen"></iframe>
   </div>
 
   <!-- NANO BANANA -->
-  <div class="tab-panel" id="tab-nb">
-    <iframe id="iframe-nb" src="/nano-banana/index.html" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
+  <div class="tab-panel iframe-panel" id="tab-nb" role="tabpanel" aria-labelledby="tab-btn-nb" hidden>
+    <iframe class="portal-iframe" id="iframe-nb" src="/nano-banana/index.html" allow="fullscreen"></iframe>
   </div>
 
   <!-- FEISHU GENERATION AGENT -->
-  <div class="tab-panel" id="tab-feishu-generation-agent">
-    <iframe id="iframe-feishu-generation-agent" data-app="feishu-generation-agent" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
+  <div class="tab-panel iframe-panel" id="tab-feishu-generation-agent" role="tabpanel" aria-labelledby="tab-btn-feishu-generation-agent" hidden>
+    <iframe class="portal-iframe" id="iframe-feishu-generation-agent" data-app="feishu-generation-agent" data-fallback-src="/feishu-generation-agent/" src="/feishu-generation-agent/" allow="fullscreen"></iframe>
   </div>
 
   <!-- INFINITE CANVAS -->
   <!-- id 必须是 "tab-" + data-tab 的值：切换逻辑用 getElementById('tab-'+dataset.tab)
        （portal/static/app.js:80），拼错会 null.classList 抛错并卡死整个 tab 栏。
        src 由 initConfiguredIframes() 从 /api/apps 注入，不写死。 -->
-  <div class="tab-panel" id="tab-infinite-canvas">
-    <iframe id="iframe-infinite-canvas" data-app="infinite-canvas" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
+  <div class="tab-panel iframe-panel" id="tab-infinite-canvas" role="tabpanel" aria-labelledby="tab-btn-infinite-canvas" hidden>
+    <iframe class="portal-iframe" id="iframe-infinite-canvas" data-app="infinite-canvas" data-fallback-src="/infinite-canvas/" src="/infinite-canvas/" allow="fullscreen"></iframe>
   </div>
 
   <!-- RAG ASSISTANT -->
-  <div class="tab-panel" id="tab-rag-assistant">
-    <iframe id="iframe-rag-assistant" data-app="rag-assistant" style="width:100%;height:100%;border:none;display:block" allow="fullscreen"></iframe>
+  <div class="tab-panel iframe-panel" id="tab-rag-assistant" role="tabpanel" aria-labelledby="tab-btn-rag-assistant" hidden>
+    <iframe class="portal-iframe" id="iframe-rag-assistant" data-app="rag-assistant" data-fallback-src="/rag-assistant/" src="/rag-assistant/" allow="fullscreen"></iframe>
   </div>
 
   <!-- HISTORY -->
-  <div class="tab-panel" id="tab-history" v-scope="HistoryApp()" @vue:mounted="init()">
+  <div class="tab-panel" id="tab-history" role="tabpanel" aria-labelledby="tab-btn-history" hidden v-scope="HistoryApp()" @vue:mounted="init()">
     <div class="portal-content history-content">
       <section class="hist-panel">
-        <header class="hist-filters">
+        <header class="hist-filters ui-filter-bar">
+          <div class="hist-filters__row ui-filter-bar__row">
           <select class="ctrl" v-if="isAdmin" v-model="userFilter" @change="reload()">
             <option value="">全部用户</option>
             <option v-for="u in userList" :key="u" :value="u">{{ u }}</option>
           </select>
-          <div class="seg"><button type="button" :class="{active: kind==='all'}" @click="kind='all';reload()">全部</button><button type="button" :class="{active: kind==='image'}" @click="kind='image';reload()">图片</button><button type="button" :class="{active: kind==='video'}" @click="kind='video';reload()">视频</button></div>
-          <div class="seg"><button type="button" :class="{active: status==='all'}" @click="status='all';reload()">全部状态</button><button type="button" :class="{active: status==='done'}" @click="status='done';reload()">成功</button><button type="button" :class="{active: status==='failed'}" @click="status='failed';reload()">失败</button><button type="button" :class="{active: status==='running'}" @click="status='running';reload()">生成中</button></div>
-          <div class="seg"><button type="button" :class="{active: days===7}" @click="days=7;reload()">近7天</button><button type="button" :class="{active: days===30}" @click="days=30;reload()">近30天</button><button type="button" :class="{active: days===90}" @click="days=90;reload()">近90天</button></div>
+          <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': kind==='all'}" @click="kind='all';reload()">全部</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='image'}" @click="kind='image';reload()">图片</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='video'}" @click="kind='video';reload()">视频</button></div>
+          <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': status==='all'}" @click="status='all';reload()">全部状态</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='done'}" @click="status='done';reload()">成功</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='failed'}" @click="status='failed';reload()">失败</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='running'}" @click="status='running';reload()">生成中</button></div>
+          <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': days===7}" @click="days=7;reload()">近7天</button><button class="ui-segment__button" type="button" :class="{'is-active': days===30}" @click="days=30;reload()">近30天</button><button class="ui-segment__button" type="button" :class="{'is-active': days===90}" @click="days=90;reload()">近90天</button></div>
+          </div>
+          <div class="hist-filters__row ui-filter-bar__row hist-filters__search-row">
           <input class="ctrl hist-search" v-model="q" placeholder="搜索提示词 / 任务编号" @keyup.enter="reload()">
-          <button class="ctrl" type="button" @click="reload()">查询</button>
-          <button class="ctrl" type="button" @click="reload()">刷新</button>
+          <button class="ctrl ui-btn ui-btn--primary ui-btn--sm" type="button" @click="reload()">查询</button>
+          <button class="ctrl ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="reload()">刷新</button>
+          </div>
         </header>
         <div class="hist-grid" v-if="items.length">
           <div class="hist-card" v-for="it in items" :key="it.app + ':' + it.job_id" @click="openDetail(it)">
@@ -101,9 +107,9 @@
         </div>
         <p v-else class="hist-empty">{{ q ? '没有匹配的记录' : '暂无历史——任务完成后会出现在这里' }}</p>
         <div class="hist-pager" v-if="totalPages > 1">
-          <button type="button" :disabled="page <= 1" @click="goPage(page - 1)">‹ 上一页</button>
+          <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="page <= 1" @click="goPage(page - 1)">‹ 上一页</button>
           <span>第 {{ page }} / {{ totalPages }} 页（共 {{ total }} 条）</span>
-          <button type="button" :disabled="page >= totalPages" @click="goPage(page + 1)">下一页 ›</button>
+          <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="page >= totalPages" @click="goPage(page + 1)">下一页 ›</button>
         </div>
       </section>
     </div>
@@ -162,12 +168,12 @@
   </div>
 
   <!-- DREAMINA -->
-  <div class="tab-panel" id="tab-dreamina" v-scope="DreaminaApp()" @vue:mounted="init()">
-    <div v-if="setupMode" class="setup-view">
-      <div class="setup-card">
+  <div class="tab-panel" id="tab-dreamina" role="tabpanel" aria-labelledby="tab-btn-dreamina" hidden v-scope="DreaminaApp()" @vue:mounted="init()">
+    <div v-if="setupMode" class="setup-view ui-admin-page">
+      <div class="setup-card ui-panel">
         <h2>{{ setupTitle }}</h2>
         <p v-html="setupDesc"></p>
-        <p v-if="(setupMode==='install' || setupMode==='login') && !isAdmin" style="color:#697386;font-size:12px">注：CLI 安装/账号登录是公司账号共享操作，登录后所有人都可使用</p>
+        <p v-if="(setupMode==='install' || setupMode==='login') && !isAdmin" class="ui-note">注：CLI 安装/账号登录是公司账号共享操作，登录后所有人都可使用</p>
         <button v-if="setupMode==='install'" type="button" @click="installCli()">一键安装</button>
         <button v-if="setupMode==='login'" type="button" @click="startLogin()">登录即梦账号</button>
         <button v-if="loginInProgress" type="button" @click="cancelLogin()">取消登录</button>
@@ -175,8 +181,8 @@
         <div v-if="setupSpinner" class="spinner"></div>
       </div>
     </div>
-    <main v-else class="app">
-      <aside class="sidebar">
+    <main v-else class="app ui-workbench">
+      <aside class="sidebar ui-sidebar">
         <div class="sidebar-header">
           <h1>Dreamina <span class="app-status-dot" :class="appStatus"></span></h1>
           <div>
@@ -188,8 +194,8 @@
         <!-- Account Management -->
         <section class="accounts-section">
           <div class="accounts-header">
-            <span style="font-size:12px;font-weight:650;color:#4b5565">账号管理</span>
-            <div style="display:flex;gap:4px">
+            <span class="ui-heading accounts-title">账号管理</span>
+            <div class="ui-inline">
               <button type="button" class="btn-small" @click="addAccount(prompt('输入账号名称(可留空)'))">添加账号</button>
               <select class="dispatch-select" :value="dispatchMode" @change="setDispatchMode($event.target.value)">
                 <option value="manual">手动</option>
@@ -211,17 +217,17 @@
                 <button type="button" class="btn-icon" title="重命名" @click="renameAccount(acc.id)">✎</button>
                 <button v-if="!acc.is_system_home" type="button" class="btn-icon" title="删除" @click="deleteAccount(acc.id)">✕</button>
               </div>
-              <div v-if="accountLoginId === acc.id" style="grid-column:1/-1;font-size:11px;color:#0369a1">登录中...</div>
-              <div v-if="accountLoginUrl && accountLoginUrl.id === acc.id" style="grid-column:1/-1;padding:6px 0;">
-                <div style="font-size:11px;color:#991b1b;margin-bottom:4px;">请在无痕/隐私窗口中打开以下链接登录：</div>
-                <input type="text" :value="accountLoginUrl.url" readonly @click="$event.target.select()" style="font-size:11px;padding:4px 6px;background:#f8fafc;cursor:text;">
+              <div v-if="accountLoginId === acc.id" class="account-login-progress">登录中...</div>
+              <div v-if="accountLoginUrl && accountLoginUrl.id === acc.id" class="account-login-url">
+                <div class="account-login-url__hint">请在无痕/隐私窗口中打开以下链接登录：</div>
+                <input type="text" :value="accountLoginUrl.url" readonly @click="$event.target.select()">
               </div>
             </div>
           </div>
-          <div v-else style="font-size:12px;color:#697386;padding:6px 0">暂无账号，点击"添加账号"开始</div>
+          <div v-else class="ui-empty ui-empty--compact">暂无账号，点击“添加账号”开始</div>
         </section>
 
-        <div class="rowButtons" style="margin-bottom:14px">
+        <div class="rowButtons">
           <button type="button" @click="updateCli()">更新 CLI</button>
         </div>
         <section style="margin-bottom:14px">
@@ -232,19 +238,19 @@
             <button type="button" @click="cleanCache()">清理缓存</button>
           </div>
         </section>
-        <div class="tabs major-tabs" style="margin-bottom:12px">
+        <div class="tabs major-tabs">
           <button class="tabBtn" :class="{ isActive: major==='image' }" type="button" @click="major='image'; mode=imageSub">图片</button>
           <button class="tabBtn" :class="{ isActive: major==='video' }" type="button" @click="major='video'; mode=videoSub">视频</button>
         </div>
         <form id="dm-form" ref="form" @submit.prevent="submit()">
           <div v-show="major==='image'">
-            <div class="sub-tabs" style="display:flex;gap:6px;margin-bottom:12px">
+            <div class="sub-tabs ui-inline">
               <button type="button" class="tabBtn sub-tab" :class="{ isActive: mode==='text2image' }" @click="mode='text2image'; imageSub='text2image'">文生图</button>
               <button type="button" class="tabBtn sub-tab" :class="{ isActive: mode==='image2image' }" @click="mode='image2image'; imageSub='image2image'">图生图</button>
             </div>
           </div>
           <div v-show="major==='video'">
-            <div class="sub-tabs" style="display:flex;gap:6px;margin-bottom:12px">
+            <div class="sub-tabs ui-inline">
               <button type="button" class="tabBtn sub-tab" :class="{ isActive: mode==='frames2video' }" @click="mode='frames2video'; videoSub='frames2video'">首尾帧</button>
               <button type="button" class="tabBtn sub-tab" :class="{ isActive: mode==='multimodal2video' }" @click="mode='multimodal2video'; videoSub='multimodal2video'">全能参考</button>
               <button type="button" class="tabBtn sub-tab" :class="{ isActive: mode==='multiframe2video' }" @click="mode='multiframe2video'; videoSub='multiframe2video'">多帧</button>
@@ -271,9 +277,9 @@
             <div class="uploadGrid three" id="dm-mmAudioRefs"></div>
           </div>
           <div v-show="mode==='multiframe2video'">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-              <label style="margin:0">关键帧 (2-9 帧)</label>
-              <div style="display:flex;align-items:center;gap:6px">
+            <div class="ui-split keyframe-toolbar">
+              <label>关键帧 (2-9 帧)</label>
+              <div class="ui-inline">
                 <button type="button" class="btn-icon" @click="removeFrame()">−</button>
                 <span>{{ frameCount }}</span>
                 <button type="button" class="btn-icon" @click="addFrame()">+</button>
@@ -341,7 +347,7 @@
         <div class="archiveBox">
           <h2>存档</h2>
           <label>存档名<input type="text" v-model="archiveName" placeholder="存档名称..."></label>
-          <div style="display:flex;gap:6px;margin-bottom:8px">
+          <div class="ui-inline archive-controls">
             <select v-model="selectedArchive">
               <option v-for="a in archives" :value="a.name">{{ a.name }}</option>
             </select>
@@ -349,12 +355,12 @@
             <button class="btn-small" type="button" @click="deleteArchive()">删除</button>
           </div>
           <button type="button" @click="saveArchive()">保存存档</button>
-          <p v-if="archiveHint" style="font-size:12px;margin-top:6px;color:#94a3b8">{{ archiveHint }}</p>
+          <p v-if="archiveHint" class="ui-note">{{ archiveHint }}</p>
         </div>
       </aside>
-      <section class="workspace">
-        <div class="panel">
-          <div class="sub-tabs" style="margin-bottom:10px">
+      <section class="workspace ui-main">
+        <div class="panel ui-panel">
+          <div class="sub-tabs">
             <button type="button" class="sub-tab" :class="{ isActive: wsTab==='jobs' }" @click="wsTab='jobs'">任务</button>
             <button type="button" class="sub-tab" :class="{ isActive: wsTab==='history' }" @click="wsTab='history'; loadHistory()">历史</button>
           </div>
@@ -379,17 +385,20 @@
   </div>
 
   <!-- VOLCENGINE PORTRAIT -->
-  <div class="tab-panel" id="tab-volcengine-portrait" v-scope="VolcenginePortraitApp()" @vue:mounted="init()">
-    <div class="portrait-container">
-      <section class="card" style="margin-bottom:12px;background:#f0f9ff;border:1px solid #bae6fd">
-        <p style="font-size:12px;color:#0369a1;margin:0">
+  <div class="tab-panel" id="tab-volcengine-portrait" role="tabpanel" aria-labelledby="tab-btn-volcengine-portrait" hidden v-scope="VolcenginePortraitApp()" @vue:mounted="init()">
+    <div class="portrait-container ui-admin-page">
+      <div class="ui-page-header">
+        <div><h1 class="ui-page-header__title">人像生成</h1><p class="ui-page-header__desc">管理人像组、素材和生成任务。</p></div>
+      </div>
+      <section class="card ui-panel ui-admin-page__section ui-alert ui-alert--info">
+        <p class="ui-note ui-note--info">
           <strong>API 凭证：</strong>由管理员在「统计」页统一配置，所有用户使用同一份火山方舟 Key/AK/SK，无需手动填写。
         </p>
       </section>
 
-      <section class="card" style="background:#eff6ff;border:1px solid #bfdbfe;margin-bottom:12px">
-        <p style="font-size:12px;color:#3b82f6;margin:0">
-          <strong>真人素材：</strong>真人认证和素材录入请在<a href="https://console.volcengine.com/ark/experience/" target="_blank" style="color:#2563eb;font-weight:600">火山方舟体验中心 → 我的 → 真人人像</a>完成。
+      <section class="card ui-panel ui-admin-page__section ui-alert ui-alert--info">
+        <p class="ui-note ui-note--info">
+          <strong>真人素材：</strong>真人认证和素材录入请在<a href="https://console.volcengine.com/ark/experience/" target="_blank" rel="noopener" class="ui-link">火山方舟体验中心 → 我的 → 真人人像</a>完成。
           录入后可直接在下方选择 Asset ID 生成视频。虚拟人像素材可直接在本页面创建组并上传。
         </p>
       </section>
@@ -405,7 +414,7 @@
             <p v-if="groupId" style="color:#22c55e;font-size:12px;margin-top:6px">组 ID: {{ groupId }}</p>
           </section>
 
-          <section class="card" v-if="isAdmin" style="background:#fef3c7;border:1px solid #f59e0b">
+          <section class="card ui-panel ui-danger-zone" v-if="isAdmin">
             <h2>🧹 批量清理旧素材组 <span style="font-size:11px;color:#92400e">（管理员）</span></h2>
             <p style="font-size:12px;color:#78350f;margin-bottom:8px">
               删除 group ID 日期在此之前的所有 AIGC 组（含内部资产）。仅按 ID 规则识别（重命名不影响；不符合 ID 规则的手动组会被跳过）。
@@ -671,127 +680,132 @@
   </div>
 
   <!-- STATS -->
-  <div class="tab-panel" id="tab-stats" v-scope="StatsApp()" @vue:mounted="init()">
-    <div class="portal-content">
-      <section class="stats-panel">
+  <div class="tab-panel" id="tab-stats" role="tabpanel" aria-labelledby="tab-btn-stats" hidden v-scope="StatsApp()" @vue:mounted="init()">
+    <div class="portal-content ui-admin-page ui-admin-page--narrow">
+      <div class="ui-page-header">
+        <div><h1 class="ui-page-header__title">统计与管理</h1><p class="ui-page-header__desc">查看使用量、用户状态与服务配置。</p></div>
+      </div>
+      <section class="stats-panel ui-panel ui-admin-page__section">
         <h2>今日用量</h2>
-        <div class="stats-row">
-          <div class="stat-card"><div class="stat-value">{{ todayJobs }}</div><div class="stat-label">Today Jobs</div></div>
-          <div class="stat-card"><div class="stat-value">{{ todayRequests }}</div><div class="stat-label">Today Requests</div></div>
+        <div class="stats-row ui-kpi-grid">
+          <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ todayJobs }}</div><div class="stat-label ui-kpi__label">Today Jobs</div></div>
+          <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ todayRequests }}</div><div class="stat-label ui-kpi__label">Today Requests</div></div>
         </div>
       </section>
-      <section class="stats-panel" v-if="isAdmin">
+      <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
         <h2>用户管理</h2>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:6px;margin-bottom:14px">
-          <span style="font-size:13px;color:#cbd5e1">公开注册：<span :style="{color:signupEnabled?'#22c55e':'#94a3b8'}">{{ signupEnabled ? '开启（任何人可注册）' : '关闭（仅 admin 可创建用户）' }}</span></span>
-          <button @click="toggleSignup()" :disabled="signupBusy" style="font-size:12px;padding:5px 12px;background:#334155;color:#e2e8f0;border:1px solid #475569;border-radius:4px;cursor:pointer">{{ signupEnabled ? '关闭注册' : '开启注册' }}</button>
+        <div class="admin-control-strip">
+          <span class="admin-muted" style="font-size:13px">公开注册：<span :class="signupEnabled ? 'admin-status--success' : 'admin-muted'">{{ signupEnabled ? '开启（任何人可注册）' : '关闭（仅 admin 可创建用户）' }}</span></span>
+          <button class="admin-secondary-action ui-btn ui-btn--strong" @click="toggleSignup()" :disabled="signupBusy">{{ signupEnabled ? '关闭注册' : '开启注册' }}</button>
         </div>
-        <form @submit.prevent="createUser()" style="display:grid;grid-template-columns:1fr 1fr 120px auto;gap:8px;margin-bottom:14px;align-items:end">
-          <label style="font-size:12px;color:#94a3b8">用户名<input v-model="newUser.username" required placeholder="如 alice" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:#1e293b;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:13px"></label>
-          <label style="font-size:12px;color:#94a3b8">密码（≥6位）<input v-model="newUser.password" type="password" required style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:#1e293b;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:13px"></label>
-          <label style="font-size:12px;color:#94a3b8">角色<select v-model="newUser.role" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:#1e293b;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:13px">
+        <form class="admin-form ui-form-grid ui-form-grid--action" @submit.prevent="createUser()">
+          <label>用户名<input v-model="newUser.username" required placeholder="如 alice"></label>
+          <label>密码（≥6位）<input v-model="newUser.password" type="password" required></label>
+          <label>角色<select v-model="newUser.role">
             <option value="user">user</option>
             <option value="admin">admin</option>
             <option value="viewer">viewer</option>
           </select></label>
-          <button type="submit" :disabled="creating" style="padding:7px 14px;background:#4f46e5;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:13px;height:32px">{{ creating ? '创建中' : '创建用户' }}</button>
+          <div class="ui-form-grid__end-action">
+            <button class="admin-primary-action ui-btn ui-btn--primary" type="submit" :disabled="creating">{{ creating ? '创建中' : '创建用户' }}</button>
+          </div>
         </form>
-        <p v-if="userHint" style="font-size:12px;margin:0 0 12px" :style="{color:userHintOk?'#22c55e':'#f87171'}">{{ userHint }}</p>
-        <table class="ip-stats-table">
+        <p v-if="userHint" style="font-size:12px;margin:0 0 12px" :class="userHintOk ? 'admin-status--success' : 'admin-status--danger'">{{ userHint }}</p>
+        <div class="ui-table-wrap ui-table-wrap--scroll"><table class="ip-stats-table ui-data-table ui-data-table--users">
           <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
           <tbody>
             <tr v-for="u in users">
               <td>{{ u.username }}</td>
               <td>
-                <select :value="u.role" @change="setRole(u, $event.target.value)" style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:3px;padding:2px 6px;font-size:12px">
+                <select class="ui-select ui-select--sm" :value="u.role" @change="setRole(u, $event.target.value)">
                   <option value="user">user</option>
                   <option value="admin">admin</option>
                   <option value="viewer">viewer</option>
                 </select>
               </td>
               <td>
-                <span :style="{color:u.enabled?'#22c55e':'#f87171'}">{{ u.enabled ? '启用' : '禁用' }}</span>
+                <span :class="u.enabled ? 'admin-status--success' : 'admin-status--danger'">{{ u.enabled ? '启用' : '禁用' }}</span>
               </td>
-              <td style="text-align:right">
-                <button @click="toggleEnabled(u)" style="font-size:11px;padding:3px 8px;background:#334155;color:#e2e8f0;border:1px solid #475569;border-radius:3px;cursor:pointer;margin-right:4px">{{ u.enabled ? '禁用' : '启用' }}</button>
-                <button @click="resetPassword(u)" style="font-size:11px;padding:3px 8px;background:#334155;color:#e2e8f0;border:1px solid #475569;border-radius:3px;cursor:pointer">重置密码</button>
+              <td>
+                <div class="ui-table-actions">
+                  <button class="ui-btn ui-btn--strong ui-btn--sm" @click="toggleEnabled(u)">{{ u.enabled ? '禁用' : '启用' }}</button>
+                  <button class="ui-btn ui-btn--warning-outline ui-btn--sm" @click="resetPassword(u)">重置密码</button>
+                </div>
               </td>
             </tr>
             <tr v-if="!users.length"><td colspan="4" style="color:#697386;text-align:center">加载中...</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
-      <section class="stats-panel" v-if="isAdmin">
+      <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
         <h2>人像生成共用 Key</h2>
-        <p style="font-size:12px;color:#94a3b8;margin:0 0 10px">由 admin 统一配置；所有用户共享这份火山方舟 Key/AK/SK。留空字段表示不修改。</p>
-        <form @submit.prevent="savePortraitKey()" style="display:grid;gap:10px;max-width:520px">
-          <label style="font-size:12px;color:#94a3b8">API Key（生成调用）
+        <p class="admin-muted" style="font-size:12px;margin:0 0 10px">由 admin 统一配置；所有用户共享这份火山方舟 Key/AK/SK。留空字段表示不修改。</p>
+        <form class="admin-field-grid" @submit.prevent="savePortraitKey()">
+          <label style="font-size:12px">API Key（生成调用）
             <input type="password" v-model="portraitKey.api_key" autocomplete="off"
                    :placeholder="portraitKey.has_api_key ? '已设置（留空保持不变）' : 'ark-...'"
-                   style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:#1e293b;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:13px">
+                   style="display:block;width:100%;margin-top:4px;padding:6px 8px;font-size:13px">
           </label>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-            <label style="font-size:12px;color:#94a3b8">Access Key（素材管理）
+          <div class="admin-field-grid admin-field-grid--two">
+            <label style="font-size:12px">Access Key（素材管理）
               <input type="password" v-model="portraitKey.access_key" autocomplete="off"
                      :placeholder="portraitKey.has_access_key ? '已设置（留空保持不变）' : 'AKLT...'"
-                     style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:#1e293b;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:13px">
+                     style="display:block;width:100%;margin-top:4px;padding:6px 8px;font-size:13px">
             </label>
-            <label style="font-size:12px;color:#94a3b8">Secret Key
+            <label style="font-size:12px">Secret Key
               <input type="password" v-model="portraitKey.secret_key" autocomplete="off"
                      :placeholder="portraitKey.has_secret_key ? '已设置（留空保持不变）' : '(base64 secret)'"
-                     style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:#1e293b;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:13px">
+                     style="display:block;width:100%;margin-top:4px;padding:6px 8px;font-size:13px">
             </label>
           </div>
-          <div style="display:flex;align-items:center;gap:12px">
-            <button type="submit" :disabled="portraitKey.saving"
-                    style="padding:7px 16px;background:#4f46e5;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:13px">
+          <div class="admin-form-actions">
+            <button class="admin-primary-action" type="submit" :disabled="portraitKey.saving" style="padding:7px 16px;border-radius:5px;font-size:13px">
               {{ portraitKey.saving ? '保存中...' : '保存' }}
             </button>
-            <span v-if="portraitKey.hint" style="font-size:12px"
-                  :style="{color: portraitKey.hintOk ? '#22c55e' : '#f87171'}">{{ portraitKey.hint }}</span>
+            <span v-if="portraitKey.hint" style="font-size:12px" :class="portraitKey.hintOk ? 'admin-status--success' : 'admin-status--danger'">{{ portraitKey.hint }}</span>
           </div>
         </form>
       </section>
-      <section class="stats-panel" v-if="isAdmin">
+      <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
         <h2>飞书日报</h2>
         <p style="font-size:12px;color:#94a3b8;margin:0 0 10px">每天到点自动把昨日 Portal 使用数据推送到飞书群机器人。管理员可预览/立即发送。</p>
-        <div class="stats-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
-          <label style="flex:2 1 320px">
+        <div class="ui-form-grid ui-form-grid--settings">
+          <label class="ui-form-grid__wide">
             <div style="font-size:12px;color:#94a3b8">Webhook URL</div>
             <input v-model="feishu.webhook_url" :placeholder="feishu._webhookPresent ? ('已配置 ' + feishu._webhookHint + ' (留空不修改)') : 'https://open.feishu.cn/open-apis/bot/v2/hook/...'" style="width:100%">
           </label>
-          <label style="flex:1 1 160px">
+          <label>
             <div style="font-size:12px;color:#94a3b8">签名 secret (可选)</div>
             <input type="password" autocomplete="off" v-model="feishu.sign_secret" :placeholder="feishu._secretPresent ? '已配置(留空不修改)' : ''" style="width:100%">
           </label>
-          <label style="flex:0 0 120px">
+          <label>
             <div style="font-size:12px;color:#94a3b8">触发时间</div>
             <input v-model="feishu.schedule_time" placeholder="09:05" style="width:100%">
           </label>
-          <label style="flex:1 1 220px">
+          <label>
             <div style="font-size:12px;color:#94a3b8">Portal 基础 URL</div>
             <input v-model="feishu.portal_base_url" placeholder="https://192.168.x.x:9091" style="width:100%">
           </label>
-          <label style="flex:0 0 auto;display:flex;align-items:center;gap:6px">
+          <label class="ui-switch-field">
             <input type="checkbox" v-model="feishu.enabled">
             <span>启用定时</span>
           </label>
         </div>
-        <div class="stats-row" style="gap:10px;margin-top:10px;align-items:center">
-          <button @click="saveFeishuConfig()">保存配置</button>
-          <label>
-            <span style="font-size:12px;color:#94a3b8">日期</span>
-            <input v-model="feishu.previewDate" type="date" style="margin-left:6px">
+        <div class="ui-toolbar ui-toolbar--wrap ui-toolbar--start" style="margin-top:10px">
+          <button class="admin-secondary-action ui-btn ui-btn--strong" @click="saveFeishuConfig()">保存配置</button>
+          <label class="ui-date-field">
+            <span>日期</span>
+            <input v-model="feishu.previewDate" type="date">
           </label>
-          <button @click="previewFeishu()">预览卡片</button>
-          <button @click="sendFeishuNow()" style="background:#2563eb;color:#fff">立即发送</button>
-          <span v-if="feishu.status" style="font-size:12px;color:#cbd5e1">{{ feishu.status }}</span>
+          <button class="admin-secondary-action ui-btn ui-btn--strong" @click="previewFeishu()">预览卡片</button>
+          <button class="admin-primary-action ui-btn ui-btn--primary" @click="sendFeishuNow()">立即发送</button>
+          <span v-if="feishu.status" class="admin-muted" style="font-size:12px">{{ feishu.status }}</span>
         </div>
-        <pre v-if="feishu.previewJson" style="max-height:320px;overflow:auto;background:#0f172a;padding:10px;border-radius:6px;font-size:11px;margin-top:10px">{{ feishu.previewJson }}</pre>
+        <pre v-if="feishu.previewJson" class="admin-pre" style="max-height:320px;overflow:auto;padding:10px;border-radius:6px;font-size:11px;margin-top:10px">{{ feishu.previewJson }}</pre>
       </section>
-      <section class="stats-panel">
+      <section class="stats-panel ui-panel ui-admin-page__section">
         <h2>按用户统计</h2>
-        <table class="ip-stats-table">
+        <div class="ui-table-wrap"><table class="ip-stats-table ui-data-table">
           <thead><tr><th>用户</th><th>Seedance<br><small style="font-weight:400;color:#94a3b8">秒</small></th><th>图像生成模块<br><small style="font-weight:400;color:#94a3b8">张</small></th><th>Dreamina<br><small style="font-weight:400;color:#94a3b8">张/秒</small></th><th>人像生成<br><small style="font-weight:400;color:#94a3b8">秒</small></th></tr></thead>
           <tbody>
             <tr v-for="(stats, uname) in byUser">
@@ -803,19 +817,19 @@
             </tr>
             <tr v-if="!Object.keys(byUser).length"><td colspan="5" style="color:#697386;text-align:center">暂无数据（任务完成后更新）</td></tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
-      <section class="stats-panel">
+      <section class="stats-panel ui-panel ui-admin-page__section">
         <h2>按日期查看</h2>
         <div class="day-picker-row">
-          <label style="font-size:12px;color:#94a3b8">日期
-            <input type="date" v-model="selectedDate" @change="loadDay()" style="margin-left:8px;padding:4px 8px;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:13px;color-scheme:dark">
+          <label style="font-size:12px">日期
+            <input type="date" v-model="selectedDate" @change="loadDay()" style="margin-left:8px;padding:4px 8px;font-size:13px">
           </label>
           <span style="font-size:11px;color:#697386;margin-left:14px" v-if="daySnapshot">
             {{ daySnapshot.date }} · 任务 {{ daySnapshot.total_jobs || 0 }} · 请求 {{ daySnapshot.total_requests || 0 }}
           </span>
         </div>
-        <table class="ip-stats-table" v-if="daySnapshot">
+        <div class="ui-table-wrap" v-if="daySnapshot"><table class="ip-stats-table ui-data-table">
           <thead><tr><th>用户</th><th>Seedance<br><small style="font-weight:400;color:#94a3b8">秒</small></th><th>图像生成模块<br><small style="font-weight:400;color:#94a3b8">张</small></th><th>Dreamina<br><small style="font-weight:400;color:#94a3b8">张/秒</small></th><th>人像生成<br><small style="font-weight:400;color:#94a3b8">秒</small></th></tr></thead>
           <tbody>
             <tr v-for="(stats, uname) in (daySnapshot.by_user || {})">
@@ -827,34 +841,38 @@
             </tr>
             <tr v-if="!Object.keys(daySnapshot.by_user || {}).length"><td colspan="5" style="color:#697386;text-align:center">该日期无记录</td></tr>
           </tbody>
-        </table>
+        </table></div>
         <p v-if="!daySnapshot" style="color:#697386;font-size:12px">选择日期后显示该日数据</p>
       </section>
 
-      <section class="stats-panel">
+      <section class="stats-panel ui-panel ui-admin-page__section">
         <h2>按日期段查询 / 导出</h2>
-        <div class="day-picker-row" style="flex-wrap:wrap;gap:10px">
-          <label style="font-size:12px;color:#94a3b8">起
-            <input type="date" v-model="rangeStart" @change="loadRange()" style="margin-left:8px;padding:4px 8px;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:13px;color-scheme:dark">
-          </label>
-          <label style="font-size:12px;color:#94a3b8">止
-            <input type="date" v-model="rangeEnd" @change="loadRange()" style="margin-left:8px;padding:4px 8px;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:13px;color-scheme:dark">
-          </label>
-          <button type="button" @click="loadRange()" :disabled="rangeLoading"
-                  style="padding:5px 14px;background:#334155;color:#e2e8f0;border:none;border-radius:4px;cursor:pointer;font-size:12px">
-            {{ rangeLoading ? '查询中…' : '刷新' }}
-          </button>
-          <button type="button" @click="exportRange()" :disabled="exporting || !rangeStart || !rangeEnd"
-                  style="padding:5px 14px;background:#4f46e5;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px"
-                  :title="'导出 CSV (UTF-8 BOM, Excel/WPS 可直接打开)'">
-            {{ exporting ? '导出中…' : '导出 CSV' }}
-          </button>
-          <span v-if="rangeError" style="color:#f87171;font-size:11px;margin-left:8px">{{ rangeError }}</span>
+        <div class="day-picker-row ui-toolbar ui-toolbar--wrap">
+          <div class="ui-toolbar__group">
+            <label class="ui-date-field"><span>起</span>
+              <input type="date" v-model="rangeStart" @change="loadRange()">
+            </label>
+            <label class="ui-date-field"><span>止</span>
+              <input type="date" v-model="rangeEnd" @change="loadRange()">
+            </label>
+          </div>
+          <div class="ui-toolbar__group">
+            <button type="button" @click="loadRange()" :disabled="rangeLoading"
+                    class="admin-secondary-action ui-btn ui-btn--strong ui-btn--sm">
+              {{ rangeLoading ? '查询中…' : '刷新' }}
+            </button>
+            <button type="button" @click="exportRange()" :disabled="exporting || !rangeStart || !rangeEnd"
+                    class="admin-primary-action ui-btn ui-btn--primary ui-btn--sm"
+                    :title="'导出 CSV (UTF-8 BOM, Excel/WPS 可直接打开)'">
+              {{ exporting ? '导出中…' : '导出 CSV' }}
+            </button>
+            <span v-if="rangeError" style="color:#f87171;font-size:11px">{{ rangeError }}</span>
+          </div>
         </div>
         <p style="font-size:11px;color:#697386;margin:6px 0 0">
           区间内汇总：每用户按 4 个子应用的图片张数 / 视频秒数累加。{{ isAdmin ? '管理员可见全部用户' : '仅可见自己' }}。
         </p>
-        <table class="ip-stats-table" v-if="Object.keys(rangeData.users || {}).length">
+        <div class="ui-table-wrap" v-if="Object.keys(rangeData.users || {}).length"><table class="ip-stats-table ui-data-table">
           <thead>
             <tr>
               <th>用户</th>
@@ -875,11 +893,11 @@
               <td>{{ rangeUserTotals(uname).images }}张 / {{ rangeUserTotals(uname).seconds }}s</td>
             </tr>
           </tbody>
-        </table>
+        </table></div>
         <p v-if="!rangeLoading && !Object.keys(rangeData.users || {}).length" style="color:#697386;font-size:12px">该区间无记录</p>
       </section>
 
-      <section class="stats-panel">
+      <section class="stats-panel ui-panel ui-admin-page__section">
         <h2>按用户趋势</h2>
         <div class="trend-controls">
           <span style="font-size:12px;color:#94a3b8;margin-right:10px">区间</span>
@@ -905,7 +923,7 @@
         <p v-if="!Object.keys(history.users).length" style="color:#697386;font-size:12px">暂无趋势数据</p>
       </section>
 
-      <section class="activity-panel" v-if="recentActivity.length">
+      <section class="activity-panel ui-panel ui-admin-page__section" v-if="recentActivity.length">
         <h2>最近活动</h2>
         <div class="activity-list">
           <div v-for="item in recentActivity" class="activity-item">
@@ -920,9 +938,12 @@
   </div>
 
   <!-- KEYS -->
-  <div class="tab-panel" id="tab-keys" v-scope="KeysApp()" @vue:mounted="init()">
-    <div class="portal-content keys-content">
-      <section class="stats-panel keys-panel">
+  <div class="tab-panel" id="tab-keys" role="tabpanel" aria-labelledby="tab-btn-keys" hidden v-scope="KeysApp()" @vue:mounted="init()">
+    <div class="portal-content keys-content ui-admin-page">
+      <div class="ui-page-header">
+        <div><h1 class="ui-page-header__title">密钥库</h1><p class="ui-page-header__desc">集中管理个人 API 密钥，按需复制到各个创作工作台。</p></div>
+      </div>
+      <section class="stats-panel keys-panel ui-panel ui-admin-page__section">
         <header class="keys-header">
           <h2>我的 API 密钥</h2>
           <p class="keys-desc">密钥库仅本人可见。点「复制」获取明文，粘贴到子应用的 API Key 输入框。</p>
@@ -994,9 +1015,12 @@
     <div id="previewDialogBody"></div>
   </dialog>
 
+  </div>
+
   <aside id="director-sidebar" class="director-sidebar" v-scope="DirectorApp()" @vue:mounted="init()">
     <button id="director-toggle" class="director-toggle" type="button"
-            @click="toggleCollapse()" title="折叠/展开导演台">▸</button>
+            @click="toggleCollapse()" :title="collapsed ? '展开导演台' : '折叠导演台'"
+            :aria-label="collapsed ? '展开导演台' : '折叠导演台'">{{ collapsed ? '◂' : '▸' }}</button>
     <header class="director-header">
       <h2>🎬 导演台</h2>
     </header>

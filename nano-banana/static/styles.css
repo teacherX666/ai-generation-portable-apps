@@ -149,16 +149,24 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .rowButtons {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   gap: 8px;
   margin: -4px 0 12px;
 }
 .rowButtons button, .secondaryWide {
+  min-width: 0;
   height: 34px;
+  padding-inline: 8px;
   border: 1px solid var(--border-strong);
   background: var(--surface);
   color: #293244;
   font-size: 12px;
+}
+.rowButtons button {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .archiveActions { grid-template-columns: 1fr 1fr 1fr; margin: 0 0 8px; }
 .archiveBox { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
@@ -167,7 +175,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  /* Prompt / 参考图 / 结果是三个直接子项；只声明两行会把参考图行压成
+     0px，卡片随后覆盖结果面板。让三块按真实高度排布，由工作区滚动。 */
+  grid-template-rows: max-content max-content minmax(260px, auto);
+  align-content: start;
   gap: 18px;
   padding: 20px;
   overflow: auto;
@@ -175,6 +186,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -189,13 +201,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 
 .tabBtn.isActive {
-  border-color: #17191f;
-  background: #17191f;
-  color: var(--surface);
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
 }
 
-.sub-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.sub-tabs { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; margin-bottom: 10px; overflow-x: auto; }
 .sub-tab {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 72px;
   height: 30px;
   padding: 0 12px;
   background: var(--surface);
@@ -206,7 +221,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   cursor: pointer;
   transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base);
 }
-.sub-tab:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.sub-tab:hover { color: #172033; border-color: #94a3b8; background: #eef2f7; }
 .sub-tab.isActive,
 .sub-tab.active { color: var(--surface); background: var(--accent); border-color: var(--accent); }
 .sub-tab:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -293,7 +308,8 @@ textarea { min-height: 220px; resize: vertical; line-height: 1.55; }
   cursor: zoom-in;
 }
 
-.resultHeader { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.resultHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.resultHeader h2 { min-width: 0; margin-bottom: 0; }
 #statusText { font-size: 13px; color: var(--text-secondary); }
 .smallButton {
   width: auto;
@@ -403,7 +419,7 @@ pre {
   z-index: 2;
 }
 #previewDialogBody { display: grid; place-items: center; min-height: 240px; }
-#previewDialogBody img { max-width: 100%; max-height: 82vh; object-fit: contain; border-radius: 6px; background: #111827; }
+#previewDialogBody img { max-width: 100%; max-height: 82vh; object-fit: contain; border-radius: 6px; background: var(--surface-sunken); }
 
 @media (max-width: 980px) {
   .app { grid-template-columns: 1fr; }
@@ -508,9 +524,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .tabBtn:hover,
 .removeMediaBtn:hover,
 #closePreviewBtn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
+  border-color: #94a3b8;
+  color: #172033;
+  background: #eef2f7;
   box-shadow: none;
 }
 .rowButtons button:active,
@@ -665,7 +681,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: #94a3b8;
   border: 1px dashed #475569;
 }
-.app-tab.plus:hover { background: #1e293b; }
+.app-tab.plus:hover { background: #1e293b; color: #f1f5f9; }
 
 .modal-overlay {
   position: fixed;
@@ -690,6 +706,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .modal-body { color: var(--text-secondary); line-height: 1.5; }
 .modal-btns {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 14px;
@@ -731,3 +748,46 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .act-detail { min-width: 0; max-width: 100%; }
 .act-detail pre { max-width: 100%; overflow-x: auto; overflow-y: auto; white-space: pre; word-break: normal; }
 .act-detail-meta { overflow-wrap: anywhere; }
+.workspace-nav-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 112px);
+  align-items: center;
+  justify-content: start;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.workspace-nav-grid .workspace-nav-btn {
+  width: 112px;
+  min-width: 112px;
+  height: 36px;
+  margin: 0;
+  padding: 0 12px;
+}
+.workspace-nav-grid .workspace-nav-btn:not(.isActive):not(.ui-btn--primary):hover {
+  color: #172033;
+  border-color: #7f8da1;
+  background: #e2e8f0;
+}
+/* 结果/活动内容必须参与卡片本身的高度计算；只由 .workspace 外层滚动。 */
+.workspace > .ui-workbench__output {
+  box-sizing: border-box;
+  height: max-content;
+  min-height: 260px;
+  align-self: start;
+  overflow: visible;
+}
+
+/* 页面级 Tab 栏 + 工作区只共享一个视口，避免 body 与 .workspace 嵌套滚动。
+   侧栏/结果区仍保留各自必要的局部滚动。 */
+html, body { height: 100%; overflow: hidden; }
+#nb-app { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+#nb-app > .app-tabs { flex: 0 0 auto; }
+#nb-app > .app.ui-shell__body { flex: 1 1 auto; height: auto; min-height: 0; }
+
+/* Shared Core compatibility: keep explicitly primary compact actions blue. */
+.btn-small.ui-btn--primary,
+.btn-small.ui-btn--primary:hover:not(:disabled) {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}

@@ -215,9 +215,34 @@ export default function CanvasProjectPage() {
     }, [clearPendingConnection, clientToWorld]);
 
     useEffect(() => {
-        void fetchModels()
-            .then(setModels)
-            .catch(() => setModels([]));
+        let cancelled = false;
+        let retryTimer: number | undefined;
+        let attempts = 0;
+
+        const loadModels = async () => {
+            try {
+                const nextModels = await fetchModels();
+                if (cancelled) return;
+                if (nextModels.length > 0) {
+                    setModels(nextModels);
+                    return;
+                }
+            } catch {
+                if (cancelled) return;
+            }
+
+            // Portal 与子应用并行启动时，画布可能比 Seedance / Nano Banana
+            // 更早拿到一次空目录。不能因此永久禁用图片/视频生成；短间隔重试，
+            // 成功后立即停止，同时保留已有目录避免瞬时抖动让按钮再次失效。
+            attempts += 1;
+            if (attempts < 6) retryTimer = window.setTimeout(loadModels, 1_500);
+        };
+
+        void loadModels();
+        return () => {
+            cancelled = true;
+            if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+        };
     }, []);
 
     // 模型目录与节点声明对账:旧版本保存的模型节点可能缺失端口(如本地演示模型当时未声明任何端口),

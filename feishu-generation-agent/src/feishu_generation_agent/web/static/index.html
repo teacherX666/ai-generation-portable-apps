@@ -4,10 +4,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>飞书生成任务审批工作区</title>
+    <link rel="stylesheet" href="static/ui/portal-ui-core.css">
     <link rel="stylesheet" href="static/styles.css">
   </head>
-  <body>
-    <header class="topbar">
+  <body class="ui-page">
+    <header class="topbar ui-shell__header">
       <div>
         <p class="eyebrow">LOCAL GENERATION AGENT</p>
         <h1>飞书生成任务审批工作区</h1>
@@ -22,7 +23,7 @@
 
     <p id="error-message" class="error-message" role="alert" hidden></p>
 
-    <section id="direct-run-panel" class="direct-run-panel panel" aria-label="直接分析需求文档">
+    <section id="direct-run-panel" class="direct-run-panel panel ui-panel" aria-label="直接分析需求文档">
       <div class="panel-heading">
         <div>
           <p class="eyebrow">DIRECT DOCUMENT</p>
@@ -48,7 +49,7 @@
       <p id="direct-run-feedback" class="mode-message" aria-live="polite"></p>
     </section>
 
-    <section id="bitable-panel" class="bitable-panel panel" aria-label="多维表格任务">
+    <section id="bitable-panel" class="bitable-panel panel ui-panel" aria-label="多维表格任务">
       <div class="panel-heading">
         <button
           id="bitable-tasks-toggle"
@@ -127,7 +128,7 @@
     </section>
 
     <main class="workspace">
-      <aside class="trace-panel panel" aria-label="LangGraph 执行信息">
+      <aside class="trace-panel panel ui-panel" aria-label="LangGraph 执行信息">
         <div class="panel-heading">
           <div>
             <p class="eyebrow">WORKFLOW</p>
@@ -147,7 +148,7 @@
         </p>
       </aside>
 
-      <section class="review-panel panel" aria-label="任务审批工作区">
+      <section class="review-panel panel ui-panel" aria-label="任务审批工作区">
         <div class="panel-heading review-heading">
           <div>
             <p class="eyebrow">REVIEW</p>
@@ -218,7 +219,7 @@
       </section>
     </main>
 
-    <footer class="action-bar">
+    <footer class="action-bar ui-shell__footer">
       <span id="polling-note">每 1 秒自动刷新运行状态</span>
       <div class="action-buttons">
         <button id="next-task-button" type="button" class="secondary" disabled>开始下一任务</button>
@@ -232,7 +233,7 @@
     </footer>
 
     <div id="planner-prompt-modal" class="modal-overlay" hidden>
-      <section class="planner-prompt-modal" role="dialog" aria-modal="true"
+      <section class="planner-prompt-modal ui-panel" role="dialog" aria-modal="true"
         aria-labelledby="planner-prompt-title">
         <div class="panel-heading">
           <div>
@@ -254,7 +255,7 @@
     </div>
 
     <div id="trash-modal" class="modal-overlay" hidden>
-      <section class="trash-modal" role="dialog" aria-modal="true" aria-labelledby="trash-title">
+      <section class="trash-modal ui-panel" role="dialog" aria-modal="true" aria-labelledby="trash-title">
         <div class="panel-heading">
           <div>
             <p class="eyebrow">TRASH</p>
