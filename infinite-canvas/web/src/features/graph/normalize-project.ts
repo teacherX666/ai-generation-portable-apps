@@ -130,9 +130,10 @@ function canonicalJson(value: unknown): string {
 
 function normalizeNode(node: CanvasNodeInput): CanvasNodeData {
     const metadata = node.metadata ? { ...node.metadata } : undefined;
-    const { scale: rawScale, ...rest } = node;
+    const { scale: rawScale, resized: rawResized, ...rest } = node;
     const scale = normalizeNodeScale(rawScale);
-    const base = { ...rest, position: { ...node.position }, ...(scale === undefined ? {} : { scale }) };
+    const resized = rawResized === true ? true : undefined;
+    const base = { ...rest, position: { ...node.position }, ...(scale === undefined ? {} : { scale }), ...(resized === undefined ? {} : { resized }) };
     if (!isBuiltInGraphNode(node.type)) return { ...base, metadata: metadata as CanvasNodeMetadata | undefined };
     const graph = normalizeGraphMetadata(node, metadata);
     if (node.type === "comfy.workflow") {

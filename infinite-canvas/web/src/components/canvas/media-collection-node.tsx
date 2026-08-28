@@ -51,11 +51,13 @@ const copyByType: Readonly<Record<GraphMediaType, { noun: string; accept: string
     audio: { noun: "音频", accept: "audio/mpeg,audio/wav" },
 };
 
-function MediaPreview({ mediaType, item, label }: { mediaType: GraphMediaType; item: GraphMediaItem; label: string }) {
+function MediaPreview({ mediaType, item, label, nodeWidth }: { mediaType: GraphMediaType; item: GraphMediaItem; label: string; nodeWidth: number }) {
     const source = safeApiPath(`/api/v1/assets/${encodeURIComponent(item.assetId)}/content`);
     const accessibleName = `${label} ${item.displayName}`;
-    if (mediaType === "image") return <img src={source} alt={accessibleName} className="h-16 w-20 rounded-md border border-[#d9e0ea] object-cover" />;
-    if (mediaType === "video") return <video src={source} aria-label={accessibleName} controls preload="metadata" className="h-16 w-24 rounded-md border border-[#d9e0ea] bg-black object-cover" />;
+    // 缩略图随节点宽度缩放，自由拖拽节点时预览跟着变（上游 47dc69a）
+    const thumbWidth = Math.max(48, Math.min(160, Math.round(nodeWidth * 0.22)));
+    if (mediaType === "image") return <img src={source} alt={accessibleName} style={{ width: thumbWidth, height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#d9e0ea] object-cover" />;
+    if (mediaType === "video") return <video src={source} aria-label={accessibleName} controls preload="metadata" style={{ width: Math.round(thumbWidth * 1.2), height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#d9e0ea] bg-black object-cover" />;
     return <audio src={source} aria-label={accessibleName} controls preload="metadata" className="h-9 w-40 max-w-full" />;
 }
 
@@ -242,9 +244,10 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
     };
 
     const overflowing = items.length + pending.length > 8;
+    const resized = node.resized === true;
 
-    return <article className="overflow-hidden rounded-xl border border-[#d9e0ea] bg-white text-[#172033] shadow-[0_12px_36px_rgba(0,0,0,0.36)]">
-        <header className="flex items-center justify-between border-b border-[#232b3e] px-3 py-2">
+    return <article className="flex h-full flex-col overflow-hidden rounded-xl border border-[#d9e0ea] bg-white text-[#172033] shadow-[0_12px_36px_rgba(0,0,0,0.36)]">
+        <header className="flex shrink-0 items-center justify-between border-b border-[#232b3e] px-3 py-2">
             <div><p className="text-[10px] tracking-[0.16em] text-[#235fd6]">MEDIA INPUT</p><h2 className="text-sm font-semibold">{node.title}</h2></div>
             {!readOnly ? <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-[#c3ccd9] bg-[#eef5ff] px-2 py-1 text-xs text-[#465267] hover:border-[#235fd6]">
                 <Plus className="size-3.5" />添加
@@ -255,7 +258,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                 }} />
             </label> : null}
         </header>
-        <ol data-overflowing={String(overflowing)} className={`${overflowing ? "max-h-80 overflow-y-auto" : ""} space-y-2 p-2`}>
+        <ol data-overflowing={String(overflowing)} className={`${resized ? "min-h-0 flex-1 overflow-y-auto" : overflowing ? "max-h-80 overflow-y-auto" : ""} space-y-2 p-2`}>
             {selectionError ? <li role="alert" className="rounded-lg border border-[#f3c5c0] bg-[#fee2e2] px-3 py-2 text-xs text-[#b91c1c]">{selectionError}</li> : null}
             {items.map((item, index) => {
                 const label = mediaItemLabel(mediaType, index);
@@ -271,7 +274,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                     }}
                     className="flex items-center gap-2 rounded-lg border border-[#21283a] bg-[#eef2f7] p-2">
                     {!readOnly ? <GripVertical className="size-4 shrink-0 text-[#666d7b]" aria-hidden="true" /> : null}
-                    <MediaPreview mediaType={mediaType} item={item} label={label} />
+                    <MediaPreview mediaType={mediaType} item={item} label={label} nodeWidth={node.width} />
                     <div className="min-w-0 flex-1"><p className="text-xs font-medium text-[#465267]">{label}</p>{readOnly
                         ? <p className="truncate text-[11px] text-[#687386]">{item.displayName}</p>
                         : <input key={`${item.id}:${item.displayName}`} aria-label={`重命名 ${label}`} defaultValue={item.displayName} onBlur={(event) => {

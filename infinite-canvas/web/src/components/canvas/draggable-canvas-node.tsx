@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
-import { formatNodeScale, nextNodeScale, nodeScaleOf } from "@/lib/canvas/node-scale";
+import { nodeScaleOf } from "@/lib/canvas/node-scale";
+import { clampNodeSize } from "@/lib/canvas/node-resize";
 import type { CanvasNodeData, Position } from "@/types/canvas";
 
 type DraggableCanvasNodeProps = {
@@ -8,7 +9,7 @@ type DraggableCanvasNodeProps = {
     scale: number;
     onPositionChange: (nodeId: string, position: Position) => void;
     onMeasuredSize?: (nodeId: string, size: { width: number; height: number }) => void;
-    onScaleChange?: (nodeId: string, scale: number) => void;
+    onResize?: (nodeId: string, size: { width: number; height: number }) => void;
     selected?: boolean;
     disabled?: boolean;
     contentSized?: boolean;
@@ -29,6 +30,16 @@ type DragState = {
     previousCursor: string;
 };
 
+type ResizeState = {
+    active: boolean;
+    pointerId: number | null;
+    startX: number;
+    startY: number;
+    initial: { width: number; height: number };
+    scale: number;
+    previousCursor: string;
+};
+
 type InteractivePointerGesture = {
     pointerId: number;
     target: Element;
@@ -40,7 +51,7 @@ function normalizedScale(scale: number) {
     return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
-export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredSize, onScaleChange, selected = false, disabled = false, contentSized = false, onSelect, onContextMenu, children, overlays }: DraggableCanvasNodeProps) {
+export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredSize, onResize, selected = false, disabled = false, contentSized = false, onSelect, onContextMenu, children, overlays }: DraggableCanvasNodeProps) {
     const elementRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<DragState>({
@@ -52,21 +63,36 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
         scale: 1,
         previousCursor: "",
     });
+    const resizeRef = useRef<ResizeState>({
+        active: false,
+        pointerId: null,
+        startX: 0,
+        startY: 0,
+        initial: { width: 0, height: 0 },
+        scale: 1,
+        previousCursor: "",
+    });
     const frameRef = useRef<number | null>(null);
+    const resizeFrameRef = useRef<number | null>(null);
     const nextPositionRef = useRef<Position | null>(null);
+    const nextResizeRef = useRef<{ width: number; height: number } | null>(null);
     const onPositionChangeRef = useRef(onPositionChange);
+    const onResizeRef = useRef(onResize);
     const nodeIdRef = useRef(node.id);
     const finishDragRef = useRef<((pointerId?: number, flush?: boolean) => void) | null>(null);
+    const finishResizeRef = useRef<((pointerId?: number, flush?: boolean) => void) | null>(null);
     const interactivePointerGestureRef = useRef<InteractivePointerGesture | null>(null);
     const clearInteractivePointerRef = useRef<() => void>(() => undefined);
     const nodeScale = nodeScaleOf(node);
     const [contentSize, setContentSize] = useState<{ width: number; height: number } | null>(null);
     onPositionChangeRef.current = onPositionChange;
+    onResizeRef.current = onResize;
     nodeIdRef.current = node.id;
 
     useEffect(() => {
         return () => {
             finishDragRef.current?.(undefined, false);
+            finishResizeRef.current?.(undefined, false);
             clearInteractivePointerRef.current();
         };
     }, []);
@@ -175,6 +201,80 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
         finishDragRef.current = finishDrag;
     };
 
+    const handleResizePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        if (disabled || event.button !== 0 || resizeRef.current.active || !onResizeRef.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        resizeRef.current = {
+            active: true,
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            // Start from the displayed content size so content-sized boxes grow continuously from their current height.
+            initial: { width: node.width, height: contentSize?.height ?? node.height },
+            scale: normalizedScale(scale),
+            previousCursor: document.body.style.cursor,
+        };
+        document.body.style.cursor = "nwse-resize";
+
+        const emitPendingResize = () => {
+            const nextResize = nextResizeRef.current;
+            nextResizeRef.current = null;
+            if (nextResize) onResizeRef.current?.(nodeIdRef.current, nextResize);
+        };
+
+        let listening = true;
+        const detachListeners = () => {
+            if (!listening) return;
+            listening = false;
+            window.removeEventListener("pointermove", handleResizePointerMove);
+            window.removeEventListener("pointerup", handleResizePointerUp);
+            window.removeEventListener("pointercancel", handleResizePointerCancel);
+            window.removeEventListener("blur", handleResizeWindowBlur);
+        };
+        const finishResize = (pointerId?: number, flush = true) => {
+            const resize = resizeRef.current;
+            if (!resize.active || (pointerId !== undefined && pointerId !== resize.pointerId)) return;
+
+            if (resizeFrameRef.current !== null) {
+                cancelAnimationFrame(resizeFrameRef.current);
+                resizeFrameRef.current = null;
+            }
+            resize.active = false;
+            resize.pointerId = null;
+            document.body.style.cursor = resize.previousCursor;
+            detachListeners();
+            finishResizeRef.current = null;
+            if (flush) emitPendingResize();
+            else nextResizeRef.current = null;
+        };
+
+        const handleResizePointerMove = (pointerEvent: PointerEvent) => {
+            const resize = resizeRef.current;
+            if (!resize.active || pointerEvent.pointerId !== resize.pointerId) return;
+            nextResizeRef.current = clampNodeSize(
+                resize.initial.width + (pointerEvent.clientX - resize.startX) / resize.scale,
+                resize.initial.height + (pointerEvent.clientY - resize.startY) / resize.scale,
+            );
+            if (resizeFrameRef.current !== null) return;
+            resizeFrameRef.current = requestAnimationFrame(() => {
+                resizeFrameRef.current = null;
+                emitPendingResize();
+            });
+        };
+
+        const handleResizePointerUp = (pointerEvent: PointerEvent) => finishResize(pointerEvent.pointerId);
+        const handleResizePointerCancel = (pointerEvent: PointerEvent) => finishResize(pointerEvent.pointerId);
+        const handleResizeWindowBlur = () => finishResize();
+
+        window.addEventListener("pointermove", handleResizePointerMove);
+        window.addEventListener("pointerup", handleResizePointerUp);
+        window.addEventListener("pointercancel", handleResizePointerCancel);
+        window.addEventListener("blur", handleResizeWindowBlur);
+        finishResizeRef.current = finishResize;
+    };
+
     const handlePointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
         if (disabled || event.button !== 0) return;
         const target = event.target instanceof Element ? event.target : null;
@@ -230,10 +330,7 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
 
     const boxWidth = (contentSize?.width ?? node.width) * nodeScale;
     const boxHeight = contentSized ? (contentSize ? contentSize.height * nodeScale : undefined) : (contentSize?.height ?? node.height) * nodeScale;
-    const stepScale = (direction: 1 | -1) => {
-        const next = nextNodeScale(nodeScale, direction);
-        if (next !== nodeScale) onScaleChange?.(node.id, next);
-    };
+    const fixedBox = node.resized === true;
 
     return (
         <div
@@ -263,17 +360,26 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
                 ref={contentRef}
                 data-testid={`node-content-${node.id}`}
                 className="origin-top-left"
-                style={{ width: node.width, minHeight: contentSized ? undefined : node.height, transform: `scale(${nodeScale})`, transformOrigin: "top left" }}
+                style={{
+                    width: node.width,
+                    ...(fixedBox ? { height: node.height, overflow: "hidden" } : { minHeight: contentSized ? undefined : node.height }),
+                    transform: `scale(${nodeScale})`,
+                    transformOrigin: "top left",
+                }}
             >
                 {children}
             </div>
             {overlays}
-            {selected && !disabled && onScaleChange ? (
-                <div data-canvas-no-drag data-canvas-no-zoom className="absolute top-2 left-2 z-10 flex items-center gap-0.5 rounded-lg border border-[#c3ccd9] bg-[#ffffff]/95 px-0.5 py-0.5">
-                    <button type="button" aria-label="缩小节点" title="缩小节点" onClick={() => stepScale(-1)} className="rounded px-1.5 text-sm leading-5 text-[#465267] hover:bg-[#eef2f7]">−</button>
-                    <button type="button" aria-label="重置节点缩放" title="重置为真实大小" onClick={() => onScaleChange(node.id, 1)} className="min-w-10 rounded px-1 text-xs leading-5 text-[#235fd6] hover:bg-[#eef2f7]">{formatNodeScale(nodeScale)}</button>
-                    <button type="button" aria-label="放大节点" title="放大节点" onClick={() => stepScale(1)} className="rounded px-1.5 text-sm leading-5 text-[#465267] hover:bg-[#eef2f7]">+</button>
-                </div>
+            {selected && !disabled && onResize ? (
+                <button
+                    type="button"
+                    aria-label="拖拽调整节点大小"
+                    title="拖拽右下角调整大小"
+                    data-canvas-no-drag
+                    data-canvas-no-zoom
+                    onPointerDown={handleResizePointerDown}
+                    className="absolute -right-1.5 -bottom-1.5 z-20 size-4 cursor-nwse-resize rounded-sm border-2 border-[#ffffff] bg-[#235fd6] shadow-[0_0_0_1px_rgba(35,95,214,0.45)]"
+                />
             ) : null}
         </div>
     );

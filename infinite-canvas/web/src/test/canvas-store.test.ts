@@ -156,6 +156,8 @@ describe("canvas graph persistence", () => {
                 { id: "low", type: CanvasNodeType.Text, title: "Low", position: { x: 0, y: 0 }, width: 200, height: 100, scale: 0.01 },
                 { id: "bad", type: CanvasNodeType.Text, title: "Bad", position: { x: 0, y: 0 }, width: 200, height: 100, scale: "abc" as unknown as number },
                 { id: "plain", type: CanvasNodeType.Text, title: "Plain", position: { x: 0, y: 0 }, width: 200, height: 100 },
+                { id: "resized", type: CanvasNodeType.Text, title: "Resized", position: { x: 0, y: 0 }, width: 200, height: 100, resized: true },
+                { id: "bad-resized", type: CanvasNodeType.Text, title: "BadResized", position: { x: 0, y: 0 }, width: 200, height: 100, resized: "yes" as unknown as boolean },
             ],
         };
         useCanvasStore.getState().replaceProjects([source]);
@@ -166,6 +168,8 @@ describe("canvas graph persistence", () => {
         expect(nodes.find((node) => node.id === "low")?.scale).toBe(0.25);
         expect(nodes.find((node) => node.id === "bad")?.scale).toBeUndefined();
         expect(nodes.find((node) => node.id === "plain")?.scale).toBeUndefined();
+        expect(nodes.find((node) => node.id === "resized")?.resized).toBe(true);
+        expect(nodes.find((node) => node.id === "bad-resized")?.resized).toBeUndefined();
     });
 
     it("normalizes old persisted projects and marks their sync metadata as legacy", () => {

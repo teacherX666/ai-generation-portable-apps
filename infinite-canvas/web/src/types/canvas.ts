@@ -88,6 +88,8 @@ export type CanvasNodeData = {
     height: number;
     /** Node-level zoom relative to the node's base size; 1 is the real size at generation time. */
     scale?: number;
+    /** Set once the node box was resized by hand; freezes the box and stretches content to fill it. */
+    resized?: boolean;
     metadata?: CanvasNodeMetadata;
 };
 

@@ -134,12 +134,12 @@ export default function CanvasProjectPage() {
         },
         [id, readOnly, updateProject],
     );
-    const changeNodeScale = useCallback(
-        (nodeId: string, scale: number) => {
+    const changeNodeSize = useCallback(
+        (nodeId: string, size: { width: number; height: number }) => {
             if (readOnly) return;
             const current = useCanvasStore.getState().openProject(id);
             if (!current) return;
-            updateProject(id, { nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, scale } : node)) });
+            updateProject(id, { nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, width: size.width, height: size.height, resized: true } : node)) });
         },
         [id, readOnly, updateProject],
     );
@@ -974,7 +974,7 @@ export default function CanvasProjectPage() {
                                     onContextMenu={readOnly ? undefined : openNodeContextMenu}
                                     onPositionChange={moveNode}
                                     onMeasuredSize={recordMeasuredNodeSize}
-                                    onScaleChange={readOnly ? undefined : changeNodeScale}
+                                    onResize={readOnly ? undefined : changeNodeSize}
                                     overlays={[...ports.targets, ...ports.sources].map((port) => (
                                         <NodePort
                                             key={`${port.direction}:${port.portId}`}
