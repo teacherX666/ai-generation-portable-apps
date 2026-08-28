@@ -289,10 +289,10 @@ def load_files_map() -> dict[str, Path]:
 
 
 def save_files_map() -> None:
-    """Persist the current FILES mapping to disk atomically."""
+    """Persist the current FILES mapping to disk atomically.
+    调用方必须已持有 LOCK（threading.Lock 不可重入，内部再抢会死锁）。"""
     try:
-        with LOCK:
-            data = {token: str(p) for token, p in FILES.items()}
+        data = {token: str(p) for token, p in FILES.items()}
         _atomic_write(FILES_MAP_PATH, json.dumps(data, ensure_ascii=False, indent=2))
     except Exception:
         pass
