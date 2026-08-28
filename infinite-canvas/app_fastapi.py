@@ -284,9 +284,27 @@ async def api_asset_content(request: Request, asset_id: str):
 @app.delete("/api/v1/assets/{asset_id}", status_code=204)
 async def api_delete_asset(request: Request, asset_id: str):
     try:
-        store.delete_asset(request.state.user["user_id"], asset_id)
+        row = store.get_asset(request.state.user["user_id"], asset_id)
     except store.NotFoundError:
         return _error(404, "not_found", "资产不存在。")
+    # 素材库资产双删（上游 895068a）：先删方舟侧，再删本地行与文件。
+    # 方舟删除失败时不删本地，避免「上游还留着但本地看不到」的悬空素材。
+    if row["kind"] == "library" and row.get("upstream_asset_id"):
+        cfg = ark_library.load_config()
+        if cfg is None:
+            return _error(503, "LIBRARY_ASSETS_UNAVAILABLE", "素材库未配置。",
+                          retryable=True, phase="library")
+        try:
+            await asyncio.to_thread(
+                ark_library.delete_asset, cfg, row["upstream_asset_id"])
+        except ValueError as exc:
+            return _error(422, "UPSTREAM_UNAVAILABLE", str(exc), phase="library")
+        except ark_library.LibraryError as exc:
+            return _error(502 if exc.retryable else 422, "UPSTREAM_UNAVAILABLE",
+                          str(exc), retryable=exc.retryable, phase="library")
+        except ark_library.LibraryInvalid as exc:
+            return _error(502, "UPSTREAM_INVALID", str(exc), phase="library")
+    store.delete_asset(request.state.user["user_id"], asset_id)
     return Response(status_code=204)
 
 

@@ -9,6 +9,7 @@ import type { GraphMediaItem } from "@/features/graph/contracts";
 afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
 });
 
 const activeAsset: AssetRef = {
@@ -17,7 +18,7 @@ const activeAsset: AssetRef = {
 };
 const processingAsset: AssetRef = { ...activeAsset, status: "processing" };
 
-const targets = [{ nodeId: "node-images", label: "参考图片" }];
+const targets = [{ nodeId: "node-images", label: "参考图片", itemCount: 0 }];
 
 it("uploads a portrait into the library, polls it active, and adds it to the media collection", async () => {
     const calls: string[] = [];
@@ -71,5 +72,43 @@ it("shows a hint instead of an add button when no image media node exists", asyn
     render(<AssetLibraryPanel targets={[]} onClose={() => undefined} upload={vi.fn()} fetchAssets={fetchAssets} fetchAsset={vi.fn()} />);
 
     await screen.findByText("先在画布中添加一个图片素材节点，再从这里添加人像。");
-    expect(screen.queryByLabelText("选择目标素材节点")).not.toBeInTheDocument();
+    expect(screen.queryByRole("menu", { name: "选择目标素材节点" })).not.toBeInTheDocument();
+});
+
+it("offers a remembered-choice picker when several image media nodes exist", async () => {
+    const added: { nodeId: string; items: GraphMediaItem[] }[] = [];
+    const addToCollection = vi.fn((nodeId: string, items: GraphMediaItem[]) => { added.push({ nodeId, items }); });
+    const fetchAssets = vi.fn(async () => [{ ...activeAsset, id: "lib-2" } satisfies AssetRef]);
+    const twoTargets = [
+        { nodeId: "node-a", label: "参考图A", itemCount: 2 },
+        { nodeId: "node-b", label: "参考图B", itemCount: 0 },
+    ];
+
+    render(<AssetLibraryPanel targets={twoTargets} onClose={() => undefined} fetchAssets={fetchAssets} fetchAsset={vi.fn()} addToCollection={addToCollection} />);
+
+    fireEvent.click(await screen.findByLabelText("添加 lib-2 到素材节点"));
+    const menu = await screen.findByRole("menu", { name: "选择目标素材节点" });
+    expect(menu).toBeInTheDocument();
+    fireEvent.click(screen.getByText("参考图B（0 项）"));
+
+    expect(addToCollection).toHaveBeenCalledWith("node-b", expect.anything());
+    expect(added).toHaveLength(1);
+    expect(added[0].nodeId).toBe("node-b");
+
+    // 记住选择：再次打开选择器，上次目标排在最前
+    fireEvent.click(screen.getByLabelText("添加 lib-2 到素材节点"));
+    const menuItems = await screen.findAllByRole("menuitem");
+    expect(menuItems[0]).toHaveTextContent("参考图B");
+});
+
+it("deletes an asset after confirmation and refreshes the list", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    const deleteAsset = vi.fn(async () => undefined);
+    const fetchAssets = vi.fn(async () => [{ ...activeAsset } satisfies AssetRef]);
+
+    render(<AssetLibraryPanel targets={[]} onClose={() => undefined} fetchAssets={fetchAssets} fetchAsset={vi.fn()} deleteAsset={deleteAsset} />);
+
+    fireEvent.click(await screen.findByLabelText("删除素材 lib-1"));
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() => expect(deleteAsset).toHaveBeenCalledWith("lib-1"));
 });

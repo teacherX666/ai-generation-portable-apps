@@ -308,3 +308,11 @@ def get_asset_status(cfg: dict, asset_id: str) -> str:
     if status is None:
         raise LibraryInvalid("素材库状态响应无效。")
     return status
+
+
+def delete_asset(cfg: dict, asset_id: str) -> None:
+    """删除方舟侧素材（上游 895068a）。DeleteAsset 调用即删，响应无业务字段。"""
+    if _ARK_ASSET_ID.fullmatch(asset_id) is None:
+        raise ValueError("素材库素材标识无效。")
+    _openapi_call(cfg, "DeleteAsset",
+                  {"Id": asset_id, "ProjectName": cfg["project_name"]})

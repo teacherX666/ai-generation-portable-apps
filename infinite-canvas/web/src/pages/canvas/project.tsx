@@ -757,9 +757,10 @@ export default function CanvasProjectPage() {
 
     const libraryTargets = useMemo(() => {
         if (!project) return [];
+        // itemCount 供面板目标选择器展示（上游 6307ed3）
         return project.nodes
             .filter((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image")
-            .map((node) => ({ nodeId: node.id, label: node.title || node.id }));
+            .map((node) => ({ nodeId: node.id, label: node.title || node.id, itemCount: node.metadata.graph.items.length }));
     }, [project]);
 
     if (!project) {
