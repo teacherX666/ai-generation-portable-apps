@@ -38,3 +38,44 @@ def test_negative_tags_schema():
     assert len(d["negative"]) >= 30
     assert len(d["styles"]) >= 30
     assert (ASSETS / "negative_tags.json").stat().st_size < 80 * 1024
+
+
+import importlib.util
+import sys
+
+sys.path.insert(0, str(ROOT / "director"))
+_spec = importlib.util.spec_from_file_location(
+    "director_app_assets", ROOT / "director" / "app.py"
+)
+director = importlib.util.module_from_spec(_spec)
+sys.modules["director_app_assets"] = director
+_spec.loader.exec_module(director)
+
+
+def test_assets_payload(monkeypatch):
+    monkeypatch.setattr(director, "ASSETS_DIR", ROOT / "director" / "assets")
+    payload = director.assets_payload()
+    assert payload["version"] == director.ASSETS_VERSION
+    for key in ("gpt_image_templates", "nano_banana_styles",
+                "shortcut_inspirations", "negative_tags"):
+        assert isinstance(payload[key], dict)
+    # 体积上限：一次性下发不应超过 1MB
+    assert len(json.dumps(payload, ensure_ascii=False)) < 1024 * 1024
+
+
+def test_optimize_langgpt_mode(monkeypatch, tmp_path):
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("langgpt框架", encoding="utf-8")
+    monkeypatch.setattr(director, "SKILL_PATH", skill)
+    monkeypatch.setattr(director, "_load_deepseek_key", lambda: "sk-test")
+    captured = {}
+    monkeypatch.setattr(director, "request_json",
+                        lambda m, u, k, body=None, timeout=None:
+                        (captured.update(body=body) or
+                         {"choices": [{"message": {"content": "结构化结果"}}]}))
+    result = director.optimize_prompt("一只猫", "langgpt")
+    assert result["ok"] is True
+    sys_msg = captured["body"]["messages"][0]["content"]
+    assert "langgpt框架" in sys_msg
+    user = captured["body"]["messages"][1]["content"]
+    assert "结构化" in user
