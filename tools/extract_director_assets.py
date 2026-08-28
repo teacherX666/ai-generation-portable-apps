@@ -95,9 +95,9 @@ def _parse_yaml_tags(yaml_path: Path) -> dict:
     structural = {"groups", "color", "tags", "name"}
     for line in text.splitlines():
         stripped = line.strip()
-        m = re.match(r"^- name:\s*(.+)$", stripped)
-        if m:
-            current_major = m.group(1).strip()
+        # 只认顶格的一级分类；缩进的二级 `- name:` 是分组名，不是分类切换
+        if line.startswith("- name:"):
+            current_major = stripped.split(":", 1)[1].strip()
             continue
         if ":" in stripped and not stripped.startswith(("#", "-")):
             key = stripped.split(":", 1)[0].strip()
