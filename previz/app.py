@@ -209,7 +209,13 @@ def _serve_file(handler: SimpleHTTPRequestHandler, path: Path, content_type: str
         if not path.exists() or not path.is_file():
             json_response(handler, 404, {"error": "文件不存在"})
             return
-        body = path.read_bytes()
+        try:
+            body = path.read_bytes()
+        except FileNotFoundError:
+            # exists 通过后文件仍可能被 _handle_render 的并发写/清理删掉，
+            # 与 export 循环的 except continue 对称容错
+            json_response(handler, 404, {"error": "文件不存在"})
+            return
     handler.send_response(200)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(body)))

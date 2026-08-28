@@ -94,17 +94,18 @@ def _mk_shot(pid="p_test01", sid="shot1"):
 
 
 class _FakeHandler:
-    """json_response 落点：记录状态码，body 进 BytesIO。"""
+    """json_response / _handle_export 落点：记录状态码与响应头，body 进 BytesIO。"""
 
     def __init__(self):
         self.wfile = io.BytesIO()
         self.status = 0
+        self.headers_out = {}
 
     def send_response(self, status):
         self.status = status
 
     def send_header(self, k, v):
-        pass
+        self.headers_out[k] = v
 
     def end_headers(self):
         pass
@@ -171,16 +172,36 @@ class TestRenderAndFiles(unittest.TestCase):
     def test_export_zip_contains_named_pngs(self):
         _mk_shot()
         self._handle("p_test01", _make_form())
-        p = previz.load_project("p_test01")
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for shot in p["shots"]:
-                f = PROJECTS_DIR / "p_test01" / str(shot.get("render") or "")
-                if previz._FILE_RE.fullmatch(f.name) and f.exists():
-                    zf.write(f, arcname=f"{shot['order']:02d}-{previz._zip_entry_name(shot['name'])}.png")
-        buf.seek(0)
-        with zipfile.ZipFile(buf) as zf:
+        previz.Handler._handle_export(self.handler, "p_test01")
+        assert self.handler.status == 200
+        assert "filename*=UTF-8''" in self.handler.headers_out["Content-Disposition"]
+        with zipfile.ZipFile(io.BytesIO(self.handler.wfile.getvalue())) as zf:
             assert zf.namelist() == ["00-镜头1.png"]
+
+    def test_render_over_limit_413(self):
+        _mk_shot()
+        orig = previz.MAX_RENDER_BYTES
+        previz.MAX_RENDER_BYTES = 10  # fixture 70 字节 → 限长读入 11 字节即触发
+        try:
+            self._handle("p_test01", _make_form())
+        finally:
+            previz.MAX_RENDER_BYTES = orig
+        assert self.handler.status == 413
+        # 限长拒绝必须发生在任何落盘之前
+        assert not (PROJECTS_DIR / "p_test01" / "s_shot1_render.png").exists()
+
+    def test_json_response_no_store(self):
+        previz.json_response(self.handler, 200, {"ok": True})
+        assert self.handler.headers_out["Cache-Control"] == "no-store"
+
+    def test_put_garbage_content_length_400(self):
+        # 与 _handle_render 同款鸭子类型调用：只测 do_PUT 的 CL 容错路径，
+        # 不需要真实 socket（n=0 时不读 rfile）
+        h = _FakeHandler()
+        h.path = "/api/projects/p_test01"
+        h.headers = {"Content-Length": "abc"}  # 垃圾 CL → _read_json_body 容错返回 None
+        previz.Handler.do_PUT(h)
+        assert h.status == 400
 
     def test_file_regex_rejects_traversal(self):
         assert previz._FILE_RE.fullmatch("../p_test01/project.json") is None
