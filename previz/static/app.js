@@ -483,11 +483,15 @@ let activeShotId = null;
 let saveTimer = null;
 let lastRender = null;     // Task 9 渲染结果 {dataUrl, shotId, width, height}
 
-// toast：Task 10 实现真实版本，这里先挂占位
-window.__previzToast = null;
+// ============ toast ============
+let toastTimer = null;
 function toast(msg, isErr) {
-  if (window.__previzToast) { window.__previzToast(msg, isErr); return; }
-  console.warn('toast:', msg);
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.toggle('err', !!isErr);
+  el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, 4000);
 }
 
 export function setDirty() {
@@ -827,6 +831,36 @@ export async function downloadRender() {
   a.click();
 }
 window.__downloadRender = downloadRender;
+
+// ============ 送画布 ============
+export async function sendRenderToCanvas() {
+  if (!lastRender) return toast('先渲染一张快照', true);
+  const shot = project.shots.find((s) => s.id === lastRender.shotId) || currentShotData();
+  const filename = `${sanitizeFilename(shot ? shot.name : 'shot')}.png`;
+  const fd = new FormData();
+  fd.append('file', dataUrlToBlob(lastRender.dataUrl), filename);
+  fd.append('media_type', 'image');
+  fd.append('kind', 'reference');
+  try {
+    const res = await fetch('/infinite-canvas/api/v1/assets', { method: 'POST', body: fd });
+    if (!res.ok) {
+      let msg = 'HTTP ' + res.status;
+      try { msg = (await res.json()).error || msg; } catch (_) { /* 非 JSON 响应 */ }
+      throw new Error(msg);
+    }
+    document.getElementById('render-status').textContent = '已送画布 ✓';
+    toast('已送画布 ✓ 去「无限画布」标签页查看');
+  } catch (err) {
+    document.getElementById('render-status').textContent = '送画布失败：' + err.message;
+    toast('送画布失败：' + err.message + '（快照已存档，可下载）', true);
+  }
+}
+window.__sendRender = sendRenderToCanvas;
+window.__toCanvas = () => {
+  // 顶栏按钮：直接送最近一张渲染图；没有则提示
+  if (!lastRender) return toast('先渲染一张快照', true);
+  sendRenderToCanvas();
+};
 
 // ============ 选中与地面拖拽 ============
 export function pickAt(clientX, clientY) {
