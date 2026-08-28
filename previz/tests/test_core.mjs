@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   JOINTS, POSE_PRESETS, jointAngles, ASPECTS, SHOT_SIZES, shotDistance,
   PROP_TYPES, CHARACTER_COLORS, newCharacter, newShot, emptyProject,
-  renderSizeFor, sanitizeFilename, newId,
+  renderSizeFor, sanitizeFilename, newId, dataUrlToBlob,
 } from '../static/core.js';
 
 test('JOINTS 恰好 14 个且无重复', () => {
@@ -65,4 +65,19 @@ test('emptyProject 结构 + newId 前缀与唯一性', () => {
 
 test('sanitizeFilename 去危险字符', () => {
   assert.equal(sanitizeFilename('镜头 1/2：远景'), '镜头_1_2_远景');
+});
+
+test('dataUrlToBlob 解析 data URL', () => {
+  const blob = dataUrlToBlob('data:image/png;base64,iVBORw0KGgo=');
+  assert.equal(blob.type, 'image/png');
+  assert.equal(blob.size, 8);   // 8 字节 PNG 签名头
+});
+
+test('PROP_TYPES 六类结构完整', () => {
+  assert.equal(PROP_TYPES.length, 6);
+  for (const p of PROP_TYPES) {
+    assert.ok(p.type && p.label);
+    assert.equal(p.geo.length, 2);
+    assert.ok(Array.isArray(p.geo[1]));
+  }
 });

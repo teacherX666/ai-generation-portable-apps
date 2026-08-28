@@ -476,7 +476,7 @@ export function removeProp(id) {
 function markDirty() { setDirty(); }
 
 // ============ 项目数据流 ============
-import { emptyProject, newShot, sanitizeFilename, dataUrlToBlob } from './core.js';
+import { emptyProject, newShot, sanitizeFilename, dataUrlToBlob, renderSizeFor } from './core.js';
 
 let project = null;        // 当前项目 JSON（内存态）
 let activeShotId = null;
@@ -636,6 +636,7 @@ export function renderShotList() {
 function duplicateShot(id) {
   const src = project.shots.find((s) => s.id === id);
   if (!src) return;
+  serializeSceneInto(src);   // 深拷贝前序列化，确保副本拿到最新机位
   const copy = JSON.parse(JSON.stringify(src));
   copy.id = newId('s_');
   copy.name = src.name + ' 副本';
@@ -712,6 +713,111 @@ export async function createProject(name) {
   await loadProject(p.id);
   return p;
 }
+
+// ============ 渲染管线 ============
+export function captureShot(width, height) {
+  const renderer = state.renderer, camera = state.camera;
+  const oldSize = new THREE.Vector2();
+  renderer.getSize(oldSize);
+  const oldPR = renderer.getPixelRatio();
+  const oldAspect = camera.aspect;
+  const hidden = hideEditHelpers();
+  renderer.setPixelRatio(1);
+  renderer.setSize(width, height, false);   // false：不改 canvas CSS 尺寸
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  renderer.render(state.scene, camera);
+  const dataUrl = renderer.domElement.toDataURL('image/png');
+  restoreEditHelpers(hidden);
+  camera.aspect = oldAspect;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(oldPR);
+  renderer.setSize(oldSize.x, oldSize.y, false);
+  return dataUrl;
+}
+
+// 【ADAPT】Task 5 重构后 jointBalls Group 已不存在（球挂在关节下、经 setJointBallsVisible 切换）
+function hideEditHelpers() {
+  const hidden = {
+    balls: [],
+    labels: [],
+    overlay: document.getElementById('frame-overlay').classList.contains('on'),
+  };
+  for (const rec of state.mannequins.values()) {
+    hidden.balls.push(rec.group.userData.balls.map((b) => b.visible));
+    setJointBallsVisible(rec.group, false);
+    hidden.labels.push(rec.labelEl.style.display);
+    rec.labelEl.style.display = 'none';
+  }
+  document.getElementById('frame-overlay').classList.remove('on');
+  return hidden;
+}
+
+function restoreEditHelpers(hidden) {
+  let i = 0;
+  for (const rec of state.mannequins.values()) {
+    const flags = hidden.balls[i] || [];
+    rec.group.userData.balls.forEach((b, j) => { b.visible = !!(flags[j] ?? true); });
+    rec.labelEl.style.display = hidden.labels[i] || '';
+    i++;
+  }
+  if (hidden.overlay) document.getElementById('frame-overlay').classList.add('on');
+}
+
+function makeThumbnail(dataUrl, w = 320) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const h = Math.max(1, Math.round(w * img.height / img.width));
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.src = dataUrl;
+  });
+}
+
+export async function renderShot() {
+  const shot = currentShotData();
+  if (!shot) return toast('先选择一个镜头', true);
+  const quality = document.getElementById('cam-quality').value;
+  const customW = Number(document.getElementById('cam-custom-width').value) || 0;
+  const { width, height } = renderSizeFor(currentAspect, quality, customW);
+  toast('渲染中…');
+  const dataUrl = captureShot(width, height);
+  const thumb = await makeThumbnail(dataUrl);
+  document.getElementById('render-img').src = dataUrl;
+  document.getElementById('render-title').textContent = `${shot.order + 1} · ${shot.name} · ${width}×${height}`;
+  document.getElementById('render-status').textContent = '';
+  document.getElementById('render-modal').hidden = false;
+  lastRender = { dataUrl, shotId: shot.id, width, height };
+  try {
+    const fd = new FormData();
+    fd.append('shot_id', shot.id);
+    fd.append('render', dataUrlToBlob(dataUrl), 'render.png');
+    fd.append('thumb', dataUrlToBlob(thumb), 'thumb.png');
+    const res = await api(`api/projects/${project.id}/shots/${shot.id}/render`, { method: 'POST', body: fd });
+    shot.render = String(res.render_url).split('/').pop();
+    shot.thumbnail = res.thumbnail || shot.thumbnail;
+    document.getElementById('render-status').textContent = '已存档 ✓';
+    renderShotList();
+  } catch (err) {
+    document.getElementById('render-status').textContent = '存档失败：' + err.message + '（预览与下载仍可用）';
+  }
+}
+window.__renderShot = renderShot;
+
+export async function downloadRender() {
+  if (!lastRender) return toast('先渲染一张快照', true);
+  const shot = project.shots.find((s) => s.id === lastRender.shotId) || currentShotData();
+  const name = shot ? sanitizeFilename(`${shot.order + 1}-${shot.name}`) : 'shot';
+  const a = document.createElement('a');
+  a.href = lastRender.dataUrl;
+  a.download = `${name}.png`;
+  a.click();
+}
+window.__downloadRender = downloadRender;
 
 // ============ 选中与地面拖拽 ============
 export function pickAt(clientX, clientY) {
@@ -812,6 +918,10 @@ if (!_glProbe.getContext('webgl2')) {
     loadProjectList().catch((err) => toast('加载项目列表失败：' + err.message, true));
   }
   initApp();
+  // 相机面板剩余接线：选「自定义宽度」才显示宽度输入行
+  document.getElementById('cam-quality').onchange = (e) => {
+    document.getElementById('custom-width-row').hidden = e.target.value !== 'custom';
+  };
 }
 // 顶部工具栏：项目 / 镜头 / 导出
 document.getElementById('project-select').onchange = (e) => loadProject(e.target.value);
