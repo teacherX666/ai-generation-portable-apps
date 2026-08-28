@@ -36,7 +36,8 @@ if (typeof DirectorApp !== "function") {
   throw new Error("DirectorApp not defined");
 }
 const app = DirectorApp();
-if (app.skills.length !== 3) throw new Error("skills must contain 3 entries");
+if (app.skills.length !== 8) throw new Error("skills must contain 8 entries");
+if (typeof app.assets !== "object") throw new Error("assets state missing");
 if (typeof app.run !== "function" || typeof app.fillToImage !== "function") {
   throw new Error("run/fillToImage missing");
 }

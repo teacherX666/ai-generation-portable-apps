@@ -2283,6 +2283,11 @@ function DirectorApp() {
     skills: [
       { id: "refine", label: "提示词优化" },
       { id: "expand", label: "提示词扩写" },
+      { id: "langgpt", label: "结构化提示词" },
+      { id: "template", label: "工业模板" },
+      { id: "style", label: "风格参考" },
+      { id: "inspire", label: "场景灵感" },
+      { id: "negative", label: "负面词生成" },
       { id: "text2image", label: "文生图" },
     ],
     skill: "refine",
@@ -2293,6 +2298,11 @@ function DirectorApp() {
     count: 1,
     ratios: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9", "9:21"],
     resolutions: ["1K", "1.5K", "2K"],
+    assets: { version: "", gpt_image_templates: { cases: [], categories: [] },
+              nano_banana_styles: { styles: [] },
+              shortcut_inspirations: { items: [] },
+              negative_tags: { negative: [], styles: [] } },
+    templateCategory: "", stylePick: "", inspireIndex: 0,
     running: false,
     error: "",
     statusText: "",
@@ -2317,13 +2327,57 @@ function DirectorApp() {
       } catch (e) {
         this.error = "导演台服务不可用：" + (e && e.message ? e.message : "网络错误");
       }
+      try {
+        const cached = localStorage.getItem("director-assets-v2");
+        if (cached) { try { this.assets = JSON.parse(cached); } catch (e) {} }
+        const res = await api("/director/api/assets", "GET");
+        if (res && res.ok && res.version) {
+          this.assets = res;
+          localStorage.setItem("director-assets-v2", JSON.stringify(res));
+        }
+      } catch (e) { /* 词库加载失败时词库类 skill 显示空态 */ }
     },
     async run() {
       this.error = "";
       this.statusText = "";
-      if (!this.input.trim()) return;
+      const needsInput = ["refine", "expand", "langgpt", "text2image"].includes(this.skill);
+      if (needsInput && !this.input.trim()) return;
       this.running = true;
       try {
+        if (this.skill === "template") {
+          const pool = (this.assets.gpt_image_templates.cases || []).slice(0, 120);
+          const list = this.templateCategory
+            ? pool.filter((c) => (c.title || "").includes(this.templateCategory)) : pool;
+          const picked = list.length ? list[Math.floor(Math.random() * list.length)] : null;
+          this.resultText = picked
+            ? `【${picked.title}】\n${picked.prompt}\n\n—— 将「主体/风格」替换为你的需求后使用`
+            : "该分类暂无模板";
+          this.statusText = "已生成模板参考";
+          return;
+        }
+        if (this.skill === "style") {
+          const styles = this.assets.nano_banana_styles.styles || [];
+          const picked = styles.find((s) => s.name === this.stylePick) || styles[0];
+          this.resultText = picked
+            ? `【风格：${picked.name}】\n${picked.prompt}`
+            : "风格库为空";
+          this.statusText = "已输出风格片段";
+          return;
+        }
+        if (this.skill === "inspire") {
+          const items = this.assets.shortcut_inspirations.items || [];
+          this.inspireIndex = (this.inspireIndex + 1) % Math.max(1, items.length);
+          const it = items[this.inspireIndex];
+          this.resultText = it ? `【${it.title}】\n${it.prompt}` : "灵感库为空";
+          this.statusText = "换一条灵感（再点一次换下一条）";
+          return;
+        }
+        if (this.skill === "negative") {
+          const neg = this.assets.negative_tags.negative || [];
+          this.resultText = "负面词：\n" + neg.join(", ");
+          this.statusText = "已生成负面词，可并入文生图";
+          return;
+        }
         if (this.skill === "text2image") {
           this.resultText = "";
           this.images = [];

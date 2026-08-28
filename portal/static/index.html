@@ -1023,6 +1023,19 @@
         <span class="director-field-label">风格补充（可选）</span>
         <input v-model="style" placeholder="如：电影感、赛博朋克">
       </label>
+      <label class="director-field" v-show="skill === 'template'">
+        <span class="director-field-label">模板分类（可选，留空随机）</span>
+        <select v-model="templateCategory">
+          <option value="">全部</option>
+          <option v-for="c in assets.gpt_image_templates.categories" :key="c" :value="c">{{ c }}</option>
+        </select>
+      </label>
+      <label class="director-field" v-show="skill === 'style'">
+        <span class="director-field-label">风格选择</span>
+        <select v-model="stylePick">
+          <option v-for="s in assets.nano_banana_styles.styles" :key="s.name" :value="s.name">{{ s.name }}</option>
+        </select>
+      </label>
       <label class="director-field">
         <span class="director-field-label">输入</span>
         <textarea v-model="input" rows="6"
