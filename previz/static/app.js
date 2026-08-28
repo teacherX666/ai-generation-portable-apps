@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from './vendor/OrbitControls.js';
-import { JOINTS, jointAngles, POSE_PRESETS, newCharacter, newId, PROP_TYPES } from './core.js';
+import { JOINTS, jointAngles, POSE_PRESETS, newCharacter, newId, PROP_TYPES, CHARACTER_COLORS } from './core.js';
 
 // ============ 全局状态 ============
 const state = {
@@ -250,7 +250,7 @@ function propGeometry(type) {
       const g = new THREE.BoxGeometry(w, d, d);        // 顶梁
       const side = new THREE.BoxGeometry(d, h, d);
       const group = new THREE.Group();
-      const top = new THREE.Mesh(g, _propMat); top.position.y = h / 2; group.add(top);
+      const top = new THREE.Mesh(g, _propMat); top.position.y = h - d / 2; group.add(top);
       const l = new THREE.Mesh(side, _propMat); l.position.set(-w / 2, h / 2 - d / 2, 0); group.add(l);
       const r = new THREE.Mesh(side, _propMat); r.position.set(w / 2, h / 2 - d / 2, 0); group.add(r);
       return group;
@@ -324,6 +324,7 @@ export function select(kindAndId) {
   const d = rec.data;
   document.getElementById('obj-type').textContent = isChar ? `人物 ${d.id}` : `道具·${(PROP_TYPES.find((p) => p.type === d.type) || {}).label || d.type}`;
   document.getElementById('obj-label').value = d.label || '';
+  document.getElementById('obj-label').disabled = !isChar;   // 道具标签不可改（改动会被丢弃）
   document.getElementById('row-color').hidden = !isChar;
   if (isChar) {
     const sel = document.getElementById('obj-color');
@@ -346,6 +347,7 @@ export function select(kindAndId) {
     renderJointRows(rec);
   } else {
     document.getElementById('pose-row').hidden = true;
+    renderJointRows(null);   // 清掉上一个木人的关节滑块，避免残留面板
   }
   document.getElementById('obj-rotation').value = d.rotation_y || 0;
   document.getElementById('obj-rotation-val').textContent = (d.rotation_y || 0) + '°';
@@ -531,6 +533,7 @@ initCameraPanel();
 initObjectPanel();
 switchPanel('object');
 state.controls.addEventListener('change', updateCameraHud);
+updateCameraHud();
 // 临时人物与道具（Task 8 改为项目驱动）
 const charA = newCharacter('A', '主角');
 const charB = newCharacter('B', '配角');
