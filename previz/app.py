@@ -76,10 +76,14 @@ def validate_project(data: Any) -> dict[str, Any] | None:
         camera = dict(DEFAULT_CAMERA)
         if isinstance(shot.get("camera"), dict):
             camera.update(shot["camera"])
+        try:
+            order = int(shot.get("order") or 0)
+        except (TypeError, ValueError):
+            order = 0  # 非数字 order 回退 0，避免 PUT 崩 500
         shots.append({
             "id": shot["id"],
             "name": str(shot.get("name") or shot["id"])[:60],
-            "order": int(shot.get("order") or 0),
+            "order": order,
             "aspect": str(shot.get("aspect") or "16:9"),
             "camera": camera,
             "characters": shot.get("characters") if isinstance(shot.get("characters"), list) else [],
@@ -164,8 +168,6 @@ def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: Any) 
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
-    if CORS:
-        handler.send_header("Access-Control-Allow-Origin", "*")
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -203,6 +205,13 @@ def _serve_file(handler: SimpleHTTPRequestHandler, path: Path, content_type: str
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def end_headers(self) -> None:
+        # CORS 头统一在状态行之后注入（send_header 会追加到 _headers_buffer，
+        # 在 super().do_GET() 之前调用会把头排到状态行前面，产出畸形 HTTP）
+        if CORS:
+            self.send_header("Access-Control-Allow-Origin", "*")
+        super().end_headers()
+
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == "/api/projects":
@@ -226,8 +235,6 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 json_response(self, 404, {"error": "文件不存在"})
             return
-        if CORS:
-            self.send_header("Access-Control-Allow-Origin", "*")
         super().do_GET()
 
     def _handle_files(self, pid: str, filename: str) -> None:
