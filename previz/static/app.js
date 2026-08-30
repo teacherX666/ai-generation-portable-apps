@@ -620,6 +620,7 @@ export function renderShotList() {
     const actions = document.createElement('div');
     actions.className = 'shot-actions';
     for (const [label, fn] of [
+      ['改名', () => renameShot(shot.id)],
       ['复制', () => duplicateShot(shot.id)],
       ['↑', () => moveShot(shot.id, -1)],
       ['↓', () => moveShot(shot.id, 1)],
@@ -635,6 +636,16 @@ export function renderShotList() {
     item.onclick = () => switchShot(shot.id);
     wrap.appendChild(item);
   }
+}
+
+function renameShot(id) {
+  const shot = project.shots.find((s) => s.id === id);
+  if (!shot) return;
+  const name = prompt('新镜头名：', shot.name);
+  if (!name || !name.trim()) return;
+  shot.name = name.trim().slice(0, 60);
+  renderShotList();
+  setDirty();
 }
 
 function duplicateShot(id) {
@@ -677,7 +688,8 @@ function reorder() {
 }
 
 export async function loadProjectList() {
-  const { projects } = await api('api/projects');
+  const { projects, broken } = await api('api/projects');
+  if (broken) toast(`有 ${broken} 个项目数据损坏，服务端已备份为 .broken 文件（可人工恢复）`, true);
   const sel = document.getElementById('project-select');
   sel.innerHTML = '';
   for (const p of projects) {
@@ -976,6 +988,15 @@ document.getElementById('btn-project-delete').onclick = async () => {
   toast('项目已删除');
   project = null;
   await loadProjectList();
+};
+document.getElementById('btn-project-rename').onclick = () => {
+  if (!project) return;
+  const name = prompt('新项目名：', project.name);
+  if (!name || !name.trim()) return;
+  project.name = name.trim().slice(0, 60);
+  setDirty();
+  saveNow();
+  loadProjectList();   // 刷新下拉文案
 };
 document.getElementById('btn-shot-new').onclick = () => {
   const shot = newShot('镜头' + (project.shots.length + 1), project.shots.length);

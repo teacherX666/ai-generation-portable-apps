@@ -100,8 +100,8 @@ def validate_project(data: Any) -> dict[str, Any] | None:
             "camera": camera,
             "characters": shot.get("characters") if isinstance(shot.get("characters"), list) else [],
             "props": shot.get("props") if isinstance(shot.get("props"), list) else [],
-            "thumbnail": str(shot.get("thumbnail") or ""),
-            "render": str(shot.get("render") or ""),
+            "thumbnail": str(shot.get("thumbnail") or "") if _FILE_RE.fullmatch(str(shot.get("thumbnail") or "")) else "",
+            "render": str(shot.get("render") or "") if _FILE_RE.fullmatch(str(shot.get("render") or "")) else "",
             "notes": str(shot.get("notes") or ""),
         })
     return {
@@ -162,6 +162,15 @@ def list_projects() -> list[dict[str, Any]]:
                 "thumbnail": (p["shots"][0].get("thumbnail") or "") if p["shots"] else "",
             })
     return out
+
+
+def count_broken_projects() -> int:
+    """统计存在 project.json.broken-* 备份的目录数（load_project 损坏兜底产物）。"""
+    if not PROJECTS_DIR.exists():
+        return 0
+    with _LOCK:
+        return sum(1 for d in PROJECTS_DIR.iterdir()
+                   if d.is_dir() and any(d.glob("project.json.broken-*")))
 
 
 def delete_project(pid: str) -> bool:
@@ -239,7 +248,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == "/api/projects":
-            json_response(self, 200, {"projects": list_projects()})
+            json_response(self, 200, {"projects": list_projects(),
+                                      "broken": count_broken_projects()})
             return
         if path.startswith("/api/projects/"):
             pid = path[len("/api/projects/"):]
@@ -274,9 +284,16 @@ class Handler(SimpleHTTPRequestHandler):
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
                 for shot in p["shots"]:
                     f = PROJECTS_DIR / pid / str(shot.get("render") or "")
-                    if _FILE_RE.fullmatch(f.name) and f.exists():
+                    # f.parent 防线：Path 保留 .. 组件，只查 f.name 拦不住
+                    # render="../s_evil_render.png"（可把 state 根目录文件打包装 zip）
+                    if _FILE_RE.fullmatch(f.name) and f.parent == (PROJECTS_DIR / pid) \
+                            and f.exists():
                         try:
-                            zf.write(f, arcname=f"{shot['order']:02d}-{_zip_entry_name(shot['name'])}.png")
+                            order = int(shot.get("order") or 0)
+                        except (TypeError, ValueError):
+                            order = 0  # 非整数 order 回退 0，避免 :02d 抛 500
+                        try:
+                            zf.write(f, arcname=f"{order:02d}-{_zip_entry_name(shot['name'])}.png")
                         except FileNotFoundError:
                             continue  # render 与 export 之间文件被删，跳过该镜头
         body = buf.getvalue()

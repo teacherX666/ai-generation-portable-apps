@@ -203,6 +203,33 @@ class TestRenderAndFiles(unittest.TestCase):
         previz.Handler.do_PUT(h)
         assert h.status == 400
 
+    def test_validate_rejects_traversal_render_field(self):
+        p = _mk_shot()
+        p["shots"][0]["render"] = "../s_evil_render.png"
+        p["shots"][0]["thumbnail"] = "../../thumb.png"
+        out = previz.validate_project(p)
+        assert out["shots"][0]["render"] == ""
+        assert out["shots"][0]["thumbnail"] == ""
+
+    def test_export_skips_parent_escape(self):
+        p = _mk_shot()
+        p["shots"][0]["render"] = "../s_evil_render.png"
+        previz.save_project(p)   # 直存绕过 validate，模拟手改数据文件
+        (PROJECTS_DIR / "s_evil_render.png").write_bytes(b"evil")
+        h = _FakeHandler()
+        previz.Handler._handle_export(h, "p_test01")
+        assert h.status == 200
+        with zipfile.ZipFile(io.BytesIO(h.wfile.getvalue())) as zf:
+            assert zf.namelist() == []
+
+    def test_count_broken_projects(self):
+        (PROJECTS_DIR / "p_bad").mkdir(parents=True, exist_ok=True)
+        (PROJECTS_DIR / "p_bad" / "project.json.broken-20260830").write_text("{}", encoding="utf-8")
+        assert previz.count_broken_projects() == 1
+        (PROJECTS_DIR / "p_good").mkdir(parents=True, exist_ok=True)
+        (PROJECTS_DIR / "p_good" / "project.json").write_text("{}", encoding="utf-8")
+        assert previz.count_broken_projects() == 1
+
     def test_file_regex_rejects_traversal(self):
         assert previz._FILE_RE.fullmatch("../p_test01/project.json") is None
         assert previz._FILE_RE.fullmatch("s_a_render.png") is not None
