@@ -87,6 +87,12 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 ├── app.py        → Wraps `dreamina` CLI tool, manages login/env, polls submit_id for results
 ├── config.json   → Runtime config (port, max_concurrent, poll intervals)
 └── static/
+
+previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人 + 6 道具 + 景别五档相机），
+│                   多镜头项目存档，渲染快照可下载 / 一键送画布（POST /infinite-canvas/api/v1/assets）
+├── app.py        → stdlib 后端：项目 CRUD（state/projects/{id}/project.json）+ 渲染存档 + export.zip；无模型调用、不发 X-Job-Id
+├── static/       → 纯静态前端：vendor three r170（ES module + import map，无构建链）；core.js 为 node 可测纯逻辑
+└── tests/        → 后端 unittest + core.js node:test
 ```
 
 ## Key Patterns
@@ -150,6 +156,7 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 | Dreamina | 8888 | 8890 |
 | Volcengine Portrait | 8891 | 8892 |
 | Infinite Canvas | 8893 | 8894 |
+| Previz（分镜布局） | 8896 | 8897 |
 | Feishu Generation Agent | 8765 | — |
 
 - **证书文件**：`portal/state/portal.pem` + `portal.key`；LAN IP 变化时 `ensure_certs()` 自动重生（`portal/app.py:101-131`）
@@ -275,6 +282,16 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 - **拼装模板的「参考图一」**：`build_image_prompt` 里固定句式「画面风格严格参考图一」指风格参考图整体；风格槽位有多张 token 时必须列全（`image_prompt.py::_style_tokens` 从「的画风」前缀提取），否则需求方读起来像只参考第一张
 - **画面比例 ≠ 交付尺寸**（2026-08-20 需求方反馈）：文档里的 1700\*2500 是交付尺寸（进 size_variants），生成模型只接受离散比例（`plan.py::IMAGE_ASPECT_RATIOS` 9 档，与 seedream 一致）；`nearest_image_aspect_ratio` 把抄错的比例确定性归一到数值最近档（1700:2500 → 2:3）。**交付裁剪是人工开关 `delivery_crop`**（默认 False 原图直出；True 才按 size_variants 居中 cover_crop）——此前一律强制裁到 1700x2500，低分辨率成图被放大后观感像「过度拉伸」
 - **t8star 令牌会被面板禁用**（HTTP 401「该令牌状态不可用」）：排障时逐个 key 实测，别假设 key 还活着。2026-08-20 实测：agent 视觉 key 与 nano-banana `state/secrets.json` 的 key 可用；seedance 预设 key 和 openclaw 两个 `.cn` key 已禁用
+
+### 分镜布局（previz）3D 子应用要点
+
+- **静态目录注入是死代码**：`Handler.directory = str(STATIC_DIR)` 在 `SimpleHTTPRequestHandler.__init__` 里被忽略（directory=None → `os.getcwd()`）；正确做法是 `functools.partial(Handler, directory=str(STATIC_DIR))`。任何 cwd 非 app 目录的启动（含 launchd）都会静默 404 全部静态文件
+- **three r170 只支持 WebGL2**（无 WebGL1 回退，构造 renderer 直接抛）；浏览器探针要测 `webgl2` 且必须在 `new THREE.WebGLRenderer` **之前**执行，否则兜底页不可达
+- **ES module + import map 是零构建约束下的选型**：vendor 是 `build/three.module.js` + `examples/jsm/controls/OrbitControls.js`（后者裸 `import 'three'`，靠 `<script type="importmap">` 解析）；需要 Chrome 89+ / Safari 16.4+
+- **`[hidden]` 会被作者样式覆盖**：`display:flex` 类样式会盖掉 UA 的 `[hidden]{display:none}`，全屏遮罩（modal/错误页）必须补 `[hidden]{display:none !important}` 全局兜底
+- **三个对象的 `add()` 有 removeFromParent 语义**：同一 mesh 不能既挂关节又挂集合组（第二次 add 会把第一次摘掉）
+- **OrbitControls 与对象拖拽冲突**：pointerdown 命中对象时 `controls.enabled=false`，pointerup 恢复
+- 前端模块单文件 app.js（ES module，`<script type="module">`）；core.js 是 node 可测纯逻辑（姿势表/景别/画幅常量都在这里）；node 语法检查要复制成 `.mjs` 再 `node --check`（否则按 CommonJS 解析误报）
 
 ### 通用调试直觉
 
