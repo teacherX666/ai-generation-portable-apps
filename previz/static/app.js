@@ -822,7 +822,7 @@ export async function renderShot() {
     fd.append('shot_id', shot.id);
     fd.append('render', dataUrlToBlob(dataUrl), 'render.png');
     if (thumb) fd.append('thumb', dataUrlToBlob(thumb), 'thumb.png');
-    const res = await api(`api/projects/${project.id}/shots/${shot.id}/render`, { method: 'POST', body: fd });
+    const res = await api(`api/projects/${project.id}/render`, { method: 'POST', body: fd });
     shot.render = String(res.render_url).split('/').pop();
     shot.thumbnail = res.thumbnail || shot.thumbnail;
     document.getElementById('render-status').textContent = '已存档 ✓';
