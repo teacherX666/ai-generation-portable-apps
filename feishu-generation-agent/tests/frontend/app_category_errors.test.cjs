@@ -472,3 +472,78 @@ test("failed runs show the safe provider error in the review panel", async () =>
   );
   assert.equal(app.getNode("execution-errors").hidden, false);
 });
+
+test("trash supports paging, search, status filters, and filtered empty states", async () => {
+  const archivedRuns = Array.from({ length: 10 }, (_, index) => ({
+    run_id: `run-archived-${index + 1}`,
+    display_text: index === 8 ? "目标失败任务" : `已删除任务 ${index + 1}`,
+    status: index === 8 ? "failed" : "succeeded",
+    updated_at: `2026-08-${String(index + 1).padStart(2, "0")}T10:00:00+08:00`,
+  }));
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/active-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/archived-runs") {
+      return jsonResponse(200, archivedRuns);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  await app.getNode("trash-button").dispatch("click");
+  await settle();
+
+  const trashList = app.getNode("trash-list");
+  assert.equal(trashList.children.length, 8);
+  assert.equal(app.getNode("trash-page-info").textContent, "第 1 / 2 页");
+  assert.equal(app.getNode("trash-pagination").hidden, false);
+  assert.equal(app.getNode("trash-prev").disabled, true);
+
+  await app.getNode("trash-next").dispatch("click");
+  assert.equal(trashList.children.length, 2);
+  assert.equal(
+    trashList.children[0].children[0].children[0].textContent,
+    "目标失败任务",
+  );
+  assert.equal(app.getNode("trash-page-info").textContent, "第 2 / 2 页");
+  assert.equal(app.getNode("trash-next").disabled, true);
+
+  const search = app.getNode("trash-search");
+  search.value = "目标";
+  await search.dispatch("input");
+  assert.equal(trashList.children.length, 1);
+  assert.equal(app.getNode("trash-page-info").textContent, "第 1 / 1 页");
+  assert.equal(app.getNode("trash-pagination").hidden, true);
+  assert.equal(
+    app.getNode("trash-result-summary").textContent,
+    "找到 1 条，共 10 条已删除任务",
+  );
+
+  search.value = "";
+  await search.dispatch("input");
+  const statusFilter = app.getNode("trash-status-filter");
+  assert.deepEqual(statusFilter.children.map((option) => option.value), [
+    "",
+    "已完成",
+    "执行失败",
+  ]);
+  statusFilter.value = "执行失败";
+  await statusFilter.dispatch("change");
+  assert.equal(trashList.children.length, 1);
+  assert.equal(
+    trashList.children[0].children[0].children[0].textContent,
+    "目标失败任务",
+  );
+
+  search.value = "不存在";
+  await search.dispatch("input");
+  assert.equal(trashList.children.length, 1);
+  assert.equal(trashList.children[0].textContent, "没有符合条件的任务。");
+  assert.equal(
+    app.getNode("trash-result-summary").textContent,
+    "找到 0 条，共 10 条已删除任务",
+  );
+});

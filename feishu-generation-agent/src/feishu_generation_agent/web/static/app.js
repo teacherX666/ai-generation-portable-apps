@@ -63,6 +63,13 @@
   const trashModal = byId("trash-modal");
   const trashList = byId("trash-list");
   const trashClose = byId("trash-close");
+  const trashSearch = byId("trash-search");
+  const trashStatusFilter = byId("trash-status-filter");
+  const trashResultSummary = byId("trash-result-summary");
+  const trashPagination = byId("trash-pagination");
+  const trashPrev = byId("trash-prev");
+  const trashNext = byId("trash-next");
+  const trashPageInfo = byId("trash-page-info");
   const nextTaskButton = byId("next-task-button");
   const rerunButton = byId("rerun-button");
   const pollingNote = byId("polling-note");
@@ -447,13 +454,75 @@
     }
   }
 
-  function renderArchivedRuns(runs) {
-    const nodes = (runs || []).map((run) => {
+  const trashState = {
+    runs: [],
+    query: "",
+    status: "",
+    page: 1,
+    pageSize: 8,
+  };
+
+  function archivedStatusLabel(run) {
+    return statusUi(run?.status).label;
+  }
+
+  function formatArchivedTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+
+  function syncTrashStatusOptions() {
+    const statuses = [...new Set(trashState.runs.map(archivedStatusLabel).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right, "zh-CN"));
+    const options = [element("option", "", "全部状态")];
+    options[0].value = "";
+    statuses.forEach((status) => {
+      const option = element("option", "", status);
+      option.value = status;
+      options.push(option);
+    });
+    if (trashState.status && !statuses.includes(trashState.status)) {
+      trashState.status = "";
+    }
+    trashStatusFilter.replaceChildren(...options);
+    trashStatusFilter.value = trashState.status;
+  }
+
+  function filteredArchivedRuns() {
+    const query = trashState.query.trim().toLocaleLowerCase("zh-CN");
+    return trashState.runs.filter((run) => {
+      if (trashState.status && archivedStatusLabel(run) !== trashState.status) return false;
+      if (!query) return true;
+      return [run.display_text, run.run_id]
+        .filter(Boolean)
+        .some((value) => String(value).toLocaleLowerCase("zh-CN").includes(query));
+    });
+  }
+
+  function renderArchivedRuns() {
+    const filtered = filteredArchivedRuns();
+    const pageCount = Math.max(1, Math.ceil(filtered.length / trashState.pageSize));
+    trashState.page = Math.min(Math.max(1, trashState.page), pageCount);
+    const start = (trashState.page - 1) * trashState.pageSize;
+    const pageRuns = filtered.slice(start, start + trashState.pageSize);
+    const nodes = pageRuns.map((run) => {
       const row = element("article", "trash-item");
       const details = element("div", "");
+      const metadata = [`状态：${archivedStatusLabel(run)}`];
+      const updatedAt = formatArchivedTime(run.updated_at);
+      if (updatedAt) metadata.push(`删除时间：${updatedAt}`);
       details.append(
         element("strong", "", run.display_text || run.run_id),
-        element("p", "bitable-task-meta", `状态：${run.status || "—"}`),
+        element("p", "bitable-task-meta", metadata.join(" · ")),
       );
       const actions = element("div", "trash-item-actions");
       const restore = element("button", "secondary", "恢复");
@@ -464,16 +533,33 @@
       row.append(details, actions);
       return row;
     });
-    if (!nodes.length) nodes.push(element("p", "trash-empty", "回收站是空的。"));
+    if (!nodes.length) {
+      nodes.push(element(
+        "p",
+        "trash-empty",
+        trashState.runs.length ? "没有符合条件的任务。" : "回收站是空的。",
+      ));
+    }
     trashList.replaceChildren(...nodes);
+    trashResultSummary.textContent = trashState.runs.length
+      ? `找到 ${filtered.length} 条，共 ${trashState.runs.length} 条已删除任务`
+      : "暂无已删除任务";
+    trashPagination.hidden = filtered.length <= trashState.pageSize;
+    trashPageInfo.textContent = `第 ${trashState.page} / ${pageCount} 页`;
+    trashPrev.disabled = trashState.page <= 1;
+    trashNext.disabled = trashState.page >= pageCount;
   }
 
   async function loadArchivedRuns() {
     try {
       const runs = await api("/api/bitable/archived-runs");
-      renderArchivedRuns(runs);
+      trashState.runs = Array.isArray(runs) ? runs : [];
+      syncTrashStatusOptions();
+      renderArchivedRuns();
     } catch (error) {
-      renderArchivedRuns([]);
+      trashState.runs = [];
+      syncTrashStatusOptions();
+      renderArchivedRuns();
       showError(error);
     }
   }
@@ -493,6 +579,11 @@
   }
 
   function openTrash() {
+    trashState.query = "";
+    trashState.status = "";
+    trashState.page = 1;
+    trashSearch.value = "";
+    trashStatusFilter.value = "";
     trashModal.hidden = false;
     loadArchivedRuns();
   }
@@ -1920,6 +2011,27 @@
   });
   trashButton.addEventListener("click", openTrash);
   trashClose.addEventListener("click", closeTrash);
+  trashSearch.addEventListener("input", () => {
+    trashState.query = trashSearch.value;
+    trashState.page = 1;
+    renderArchivedRuns();
+  });
+  trashStatusFilter.addEventListener("change", () => {
+    trashState.status = trashStatusFilter.value;
+    trashState.page = 1;
+    renderArchivedRuns();
+  });
+  trashPrev.addEventListener("click", () => {
+    if (trashState.page <= 1) return;
+    trashState.page -= 1;
+    renderArchivedRuns();
+  });
+  trashNext.addEventListener("click", () => {
+    const pageCount = Math.max(1, Math.ceil(filteredArchivedRuns().length / trashState.pageSize));
+    if (trashState.page >= pageCount) return;
+    trashState.page += 1;
+    renderArchivedRuns();
+  });
   trashModal.addEventListener("click", (event) => {
     if (event.target === trashModal) closeTrash();
   });
