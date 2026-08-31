@@ -911,6 +911,7 @@ export async function renderShot() {
     filenameBase: sanitizeFilename(`${shot.order + 1}-${shot.name}`),
     width, height,
     title: `${shot.order + 1} · ${shot.name} · ${width}×${height}`,
+    srcType: 'image/png',
   });
   try {
     const fd = new FormData();
@@ -1061,34 +1062,40 @@ function bakeAnno() {
   if (!anno.items.length) return toast('还没有标注', true);
   const img = new Image();
   img.onload = () => {
-    const c = document.createElement('canvas');
-    c.width = img.naturalWidth; c.height = img.naturalHeight;
-    const ctx = c.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-    const sx = img.naturalWidth / anno.svg.viewBox.baseVal.width;
-    const sy = img.naturalHeight / anno.svg.viewBox.baseVal.height;
-    for (const it of anno.items) {
-      ctx.fillStyle = it.color;
-      ctx.lineWidth = Math.max(3, img.naturalWidth / 400);
-      if (it.type === 'rect') {
-        ctx.strokeStyle = it.color;
-        ctx.globalAlpha = 0.12; ctx.fillRect(it.x * sx, it.y * sy, it.w * sx, it.h * sy);
-        ctx.globalAlpha = 1; ctx.strokeRect(it.x * sx, it.y * sy, it.w * sx, it.h * sy);
-      } else {
-        const size = Math.max(16, img.naturalWidth / 36);
-        ctx.font = `700 ${size}px -apple-system, "PingFang SC", sans-serif`;
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = size / 5; ctx.strokeText(it.text, it.x * sx, it.y * sy);
-        ctx.fillText(it.text, it.x * sx, it.y * sy);
+    try {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const sx = img.naturalWidth / anno.svg.viewBox.baseVal.width;
+      const sy = img.naturalHeight / anno.svg.viewBox.baseVal.height;
+      for (const it of anno.items) {
+        ctx.fillStyle = it.color;
+        ctx.lineWidth = Math.max(3, img.naturalWidth / 400);
+        if (it.type === 'rect') {
+          ctx.strokeStyle = it.color;
+          ctx.globalAlpha = 0.12; ctx.fillRect(it.x * sx, it.y * sy, it.w * sx, it.h * sy);
+          ctx.globalAlpha = 1; ctx.strokeRect(it.x * sx, it.y * sy, it.w * sx, it.h * sy);
+        } else {
+          const size = Math.max(16, img.naturalWidth / 36);
+          ctx.font = `700 ${size}px -apple-system, "PingFang SC", sans-serif`;
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = size / 5; ctx.strokeText(it.text, it.x * sx, it.y * sy);
+          ctx.fillText(it.text, it.x * sx, it.y * sy);
+        }
       }
+      ctx.globalAlpha = 1;
+      // 烘焙格式跟随源图：JPEG 照片用 JPEG 0.92，避免 PNG 膨胀 3-10 倍导致送画布 413
+      const fmt = (annoSource && annoSource.srcType === 'image/jpeg') ? 'image/jpeg' : 'image/png';
+      const baked = fmt === 'image/jpeg' ? c.toDataURL('image/jpeg', 0.92) : c.toDataURL('image/png');
+      anno.baseUrl = baked;              // 合并结果成为新底图
+      anno.items = []; anno.svg.innerHTML = '';
+      annoSource.dataUrl = baked;        // 下载/送画布走标注版
+      document.getElementById('render-img').src = baked;
+      toast('标注已合并进图片 ✓');
+    } catch (err) {
+      toast('合并失败：图片过大或格式不支持', true);
     }
-    ctx.globalAlpha = 1;
-    const baked = c.toDataURL('image/png');
-    anno.baseUrl = baked;              // 合并结果成为新底图
-    anno.items = []; anno.svg.innerHTML = '';
-    annoSource.dataUrl = baked;        // 下载/送画布走标注版
-    document.getElementById('render-img').src = baked;
-    toast('标注已合并进图片 ✓');
   };
   img.src = anno.baseUrl;
 }
@@ -1355,16 +1362,23 @@ document.getElementById('anno-file').onchange = (e) => {
   if (!file) return;
   if (file.size > 20 * 1024 * 1024) return toast('图片超过 20MB', true);
   if (!file.type.startsWith('image/')) return toast('请选择图片文件', true);
+  if (file.type === 'image/svg+xml') return toast('暂不支持 SVG 图片', true);
   const reader = new FileReader();
   reader.onload = () => {
     const img = new Image();
     img.onload = () => {
+      // 尺寸守卫：烘焙到 canvas 需要内存，超限直接拒绝
+      if (img.naturalWidth > 8192 || img.naturalHeight > 8192
+          || img.naturalWidth * img.naturalHeight > 64e6) {
+        return toast('图片尺寸过大（最长边 ≤8192 且总像素 ≤6400 万）', true);
+      }
       openAnnoModal({
         dataUrl: reader.result,
         filenameBase: sanitizeFilename(file.name.replace(/\.[^.]+$/, '')) || '标注图',
         width: img.naturalWidth,
         height: img.naturalHeight,
         title: `${file.name} · ${img.naturalWidth}×${img.naturalHeight}`,
+        srcType: file.type,
       });
     };
     img.onerror = () => toast('图片读取失败', true);

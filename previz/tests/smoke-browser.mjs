@@ -223,7 +223,64 @@ try {
   const dl = await dlPromise;
   assert.equal(dl.suggestedFilename(), 'anno-upload.png',
     '上传会话下载文件名应为 anno-upload.png，实际: ' + dl.suggestedFilename());
-  assert.ok(!pageErrors.length, '上传标注流程后不应有 pageerror: ' + pageErrors.join(' | '));
+
+  // 7. SVG 拒绝：关闭模态后传 SVG → modal 保持 hidden、无报错
+  await page.click('#btn-render-close');
+  await page.waitForTimeout(200);
+  await page.setInputFiles('#anno-file', {
+    name: 't.svg',
+    mimeType: 'image/svg+xml',
+    buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+  });
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator('#render-modal').evaluate((el) => el.hidden), true,
+    'SVG 上传应被拒绝（modal 保持 hidden）');
+
+  // 8. JPEG 烘焙：上传 JPEG → 画框 → 合并 → 结果 data:image/jpeg、尺寸不变
+  const jpgB64 = await page.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 48;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#ff8800';
+    ctx.fillRect(0, 0, 64, 48);
+    return c.toDataURL('image/jpeg', 0.9).split(',')[1];
+  });
+  const jpgPath = '/tmp/anno-upload.jpg';
+  fs.writeFileSync(jpgPath, Buffer.from(jpgB64, 'base64'));
+  await page.setInputFiles('#anno-file', { name: 'anno-upload.jpg', mimeType: 'image/jpeg', buffer: fs.readFileSync(jpgPath) });
+  await page.waitForTimeout(600);
+  assert.equal(await page.locator('#render-modal').evaluate((el) => el.hidden), false,
+    'JPEG 上传后预览弹窗应可见');
+  const jpTitle = (await page.locator('#render-title').textContent()) || '';
+  assert.ok(jpTitle.includes('64×48'), 'JPEG 上传后标题应含 64×48，实际: ' + jpTitle);
+  await page.click('#btn-render-anno');
+  await page.waitForTimeout(300);
+  const jpStage = await page.locator('#render-stage').boundingBox();
+  await page.mouse.move(jpStage.x + jpStage.width * 0.25, jpStage.y + jpStage.height * 0.25);
+  await page.mouse.down();
+  await page.mouse.move(jpStage.x + jpStage.width * 0.5, jpStage.y + jpStage.height * 0.5, { steps: 3 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('#anno-layer rect').count(), 1, 'JPEG 上传图应能画矩形框');
+  const jpBefore = await page.locator('#render-img').getAttribute('src');
+  await page.click('#anno-bake');
+  await page.waitForFunction((before) => {
+    const img = document.getElementById('render-img');
+    return img.src !== before;
+  }, jpBefore, { timeout: 5000 });
+  const jpAfter = await page.locator('#render-img').getAttribute('src');
+  assert.ok(jpAfter.startsWith('data:image/jpeg'),
+    'JPEG 源图烘焙结果应为 data:image/jpeg（跟随源图格式），实际前缀: ' + jpAfter.slice(0, 22));
+  const jpDims = await page.evaluate(async (src) => {
+    const img = new Image();
+    img.src = src;
+    await img.decode();
+    return { w: img.naturalWidth, h: img.naturalHeight };
+  }, jpAfter);
+  assert.equal(jpDims.w, 64, `JPEG 合并后宽度应为 64，实际 ${jpDims.w}`);
+  assert.equal(jpDims.h, 48, `JPEG 合并后高度应为 48，实际 ${jpDims.h}`);
+  console.log(`JPEG 烘焙 ${jpDims.w}×${jpDims.h} → ${jpAfter.slice(0, 22)}`);
+  assert.ok(!pageErrors.length, '全流程后不应有 pageerror: ' + pageErrors.join(' | '));
 
   console.log('SMOKE-PASS');
 } finally {

@@ -29,7 +29,8 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 # 上限沿用画布上游默认值；Portal 自身上限 200MB（portal/app.py:1293），我们更严格。
-MAX_UPLOAD = {"image": 10 * 1024 * 1024, "video": 64 * 1024 * 1024, "audio": 32 * 1024 * 1024}
+# image 10MB→32MB：previz 标注 JPEG 烘焙后（20MB 原图 × JPEG 0.92 保真）避免 413
+MAX_UPLOAD = {"image": 32 * 1024 * 1024, "video": 64 * 1024 * 1024, "audio": 32 * 1024 * 1024}
 _EXT_BY_MIME = {
     "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
     "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov",
