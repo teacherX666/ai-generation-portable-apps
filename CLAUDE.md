@@ -156,7 +156,7 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 - **下载映射持久化**：`state/download_files.json`（token→文件路径）
 - **数据布局（2026-07-22 起）**：各子应用的 `outputs/`、`state/`、`archives/`、`uploads/`、`accounts/` 以及 `portal/state/` 已从软链改为**主仓库内的真实目录**，不再依赖 `ai-generation-portable-apps-backup-2026-07-14-1653/`（该 backup 目录已删除，主干数据打包留档在 `~/backup-trunk-2026-07-22.zip`）。迁移时**弃掉了草稿缓存** `state/workspaces/` 和 `state/media/`（历史参考图需用户重传）以及 `portal/state/logs/`。`activity_log.json` / `usage.json` / `users.json` / `accounts.json` 等主干与统计数据完整保留。
 - **飞书产出搬运**：独立服务 `com.feishu-output-sync`（launchd，**独立于 com.ai-portal**）常驻轮询 `feishu-output-sync/sync.py`，把各子应用 outputs 增量搬进「每人一张多维表格」（组织内可编辑）。日志 `~/Library/Logs/feishu-output-sync.log`；配置 `feishu-output-sync/config.json`（gitignored）。
-- **每日清理**：独立服务 `com.ai-portal-cleanup`（launchd，每日 03:47）跑 `tools/cleanup_daily.py --apply`：outputs 保留 14 天（命中飞书 synced 表指纹→直接删，未命中→回收站）、workspaces 超 30 天未编辑的 media/ 删除（preset.json 保留）、download_files.json 失效 token 剪枝、超大日志截断（agent 日志 >100MB、portal 子应用日志 >50MB）。**统计数据（usage.json 等）一律不碰**。日志 `~/Library/Logs/ai-portal-cleanup.log`；脚本改动即时生效，plist 改动需 unload+load。
+- **每日清理**：独立服务 `com.ai-portal-cleanup`（launchd，每日 03:47）跑 `tools/cleanup_daily.py --apply`：outputs 保留 14 天（命中飞书 synced 表指纹→直接删，未命中→回收站；`volcengine-portrait/视频生成合集` 也在 outputs 白名单内）、workspaces 超 30 天未编辑的 media/ 删除（preset.json 保留）、download_files.json 失效 token 剪枝、超大日志截断（agent 日志 >100MB、portal 子应用日志 >50MB）、回收站二次清理（`~/.Trash/ai-portable-cleanup-*` 超 30 天彻底删除，只认精确目录名模式）。**统计数据（usage.json 等）一律不碰**。日志 `~/Library/Logs/ai-portal-cleanup.log`；脚本改动即时生效，plist 改动需 unload+load。
 
 ## 无限画布 2026-08-19 上游同步（新增功能）
 
