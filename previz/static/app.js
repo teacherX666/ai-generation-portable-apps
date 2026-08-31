@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from './vendor/OrbitControls.js';
-import { JOINTS, jointAngles, POSE_PRESETS, newCharacter, newId, PROP_TYPES, CHARACTER_COLORS } from './core.js';
+import { JOINTS, jointAngles, POSE_PRESETS, newCharacter, newId, PROP_TYPES, CHARACTER_COLORS, obbPenetration } from './core.js';
 
 // ============ 全局状态 ============
 const state = {
   scene: null, camera: null, renderer: null, controls: null,
   mannequins: new Map(),      // characterId -> {group, joints, labelEl, data}
-  props: new Map(),           // propId -> {group, data}
+  props: new Map(),           // propId -> {group, data, footprint}
   selected: null,             // {kind:'char'|'prop', id}
   editHelpers: null,          // THREE.Group：编辑辅助（选中环等）
 };
@@ -144,8 +144,11 @@ export function addMannequin(data) {
   labelEl.className = 'char-label';
   labelEl.textContent = data.label || data.id;
   document.getElementById('viewport-wrap').appendChild(labelEl);
-  state.mannequins.set(data.id, { group, data, labelEl });
-  return { group, data, labelEl };
+  // 存进 map 的对象必须与返回值是同一引用：resolveCollisions 用 other === rec 跳过自身，
+  // 若返回另一个字面量，木人会与自己碰撞（0.4+0.4 穿透，被推飞 8×0.801m）
+  const rec = { group, data, labelEl };
+  state.mannequins.set(data.id, rec);
+  return rec;
 }
 
 export function updateLabels() {
@@ -324,9 +327,10 @@ export function addProp(data) {
   const group = new THREE.Group();
   group.add(propGeometry(data.type));
   const box = new THREE.Box3().setFromObject(group);   // 局部坐标（group 尚未变换）
-  const size = new THREE.Vector3();
+  const size = new THREE.Vector3(), center = new THREE.Vector3();
   box.getSize(size);
-  const rec = { group, data, footprint: { hx: size.x / 2, hz: size.z / 2 } };
+  box.getCenter(center);
+  const rec = { group, data, footprint: { hx: size.x / 2, hz: size.z / 2, cx: center.x, cz: center.z } };
   group.position.set(data.position[0], data.position[1], data.position[2]);
   group.rotation.y = (data.rotation_y || 0) * Math.PI / 180;
   const s = data.scale || [1, 1, 1];
@@ -337,42 +341,23 @@ export function addProp(data) {
 }
 
 // ============ 碰撞体积（XZ 平面 OBB） ============
-// 道具：addProp 构建时测局部 XZ 半宽（几何在 group 局部空间、未加变换前）
-// 木人：固定半径 0.4（×scale）
+// 道具：addProp 构建时测局部 XZ 半宽与中心偏移（几何在 group 局部空间、未加变换前）
+// 木人：固定半径 0.4（×scale），无中心偏移
+// 门框：返回 null —— 顶梁底沿高于木人头顶，门洞本应可通行；碰撞豁免
 function footprintOf(rec) {
+  const ry = rec.group.rotation.y;
+  if (rec.data && rec.data.type === 'door') return null;   // 门框不参与碰撞
   if (!rec.footprint) {   // 木人路径：数据流层没有 footprint，动态生成
     return { x: rec.group.position.x, z: rec.group.position.z,
              hx: 0.4 * Math.abs(rec.group.scale.x), hz: 0.4 * Math.abs(rec.group.scale.x),
-             ry: rec.group.rotation.y };
+             ry };
   }
   const sx = Math.abs(rec.group.scale.x), sz = Math.abs(rec.group.scale.z);
-  return { x: rec.group.position.x, z: rec.group.position.z,
-           hx: rec.footprint.hx * sx, hz: rec.footprint.hz * sz,
-           ry: rec.group.rotation.y };
-}
-
-// 沿 SAT 最小穿透轴计算精确推出量；返回 {pen, ux, uz, sign} 或 null（该轴分离 → 无重叠）
-function obbPenetration(a, b) {
-  const ca = Math.cos(a.ry), sa = Math.sin(a.ry);
-  const cb = Math.cos(b.ry), sb = Math.sin(b.ry);
-  const dx = b.x - a.x, dz = b.z - a.z;
-  let best = null;
-  const axes = [[ca, sa], [-sa, ca], [cb, sb], [-sb, cb]];
-  for (const [ux, uz] of axes) {
-    const projA = a.hx * Math.abs(ux * ca + uz * sa) + a.hz * Math.abs(ux * -sa + uz * ca);
-    const projB = b.hx * Math.abs(ux * cb + uz * sb) + b.hz * Math.abs(ux * -sb + uz * cb);
-    const d = ux * dx + uz * dz;
-    const pen = projA + projB - Math.abs(d);
-    if (pen < 0) return null;               // 该轴分离 → 无重叠
-    // d = u·(b-a)：d>0 说明 a 在 -u 侧，应沿 -u 推（远离 b）；d<0 沿 +u 推
-    if (!best || pen < best.pen) best = { pen, ux, uz, sign: d > 0 ? -1 : 1 };
-  }
-  return best;
-}
-
-// 诊断用：两足迹是否重叠（与 obbPenetration 同一投影公式）
-function obbOverlap(a, b) {
-  return obbPenetration(a, b) !== null;
+  const cx = rec.footprint.cx || 0, cz = rec.footprint.cz || 0;   // 局部中心偏移（如台阶逐级后退）
+  const cos = Math.cos(ry), sin = Math.sin(ry);
+  return { x: rec.group.position.x + (cx * cos - cz * sin) * sx,
+           z: rec.group.position.z + (cx * sin + cz * cos) * sz,
+           hx: rec.footprint.hx * sx, hz: rec.footprint.hz * sz, ry };
 }
 
 function allActorRecs() {
@@ -383,10 +368,13 @@ export function resolveCollisions(rec, maxSteps = 8) {
   // 最小穿透轴一次性推出（多对象链式时迭代 ≤maxSteps 次）
   for (let step = 0; step < maxSteps; step++) {
     const me = footprintOf(rec);
+    if (!me) return;                    // 自身无碰撞体（门框）→ 直接跳过
     let best = null;
     for (const other of allActorRecs()) {
       if (other === rec) continue;
-      const r = obbPenetration(me, footprintOf(other));
+      const of = footprintOf(other);
+      if (!of) continue;                // 对方无碰撞体（门框）→ 不参与
+      const r = obbPenetration(me, of);
       if (r && (!best || r.pen < best.pen)) best = r;
     }
     if (!best) return;
@@ -507,6 +495,7 @@ export function initObjectPanel() {
     rec.data.rotation_y = Number(e.target.value);
     rec.group.rotation.y = Number(e.target.value) * Math.PI / 180;
     document.getElementById('obj-rotation-val').textContent = e.target.value + '°';
+    resolveCollisions(rec);   // 旋转改变足迹朝向，可能重新重叠
     markDirty();
   };
   $('obj-scale').oninput = (e) => {
@@ -522,6 +511,7 @@ export function initObjectPanel() {
       rec.group.scale.set(v, v, v);
     }
     document.getElementById('obj-scale-val').textContent = String(v);
+    resolveCollisions(rec);   // 缩放改变足迹尺寸，可能重新重叠
     markDirty();
   };
   $('obj-pose').onchange = (e) => {
@@ -1157,6 +1147,10 @@ function initPropPicker() {
       picker.hidden = true;
     }
   });
+  // ESC 关闭
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !picker.hidden) picker.hidden = true;
+  });
 }
 // 对象工具
 document.getElementById('btn-add-char').onclick = () => {
@@ -1169,6 +1163,11 @@ document.getElementById('btn-add-char').onclick = () => {
 };
 document.getElementById('btn-add-prop').onclick = () => {
   const picker = document.getElementById('prop-picker');
+  if (picker.hidden) {   // 打开时锚定到按钮下方
+    const rect = document.getElementById('btn-add-prop').getBoundingClientRect();
+    picker.style.left = rect.left + 'px';
+    picker.style.top = rect.bottom + 6 + 'px';
+  }
   picker.hidden = !picker.hidden;
 };
 initPropPicker();

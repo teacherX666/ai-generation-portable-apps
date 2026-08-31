@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   JOINTS, POSE_PRESETS, jointAngles, ASPECTS, SHOT_SIZES, shotDistance,
   PROP_TYPES, CHARACTER_COLORS, newCharacter, newShot, emptyProject,
-  renderSizeFor, sanitizeFilename, newId, dataUrlToBlob,
+  renderSizeFor, sanitizeFilename, newId, dataUrlToBlob, obbPenetration,
 } from '../static/core.js';
 
 test('JOINTS 恰好 14 个且无重复', () => {
@@ -80,4 +80,26 @@ test('PROP_TYPES 十类结构完整', () => {
     assert.equal(p.geo.length, 2);
     assert.ok(Array.isArray(p.geo[1]));
   }
+});
+
+test('obbPenetration 轴对齐最小穿透', () => {
+  // a 在 b 的 +x 侧（a.x=0.5 > b.x=0），应沿 +x 推出（远离 b）；穿透 0.1
+  const a = { x: 0.5, z: 0, hx: 0.3, hz: 0.3, ry: 0 };
+  const b = { x: 0, z: 0, hx: 0.3, hz: 0.3, ry: 0 };
+  const r = obbPenetration(a, b);
+  assert.ok(r && Math.abs(r.pen - 0.1) < 1e-9);
+  assert.equal(r.sign, 1);   // a 在 b 的 +x 侧，应沿 +x 推出
+});
+
+test('obbPenetration 分离返回 null', () => {
+  assert.equal(obbPenetration({ x: 0, z: 0, hx: 0.3, hz: 0.3, ry: 0 },
+                              { x: 5, z: 5, hx: 0.3, hz: 0.3, ry: 0 }), null);
+});
+
+test('obbPenetration 旋转 90° 墙', () => {
+  const wall = { x: 0, z: 0, hx: 1.5, hz: 0.125, ry: Math.PI / 2 };  // 沿 z 长
+  const box = { x: 0, z: 1.0, hx: 0.3, hz: 0.3, ry: 0 };
+  const r = obbPenetration(box, wall);
+  assert.ok(r && r.pen > 0);
+  assert.ok(r.ux * r.sign > 0 || r.uz * r.sign > 0);  // 有推出方向
 });

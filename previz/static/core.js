@@ -139,3 +139,24 @@ export function dataUrlToBlob(dataUrl) {
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Blob([bytes], { type: mime });
 }
+
+// —— 碰撞（XZ 平面 OBB，SAT）——
+// 入参是普通对象 {x, z, hx, hz, ry}（世界坐标中心 + 旋转 + XZ 半宽），无 three 依赖；
+// 返回 {pen, ux, uz, sign}（最小穿透轴推出量）或 null（该轴分离 → 无重叠）。
+export function obbPenetration(a, b) {
+  const ca = Math.cos(a.ry), sa = Math.sin(a.ry);
+  const cb = Math.cos(b.ry), sb = Math.sin(b.ry);
+  const dx = b.x - a.x, dz = b.z - a.z;
+  let best = null;
+  const axes = [[ca, sa], [-sa, ca], [cb, sb], [-sb, cb]];
+  for (const [ux, uz] of axes) {
+    const projA = a.hx * Math.abs(ux * ca + uz * sa) + a.hz * Math.abs(ux * -sa + uz * ca);
+    const projB = b.hx * Math.abs(ux * cb + uz * sb) + b.hz * Math.abs(ux * -sb + uz * cb);
+    const d = ux * dx + uz * dz;
+    const pen = projA + projB - Math.abs(d);
+    if (pen < 0) return null;               // 该轴分离 → 无重叠
+    // d = u·(b-a)：d>0 说明 a 在 -u 侧，应沿 -u 推（远离 b）；d<0 沿 +u 推
+    if (!best || pen < best.pen) best = { pen, ux, uz, sign: d > 0 ? -1 : 1 };
+  }
+  return best;
+}

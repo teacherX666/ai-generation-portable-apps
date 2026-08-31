@@ -46,36 +46,47 @@ try {
   await page.waitForTimeout(300);
   assert.equal(await page.locator('.char-label').count(), 1);
 
-  // 2.5 碰撞体积：加一面墙，断言生成在原点的新道具被 SAT 最小穿透完全推开（XZ 不重叠）
+  // 2.5 碰撞体积：加一面墙，断言生成在原点的新道具被 SAT 最小穿透完全推开——
+  //     不重叠，且间距 ∈ [0.001, 0.2]（推挤应刚好分离，推飞太远也是失败）
   //     选中道具后 picker 自动收起，需先重开
   await page.click('#btn-add-prop');
   await page.locator('#prop-picker button', { hasText: '墙壁' }).click();
   await page.waitForTimeout(300);
-  const noOverlap = await page.evaluate(() => {
+  const push = await page.evaluate(async () => {
+    const { obbPenetration } = await import('/core.js');
     const s = window.__previzDebug;
     const recs = [...s.props.values()];
-    if (recs.length < 2) return false;
+    if (recs.length < 2) return null;
     const foot = (rec) => {
       const sx = Math.abs(rec.group.scale.x), sz = Math.abs(rec.group.scale.z);
-      return { x: rec.group.position.x, z: rec.group.position.z,
+      const cx = rec.footprint.cx || 0, cz = rec.footprint.cz || 0;
+      const cos = Math.cos(rec.group.rotation.y), sin = Math.sin(rec.group.rotation.y);
+      return { x: rec.group.position.x + (cx * cos - cz * sin) * sx,
+               z: rec.group.position.z + (cx * sin + cz * cos) * sz,
                hx: (rec.footprint ? rec.footprint.hx : 0.4) * sx,
                hz: (rec.footprint ? rec.footprint.hz : 0.4) * sz,
                ry: rec.group.rotation.y };
     };
-    const obbOverlap = (a, b) => {
-      const ca = Math.cos(a.ry), sa = Math.sin(a.ry);
-      const cb = Math.cos(b.ry), sb = Math.sin(b.ry);
-      const dx = b.x - a.x, dz = b.z - a.z;
+    const a = foot(recs[0]), b = foot(recs[1]);
+    // 间距 = 各轴 (|d| - projA - projB) 的最大值；>0 即分离（与 obbPenetration 同公式）
+    const gapOf = (p, q) => {
+      const ca = Math.cos(p.ry), sa = Math.sin(p.ry);
+      const cb = Math.cos(q.ry), sb = Math.sin(q.ry);
+      const dx = q.x - p.x, dz = q.z - p.z;
+      let gap = -Infinity;
       for (const [ux, uz] of [[ca, sa], [-sa, ca], [cb, sb], [-sb, cb]]) {
-        const projA = a.hx * Math.abs(ux * ca + uz * sa) + a.hz * Math.abs(ux * -sa + uz * ca);
-        const projB = b.hx * Math.abs(ux * cb + uz * sb) + b.hz * Math.abs(ux * -sb + uz * cb);
-        if (Math.abs(ux * dx + uz * dz) > projA + projB) return false;
+        const projA = p.hx * Math.abs(ux * ca + uz * sa) + p.hz * Math.abs(ux * -sa + uz * ca);
+        const projB = q.hx * Math.abs(ux * cb + uz * sb) + q.hz * Math.abs(ux * -sb + uz * cb);
+        gap = Math.max(gap, Math.abs(ux * dx + uz * dz) - (projA + projB));
       }
-      return true;
+      return gap;
     };
-    return !obbOverlap(foot(recs[0]), foot(recs[1]));
+    return { overlap: obbPenetration(a, b) !== null, gap: gapOf(a, b) };
   });
-  assert.ok(noOverlap, '生成在原点的新道具应被 SAT 推挤到完全不重叠');
+  assert.ok(push, '应有墙与箱两个道具');
+  assert.ok(!push.overlap, '生成在原点的新道具应被 SAT 推挤到完全不重叠');
+  assert.ok(push.gap >= 0.001 && push.gap <= 0.2,
+    `推挤间距应 ∈ [0.001, 0.2]（推飞太远也是失败），实际 ${push.gap.toFixed(4)}`);
 
   // 3. 渲染快照 → 预览弹窗 + 存档成功（覆盖 防抖冲刷 + multipart 存档链路）
   await page.click('#btn-render');

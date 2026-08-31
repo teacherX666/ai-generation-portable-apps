@@ -59,6 +59,6 @@ select,input[type=number],input:not([type]),textarea { background:#0f172a; color
   align-items:center; justify-content:center; text-align:center; padding:40px; }
 .char-label { position:absolute; top:0; left:0; background:rgba(15,23,42,.8); color:var(--text);
   border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:12px; pointer-events:none; white-space:nowrap; }
-.prop-picker { position:fixed; top:52px; right:170px; background:var(--panel); border:1px solid var(--line);
+.prop-picker { position:fixed; top:auto; right:auto; background:var(--panel); border:1px solid var(--line);
   border-radius:8px; padding:8px; display:grid; grid-template-columns:repeat(5, 72px); gap:6px; z-index:900; }
 .prop-picker button { padding:6px 0; font-size:12px; }
