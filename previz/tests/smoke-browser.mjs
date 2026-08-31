@@ -46,7 +46,7 @@ try {
   await page.waitForTimeout(300);
   assert.equal(await page.locator('.char-label').count(), 1);
 
-  // 2.5 碰撞体积：加一面墙，断言生成在原点的新道具被推开（XZ 不堆叠）
+  // 2.5 碰撞体积：加一面墙，断言生成在原点的新道具被 SAT 最小穿透完全推开（XZ 不重叠）
   //     选中道具后 picker 自动收起，需先重开
   await page.click('#btn-add-prop');
   await page.locator('#prop-picker button', { hasText: '墙壁' }).click();
@@ -62,11 +62,20 @@ try {
                hz: (rec.footprint ? rec.footprint.hz : 0.4) * sz,
                ry: rec.group.rotation.y };
     };
-    const a = foot(recs[0]), b = foot(recs[1]);
-    // 简化：中心距离小于两半对角线之和视为可疑重叠（此处只断言墙与箱子不堆叠在同一原点）
-    return Math.hypot(a.x - b.x, a.z - b.z) > 0.5;
+    const obbOverlap = (a, b) => {
+      const ca = Math.cos(a.ry), sa = Math.sin(a.ry);
+      const cb = Math.cos(b.ry), sb = Math.sin(b.ry);
+      const dx = b.x - a.x, dz = b.z - a.z;
+      for (const [ux, uz] of [[ca, sa], [-sa, ca], [cb, sb], [-sb, cb]]) {
+        const projA = a.hx * Math.abs(ux * ca + uz * sa) + a.hz * Math.abs(ux * -sa + uz * ca);
+        const projB = b.hx * Math.abs(ux * cb + uz * sb) + b.hz * Math.abs(ux * -sb + uz * cb);
+        if (Math.abs(ux * dx + uz * dz) > projA + projB) return false;
+      }
+      return true;
+    };
+    return !obbOverlap(foot(recs[0]), foot(recs[1]));
   });
-  assert.ok(noOverlap, '生成在原点的新道具应被碰撞推开');
+  assert.ok(noOverlap, '生成在原点的新道具应被 SAT 推挤到完全不重叠');
 
   // 3. 渲染快照 → 预览弹窗 + 存档成功（覆盖 防抖冲刷 + multipart 存档链路）
   await page.click('#btn-render');

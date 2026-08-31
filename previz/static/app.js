@@ -351,41 +351,47 @@ function footprintOf(rec) {
            ry: rec.group.rotation.y };
 }
 
-function obbOverlap(a, b) {
+// 沿 SAT 最小穿透轴计算精确推出量；返回 {pen, ux, uz, sign} 或 null（该轴分离 → 无重叠）
+function obbPenetration(a, b) {
   const ca = Math.cos(a.ry), sa = Math.sin(a.ry);
   const cb = Math.cos(b.ry), sb = Math.sin(b.ry);
   const dx = b.x - a.x, dz = b.z - a.z;
+  let best = null;
   const axes = [[ca, sa], [-sa, ca], [cb, sb], [-sb, cb]];
   for (const [ux, uz] of axes) {
     const projA = a.hx * Math.abs(ux * ca + uz * sa) + a.hz * Math.abs(ux * -sa + uz * ca);
     const projB = b.hx * Math.abs(ux * cb + uz * sb) + b.hz * Math.abs(ux * -sb + uz * cb);
-    if (Math.abs(ux * dx + uz * dz) > projA + projB) return false;
+    const d = ux * dx + uz * dz;
+    const pen = projA + projB - Math.abs(d);
+    if (pen < 0) return null;               // 该轴分离 → 无重叠
+    // d = u·(b-a)：d>0 说明 a 在 -u 侧，应沿 -u 推（远离 b）；d<0 沿 +u 推
+    if (!best || pen < best.pen) best = { pen, ux, uz, sign: d > 0 ? -1 : 1 };
   }
-  return true;
+  return best;
+}
+
+// 诊断用：两足迹是否重叠（与 obbPenetration 同一投影公式）
+function obbOverlap(a, b) {
+  return obbPenetration(a, b) !== null;
 }
 
 function allActorRecs() {
   return [...state.mannequins.values(), ...state.props.values()];
 }
 
-export function resolveCollisions(rec, maxSteps = 12) {
-  // 将 rec 从重叠中推挤出去（沿对方→自己方向，步长 0.06m，最多 maxSteps 步）
+export function resolveCollisions(rec, maxSteps = 8) {
+  // 最小穿透轴一次性推出（多对象链式时迭代 ≤maxSteps 次）
   for (let step = 0; step < maxSteps; step++) {
     const me = footprintOf(rec);
-    let overlap = null;
+    let best = null;
     for (const other of allActorRecs()) {
       if (other === rec) continue;
-      const o = footprintOf(other);
-      if (obbOverlap(me, o)) {
-        const dx = me.x - o.x, dz = me.z - o.z;
-        const len = Math.hypot(dx, dz);
-        overlap = { nx: len > 1e-6 ? dx / len : 1, nz: len > 1e-6 ? dz / len : 0 };
-        break;
-      }
+      const r = obbPenetration(me, footprintOf(other));
+      if (r && (!best || r.pen < best.pen)) best = r;
     }
-    if (!overlap) return;
-    rec.group.position.x += overlap.nx * 0.06;
-    rec.group.position.z += overlap.nz * 0.06;
+    if (!best) return;
+    rec.group.position.x += best.ux * best.sign * (best.pen + 0.001);
+    rec.group.position.z += best.uz * best.sign * (best.pen + 0.001);
   }
 }
 
