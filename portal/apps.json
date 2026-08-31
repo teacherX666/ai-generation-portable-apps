@@ -113,6 +113,20 @@
     "stats_combine": "images_or_seconds"
   },
   {
+    "name": "previz",
+    "display_name": "分镜布局",
+    "port_env": "PREVIZ_PORT",
+    "port_default": 8896,
+    "mount": "iframe",
+    "iframe_url": "/previz/index.html",
+    "color": "#6366f1",
+    "credential_scheme": "none",
+    "job_type": "dynamic",
+    "metrics": ["images"],
+    "unit_label": "次",
+    "stats_combine": "images_or_seconds"
+  },
+  {
     "name": "rag-assistant",
     "display_name": "报错问答助手",
     "port_env": "RAG_ASSISTANT_PORT",
