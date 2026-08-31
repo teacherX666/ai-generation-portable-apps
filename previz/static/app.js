@@ -245,8 +245,9 @@ function propGeometry(type) {
   const def = PROP_TYPES.find((p) => p.type === type) || PROP_TYPES[0];
   const [kind, params] = def.geo;
   switch (kind) {
-    case 'box': return new THREE.BoxGeometry(...params);
-    case 'cylinder': return new THREE.CylinderGeometry(...params);
+    // box/cylinder/cone 是单几何体：包成 Mesh 返回（addProp 的 group.add 需要 Object3D）
+    case 'box': return new THREE.Mesh(new THREE.BoxGeometry(...params), _propMat);
+    case 'cylinder': return new THREE.Mesh(new THREE.CylinderGeometry(...params), _propMat);
     case 'door': { // 门框：三根柱拼装（顶梁 + 左右柱），params=[w,h,d]
       const [w, h, d] = params;
       const g = new THREE.BoxGeometry(w, d, d);        // 顶梁
@@ -269,7 +270,7 @@ function propGeometry(type) {
     }
     case 'cone': { // 山形
       const [r, h] = params;
-      return new THREE.ConeGeometry(r, h, 4);
+      return new THREE.Mesh(new THREE.ConeGeometry(r, h, 4), _propMat);
     }
     case 'table': { // 桌子：桌面 + 四腿
       const [w, h, d] = params;
@@ -805,6 +806,8 @@ function makeThumbnail(dataUrl, w = 320) {
 export async function renderShot() {
   const shot = currentShotData();
   if (!shot) return toast('先选择一个镜头', true);
+  // 先冲刷防抖保存：镜头可能刚创建、服务端项目里还没有它（否则存档 POST 会 400 镜头不存在）
+  await saveNow();
   const quality = document.getElementById('cam-quality').value;
   const customW = Number(document.getElementById('cam-custom-width').value) || 0;
   const { width, height } = renderSizeFor(currentAspect, quality, customW);
