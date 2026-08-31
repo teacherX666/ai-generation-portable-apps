@@ -985,6 +985,11 @@ export function initAnno() {
   // SVG 指针事件
   anno.svg.addEventListener('pointerdown', (evt) => {
     if (!anno.active) return;
+    if (anno.drawing) {                    // 上一笔未提交（指针在窗口外松开等）：丢弃残留临时矩形
+      anno.drawing.el.remove();
+      anno.drawing = null;
+    }
+    if (evt.button !== 0) return;          // 仅左键开始绘制
     const p = annoCoords(evt);
     if (anno.tool === 'rect') {
       const el = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -1013,19 +1018,24 @@ export function initAnno() {
     anno.drawing.el.setAttribute('x', x); anno.drawing.el.setAttribute('y', y);
     anno.drawing.el.setAttribute('width', w); anno.drawing.el.setAttribute('height', h);
   });
-  window.addEventListener('pointerup', () => {
-    if (!anno.drawing) return;
-    const el = anno.drawing.el;
-    const w = +el.getAttribute('width'), h = +el.getAttribute('height');
-    if (w === 0 && h === 0) {   // 纯单击（未拖拽）：移除临时矩形，不入栈
-      el.remove();
-    } else {
-      anno.items.push({ type: 'rect', color: el.getAttribute('stroke'),
-                        x: +el.getAttribute('x'), y: +el.getAttribute('y'),
-                        w, h });
-    }
-    anno.drawing = null;
-  });
+  window.addEventListener('pointerup', () => annoEndDraw());
+  window.addEventListener('pointercancel', () => annoEndDraw());
+}
+
+// 收尾一笔绘制：提交或丢弃。pointerup / pointercancel 共用——
+// 指针在浏览器窗口外松开时 pointerup 不触发，靠 pointercancel 兜底防幽灵矩形
+function annoEndDraw() {
+  if (!anno.drawing) return;
+  const el = anno.drawing.el;
+  const w = +el.getAttribute('width'), h = +el.getAttribute('height');
+  if (w === 0 && h === 0) {   // 纯单击（未拖拽）：移除临时矩形，不入栈
+    el.remove();
+  } else {
+    anno.items.push({ type: 'rect', color: el.getAttribute('stroke'),
+                      x: +el.getAttribute('x'), y: +el.getAttribute('y'),
+                      w, h });
+  }
+  anno.drawing = null;
 }
 
 function renderAnno() {

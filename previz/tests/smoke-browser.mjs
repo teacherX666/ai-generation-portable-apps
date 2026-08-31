@@ -146,6 +146,10 @@ try {
   await page.mouse.click(stage.x + stage.width * 0.4, stage.y + stage.height * 0.4);
   await page.waitForTimeout(200);
   assert.equal(await page.locator('#anno-layer rect').count(), 0, '纯单击不应产生矩形框');
+  // 右键守卫：button!==0 不进入绘制
+  await page.mouse.click(stage.x + stage.width * 0.45, stage.y + stage.height * 0.45, { button: 'right' });
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator('#anno-layer rect').count(), 0, '右键不应产生矩形框');
   await page.click('#btn-render-anno');   // 关闭标注
 
   // 5. 文字标注：T 文字 → prompt 对话框 → SVG text → 合并（标注版底图仍可继续标）
