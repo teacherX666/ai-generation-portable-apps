@@ -1554,8 +1554,14 @@
         `${label} ${asset}${reasonText[record.failure_reason] || reasonText.unknown}`,
       );
     }));
-    assetIngestBox.hidden = assetIngestIssues.length === 0;
-    if (assetIngestIssues.length === 0) retryFailedAssetsFeedback.textContent = "";
+    const recoveredFailedAssets = assetIngestIssues.length === 0
+      && (view.events || []).some(
+        (event) => event.node === "retry_failed_assets" && event.status === "completed",
+      );
+    retryFailedAssetsFeedback.textContent = recoveredFailedAssets
+      ? "失败素材已全部恢复，无需重新读取"
+      : "";
+    assetIngestBox.hidden = assetIngestIssues.length === 0 && !recoveredFailedAssets;
     const visionIssues = view.approval.vision_issues || [];
     const visionIssueBox = byId("vision-issues");
     visionIssueBox.textContent = visionIssues.length

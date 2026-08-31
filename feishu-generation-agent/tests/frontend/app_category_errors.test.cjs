@@ -275,6 +275,62 @@ test("approval view distinguishes blocking document and nonblocking asset issues
   assert.equal(app.getNode("vision-issues").hidden, false);
 });
 
+test("approval view keeps the recovered asset result visible after retry", async () => {
+  const runView = {
+    run_id: "run-assets-recovered",
+    thread_id: "thread-assets-recovered",
+    source_url: "https://acme.feishu.cn/docx/recovered",
+    status: "waiting_approval",
+    events: [{ node: "retry_failed_assets", status: "completed" }],
+    privacy: {},
+    approval: {
+      document_title: "素材已恢复",
+      revision: 8,
+      document_summary: "",
+      tasks: [],
+      media_assets: [],
+      excluded_assets: [],
+      selected_task_ids: [],
+      coverage: {
+        successful_total: 2,
+        referenced_count: 2,
+        excluded_count: 0,
+        uncovered_count: 0,
+        failed_count: 0,
+      },
+      validation_issues: [],
+      ingest_issue_records: [],
+      blocking_ingest_issues: [],
+      asset_ingest_issues: [],
+      vision_issues: [],
+    },
+  };
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [{
+        run_id: runView.run_id,
+        display_text: "素材已恢复",
+      }]);
+    }
+    if (url === `/api/runs/${runView.run_id}`) {
+      return jsonResponse(200, runView);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  assert.equal(app.getNode("asset-ingest-issues").hidden, false);
+  assert.equal(app.getNode("retry-failed-assets-button").hidden, true);
+  assert.equal(
+    app.getNode("retry-failed-assets-feedback").textContent,
+    "失败素材已全部恢复，无需重新读取",
+  );
+});
+
 test("failed runs show the safe provider error in the review panel", async () => {
   const runView = {
     run_id: "run-provider-error",
