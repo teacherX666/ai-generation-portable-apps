@@ -292,6 +292,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **`[hidden]` 会被作者样式覆盖**：`display:flex` 类样式会盖掉 UA 的 `[hidden]{display:none}`，全屏遮罩（modal/错误页）必须补 `[hidden]{display:none !important}` 全局兜底
 - **三个对象的 `add()` 有 removeFromParent 语义**：同一 mesh 不能既挂关节又挂集合组（第二次 add 会把第一次摘掉）
 - **OrbitControls 与对象拖拽冲突**：pointerdown 命中对象时 `controls.enabled=false`，pointerup 恢复
+- **渲染必须按需，禁用常驻 rAF 循环**：空闲 60fps 持续 WebGL 会压满 GPU、把 macOS WindowServer 图形合成进程饿死（主线程 80s 无响应 → 看门狗强杀 = 整机崩溃/注销，2026-08-31 实锤两次）。模式：模块级 `requestRender()`（rAF 合并去重，帧内 controls.update + updateLabels + render），从 setDirty/select/onViewportMove/controls change/loadShotIntoScene/resize 等所有交互路径触发；冒烟测试用 `renderer.info.render.frame` 断言「空闲 2.5s 帧计数静止、拖拽后增长」
 - 前端模块单文件 app.js（ES module，`<script type="module">`）；core.js 是 node 可测纯逻辑（姿势表/景别/画幅常量都在这里）；node 语法检查要复制成 `.mjs` 再 `node --check`（否则按 CommonJS 解析误报）
 
 ### 通用调试直觉
