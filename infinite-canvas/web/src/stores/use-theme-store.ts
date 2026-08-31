@@ -15,6 +15,13 @@ export const useThemeStore = create<ThemeStore>()(
             theme: "light",
             setTheme: (theme) => set({ theme }),
         }),
-        { name: "infinite-canvas:theme_store" },
+        {
+            name: "infinite-canvas:theme_store",
+            // v1：PR #7 全站浅色化后，组件按浅色硬编码；存量用户的 dark
+            // 持久化状态会让继承文字（--foreground=浅色）落在浅色面板上隐身。
+            // 一次性迁移：旧状态一律回浅色。
+            version: 1,
+            migrate: () => ({ theme: "light" as ThemeName }),
+        },
     ),
 );

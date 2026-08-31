@@ -362,9 +362,9 @@ export function AssetLibraryPanel({
     const currentGroup = groups.find((group) => group.group_id === selectedGroupId);
 
     return (
-        <aside className="fixed right-6 top-1/2 z-40 flex h-[60vh] w-1/4 min-w-[380px] -translate-y-1/2 flex-col rounded-xl border border-[#d9e0ea] bg-[#f8fafc] p-4 shadow-2xl" aria-label="人像资产库">
+        <aside className="fixed right-6 top-1/2 z-40 flex h-[60vh] w-1/4 min-w-[380px] -translate-y-1/2 flex-col rounded-xl border border-[#d9e0ea] bg-[#f8fafc] p-4 text-[#172033] shadow-2xl [color-scheme:light]" aria-label="人像资产库">
             <div className="flex items-center justify-between">
-                <h2 className="text-sm font-semibold">人像资产库</h2>
+                <h2 className="text-sm font-semibold text-[#172033]">人像资产库</h2>
                 <button type="button" onClick={onClose} aria-label="关闭人像资产库" className="text-xs text-[#687386] hover:text-[#172033]">关闭</button>
             </div>
             <p className="mt-1 text-xs text-[#687386]">上传的人像会进入火山方舟私域资产库，生成视频时以资产引用方式使用。</p>
@@ -456,7 +456,7 @@ export function AssetLibraryPanel({
                         const selected = event.target.files?.[0];
                         if (selected) void submitFile(selected);
                     }}
-                    className="block max-w-full text-xs file:mr-3 file:rounded file:border file:border-[#d9e0ea] file:bg-[#f3f6fa] file:px-3 file:py-2 file:text-[#235fd6]"
+                    className="block max-w-full text-xs text-[#172033] file:mr-3 file:rounded file:border file:border-[#d9e0ea] file:bg-[#f3f6fa] file:px-3 file:py-2 file:text-[#235fd6]"
                 />
                 <button
                     type="button"
