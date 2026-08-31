@@ -836,23 +836,31 @@ async def test_clone_run_fails_closed_without_source_prompt_snapshot(
             )
 
 
-async def test_clone_run_for_approval_requires_a_previously_approved_task(
+async def test_clone_run_without_approved_tasks_reanalyzes_original_document(
     tmp_path: Path,
 ) -> None:
-    async with _environment(tmp_path) as (client, runtime, _graph, _repository):
+    async with _environment(tmp_path) as (client, runtime, graph, _repository):
         created = await client.post(
             "/api/runs", json={"source_url": "https://tenant.feishu.cn/docx/source"}
         )
         original_run_id = created.json()["run_id"]
         original = await _wait_for_status(client, original_run_id, "waiting_approval")
 
-        with pytest.raises(Exception, match="原运行没有已批准任务"):
-            await runtime.clone_run_for_approval(
-                original_run_id,
-                RequirementRequest(source_url=original["source_url"]),
-                run_id="rerun-without-approval",
-                thread_id="rerun-without-approval-thread",
-            )
+        rerun_id = await runtime.clone_run_for_approval(
+            original_run_id,
+            RequirementRequest(source_url=original["source_url"]),
+            run_id="rerun-without-approval",
+            thread_id="rerun-without-approval-thread",
+        )
+        rerun = await _wait_for_status(client, rerun_id, "waiting_approval")
+
+    assert rerun_id == "rerun-without-approval"
+    assert rerun["approval"]["tasks"]
+    assert graph.states[rerun["thread_id"]]["planning_prompt"]
+    assert any(
+        event["node"] == "rerun_source" and event["status"] == "started"
+        for event in rerun["events"]
+    )
 
 
 async def test_clone_run_for_approval_initializes_a_real_langgraph_checkpoint(

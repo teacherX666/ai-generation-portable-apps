@@ -208,7 +208,12 @@ class GraphRuntime:
         run_id: str,
         thread_id: str,
     ) -> str:
-        """Create an independent approval checkpoint from a prior run's draft."""
+        """Create a rerun from a prior run.
+
+        Reuse the approved plan when one exists. Runs cancelled before approval do
+        not have an approved plan, so re-read and re-plan the original document
+        instead of exposing a rerun action that can only fail.
+        """
         if self._closed:
             raise RunConflict("运行时正在关闭")
         async with self._start_lock:
@@ -222,7 +227,8 @@ class GraphRuntime:
                 raise RunConflict("重跑运行 ID 已存在")
             snapshot = await self.graph.aget_state(self._config(source["thread_id"]))
             source_state = dict(snapshot.values or {})
-            if self._planning_prompt_from_state(source_state) is None:
+            planning_prompt = self._planning_prompt_from_state(source_state)
+            if planning_prompt is None:
                 raise RunValidationError("原运行缺少有效提示词快照")
             try:
                 approved_plan = approved_plan_from_state(
@@ -230,9 +236,29 @@ class GraphRuntime:
                     max_output_count=self.settings.max_output_count,
                 )
             except (TypeError, ValueError):
-                raise RunValidationError("原运行没有可重跑的审批计划") from None
-            if not approved_plan.tasks:
-                raise RunValidationError("原运行没有已批准任务")
+                approved_plan = None
+            if approved_plan is None or not approved_plan.tasks:
+                await self.repository.create_run(
+                    run_id,
+                    thread_id,
+                    request.source_url,
+                    status="created",
+                    owner_user_id=planning_prompt.owner_user_id,
+                )
+                fresh_request = request.model_copy(
+                    update={"planning_prompt": planning_prompt}
+                )
+                await self.repository.append_event(
+                    run_id,
+                    "rerun_source",
+                    "started",
+                    "Original document queued for fresh analysis",
+                )
+                self._start_background(
+                    self._run_to_approval(run_id, thread_id, fresh_request),
+                    name=f"approval-run-{run_id}",
+                )
+                return run_id
             approved_plan_json = approved_plan.model_dump(mode="json")
             approved_tasks = [
                 task.model_dump(mode="json") for task in approved_plan.tasks
