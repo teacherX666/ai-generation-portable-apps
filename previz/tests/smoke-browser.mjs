@@ -97,6 +97,71 @@ try {
   const status = (await page.locator('#render-status').textContent()) || '';
   assert.ok(status.includes('已存档'), '存档状态应为「已存档 ✓」，实际: ' + status);
 
+  // 4. 图片标注：开标注 → 画矩形框 → 合并 → 断言 img src 变化（标注版数据 URL）
+  await page.click('#btn-render-anno');
+  const stage = await page.locator('#render-stage').boundingBox();
+  await page.mouse.move(stage.x + stage.width * 0.2, stage.y + stage.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(stage.x + stage.width * 0.5, stage.y + stage.height * 0.5, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const annoCount = await page.locator('#anno-layer rect').count();
+  assert.equal(annoCount, 1, '应画出 1 个矩形框');
+  const srcBefore = await page.locator('#render-img').getAttribute('src');
+  await page.click('#anno-bake');
+  await page.waitForFunction((before) => {
+    const img = document.getElementById('render-img');
+    return img.src !== before && img.src.startsWith('data:image/png');
+  }, srcBefore, { timeout: 5000 });
+  const srcAfter = await page.locator('#render-img').getAttribute('src');
+  assert.notEqual(srcAfter, srcBefore, '合并后 img src 应变为标注版');
+  assert.ok(srcAfter.startsWith('data:image/png'), '合并结果应为 PNG data URL');
+  // 合并后 PNG 尺寸应等于渲染尺寸（标题里的 width×height）
+  const title = (await page.locator('#render-title').textContent()) || '';
+  const m = title.match(/(\d+)\s*×\s*(\d+)/);
+  assert.ok(m, '渲染标题应含 width×height，实际: ' + title);
+  const expectedW = Number(m[1]), expectedH = Number(m[2]);
+  const dims = await page.evaluate(async (src) => {
+    const img = new Image();
+    img.src = src;
+    await img.decode();
+    return { w: img.naturalWidth, h: img.naturalHeight };
+  }, srcAfter);
+  assert.equal(dims.w, expectedW, `合并后 PNG 宽度应等于渲染宽度 ${expectedW}，实际 ${dims.w}`);
+  assert.equal(dims.h, expectedH, `合并后 PNG 高度应等于渲染高度 ${expectedH}，实际 ${dims.h}`);
+  console.log(`合并后 PNG 尺寸 ${dims.w}×${dims.h}（渲染标题 ${expectedW}×${expectedH}）`);
+  // 合并后 SVG 标注层应清空；标注仍激活，可直接在标注版底图上继续画（原图可继续改）
+  assert.equal(await page.locator('#anno-layer rect').count(), 0, '合并后标注层应清空');
+  await page.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.6);
+  await page.mouse.down();
+  await page.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.7, { steps: 3 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('#anno-layer rect').count(), 1, '合并后应能在标注版底图上继续画矩形框');
+  // 撤销 → 清空
+  await page.click('#anno-undo');
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('#anno-layer rect').count(), 0, '撤销后矩形框应消失');
+  await page.click('#btn-render-anno');   // 关闭标注
+
+  // 5. 文字标注：T 文字 → prompt 对话框 → SVG text → 合并（标注版底图仍可继续标）
+  await page.click('#btn-render-anno');   // 重新打开标注
+  await page.click('#anno-text');
+  page.on('dialog', (d) => d.accept('红点'));
+  await page.mouse.click(stage.x + stage.width * 0.3, stage.y + stage.height * 0.3);
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('#anno-layer text').count(), 1, '文字标注后应有 1 个 SVG text');
+  assert.equal(await page.locator('#anno-layer text').textContent(), '红点', 'SVG text 内容应为「红点」');
+  const textSrcBefore = await page.locator('#render-img').getAttribute('src');
+  await page.click('#anno-bake');
+  await page.waitForFunction((before) => {
+    const img = document.getElementById('render-img');
+    return img.src !== before && img.src.startsWith('data:image/png');
+  }, textSrcBefore, { timeout: 5000 });
+  const textSrcAfter = await page.locator('#render-img').getAttribute('src');
+  assert.notEqual(textSrcAfter, textSrcBefore, '文字合并后 img src 应变更为标注版');
+  assert.ok(!pageErrors.length, '标注流程后不应有 pageerror: ' + pageErrors.join(' | '));
+
   console.log('SMOKE-PASS');
 } finally {
   await browser.close();

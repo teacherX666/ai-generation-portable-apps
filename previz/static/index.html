@@ -83,8 +83,24 @@
 <div id="render-modal" class="modal" hidden>
   <div class="modal-box">
     <h3 id="render-title">快照预览</h3>
-    <img id="render-img" alt="快照">
+    <div id="render-stage">
+      <img id="render-img" alt="快照">
+      <svg id="anno-layer"></svg>
+    </div>
+    <div id="anno-tools" class="anno-tools" hidden>
+      <button id="anno-rect" type="button" class="active">▭ 矩形框</button>
+      <button id="anno-text" type="button">T 文字</button>
+      <span class="anno-colors" id="anno-colors">
+        <button data-color="#ef4444" type="button" class="swatch active" style="background:#ef4444"></button>
+        <button data-color="#facc15" type="button" class="swatch" style="background:#facc15"></button>
+        <button data-color="#22c55e" type="button" class="swatch" style="background:#22c55e"></button>
+      </span>
+      <button id="anno-undo" type="button">撤销</button>
+      <button id="anno-clear" type="button">清空</button>
+      <button id="anno-bake" type="button" class="primary">合并到图片</button>
+    </div>
     <div class="modal-actions">
+      <button id="btn-render-anno" type="button">✏️ 标注</button>
       <button id="btn-render-download" type="button" class="primary">下载 PNG</button>
       <button id="btn-render-canvas" type="button" class="primary green">送画布</button>
       <button id="btn-render-close" type="button">关闭</button>

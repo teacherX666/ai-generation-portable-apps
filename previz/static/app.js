@@ -908,6 +908,8 @@ export async function renderShot() {
   if (!dataUrl) return;   // captureShot 内部已 toast 提示
   const thumb = await makeThumbnail(dataUrl);
   document.getElementById('render-img').src = dataUrl;
+  anno.svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  annoReset(dataUrl);   // 新快照 → 清上一张的标注状态
   document.getElementById('render-title').textContent = `${shot.order + 1} · ${shot.name} · ${width}×${height}`;
   document.getElementById('render-status').textContent = '';
   document.getElementById('render-modal').hidden = false;
@@ -938,6 +940,143 @@ export async function downloadRender() {
   a.click();
 }
 window.__downloadRender = downloadRender;
+
+// ============ 图片标注（打框 + 标记） ============
+const anno = {          // 当前快照的标注状态
+  tool: 'rect', color: '#ef4444', items: [],   // items: {type,color,x,y,w,h,text}
+  svg: null, active: false, drawing: null,     // drawing: {x0,y0,el}
+  baseUrl: null,        // 渲染原始 data URL（合并前的底图）
+};
+let annoTimer = null;
+
+function annoReset(baseUrl) {
+  anno.items = [];
+  anno.baseUrl = baseUrl;
+  anno.drawing = null;
+  anno.svg.innerHTML = '';
+}
+
+function annoCoords(evt) {
+  const r = anno.svg.getBoundingClientRect();
+  const vw = anno.svg.viewBox.baseVal.width, vh = anno.svg.viewBox.baseVal.height;
+  return { x: (evt.clientX - r.left) / r.width * vw, y: (evt.clientY - r.top) / r.height * vh };
+}
+
+export function initAnno() {
+  anno.svg = document.getElementById('anno-layer');
+  const $ = (id) => document.getElementById(id);
+  $('btn-render-anno').onclick = () => {
+    anno.active = !anno.active;
+    $('anno-tools').hidden = !anno.active;
+    $('anno-layer').style.display = anno.active ? 'block' : 'none';
+    if (!anno.baseUrl && lastRender) annoReset(lastRender.dataUrl);
+  };
+  $('anno-rect').onclick = () => { anno.tool = 'rect'; $('anno-rect').classList.add('active'); $('anno-text').classList.remove('active'); };
+  $('anno-text').onclick = () => { anno.tool = 'text'; $('anno-text').classList.add('active'); $('anno-rect').classList.remove('active'); };
+  document.querySelectorAll('#anno-colors .swatch').forEach((b) => {
+    b.onclick = () => {
+      document.querySelectorAll('#anno-colors .swatch').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+      anno.color = b.dataset.color;
+    };
+  });
+  $('anno-undo').onclick = () => { anno.items.pop(); renderAnno(); };
+  $('anno-clear').onclick = () => { anno.items = []; renderAnno(); };
+  $('anno-bake').onclick = () => bakeAnno();
+  // SVG 指针事件
+  anno.svg.addEventListener('pointerdown', (evt) => {
+    if (!anno.active) return;
+    const p = annoCoords(evt);
+    if (anno.tool === 'rect') {
+      const el = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      el.setAttribute('fill', anno.color);
+      el.setAttribute('stroke', anno.color);
+      anno.svg.appendChild(el);
+      anno.drawing = { x0: p.x, y0: p.y, el };
+    } else {
+      const label = prompt('标注文字：');
+      if (!label) return;
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', p.x); t.setAttribute('y', p.y);
+      t.setAttribute('font-size', Math.max(16, anno.svg.viewBox.baseVal.width / 36));
+      t.setAttribute('fill', anno.color);
+      t.textContent = label.trim().slice(0, 40);
+      anno.svg.appendChild(t);
+      anno.items.push({ type: 'text', color: anno.color, x: p.x, y: p.y, text: t.textContent });
+    }
+  });
+  window.addEventListener('pointermove', (evt) => {
+    if (!anno.drawing) return;
+    const p = annoCoords(evt);
+    const x = Math.min(p.x, anno.drawing.x0), y = Math.min(p.y, anno.drawing.y0);
+    const w = Math.abs(p.x - anno.drawing.x0), h = Math.abs(p.y - anno.drawing.y0);
+    anno.drawing.el.setAttribute('x', x); anno.drawing.el.setAttribute('y', y);
+    anno.drawing.el.setAttribute('width', w); anno.drawing.el.setAttribute('height', h);
+  });
+  window.addEventListener('pointerup', () => {
+    if (!anno.drawing) return;
+    const el = anno.drawing.el;
+    anno.items.push({ type: 'rect', color: el.getAttribute('stroke'),
+                      x: +el.getAttribute('x'), y: +el.getAttribute('y'),
+                      w: +el.getAttribute('width'), h: +el.getAttribute('height') });
+    anno.drawing = null;
+  });
+}
+
+function renderAnno() {
+  anno.svg.innerHTML = '';
+  for (const it of anno.items) {
+    if (it.type === 'rect') {
+      const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      r.setAttribute('x', it.x); r.setAttribute('y', it.y);
+      r.setAttribute('width', it.w); r.setAttribute('height', it.h);
+      r.setAttribute('fill', it.color); r.setAttribute('stroke', it.color);
+      anno.svg.appendChild(r);
+    } else {
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', it.x); t.setAttribute('y', it.y);
+      t.setAttribute('font-size', Math.max(16, anno.svg.viewBox.baseVal.width / 36));
+      t.setAttribute('fill', it.color);
+      t.textContent = it.text;
+      anno.svg.appendChild(t);
+    }
+  }
+}
+
+function bakeAnno() {
+  if (!anno.baseUrl) return;
+  if (!anno.items.length) return toast('还没有标注', true);
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const sx = img.naturalWidth / anno.svg.viewBox.baseVal.width;
+    const sy = img.naturalHeight / anno.svg.viewBox.baseVal.height;
+    for (const it of anno.items) {
+      ctx.strokeStyle = it.color; ctx.fillStyle = it.color;
+      ctx.lineWidth = Math.max(3, img.naturalWidth / 400);
+      if (it.type === 'rect') {
+        ctx.globalAlpha = 0.12; ctx.fillRect(it.x * sx, it.y * sy, it.w * sx, it.h * sy);
+        ctx.globalAlpha = 1; ctx.strokeRect(it.x * sx, it.y * sy, it.w * sx, it.h * sy);
+      } else {
+        const size = Math.max(16, img.naturalWidth / 36);
+        ctx.font = `700 ${size}px -apple-system, "PingFang SC", sans-serif`;
+        ctx.lineWidth = size / 5; ctx.strokeText(it.text, it.x * sx, it.y * sy);
+        ctx.fillText(it.text, it.x * sx, it.y * sy);
+      }
+    }
+    ctx.globalAlpha = 1;
+    const baked = c.toDataURL('image/png');
+    anno.baseUrl = baked;              // 合并结果成为新底图
+    anno.items = []; anno.svg.innerHTML = '';
+    lastRender.dataUrl = baked;        // 下载/送画布走标注版
+    document.getElementById('render-img').src = baked;
+    toast('标注已合并进图片 ✓');
+  };
+  img.src = anno.baseUrl;
+}
 
 // ============ 送画布 ============
 export async function sendRenderToCanvas() {
@@ -1181,6 +1320,10 @@ document.getElementById('btn-render-download').onclick = () => window.__download
 document.getElementById('btn-render-canvas').onclick = () => window.__sendRender && window.__sendRender();
 document.getElementById('btn-render-close').onclick = () => {
   document.getElementById('render-modal').hidden = true;
+  anno.active = false;
+  document.getElementById('anno-tools').hidden = true;
+  document.getElementById('anno-layer').style.display = 'none';
 };
+initAnno();
 // 调试钩子：headless 冒烟验证与排障用
 window.__previzDebug = state;
