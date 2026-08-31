@@ -933,7 +933,7 @@ export async function downloadRender() {
   if (!annoSource) return toast('先渲染或上传一张图片', true);
   const a = document.createElement('a');
   a.href = annoSource.dataUrl;
-  a.download = `${annoSource.filenameBase}.png`;
+  a.download = `${annoSource.filenameBase}.${annoSource.srcType === 'image/jpeg' ? 'jpg' : 'png'}`;
   a.click();
 }
 window.__downloadRender = downloadRender;
@@ -944,7 +944,7 @@ const anno = {          // 当前快照的标注状态
   svg: null, active: false, drawing: null,     // drawing: {x0,y0,el}
   baseUrl: null,        // 渲染原始 data URL（合并前的底图）
 };
-let annoSource = null;  // 当前标注会话：{ dataUrl, filenameBase, width, height, title }
+let annoSource = null;  // 当前标注会话：{ dataUrl, filenameBase, srcType, width, height, title }
 
 function annoReset(baseUrl) {
   anno.items = [];
@@ -1121,7 +1121,7 @@ function openAnnoModal(src) {
 // ============ 送画布 ============
 export async function sendRenderToCanvas() {
   if (!annoSource) return toast('先渲染或上传一张图片', true);
-  const filename = `${annoSource.filenameBase}.png`;
+  const filename = `${annoSource.filenameBase}.${annoSource.srcType === 'image/jpeg' ? 'jpg' : 'png'}`;
   const fd = new FormData();
   fd.append('file', dataUrlToBlob(annoSource.dataUrl), filename);
   fd.append('media_type', 'image');

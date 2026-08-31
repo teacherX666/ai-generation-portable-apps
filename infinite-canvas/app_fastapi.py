@@ -266,7 +266,7 @@ async def api_upload_asset(request: Request, file: UploadFile = File(...),
     if kind == "library":
         if mime not in ("image/png", "image/jpeg", "image/webp"):
             path.unlink(missing_ok=True)
-            return _error(400, "invalid_request", "素材库只支持 10MB 以内的 PNG/JPEG/WebP 图片。")
+            return _error(400, "invalid_request", "素材库只支持 32MB 以内的 PNG/JPEG/WebP 图片。")
         cfg = ark_library.load_config()
         if cfg is None:
             # code 与上游一致，前端统一走「上传失败，请重试」的提示。
