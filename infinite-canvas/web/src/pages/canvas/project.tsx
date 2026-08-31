@@ -1066,7 +1066,7 @@ export default function CanvasProjectPage() {
                         type="button"
                         onClick={() => setLibraryPanelOpen((open) => !open)}
                         aria-label="打开人像资产库"
-                        className="absolute right-6 bottom-20 z-30 rounded-lg border border-[#c3ccd9] bg-[#eef2f7] px-3 py-2 text-xs text-[#465267] hover:border-[#2f6bdd]"
+                        className="absolute right-6 bottom-20 z-30 rounded-lg border border-[#c3ccd9] bg-[#ffffff] px-3 py-2 text-xs font-medium text-[#235fd6] shadow-sm hover:border-[#235fd6] hover:bg-[#eef5ff]"
                     >
                         人像资产库
                     </button>
