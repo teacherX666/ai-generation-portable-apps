@@ -90,6 +90,30 @@ try {
   assert.ok(push.gap >= 0.001 && push.gap <= 0.2,
     `推挤间距应 ∈ [0.001, 0.2]（推飞太远也是失败），实际 ${push.gap.toFixed(4)}`);
 
+  // 2.6 按需渲染：空闲时 three 帧计数必须静止（持续 60fps 会把 macOS WindowServer
+  //     饿死——2026-08-31 看门狗强杀实锤）；交互时帧计数应增长
+  const framesIdle = async (ms) => {
+    const a = await page.evaluate(() => window.__previzDebug.renderer.info.render.frame);
+    await page.waitForTimeout(ms);
+    const b = await page.evaluate(() => window.__previzDebug.renderer.info.render.frame);
+    return { a, b };
+  };
+  const idle1 = await framesIdle(2500);
+  assert.equal(idle1.b, idle1.a, `空闲 2.5s 帧计数不应增长（按需渲染失效），${idle1.a}→${idle1.b}`);
+  // 拖拽道具 → 帧增长
+  const stageBox = await page.locator('#viewport').boundingBox();
+  await page.mouse.move(stageBox.x + stageBox.width / 2, stageBox.y + stageBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(stageBox.x + stageBox.width / 2 + 120, stageBox.y + stageBox.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  const afterDrag = await page.evaluate(() => window.__previzDebug.renderer.info.render.frame);
+  assert.ok(afterDrag > idle1.b, `拖拽后帧计数应增长，${idle1.b}→${afterDrag}`);
+  // 松手后再静止 2.5s → 帧计数再次静止
+  const idle2 = await framesIdle(2500);
+  assert.equal(idle2.b, idle2.a, `拖拽停止后帧计数应静止，${idle2.a}→${idle2.b}`);
+  console.log(`按需渲染验证：空闲静止 ${idle1.a}→${idle1.b}，拖拽后 ${afterDrag}`);
+
   // 3. 渲染快照 → 预览弹窗 + 存档成功（覆盖 防抖冲刷 + multipart 存档链路）
   await page.click('#btn-render');
   await page.waitForTimeout(3500);

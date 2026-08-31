@@ -15,6 +15,21 @@ const pointer = new THREE.Vector2();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let dragState = null;
 
+// 按需渲染：空闲时不渲染——Mac mini 上 60fps 持续 WebGL 会把 WindowServer
+// 图形合成进程饿死（2026-08-31 看门狗强杀实锤）。只在交互时请求一帧。
+let _renderPending = false;
+function requestRender() {
+  if (_renderPending) return;
+  _renderPending = true;
+  requestAnimationFrame(() => {
+    _renderPending = false;
+    if (!state.renderer) return;
+    if (state.controls) state.controls.update();
+    updateLabels();
+    state.renderer.render(state.scene, state.camera);
+  });
+}
+
 // ============ 场景 ============
 export function initScene() {
   const el = document.getElementById('viewport');
@@ -405,6 +420,7 @@ export function select(kindAndId) {
   for (const [id, { group }] of state.mannequins) {
     setJointBallsVisible(group, !!(isChar && kindAndId.id === id));
   }
+  requestRender();   // 白球显隐需要重绘
   if (!kindAndId) { renderJointRows(null); return; }
   const rec = isChar ? state.mannequins.get(kindAndId.id) : state.props.get(kindAndId.id);
   if (!rec) return;
@@ -581,6 +597,7 @@ function toast(msg, isErr) {
 }
 
 export function setDirty() {
+  requestRender();   // 所有数据/场景变更的渲染入口（滑杆/姿势/轨道等）
   const el = document.getElementById('save-state');
   el.textContent = '未保存…';
   clearTimeout(saveTimer);
@@ -654,6 +671,7 @@ function loadShotIntoScene(shot) {
   select(null);
   document.getElementById('shot-notes').value = shot.notes || '';
   renderShotList();
+  requestRender();   // 场景重建后重绘（select(null) 已覆盖白球路径，这里是空场景/首帧兜底）
 }
 
 export function switchShot(id) {
@@ -664,6 +682,7 @@ export function switchShot(id) {
   if (!shot) {   // 新项目还没有镜头：清空场景即可
     clearSceneActors();
     renderShotList();
+    requestRender();
     return;
   }
   loadShotIntoScene(shot);
@@ -1193,6 +1212,7 @@ export function onViewportMove(e) {
   const group = dragState.group;
   group.position.set(p.x - dragState.offset.x, 0, p.z - dragState.offset.z);
   resolveCollisions(dragState.rec);
+  requestRender();   // 拖拽实时重绘
   // 数据回写由 data flow 层（Task 8）在 pointerup 时统一做
 }
 
@@ -1231,17 +1251,12 @@ if (!_glProbe.getContext('webgl2')) {
   el.addEventListener('pointerdown', onViewportDown);
   window.addEventListener('pointermove', onViewportMove);
   window.addEventListener('pointerup', onViewportUp);
-  function tick() {
-    requestAnimationFrame(tick);
-    state.controls.update();
-    updateLabels();
-    state.renderer.render(state.scene, state.camera);
-  }
-  tick();
+  requestRender();                        // 首帧
   window.addEventListener('resize', () => {
     state.camera.aspect = el.clientWidth / el.clientHeight;
     state.camera.updateProjectionMatrix();
     state.renderer.setSize(el.clientWidth, el.clientHeight);
+    requestRender();
   });
   // 项目加载入口（WebGL 检测已前置到接线块顶部）
   function initApp() {
