@@ -142,6 +142,10 @@ try {
   await page.click('#anno-undo');
   await page.waitForTimeout(150);
   assert.equal(await page.locator('#anno-layer rect').count(), 0, '撤销后矩形框应消失');
+  // 0×0 守卫：纯单击（未拖拽）不入栈、不残留临时矩形
+  await page.mouse.click(stage.x + stage.width * 0.4, stage.y + stage.height * 0.4);
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator('#anno-layer rect').count(), 0, '纯单击不应产生矩形框');
   await page.click('#btn-render-anno');   // 关闭标注
 
   // 5. 文字标注：T 文字 → prompt 对话框 → SVG text → 合并（标注版底图仍可继续标）

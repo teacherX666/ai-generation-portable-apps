@@ -947,7 +947,6 @@ const anno = {          // 当前快照的标注状态
   svg: null, active: false, drawing: null,     // drawing: {x0,y0,el}
   baseUrl: null,        // 渲染原始 data URL（合并前的底图）
 };
-let annoTimer = null;
 
 function annoReset(baseUrl) {
   anno.items = [];
@@ -990,6 +989,7 @@ export function initAnno() {
     if (anno.tool === 'rect') {
       const el = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
       el.setAttribute('fill', anno.color);
+      el.setAttribute('fill-opacity', '0.12');
       el.setAttribute('stroke', anno.color);
       anno.svg.appendChild(el);
       anno.drawing = { x0: p.x, y0: p.y, el };
@@ -1016,9 +1016,14 @@ export function initAnno() {
   window.addEventListener('pointerup', () => {
     if (!anno.drawing) return;
     const el = anno.drawing.el;
-    anno.items.push({ type: 'rect', color: el.getAttribute('stroke'),
-                      x: +el.getAttribute('x'), y: +el.getAttribute('y'),
-                      w: +el.getAttribute('width'), h: +el.getAttribute('height') });
+    const w = +el.getAttribute('width'), h = +el.getAttribute('height');
+    if (w === 0 && h === 0) {   // 纯单击（未拖拽）：移除临时矩形，不入栈
+      el.remove();
+    } else {
+      anno.items.push({ type: 'rect', color: el.getAttribute('stroke'),
+                        x: +el.getAttribute('x'), y: +el.getAttribute('y'),
+                        w, h });
+    }
     anno.drawing = null;
   });
 }
@@ -1030,7 +1035,8 @@ function renderAnno() {
       const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
       r.setAttribute('x', it.x); r.setAttribute('y', it.y);
       r.setAttribute('width', it.w); r.setAttribute('height', it.h);
-      r.setAttribute('fill', it.color); r.setAttribute('stroke', it.color);
+      r.setAttribute('fill', it.color); r.setAttribute('fill-opacity', '0.12');
+      r.setAttribute('stroke', it.color);
       anno.svg.appendChild(r);
     } else {
       const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -1055,14 +1061,16 @@ function bakeAnno() {
     const sx = img.naturalWidth / anno.svg.viewBox.baseVal.width;
     const sy = img.naturalHeight / anno.svg.viewBox.baseVal.height;
     for (const it of anno.items) {
-      ctx.strokeStyle = it.color; ctx.fillStyle = it.color;
+      ctx.fillStyle = it.color;
       ctx.lineWidth = Math.max(3, img.naturalWidth / 400);
       if (it.type === 'rect') {
+        ctx.strokeStyle = it.color;
         ctx.globalAlpha = 0.12; ctx.fillRect(it.x * sx, it.y * sy, it.w * sx, it.h * sy);
         ctx.globalAlpha = 1; ctx.strokeRect(it.x * sx, it.y * sy, it.w * sx, it.h * sy);
       } else {
         const size = Math.max(16, img.naturalWidth / 36);
         ctx.font = `700 ${size}px -apple-system, "PingFang SC", sans-serif`;
+        ctx.strokeStyle = '#fff';
         ctx.lineWidth = size / 5; ctx.strokeText(it.text, it.x * sx, it.y * sy);
         ctx.fillText(it.text, it.x * sx, it.y * sy);
       }
