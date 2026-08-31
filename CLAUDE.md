@@ -288,6 +288,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **静态目录注入是死代码**：`Handler.directory = str(STATIC_DIR)` 在 `SimpleHTTPRequestHandler.__init__` 里被忽略（directory=None → `os.getcwd()`）；正确做法是 `functools.partial(Handler, directory=str(STATIC_DIR))`。任何 cwd 非 app 目录的启动（含 launchd）都会静默 404 全部静态文件
 - **three r170 只支持 WebGL2**（无 WebGL1 回退，构造 renderer 直接抛）；浏览器探针要测 `webgl2` 且必须在 `new THREE.WebGLRenderer` **之前**执行，否则兜底页不可达
 - **ES module + import map 是零构建约束下的选型**：vendor 是 `build/three.module.js` + `examples/jsm/controls/OrbitControls.js`（后者裸 `import 'three'`，靠 `<script type="importmap">` 解析）；需要 Chrome 89+ / Safari 16.4+
+- **import map 的值必须是 URL（带 `./` 前缀）**：`{"imports":{"three":"vendor/three.module.js"}}` 是裸 specifier，HTML 规范拒绝、Chrome 忽略该条目 → `import 'three'` 解析失败 → **整个模块脚本从未执行**，UI 是静态 HTML 照样显示、按钮全死——curl 和静态检查都发现不了，必须真浏览器跑（`previz/tests/smoke-browser.mjs` 就是为这个加的，playwright 复用 `infinite-canvas/web/node_modules` + 系统 Chrome）
 - **`[hidden]` 会被作者样式覆盖**：`display:flex` 类样式会盖掉 UA 的 `[hidden]{display:none}`，全屏遮罩（modal/错误页）必须补 `[hidden]{display:none !important}` 全局兜底
 - **三个对象的 `add()` 有 removeFromParent 语义**：同一 mesh 不能既挂关节又挂集合组（第二次 add 会把第一次摘掉）
 - **OrbitControls 与对象拖拽冲突**：pointerdown 命中对象时 `controls.enabled=false`，pointerup 恢复
