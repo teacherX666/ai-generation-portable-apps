@@ -352,11 +352,13 @@ function footprintOf(rec) {
              hx: 0.4 * Math.abs(rec.group.scale.x), hz: 0.4 * Math.abs(rec.group.scale.x),
              ry };
   }
+  // 偏移向量先缩放后按 three.js Y 旋转（R_y: x'=x·c+z·s, z'=−x·s+z·c——
+  // 与标准 2D 旋转互为镜像，实测 R_y(90°)·(0,0,−0.24)=(−0.24,0,0)）
   const sx = Math.abs(rec.group.scale.x), sz = Math.abs(rec.group.scale.z);
-  const cx = rec.footprint.cx || 0, cz = rec.footprint.cz || 0;   // 局部中心偏移（如台阶逐级后退）
+  const ox = (rec.footprint.cx || 0) * sx, oz = (rec.footprint.cz || 0) * sz;
   const cos = Math.cos(ry), sin = Math.sin(ry);
-  return { x: rec.group.position.x + (cx * cos - cz * sin) * sx,
-           z: rec.group.position.z + (cx * sin + cz * cos) * sz,
+  return { x: rec.group.position.x + ox * cos + oz * sin,
+           z: rec.group.position.z - ox * sin + oz * cos,
            hx: rec.footprint.hx * sx, hz: rec.footprint.hz * sz, ry };
 }
 
@@ -1163,10 +1165,11 @@ document.getElementById('btn-add-char').onclick = () => {
 };
 document.getElementById('btn-add-prop').onclick = () => {
   const picker = document.getElementById('prop-picker');
-  if (picker.hidden) {   // 打开时锚定到按钮下方
+  if (picker.hidden) {   // 打开时锚定到按钮下方——锚右缘：400px 网格从右往左展开，窄视口不溢出
     const rect = document.getElementById('btn-add-prop').getBoundingClientRect();
-    picker.style.left = rect.left + 'px';
-    picker.style.top = rect.bottom + 6 + 'px';
+    picker.style.left = '';
+    picker.style.right = (window.innerWidth - rect.right) + 'px';
+    picker.style.top = (rect.bottom + 6) + 'px';
   }
   picker.hidden = !picker.hidden;
 };

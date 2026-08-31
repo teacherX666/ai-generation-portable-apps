@@ -103,3 +103,13 @@ test('obbPenetration 旋转 90° 墙', () => {
   assert.ok(r && r.pen > 0);
   assert.ok(r.ux * r.sign > 0 || r.uz * r.sign > 0);  // 有推出方向
 });
+
+test('footprint 偏移旋转方向与 three.js 一致', () => {
+  // R_y(90°)·(0,0,−0.24) 应得 (−0.24, 0)——three.js Y 旋转约定
+  const cos = Math.cos(Math.PI / 2), sin = Math.sin(Math.PI / 2);
+  const ox = 0, oz = -0.24;
+  const x = ox * cos + oz * sin;
+  assert.ok(x < -0.239 && x > -0.241, '90° 时 cz=−0.24 应映射到 x≈−0.24');
+  const z = -ox * sin + oz * cos;
+  assert.ok(Math.abs(z) < 1e-9, '90° 时 z 应≈0');
+});

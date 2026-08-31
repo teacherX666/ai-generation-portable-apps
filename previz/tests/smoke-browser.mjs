@@ -58,11 +58,12 @@ try {
     const recs = [...s.props.values()];
     if (recs.length < 2) return null;
     const foot = (rec) => {
+      // 与生产 footprintOf 同源公式：偏移先缩放后按 three.js Y 旋转
       const sx = Math.abs(rec.group.scale.x), sz = Math.abs(rec.group.scale.z);
-      const cx = rec.footprint.cx || 0, cz = rec.footprint.cz || 0;
+      const ox = (rec.footprint.cx || 0) * sx, oz = (rec.footprint.cz || 0) * sz;
       const cos = Math.cos(rec.group.rotation.y), sin = Math.sin(rec.group.rotation.y);
-      return { x: rec.group.position.x + (cx * cos - cz * sin) * sx,
-               z: rec.group.position.z + (cx * sin + cz * cos) * sz,
+      return { x: rec.group.position.x + ox * cos + oz * sin,
+               z: rec.group.position.z - ox * sin + oz * cos,
                hx: (rec.footprint ? rec.footprint.hx : 0.4) * sx,
                hz: (rec.footprint ? rec.footprint.hz : 0.4) * sz,
                ry: rec.group.rotation.y };
