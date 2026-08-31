@@ -51,6 +51,10 @@ class FakeNode {
     this.children.push(...children);
   }
 
+  prepend(...children) {
+    this.children.unshift(...children);
+  }
+
   replaceChildren(...children) {
     this.children = children;
   }
@@ -527,7 +531,7 @@ test("trash supports paging, search, status filters, and filtered empty states",
   const statusFilter = app.getNode("trash-status-filter");
   assert.deepEqual(statusFilter.children.map((option) => option.value), [
     "",
-    "已完成",
+    "成片与结果",
     "执行失败",
   ]);
   statusFilter.value = "执行失败";
@@ -546,4 +550,150 @@ test("trash supports paging, search, status filters, and filtered empty states",
     app.getNode("trash-result-summary").textContent,
     "找到 0 条，共 10 条已删除任务",
   );
+});
+
+
+test("cancelling a run restores history controls and allows switching immediately", async () => {
+  let cancelled = false;
+  const approval = {
+    revision: 1,
+    document_summary: "",
+    tasks: [],
+    media_assets: [],
+    excluded_assets: [],
+    selected_task_ids: [],
+    coverage: {},
+    validation_issues: [],
+    ingest_issue_records: [],
+    vision_issues: [],
+  };
+  const views = {
+    "run-current": {
+      run_id: "run-current",
+      thread_id: "thread-current",
+      source_url: "https://example.invalid/current",
+      status: "waiting_approval",
+      events: [],
+      privacy: {},
+      approval: { ...approval, document_title: "当前任务" },
+    },
+    "run-other": {
+      run_id: "run-other",
+      thread_id: "thread-other",
+      source_url: "https://example.invalid/other",
+      status: "succeeded",
+      events: [],
+      privacy: {},
+      artifacts: [],
+      approval: { ...approval, document_title: "其他已完成任务" },
+    },
+  };
+  const app = await loadApp(async (url, options = {}) => {
+    if (url === "/api/health") return jsonResponse(200, { modes: { bitable: true } });
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, cancelled ? [] : [{
+        run_id: "run-current",
+        display_text: "当前任务",
+        status: "待审批",
+      }]);
+    }
+    if (url === "/api/bitable/recent-runs") {
+      return jsonResponse(200, [
+        ...(cancelled ? [{
+          run_id: "run-current",
+          display_text: "当前任务",
+          status: "失败",
+          rerunnable: true,
+        }] : []),
+        {
+          run_id: "run-other",
+          display_text: "其他已完成任务",
+          status: "已完成",
+          rerunnable: true,
+        },
+      ]);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    if (url === "/api/runs/run-current/decision" && options.method === "POST") {
+      cancelled = true;
+      views["run-current"] = { ...views["run-current"], status: "cancelled" };
+      return jsonResponse(200, { ok: true });
+    }
+    if (url.startsWith("/api/runs/")) {
+      return jsonResponse(200, views[url.split("/").at(-1)]);
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  await app.getNode("cancel-button").dispatch("click");
+  await settle();
+
+  const rows = app.getNode("recent-run-list").children;
+  const otherRow = rows.find((row) => row.dataset.runId === "run-other");
+  const openButton = otherRow.querySelectorAll("button")[0];
+  assert.equal(openButton.textContent, "打开");
+  assert.equal(openButton.disabled, false);
+  assert.equal(app.getNode("current-run-switcher").disabled, false);
+
+  await openButton.dispatch("click");
+  assert.equal(app.getNode("document-title").textContent, "其他已完成任务");
+});
+
+test("completed runs keep generated artifacts visible without review controls", async () => {
+  const completed = {
+    run_id: "run-completed-artifacts",
+    thread_id: "thread-completed-artifacts",
+    source_url: "https://example.invalid/completed",
+    status: "succeeded",
+    events: [],
+    privacy: {},
+    delivery: {
+      target_type: "production_result_record",
+      result_table_url: "https://example.invalid/results",
+    },
+    artifacts: [{
+      artifact_id: "image-1",
+      kind: "image",
+      size: 1024,
+      preview_url: "/api/artifacts/image-1",
+    }],
+    approval: {
+      document_title: "已完成素材任务",
+      revision: 1,
+      document_summary: "",
+      tasks: [],
+      media_assets: [],
+      excluded_assets: [],
+      selected_task_ids: [],
+      coverage: {},
+      validation_issues: [],
+      ingest_issue_records: [],
+      vision_issues: [],
+    },
+  };
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") return jsonResponse(200, { modes: { bitable: true } });
+    if (url === "/api/bitable/active-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, [{
+      run_id: completed.run_id,
+      display_text: "已完成素材任务",
+      status: "已完成",
+      result_table_url: completed.delivery.result_table_url,
+      rerunnable: true,
+    }]);
+    if (url === `/api/runs/${completed.run_id}`) return jsonResponse(200, completed);
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  const switcher = app.getNode("current-run-switcher");
+  switcher.value = completed.run_id;
+  await switcher.dispatch("change");
+
+  assert.equal(app.getNode("status-badge").textContent, "成片与结果");
+  assert.equal(app.getNode("artifact-review").hidden, false);
+  assert.equal(app.getNode("artifact-list").children.length, 1);
+  assert.equal(app.getNode("artifact-review-feedback-box").hidden, true);
+  assert.equal(app.getNode("artifact-review-actions").hidden, true);
+  assert.equal(app.getNode("delivery-target").hidden, false);
 });

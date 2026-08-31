@@ -32,3 +32,13 @@ test("bottom actions are contextual and direct url supports enter", () => {
   assert.match(app, /retryDeliveryButton\.hidden = status !== "delivery_failed"/);
   assert.match(app, /directRunUrl\.addEventListener\("keydown"/);
 });
+
+
+test("bottom actions keep only core contextual operations", () => {
+  assert.doesNotMatch(html, /id="next-task-button"/);
+  assert.doesNotMatch(html, /id="delete-run-button"/);
+  assert.doesNotMatch(html, /id="cancel-artifacts-button"/);
+  assert.match(html, /id="confirm-artifacts-button"[^>]*>[\s\n]*导出到结果表/);
+  assert.match(app, /waiting_review:\s*\{ label: "成片与结果"/);
+  assert.match(app, /succeeded:\s*\{ label: "成片与结果"/);
+});

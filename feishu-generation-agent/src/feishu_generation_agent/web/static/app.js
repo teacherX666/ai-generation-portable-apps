@@ -37,11 +37,12 @@
   const retryFailedAssetsFeedback = byId("retry-failed-assets-feedback");
   const confirmArtifactsButton = byId("confirm-artifacts-button");
   const adjustArtifactsButton = byId("adjust-artifacts-button");
-  const cancelArtifactsButton = byId("cancel-artifacts-button");
   const artifactReview = byId("artifact-review");
   const artifactList = byId("artifact-list");
+  const artifactReviewMessage = byId("artifact-review-message");
+  const artifactReviewFeedbackBox = byId("artifact-review-feedback-box");
+  const artifactReviewActions = byId("artifact-review-actions");
   const artifactReviewFeedback = byId("artifact-review-feedback");
-  const deleteRunButton = byId("delete-run-button");
   const conflictBox = byId("review-conflict");
   const conflictText = byId("review-conflict-text");
   const discardButton = byId("discard-review-draft");
@@ -70,7 +71,6 @@
   const trashPrev = byId("trash-prev");
   const trashNext = byId("trash-next");
   const trashPageInfo = byId("trash-page-info");
-  const nextTaskButton = byId("next-task-button");
   const rerunButton = byId("rerun-button");
   const pollingNote = byId("polling-note");
   const actionTitle = byId("action-title");
@@ -96,18 +96,18 @@
     resuming: { label: "正在恢复", tone: "running", action: "正在恢复上次中断的任务，请稍候。" },
     waiting_approval: { label: "等待你审核", tone: "attention", action: "检查并修改下方计划，确认无误后批准生成。" },
     waiting_provider: { label: "正在生成内容", tone: "running", action: "生成服务正在工作，可以留在此页等待自动更新。" },
-    waiting_review: { label: "等待验收成片", tone: "attention", action: "预览生成结果，满意后确认写入结果表。" },
+    waiting_review: { label: "成片与结果", tone: "attention", action: "查看生成素材，确认满意后导出到结果表。" },
     delivering: { label: "正在写入结果表", tone: "running", action: "内容已生成，正在回写飞书，请不要重复提交。" },
-    succeeded: { label: "已完成", tone: "success", action: "任务已完成并交付，可以继续处理下一条任务。" },
+    succeeded: { label: "成片与结果", tone: "success", action: "素材已导出到结果表，仍可在这里继续查看。" },
     completed_with_errors: { label: "部分完成", tone: "warning", action: "部分内容生成失败，可查看错误后重新运行。" },
     delivery_failed: { label: "写入结果表失败", tone: "danger", action: "生成内容已保留，请重新写入结果表，不需要重新生成。" },
     failed: { label: "执行失败", tone: "danger", action: "查看页面中的失败原因，修正后可重新运行。" },
     cancelled: { label: "已取消", tone: "muted", action: "本次任务已取消，可以重新运行或开始下一条。" },
     "待审批": { label: "等待你审核", tone: "attention", action: "检查并修改下方计划，确认无误后批准生成。" },
-    "待确认成片": { label: "等待验收成片", tone: "attention", action: "预览生成结果，满意后确认写入结果表。" },
+    "待确认成片": { label: "成片与结果", tone: "attention", action: "查看生成素材，确认满意后导出到结果表。" },
     "生成中": { label: "正在生成内容", tone: "running", action: "生成服务正在工作。" },
     "回写中": { label: "正在写入结果表", tone: "running", action: "内容已生成，正在回写飞书。" },
-    "已完成": { label: "已完成", tone: "success", action: "任务已完成并交付。" },
+    "已完成": { label: "成片与结果", tone: "success", action: "素材已导出到结果表，仍可继续查看。" },
     "失败": { label: "执行失败", tone: "danger", action: "查看失败原因后可以重新运行。" },
     "回写失败": { label: "写入结果表失败", tone: "danger", action: "生成内容已保留，可以重新写入。" },
   };
@@ -269,6 +269,7 @@
       control.disabled = value;
     });
     updateActionAvailability();
+    renderRecentRuns();
   }
 
   function stopPolling() {
@@ -747,25 +748,16 @@
     retryFailedAssetsButton.hidden = !canReview || retryableAssetIssues.length === 0;
     confirmArtifactsButton.disabled = state.busy || !canReviewArtifacts;
     adjustArtifactsButton.disabled = state.busy || !canReviewArtifacts;
-    cancelArtifactsButton.disabled = state.busy || !canReviewArtifacts;
     artifactReviewFeedback.disabled = state.busy || !canReviewArtifacts;
     const terminal = TERMINAL_RUN_STATUSES.has(state.view?.status);
-    nextTaskButton.disabled = state.busy || !terminal;
     rerunButton.disabled = state.busy
       || state.runMode !== "bitable"
       || !RERUNNABLE_RUN_STATUSES.has(state.view?.status);
-    const deletable = [
-      "waiting_approval", "waiting_review", "succeeded", "completed_with_errors",
-      "delivery_failed", "failed", "cancelled",
-    ].includes(state.view?.status);
-    deleteRunButton.disabled = state.busy || !deletable;
-    nextTaskButton.hidden = !terminal;
     rerunButton.hidden = state.runMode !== "bitable" || !RERUNNABLE_RUN_STATUSES.has(status);
     retryDeliveryButton.hidden = status !== "delivery_failed";
     rejectButton.hidden = !canReview;
     approveButton.hidden = !canReview;
     cancelButton.hidden = !canReview;
-    deleteRunButton.hidden = !deletable;
     actionTitle.textContent = statusInfo.label;
     byId("reject-feedback").disabled = state.busy || !canReview;
     taskList.querySelectorAll("input, textarea, select, button").forEach((control) => {
@@ -1565,12 +1557,23 @@
     }
     state.artifactPreviewSignature = signature;
 
-    if (view.status !== "waiting_review") {
+    const showsArtifacts = [
+      "waiting_review", "delivering", "delivery_failed", "succeeded", "completed_with_errors",
+    ].includes(view.status) && artifacts.length > 0;
+    if (!showsArtifacts) {
       artifactReview.hidden = true;
       artifactList.replaceChildren();
       return;
     }
+    const canReviewArtifacts = view.status === "waiting_review";
     artifactReview.hidden = false;
+    artifactReviewMessage.textContent = canReviewArtifacts
+      ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
+      : view.status === "delivery_failed"
+        ? "素材已生成但结果表写入失败，可继续查看素材并在底部重新写入。"
+        : "本次生成素材已保留，可继续查看；导出结果可通过上方结果表入口打开。";
+    artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
+    artifactReviewActions.hidden = !canReviewArtifacts;
     artifactList.replaceChildren(...artifacts.map((artifact) => {
       const card = element("figure", "artifact-card");
       const label = artifact.kind === "video" ? "视频" : "图片";
@@ -1774,48 +1777,6 @@
     }
   }
 
-  async function resetForNextTask() {
-    stopPolling();
-    state.runId = null;
-    state.runMode = null;
-    state.view = null;
-    state.review = ReviewState.createReviewState();
-    state.referenceUploads = ReferenceUploadState.createState();
-    state.referenceMutations = ReferenceMutationState.createState();
-    state.bitable = BitableState.resetRunContext(state.bitable);
-    byId("status-badge").textContent = "尚未创建";
-    byId("status-badge").dataset.tone = "muted";
-    byId("run-status").textContent = "—";
-    runGuidance.dataset.tone = "muted";
-    runGuidance.replaceChildren(
-      element("strong", "", "还没有进行中的任务"),
-      element("span", "", "从上方粘贴飞书文档，或在多维表格任务中选择一条开始。"),
-    );
-    byId("thread-id").textContent = "—";
-    byId("current-node").textContent = "—";
-    byId("run-duration").textContent = "—";
-    byId("document-title").textContent = "等待选择多维表格任务";
-    byId("document-summary").textContent = "";
-    byId("delivery-target").hidden = true;
-    artifactReview.hidden = true;
-    artifactList.replaceChildren();
-    artifactReviewFeedback.value = "";
-    state.artifactPreviewSignature = null;
-    ["validation-issues", "blocking-ingest-issues", "vision-issues"].forEach((id) => {
-      byId(id).textContent = "";
-      byId(id).hidden = true;
-    });
-    byId("asset-ingest-issue-list").replaceChildren();
-    byId("asset-ingest-issues").hidden = true;
-    retryFailedAssetsFeedback.textContent = "";
-    byId("event-list").replaceChildren();
-    taskList.replaceChildren();
-    pollingNote.textContent = "请选择下一条任务开始分析";
-    updateActionAvailability();
-    await scanBitableTasks();
-    await loadRecentRuns();
-  }
-
   async function rerunBitableTask(runId = state.runId) {
     if (!runId || state.busy) return;
     setBusy(true);
@@ -1908,8 +1869,6 @@
   byId("approve-button").addEventListener("click", () => submitDecision("approve"));
   confirmArtifactsButton.addEventListener("click", () => submitArtifactReview("confirm"));
   adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));
-  cancelArtifactsButton.addEventListener("click", () => submitArtifactReview("cancel"));
-  nextTaskButton.addEventListener("click", resetForNextTask);
   rerunButton.addEventListener("click", () => rerunBitableTask());
   retryFailedAssetsButton.addEventListener("click", async () => {
     if (!state.runId || state.busy || state.view?.status !== "waiting_approval") return;
@@ -1951,22 +1910,6 @@
       state.bitable = BitableState.retryFailed(state.bitable, error.message);
       showError(error);
     } finally {
-      setBusy(false);
-    }
-  });
-  deleteRunButton.addEventListener("click", async () => {
-    if (!state.runId || state.busy) return;
-    if (!globalThis.confirm("删除此运行的本地记录、输入和产物？飞书交付文档不会删除。")) return;
-    setBusy(true);
-    clearError();
-    try {
-      await api(`/api/runs/${state.runId}`, { method: "DELETE" });
-      state.runId = null;
-      state.view = null;
-      state.review = ReviewState.createReviewState();
-      globalThis.location.reload();
-    } catch (error) {
-      showError(error);
       setBusy(false);
     }
   });
