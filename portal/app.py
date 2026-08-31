@@ -37,6 +37,7 @@ STATIC_DIR = ROOT / "static"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import daily_report as _daily_report_module
+from cat_skins.experiment import CatExperimentService
 from cat_skins.service import (
     CatDailyLimitError,
     CatGenerationBusyError,
@@ -1626,6 +1627,7 @@ cat_skin_generator = CatSkinGenerator(
     key_loader=lambda: _daily_report_module._load_deepseek_key(STATE_DIR),
 )
 cat_skin_manager = CatSkinManager(CAT_SKINS_PATH, CAT_CLASSIC_PATH, cat_skin_generator)
+cat_experiment_service = CatExperimentService(CAT_SKINS_DIR)
 
 
 # ─── HTTP Handler ──────────────────────────────────────────────────────────────
@@ -1766,6 +1768,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(200, {"ok": True, "username": user["username"], "role": user["role"]})
         elif path == "/api/cat/wardrobe":
             self._json(200, cat_skin_manager.wardrobe(user))
+        elif path == "/api/cat/experiment/config":
+            self._cat_experiment_config(user)
         elif path == "/api/users":
             if not auth.has_permission(user, "manage_users"):
                 self._json(403, {"ok": False, "error": "forbidden"})
@@ -1821,6 +1825,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/cat/open":
             self._cat_open(user)
+            return
+        if path == "/api/cat/experiment/generate":
+            self._cat_experiment_generate(user)
             return
         if path == "/api/cat/equip":
             self._cat_equip(user)
@@ -1946,6 +1953,35 @@ class Handler(SimpleHTTPRequestHandler):
             return
         wardrobe = cat_skin_manager.wardrobe(user)
         self._json(200, {"ok": True, "skin": skin, "can_open": wardrobe["can_open"], "equipped_skin_id": skin["id"]})
+
+    def _cat_experiment_config(self, user: dict):
+        if user.get("role") != "admin":
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
+            return
+        self._json(200, cat_experiment_service.config())
+
+    def _cat_experiment_generate(self, user: dict):
+        if user.get("role") != "admin":
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
+            return
+        body = self._read_json()
+        if body is None:
+            return
+        experiment_id = str(body.get("experiment_id") or "orange_tabby").strip()
+        raw_seed = body.get("seed")
+        try:
+            seed = int(raw_seed) if raw_seed not in (None, "") else None
+            result = cat_experiment_service.generate(experiment_id, seed)
+        except KeyError as exc:
+            self._json(400, {"ok": False, "error": str(exc).strip("'")})
+            return
+        except (TypeError, ValueError):
+            self._json(400, {"ok": False, "error": "seed 必须是整数"})
+            return
+        if not result["validation"]["passed"]:
+            self._json(422, result)
+            return
+        self._json(200, result)
 
     def _cat_equip(self, user: dict):
         body = self._read_json()

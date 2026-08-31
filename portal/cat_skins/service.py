@@ -20,31 +20,115 @@ RARITY_TABLE = (("common", 60), ("rare", 28), ("epic", 10), ("legendary", 2))
 RARITY_LABELS = {"common": "普通", "rare": "稀有", "epic": "史诗", "legendary": "传说"}
 RARITY_THEMES = {
     "common": [
-        ("orange_tabby", "橘色条纹猫", "striped", "暖橘、奶油色"),
-        ("blue_gray", "蓝灰短毛猫", "solid", "蓝灰、银灰"),
-        ("tuxedo", "奶牛猫", "color_block", "黑白撞色"),
-        ("cream_spots", "奶油斑点猫", "spotted", "奶油、浅棕"),
+        ("orange_tabby", "橘猫", "tabby", "暖橘、奶油色"),
+        ("blue_gray", "蓝猫", "solid", "蓝灰、银灰"),
+        ("tuxedo", "奶牛猫", "tuxedo", "黑白撞色"),
+        ("cream_spots", "奶油猫", "spotted", "奶油、浅棕"),
+        ("lihua", "狸花猫", "tabby", "棕灰、黑纹"),
+        ("white_cat", "白猫", "solid", "白色、粉色"),
+        ("black_white", "黑白猫", "tuxedo", "黑白撞色"),
     ],
     "rare": [
-        ("ragdoll", "布偶猫", "color_block", "奶白、浅灰、蓝眼"),
-        ("calico", "三花猫", "complex", "黑、橘、白"),
-        ("siamese", "暹罗猫", "color_block", "米白、深棕、蓝眼"),
-        ("golden_shaded", "金渐层猫", "complex", "金色、深棕"),
-        ("maine_coon", "缅因猫", "striped", "棕灰、深色条纹"),
+        ("ragdoll", "布偶猫", "point", "奶白、浅灰、蓝眼"),
+        ("calico", "三花猫", "calico", "黑、橘、白"),
+        ("siamese", "暹罗猫", "point", "米白、深棕、蓝眼"),
+        ("golden_shaded", "金渐层猫", "dorsal", "金色、深棕"),
+        ("maine_coon", "缅因猫", "tabby", "棕灰、深色条纹"),
+        ("big_orange", "大橘猫", "tabby", "深橘、奶油色"),
+        ("blue_chubby", "胖猫", "spotted", "亮蓝、浅蓝"),
+        ("silver_tabby", "银渐层猫", "dorsal", "银白、深灰"),
     ],
     "epic": [
-        ("angel", "天使猫", "complex", "奶白、天蓝、金色"),
-        ("demon", "恶魔猫", "complex", "暗红、黑、紫"),
-        ("spider_hero", "蛛网英雄猫", "complex", "红、蓝、白眼罩"),
-        ("arcane_mage", "奥术法师猫", "complex", "深紫、星蓝、金色"),
-        ("mecha", "机械猫", "complex", "银灰、青蓝光"),
+        ("angel", "天使猫", "solid", "奶白、天蓝、金色"),
+        ("demon", "恶魔猫", "dorsal", "暗红、黑、紫"),
+        ("spider_hero", "蜘蛛侠猫", "spider", "红、蓝、白眼罩"),
+        ("arcane_mage", "法师猫", "dorsal", "深紫、星蓝、金色"),
+        ("mecha", "机械猫", "panel", "银灰、青蓝光"),
+        ("him", "HIM猫", "glitch", "黑灰、纯白眼"),
+        ("cyber", "赛博猫", "panel", "深灰、霓虹青"),
+        ("lucky", "招财猫", "patchwork", "白、红、金"),
+        ("wukong", "悟空猫", "dorsal", "金棕、赤红"),
     ],
     "legendary": [
-        ("celestial_king", "星辰神王猫", "complex", "星蓝、金色、白光"),
-        ("dragon_lord", "龙王猫", "complex", "赤金、墨黑、龙鳞色"),
-        ("time_guardian", "时空守护猫", "complex", "青蓝、紫色、金色"),
-        ("seraph", "六翼炽天使猫", "complex", "圣白、金色、虹彩蓝"),
+        ("celestial_king", "国王猫", "dorsal", "星蓝、金色、白光"),
+        ("dragon_lord", "龙王猫", "scale", "赤金、墨黑、龙鳞色"),
+        ("time_guardian", "时空猫", "panel", "青蓝、紫色、金色"),
+        ("seraph", "六翼天使猫", "solid", "圣白、金色、虹彩蓝"),
+        ("phoenix", "凤凰猫", "patchwork", "赤红、金色"),
+        ("star_god", "星神猫", "glitch", "深蓝、星白、金色"),
     ],
+}
+
+THEME_ACCESSORIES = {
+    "angel": "angel_wing",
+    "demon": "horns",
+    "spider_hero": "spider_mask",
+    "arcane_mage": "mage_hat_cape",
+    "mecha": "mecha_pack",
+    "him": "none",
+    "cyber": "mecha_pack",
+    "lucky": "lucky_charm",
+    "wukong": "headband",
+    "celestial_king": "crown",
+    "dragon_lord": "dragon_wing",
+    "time_guardian": "clock_ring",
+    "seraph": "seraph_wing",
+    "phoenix": "phoenix_wing",
+    "star_god": "star_crown",
+}
+
+THEME_EFFECTS = {
+    "angel": "halo", "seraph": "halo", "spider_hero": "web",
+    "arcane_mage": "star", "mecha": "spark", "cyber": "spark",
+    "him": "shadow", "lucky": "coin", "wukong": "flame",
+    "celestial_king": "royal", "dragon_lord": "flame",
+    "time_guardian": "star", "phoenix": "flame", "star_god": "star",
+}
+
+THEME_LABELS = {
+    theme: name
+    for items in RARITY_THEMES.values()
+    for theme, name, _pattern, _colors in items
+}
+
+# 名称保持短、自然、能看出主题，但不再把同主题的每只猫强制显示成同一个名字。
+# “胖猫”是一个需要保留原名和原故事语境的特殊主题，不做别名改写。
+THEME_NAME_POOLS = {
+    "orange_tabby": ("橘猫", "小橘猫", "蜜橘猫", "橘团猫"),
+    "blue_gray": ("蓝猫", "雾蓝猫", "灰蓝猫", "蓝绒猫"),
+    "tuxedo": ("奶牛猫", "黑白猫", "墨点猫", "花脸猫"),
+    "cream_spots": ("奶油猫", "奶糖猫", "奶斑猫", "布丁猫"),
+    "lihua": ("狸花猫", "小狸猫", "虎纹猫", "山纹猫"),
+    "white_cat": ("白猫", "雪球猫", "白绒猫", "云团猫"),
+    "black_white": ("黑白猫", "墨白猫", "棋盘猫", "乌云猫"),
+    "ragdoll": ("布偶猫", "蓝眼猫", "绒雪猫", "仙布猫"),
+    "calico": ("三花猫", "花团猫", "彩斑猫", "小三花"),
+    "siamese": ("暹罗猫", "焦糖猫", "蓝眸猫", "重点猫"),
+    "golden_shaded": ("金渐层猫", "金绒猫", "小金猫", "金影猫"),
+    "maine_coon": ("缅因猫", "长毛猫", "森系猫", "巨绒猫"),
+    "big_orange": ("大橘猫", "橘座猫", "橘胖猫", "大橘子"),
+    "blue_chubby": ("胖猫",),
+    "silver_tabby": ("银渐层猫", "银绒猫", "月银猫", "银影猫"),
+    "angel": ("天使猫", "小羽猫", "云翼猫", "晨光猫"),
+    "demon": ("恶魔猫", "小魔猫", "赤角猫", "夜魔猫"),
+    "spider_hero": ("蜘蛛侠猫", "小蛛猫", "红蛛猫", "蛛丝猫"),
+    "arcane_mage": ("法师猫", "星法猫", "紫咒猫", "魔法猫"),
+    "mecha": ("机械猫", "机甲猫", "钢爪猫", "芯片猫"),
+    "him": ("HIM猫", "白眼猫", "暗影猫", "方块猫"),
+    "cyber": ("赛博猫", "霓虹猫", "电光猫", "数据猫"),
+    "lucky": ("招财猫", "金币猫", "福气猫", "小财猫"),
+    "wukong": ("悟空猫", "金箍猫", "猴王猫", "筋斗猫"),
+    "celestial_king": ("国王猫", "金冠猫", "小王猫", "王冠猫"),
+    "dragon_lord": ("龙王猫", "龙鳞猫", "赤龙猫", "小龙王"),
+    "time_guardian": ("时空猫", "钟摆猫", "时间猫", "裂隙猫"),
+    "seraph": ("六翼天使猫", "圣翼猫", "炽天猫", "六羽猫"),
+    "phoenix": ("凤凰猫", "火羽猫", "涅槃猫", "赤羽猫"),
+    "star_god": ("星神猫", "星辉猫", "神星猫", "夜空猫"),
+}
+
+THEME_DESCRIPTIONS = {
+    "blue_chubby": "以网络事件中的蓝色猫头像和那段令人惋惜的感情悲剧为原型，保留原版悲情故事与纪念意味。",
+    "angel": "头顶金色光环，展开蓝白羽翼，奔跑时留下柔和光点。",
 }
 
 
@@ -94,8 +178,13 @@ class CatSkinGenerator:
         self.anatomy = _read_json(root / "cat-anatomy-v1.json")
         self.classic = _read_json(root / "classic-black-v1.json")
         self.catalog = _read_json(root / "catalog-v1.json")
+        self.master = _read_json(root / "master-template-v1.json")
+        self.master_cells = {(cell["x"], cell["y"]): cell for cell in self.master["cells"]}
         self.key_loader = key_loader or (lambda: "")
         self._recent_silhouettes: list[tuple[str, ...]] = []
+        self._recent_signatures: list[str] = []
+        self._recent_themes: list[str] = []
+        self._recent_names: list[str] = []
         self._recent_lock = threading.Lock()
 
     def _config(self) -> tuple[str, str, str, str]:
@@ -411,13 +500,15 @@ class CatSkinGenerator:
         "body": ("balanced", "slim", "fluffy"),
         "tail": ("classic_up", "long_curl", "soft_hook", "plume"),
         "ears": ("classic", "wide", "tufted"),
-        "pattern": ("solid", "tabby", "tuxedo", "point", "calico", "spotted"),
+        "pattern": ("solid", "tabby", "tuxedo", "point", "calico", "spotted", "dorsal", "patchwork", "panel", "spider", "glitch", "scale"),
+        "palette_variant": ("standard", "bright", "dark", "cool"),
+        "pattern_variant": ("v1", "v2", "v3", "v4"),
     }
     _ACCESSORIES = {
         "common": ("none",),
         "rare": ("none",),
-        "epic": ("crown", "halo", "angel_wing", "horns", "cape"),
-        "legendary": ("crown", "halo", "angel_wing", "horns", "cape"),
+        "epic": ("none", "angel_wing", "horns", "spider_mask", "mage_hat_cape", "mecha_pack", "lucky_charm", "headband"),
+        "legendary": ("crown", "dragon_wing", "clock_ring", "seraph_wing", "phoenix_wing", "star_crown"),
     }
     _PALETTES = {
         "orange_tabby": {"O":"#63361F","F":"#E98B35","I":"#9BE06D","P":"#172019","N":"#D65B70","S":"#FFE0B2"},
@@ -429,29 +520,49 @@ class CatSkinGenerator:
         "siamese": {"O":"#45342E","F":"#E8D9BD","I":"#78C9F4","P":"#234A6A","N":"#C98282","S":"#76564A"},
         "golden_shaded": {"O":"#56391E","F":"#DDA94A","I":"#69C993","P":"#173B2A","N":"#D47B72","S":"#F3D991"},
         "maine_coon": {"O":"#3A302A","F":"#806B5A","I":"#8AD49E","P":"#203126","N":"#CC777A","S":"#BDAA94"},
+        "lihua": {"O":"#282521","F":"#71685B","I":"#8BCB6D","P":"#182016","N":"#D17A7A","S":"#B5A58D"},
+        "white_cat": {"O":"#77747A","F":"#F5F3F0","I":"#72C8A7","P":"#21332D","N":"#E18D9B","S":"#D8D4D4"},
+        "black_white": {"O":"#15171B","F":"#292C33","I":"#E9C44E","P":"#15171B","N":"#D65B70","S":"#F4F2EA"},
+        "big_orange": {"O":"#633018","F":"#F29A32","I":"#86CA62","P":"#182016","N":"#D65B70","S":"#FFD59B"},
+        "blue_chubby": {"O":"#183B61","F":"#358ED0","I":"#F7D85C","P":"#142A3C","N":"#E27A8E","S":"#8BD0F4"},
+        "silver_tabby": {"O":"#30343A","F":"#C8CDD1","I":"#74BF8C","P":"#1C2921","N":"#D5838B","S":"#737B83"},
         "angel": {"O":"#866A35","F":"#FFF8E8","I":"#77C7F2","P":"#26577A","N":"#E69A9A","S":"#E7DAB9","A":"#F1C84B","W":"#DDF3FF"},
         "demon": {"O":"#21151F","F":"#8E2F45","I":"#E8C45D","P":"#251018","N":"#D65B70","S":"#C47484","A":"#4B244F","W":"#B84255"},
         "spider_hero": {"O":"#171923","F":"#D7353F","I":"#F8FAFC","P":"#202431","N":"#171923","S":"#2867B2","A":"#F8FAFC"},
         "arcane_mage": {"O":"#211A3A","F":"#49377C","I":"#91FFF1","P":"#241D45","N":"#E78BBE","S":"#7960C6","A":"#F4D76B"},
-        "mecha": {"O":"#25313A","F":"#81909B","I":"#6FFFF2","P":"#153039","N":"#E16A70","S":"#C9D4DB","A":"#42BFC7"},
+        "mecha": {"O":"#25313A","F":"#81909B","I":"#6FFFF2","P":"#153039","N":"#E16A70","S":"#C9D4DB","A":"#42BFC7","W":"#B7FFF8"},
+        "him": {"O":"#111318","F":"#292D34","I":"#FFFFFF","P":"#FFFFFF","N":"#8B8F98","S":"#555B66","A":"#FFFFFF"},
+        "cyber": {"O":"#171C28","F":"#303B4D","I":"#75FFF0","P":"#123D42","N":"#EB6C9B","S":"#935CDE","A":"#30D6D2","W":"#FF4FD8"},
+        "lucky": {"O":"#6E3E2E","F":"#FFF4DE","I":"#6DBB73","P":"#213122","N":"#DA7580","S":"#D63D3D","A":"#F0C64B","W":"#D63D3D"},
+        "wukong": {"O":"#4B2B1A","F":"#B97838","I":"#E9D657","P":"#2D2116","N":"#D46A66","S":"#F0B047","A":"#C93F35"},
         "celestial_king": {"O":"#2B2444","F":"#536EB2","I":"#A8FFF0","P":"#192647","N":"#E68DA4","S":"#D9E2FF","A":"#F3C849","W":"#EEF5FF"},
         "dragon_lord": {"O":"#261B18","F":"#9E3D2E","I":"#F2D45C","P":"#291713","N":"#D65B70","S":"#D98A45","A":"#F0B83E","W":"#5E2525"},
         "time_guardian": {"O":"#20233D","F":"#416E92","I":"#78F2DE","P":"#182B3B","N":"#DD7FA2","S":"#8D73C9","A":"#F0CE59","W":"#9DEBFA"},
         "seraph": {"O":"#75603B","F":"#FFF9EC","I":"#83D8FF","P":"#315D78","N":"#E89AA4","S":"#E9DDBB","A":"#F4CC4F","W":"#E4F6FF"},
+        "phoenix": {"O":"#572018","F":"#D84B2F","I":"#FFE36A","P":"#3A1913","N":"#E47A72","S":"#F19332","A":"#FFD35A","W":"#FF8A35"},
+        "star_god": {"O":"#17162F","F":"#34366F","I":"#C6FFFF","P":"#172642","N":"#DE86A8","S":"#777ED8","A":"#F2D45C","W":"#F8FBFF"},
     }
 
-    def _random_design(self, rarity: str, theme: str, rng: random.Random) -> dict:
-        accessory = "none"
-        if rarity in {"epic", "legendary"}:
-            themed = {"angel": "angel_wing", "seraph": "angel_wing", "celestial_king": "crown", "dragon_lord": "horns", "demon": "horns", "arcane_mage": "cape"}
-            accessory = themed.get(theme, rng.choice(self._ACCESSORIES[rarity][1:]))
+    @staticmethod
+    def _pick_name(theme: str, rng: random.Random, blocked_names: set[str] | None = None) -> str:
+        blocked_names = blocked_names or set()
+        pool = THEME_NAME_POOLS.get(theme) or (THEME_LABELS.get(theme, "像素猫"),)
+        available = [name for name in pool if name not in blocked_names]
+        return rng.choice(available or list(pool))
+
+    def _random_design(self, rarity: str, theme: str, rng: random.Random, blocked_names: set[str] | None = None) -> dict:
+        # High-rarity silhouettes are semantic, never a random unrelated prop.
+        # This prevents a mecha cat from accidentally receiving angel wings.
+        accessory = THEME_ACCESSORIES.get(theme, "none")
         return {
-            "name": next(item[1] for item in RARITY_THEMES[rarity] if item[0] == theme),
+            "name": self._pick_name(theme, rng, blocked_names),
             "head": rng.choice(self._DESIGN_OPTIONS["head"]),
             "body": rng.choice(self._DESIGN_OPTIONS["body"]),
             "tail": rng.choice(self._DESIGN_OPTIONS["tail"]),
             "ears": rng.choice(self._DESIGN_OPTIONS["ears"]),
             "pattern": rng.choice(self._DESIGN_OPTIONS["pattern"]),
+            "palette_variant": rng.choice(self._DESIGN_OPTIONS["palette_variant"]),
+            "pattern_variant": rng.choice(self._DESIGN_OPTIONS["pattern_variant"]),
             "accessory": accessory,
         }
 
@@ -461,11 +572,13 @@ class CatSkinGenerator:
         for field, allowed in self._DESIGN_OPTIONS.items():
             if raw.get(field) in allowed:
                 design[field] = raw[field]
-        if raw.get("accessory") in self._ACCESSORIES[rarity]:
-            design["accessory"] = raw["accessory"]
-        name = raw.get("name")
-        if isinstance(name, str) and 2 <= len(name.strip()) <= 8:
-            design["name"] = name.strip()
+        # Theme identity wins over model improvisation for silhouettes. A short
+        # model name may survive, but verbose title-stacking falls back to the
+        # natural Chinese name pool.
+        design["accessory"] = THEME_ACCESSORIES.get(theme, "none")
+        raw_name = str(raw.get("name") or "").strip()
+        if 2 <= len(raw_name) <= 6 and (raw_name.endswith("猫") or theme == "blue_chubby"):
+            design["name"] = raw_name
         return design
 
     def _choose_design(self, rarity: str, theme: str, theme_zh: str, rng: random.Random) -> dict:
@@ -491,77 +604,218 @@ class CatSkinGenerator:
             if 0 <= x < 16 and 0 <= y < 16:
                 matrix[y][x] = code
 
-    def _assemble_design(self, rarity: str, theme: str, design: dict, rng: random.Random) -> dict:
-        matrix = [list(row) for row in self.classic["frames"]["a"]]
-        head_patches = {
-            "round": [], "soft_cheek": [(6,7,"O"),(7,8,"F")],
-            "fluffy": [(6,3,"O"),(6,4,"F"),(6,7,"O"),(7,8,"F")],
-        }
-        body_patches = {
-            "balanced": [], "slim": [(4,8,"."),(3,11,".")],
-            "fluffy": [(3,9,"O"),(3,11,"O"),(4,12,"F")],
-        }
-        ear_patches = {"classic": [], "wide": [(8,1,"O"),(14,1,"O")], "tufted": [(6,1,"O"),(8,0,"O"),(14,0,"O")]}
-        tails = {
-            "classic_up": [(4,10),(3,10),(2,9),(1,9),(0,8),(0,7)],
-            "long_curl": [(4,10),(3,10),(2,9),(1,8),(0,7),(0,6),(1,5),(2,5)],
-            "soft_hook": [(4,10),(3,9),(2,8),(1,7),(1,6),(2,5),(3,5)],
-            "plume": [(4,10),(3,10),(2,9),(1,8),(0,7),(1,6),(2,6),(3,7)],
-        }
-        self._set_pixels(matrix, head_patches[design["head"]] + body_patches[design["body"]] + ear_patches[design["ears"]])
-        for y in range(5, 12):
-            for x in range(0, 5): matrix[y][x] = "."
-        route = tails[design["tail"]]
-        for index, (x, y) in enumerate(route): matrix[y][x] = "O" if index in {0, len(route)-1} else "F"
-        pattern_points = {
-            "solid": [], "tabby": [(9,3,"S"),(11,3,"S"),(13,3,"S"),(7,10,"S"),(9,11,"S")],
-            "tuxedo": [(10,7,"S"),(11,8,"S"),(12,8,"S"),(8,10,"S"),(9,10,"S")],
-            "point": [(8,2,"S"),(14,2,"S"),(8,7,"S"),(14,7,"S"),(6,14,"S"),(11,14,"S")],
-            "calico": [(9,3,"S"),(13,4,"S"),(8,10,"S"),(10,11,"S")],
-            "spotted": [(9,4,"S"),(13,7,"S"),(7,10,"S"),(9,12,"S")],
-        }
-        self._set_pixels(matrix, pattern_points[design["pattern"]])
-        accessory = design["accessory"]
-        accessory_points = {
-            "none": [], "crown": [(9,2,"A"),(9,1,"A"),(10,1,"A"),(11,0,"A"),(12,1,"A"),(13,1,"A"),(13,2,"A")],
-            "halo": [(8,0,"A"),(9,0,"A"),(10,0,"A"),(11,0,"A"),(12,0,"A"),(13,0,"A"),(14,0,"A")],
-            "angel_wing": [(6,7,"W"),(5,6,"W"),(4,5,"W"),(3,4,"W"),(2,4,"W"),(3,5,"W"),(4,6,"W"),(5,7,"W")],
+    def _master_pattern_operations(self, pattern: str, rng: random.Random, variant: str = "v1") -> list[tuple[int, int, str]]:
+        """Paint theme markings only in frozen, non-facial pattern cells."""
+        groups = {
+            "solid": [[(9,3)],[(14,4)],[(7,10)],[(9,11)]],
+            "tabby": [[(9,3),(10,3)],[(13,4),(14,4)],[(7,10),(8,10)],[(6,11),(7,11)],[(1,7),(2,7)]],
+            "tuxedo": [[(10,7)],[(9,8),(11,8),(13,8)],[(7,10),(8,10)],[(8,11),(9,11)]],
+            "point": [[(8,2),(9,2)],[(13,2),(14,2)],[(7,10),(8,10)],[(8,11),(9,11)]],
+            "calico": [[(8,3),(9,3),(8,4)],[(13,3),(14,3),(14,4)],[(6,9),(7,9),(6,10),(7,10)],[(8,11),(9,11)],[(1,7),(2,7),(1,8),(2,8)]],
+            "spotted": [[(9,4)],[(13,7)],[(7,10)],[(9,11)],[(2,7)]],
+            "dorsal": [[(8,3),(9,3),(10,3)],[(7,4),(8,4)],[(6,9),(7,9),(8,9)],[(7,10),(8,10),(9,10)],[(8,11),(9,11)]],
+            "patchwork": [[(8,3),(9,3)],[(13,3),(14,3),(14,4)],[(6,9),(7,9)],[(8,10),(9,10)],[(6,11),(7,11),(8,11)]],
+            "panel": [[(9,3),(10,3),(11,3)],[(14,4)],[(8,7)],[(6,9),(7,9)],[(9,10),(10,10)],[(7,11),(9,11)]],
+            "spider": [[(9,3),(11,3),(13,3)],[(8,4),(10,4),(12,4),(14,4)],[(8,7),(10,7),(12,7),(14,7)],[(7,10),(9,10)],[(8,11),(10,11)]],
+            "glitch": [[(8,3),(10,3),(13,3)],[(14,4)],[(8,7),(14,7)],[(6,9),(8,9)],[(7,10),(10,10)],[(6,11),(9,11)]],
+            "scale": [[(8,3),(10,3),(13,3)],[(9,4),(14,4)],[(8,7),(13,7)],[(6,9),(8,9)],[(7,10),(9,10)],[(8,11),(10,11)]],
+        }.get(pattern, [])
+        if not groups:
+            return []
+        variant_index = {"v1":0,"v2":1,"v3":2,"v4":3}.get(variant, 0)
+        minimum = 2 if pattern in {"tuxedo", "point"} else min(3, len(groups))
+        count = min(len(groups), minimum + (variant_index % 2))
+        # Rotate before sampling so pattern_variant materially changes pixels.
+        rotated = groups[variant_index % len(groups):] + groups[:variant_index % len(groups)]
+        # Use the rotated leading groups rather than random sampling: two
+        # different variant ids must produce genuinely different pixels.
+        selected = rotated[:count]
+        operations: list[tuple[int, int, str]] = []
+        for group in selected:
+            for x, y in group:
+                cell = self.master_cells[(x, y)]
+                if cell.get("pattern_allowed") and not cell.get("final_face_foreground"):
+                    operations.append((x, y, "S"))
+        return operations
+
+    @staticmethod
+    def _master_accessory_operations(accessory: str) -> list[tuple[int, int, str]]:
+        """Theme-specific 16×16 symbols; no unrelated accessory lottery."""
+        accessories = {
+            "none": [],
+            "crown": [(9,2,"A"),(9,1,"A"),(10,1,"A"),(11,0,"A"),(12,1,"A"),(13,1,"A"),(13,2,"A")],
+            "star_crown": [(8,2,"A"),(9,1,"A"),(10,1,"A"),(10,2,"A"),(11,0,"W"),(12,1,"A"),(12,2,"A"),(13,1,"A"),(14,2,"A")],
+            # A is deliberately shared by the gold halo and blue wing edge;
+            # it is still distinct from O, the cat body's dark outline.
+            "angel_wing": [(9,0,"A"),(10,0,"A"),(11,0,"A"),(12,0,"A"),(13,0,"A"),(2,4,"A"),(3,4,"A"),(4,4,"A"),(2,5,"A"),(3,5,"W"),(4,5,"W"),(5,5,"A"),(3,6,"A"),(4,6,"W"),(5,6,"A"),(4,7,"A"),(5,7,"W"),(6,7,"A")],
+            # Larger wings deliberately overpaint 1-3 upper tail pixels. The
+            # tail skeleton remains intact underneath as a logical base layer.
+            "seraph_wing": [(1,2,"O"),(2,2,"W"),(3,2,"O"),(0,3,"O"),(1,3,"W"),(2,3,"W"),(3,3,"W"),(4,3,"O"),(0,4,"O"),(1,4,"W"),(2,4,"W"),(3,4,"W"),(4,4,"W"),(5,4,"O"),(1,5,"O"),(2,5,"W"),(3,5,"W"),(4,5,"W"),(5,5,"O"),(2,6,"O"),(3,6,"W"),(4,6,"W"),(5,6,"O"),(4,7,"W"),(5,7,"O")],
+            "dragon_wing": [(1,2,"O"),(2,2,"A"),(3,2,"O"),(0,3,"O"),(1,3,"A"),(2,3,"A"),(3,3,"A"),(4,3,"O"),(1,4,"O"),(2,4,"A"),(3,4,"O"),(4,4,"A"),(5,4,"O"),(2,5,"O"),(3,5,"A"),(4,5,"A"),(5,5,"O"),(3,6,"O"),(4,6,"A"),(5,6,"O"),(4,7,"A"),(5,7,"O")],
+            "phoenix_wing": [(1,2,"A"),(2,2,"W"),(3,2,"A"),(0,3,"A"),(1,3,"W"),(2,3,"W"),(3,3,"W"),(4,3,"A"),(1,4,"A"),(2,4,"W"),(3,4,"W"),(4,4,"W"),(5,4,"A"),(2,5,"A"),(3,5,"W"),(4,5,"W"),(5,5,"A"),(3,6,"A"),(4,6,"W"),(5,6,"A")],
             "horns": [(8,2,"A"),(8,1,"A"),(9,0,"A"),(14,2,"A"),(14,1,"A"),(13,0,"A")],
-            "cape": [(5,8,"A"),(4,7,"A"),(3,6,"A"),(2,5,"A"),(3,7,"A"),(4,8,"A")],
+            "spider_mask": [(8,4,"O"),(9,4,"O"),(10,4,"O"),(12,4,"O"),(13,4,"O"),(14,4,"O"),(8,5,"A"),(9,5,"A"),(13,5,"A"),(14,5,"A"),(8,6,"A"),(9,6,"A"),(13,6,"A"),(14,6,"A"),(10,7,"O"),(12,7,"O")],
+            "mage_hat_cape": [(6,3,"O"),(7,2,"O"),(8,1,"A"),(9,0,"A"),(10,0,"A"),(11,1,"A"),(12,2,"O"),(13,2,"O"),(5,3,"O"),(6,4,"A"),(5,5,"A"),(4,6,"A"),(3,7,"A"),(4,8,"A"),(5,9,"A")],
+            "mecha_pack": [(3,3,"O"),(4,3,"A"),(5,3,"O"),(2,4,"O"),(3,4,"A"),(4,4,"W"),(5,4,"O"),(2,5,"O"),(3,5,"W"),(4,5,"A"),(5,5,"O"),(3,6,"O"),(4,6,"A"),(5,6,"O"),(4,7,"W"),(5,7,"O")],
+            "clock_ring": [(1,2,"A"),(2,1,"A"),(3,1,"W"),(4,2,"A"),(5,3,"A"),(6,4,"A"),(5,4,"W"),(4,5,"A"),(3,6,"A"),(2,5,"A"),(1,4,"W"),(1,3,"A")],
+            "lucky_charm": [(6,2,"A"),(7,1,"A"),(8,2,"A"),(6,3,"A"),(7,3,"W"),(8,3,"A")],
+            "headband": [(8,3,"A"),(9,3,"A"),(10,3,"A"),(11,3,"A"),(12,3,"A"),(13,3,"A"),(14,3,"A"),(15,3,"A")],
         }
-        self._set_pixels(matrix, accessory_points[accessory])
-        palette_source = dict(self._PALETTES.get(theme, self.classic["palette"]))
-        if accessory == "angel_wing" and "W" not in palette_source:
-            palette_source["W"] = "#DDF3FF"
-        palette = self._valid_palette(palette_source, self.classic["palette"], self.anatomy["rarity_limits"][rarity]["max_palette_colors"])
-        frames, parts, floating = self._repair_design(["".join(row) for row in matrix], palette, rarity, theme, rng)
-        # The assembler knows exactly which controlled patch is the tail. Do
-        # not let the generic legacy repair heuristic mistake a nearby wing or
-        # cape pixel for part of the tail.
-        occupied_a = {(x, y) for y, row in enumerate(frames["a"]) for x, code in enumerate(row) if code != "."}
-        tail_pixels = {(x, y) for x, y in route if (x, y) in occupied_a}
-        tail_pixels |= {tuple(point) for point in self.anatomy["anatomy"]["tail"]["root"] if tuple(point) in occupied_a}
-        parts["tail"] = [list(point) for point in sorted(tail_pixels)]
-        if accessory == "angel_wing":
-            parts["wing"] = [[x, y] for x, y, _code in accessory_points[accessory] if (x, y) in occupied_a and (x, y) not in tail_pixels]
-        else:
-            parts["wing"] = []
-        skin = {
-            "schema_version": "cat-skin-v1", "name": design["name"], "rarity": rarity, "theme": theme,
-            "pattern_type": design["pattern"], "palette": palette, "frames": frames, "parts": parts,
-            "floating_regions": floating, "design_recipe": dict(design),
-            "design_notes": {"recognizable_features": [theme, design["head"], design["tail"], design["pattern"], accessory], "animation_change": "部件库组装主体，第二帧只切换固定腿部步态。"},
-        }
+        return list(accessories.get(accessory, []))
+
+    @staticmethod
+    def _palette_variant(palette: dict, variant: str) -> dict:
+        """Create visible color variety without adding palette keys."""
+        if variant == "standard":
+            return palette
+        factors = {"bright": 1.18, "dark": 0.78, "cool": 1.0}
+        factor = factors.get(variant, 1.0)
+        result = dict(palette)
+        for key in ("F", "S"):
+            raw = result.get(key)
+            if not isinstance(raw, str) or len(raw) != 7:
+                continue
+            r, g, b = (int(raw[i:i+2], 16) for i in (1,3,5))
+            if variant == "cool":
+                r, g, b = int(r*.82), int(g*.96), min(255, int(b*1.18))
+            else:
+                r, g, b = (min(255, max(0, int(v*factor))) for v in (r,g,b))
+            result[key] = f"#{r:02X}{g:02X}{b:02X}"
+        return result
+
+    def _assemble_design(self, rarity: str, theme: str, design: dict, rng: random.Random) -> dict:
+        """Render a gift cat through the frozen Master Template V1 anatomy."""
+        matrix_a = [list(row) for row in self.classic["frames"]["a"]]
+        matrix_b = [list(row) for row in self.classic["frames"]["b"]]
+        pattern_ops = self._master_pattern_operations(design["pattern"], rng, design.get("pattern_variant", "v1"))
+        accessory_ops = self._master_accessory_operations(design["accessory"])
+        for x, y, code in [*pattern_ops, *accessory_ops]:
+            matrix_a[y][x] = code
+            # All selected markings/accessories stay above the gait-only area.
+            matrix_b[y][x] = code
+
+        palette_source = self._palette_variant(
+            dict(self._PALETTES.get(theme, self.classic["palette"])),
+            design.get("palette_variant", "standard"),
+        )
+        if design["accessory"] in {"angel_wing", "seraph_wing"}:
+            # Medium sky blue survives both the white checkerboard wardrobe
+            # background and the tiny 1:1 game rendering.
+            palette_source["W"] = "#74BDE8"
+        palette = self._valid_palette(
+            palette_source,
+            self.classic["palette"],
+            self.anatomy["rarity_limits"][rarity]["max_palette_colors"],
+        )
+        skin = json.loads(json.dumps(self.classic))
+        skin.update({
+            "name": design["name"],
+            "rarity": rarity,
+            "theme": theme,
+            "pattern_type": design["pattern"],
+            "palette": palette,
+            "frames": {
+                "a": ["".join(row) for row in matrix_a],
+                "b": ["".join(row) for row in matrix_b],
+            },
+            "floating_regions": ([{"type": "halo", "pixels": [[x, 0] for x in range(9, 14)]}] if design["accessory"] == "angel_wing" else []),
+            "effect": THEME_EFFECTS.get(theme, "star" if rarity in {"epic", "legendary"} else "spark" if rarity == "rare" else "none"),
+            "design_recipe": {
+                **dict(design),
+                "template": "classic-black-master-v1",
+                "pattern_operations": [[x, y, code] for x, y, code in pattern_ops],
+                "accessory_operations": [[x, y, code] for x, y, code in accessory_ops],
+                "visual_tail_overlaps": [[x, y] for x, y, _code in accessory_ops if (x, y) in {tuple(point) for point in self.classic["parts"]["tail"]}],
+            },
+            "design_notes": {
+                "recognizable_features": [theme, design["pattern"], design["accessory"]],
+                "animation_change": "Master Template V1 固定猫体，两帧仅使用经典腿部步态。",
+            },
+        })
+        wing_accessories = {"angel_wing", "seraph_wing", "dragon_wing", "phoenix_wing"}
+        tail_coords = {tuple(point) for point in skin["parts"]["tail"]}
+        skin["parts"]["wing"] = [
+            [x, y] for x, y, _code in accessory_ops
+            if design["accessory"] in wing_accessories and (x, y) not in tail_coords and y > 0
+        ]
+        skin["parts"]["head_accessory"] = [
+            [x, y] for x, y, _code in accessory_ops
+            if design["accessory"] in {"crown", "star_crown", "horns", "spider_mask", "mage_hat_cape", "clock_ring", "lucky_charm", "headband"}
+            or (design["accessory"] == "angel_wing" and y == 0)
+        ]
+        if theme == "him":
+            # Controlled facial exception: keep both eye boxes separated but
+            # fill eye and pupil cells pure white for the recognizable HIM gaze.
+            for x, y in [*self.anatomy["anatomy"]["eyes"]["left_eye_box"], *self.anatomy["anatomy"]["eyes"]["right_eye_box"]]:
+                matrix_a[y][x] = "I"
+                matrix_b[y][x] = "I"
+            skin["frames"] = {"a": ["".join(row) for row in matrix_a], "b": ["".join(row) for row in matrix_b]}
         errors = validate_data(skin, self.anatomy)
-        if errors: raise CatGenerationError("部件组装未通过结构校验：" + "；".join(errors[:5]))
+        if errors:
+            raise CatGenerationError("Master Template V1 生成未通过结构校验：" + "；".join(errors[:5]))
+        return skin
+
+    @staticmethod
+    def _design_signature(theme: str, design: dict) -> str:
+        return "|".join(str(value) for value in (
+            theme, design.get("pattern"), design.get("pattern_variant"),
+            design.get("palette_variant"), design.get("accessory"),
+        ))
+
+    @staticmethod
+    def _stored_signature(skin: dict) -> str:
+        recipe = skin.get("design_recipe") if isinstance(skin, dict) else None
+        if not isinstance(recipe, dict):
+            return ""
+        return CatSkinGenerator._design_signature(str(skin.get("theme") or ""), recipe)
+
+    def generate_with_history(self, recent_skins: list[dict] | None = None, rng: random.Random | None = None) -> dict:
+        """Generate with a five-theme cooldown and twenty-recipe cooldown.
+
+        Recent wardrobe recipes are accepted so restart does not immediately
+        bring back the same cat. In-memory history also protects rapid admin
+        testing before the next wardrobe read.
+        """
+        rng = rng or random.SystemRandom()
+        recent_skins = recent_skins or []
+        stored_themes = [str(skin.get("theme") or "") for skin in recent_skins[-5:]]
+        stored_signatures = {self._stored_signature(skin) for skin in recent_skins[-20:]}
+        stored_signatures.discard("")
+        stored_names = {str(skin.get("name") or "") for skin in recent_skins[-20:]}
+        stored_names.discard("")
+        rarity = self._draw_rarity(rng)
+        with self._recent_lock:
+            blocked_themes = set(stored_themes + self._recent_themes[-5:])
+            blocked_signatures = stored_signatures | set(self._recent_signatures[-20:])
+            blocked_names = stored_names | set(self._recent_names[-20:])
+        candidates = [item for item in RARITY_THEMES[rarity] if item[0] not in blocked_themes]
+        if not candidates:
+            candidates = list(RARITY_THEMES[rarity])
+
+        chosen = None
+        for _attempt in range(32):
+            theme, _theme_zh, declared_pattern, _colors = rng.choice(candidates)
+            design = self._random_design(rarity, theme, rng, blocked_names)
+            if declared_pattern in self._DESIGN_OPTIONS["pattern"]:
+                design["pattern"] = declared_pattern
+            signature = self._design_signature(theme, design)
+            chosen = (theme, design, signature)
+            if signature not in blocked_signatures:
+                break
+        assert chosen is not None
+        theme, design, signature = chosen
+        skin = self._assemble_design(rarity, theme, design, rng)
+        with self._recent_lock:
+            self._recent_themes.append(theme)
+            self._recent_signatures.append(signature)
+            self._recent_names.append(design["name"])
+            del self._recent_themes[:-5]
+            del self._recent_signatures[:-20]
+            del self._recent_names[:-20]
         return skin
 
     def generate(self, rng: random.Random | None = None) -> dict:
-        rng = rng or random.SystemRandom()
-        rarity = self._draw_rarity(rng)
-        theme, theme_zh, _pattern, _colors = rng.choice(RARITY_THEMES[rarity])
-        design = self._choose_design(rarity, theme, theme_zh, rng)
-        return self._assemble_design(rarity, theme, design, rng)
+        return self.generate_with_history([], rng)
 
 
 class CatSkinManager:
@@ -612,7 +866,7 @@ class CatSkinManager:
                 "ok": True,
                 "is_admin": is_admin,
                 "can_open": is_admin or state.get("last_open_date") != today,
-                "next_open_date": "不限次数" if is_admin else today if state.get("last_open_date") != today else "明天",
+                "next_open_date": "不限次数" if is_admin else (today if state.get("last_open_date") != today else "明天"),
                 "equipped_skin_id": state.get("equipped_skin_id", "classic-black"),
                 "skins": [*builtins, *generated],
                 "generator": self.generator.provider_info(),
@@ -631,13 +885,19 @@ class CatSkinManager:
                 raise CatGenerationBusyError("一只猫咪正在生成中，请稍候")
             self._generating.add(user_id)
         try:
-            generated = self.generator.generate()
+            if hasattr(self.generator, "generate_with_history"):
+                generated = self.generator.generate_with_history(state.get("skins", [])[-20:])
+            else:
+                generated = self.generator.generate()
             now = datetime.now().astimezone().isoformat(timespec="seconds")
             skin = dict(generated)
             skin.update({
                 "id": "cat_" + secrets.token_hex(8),
                 "rarity_label": RARITY_LABELS[skin["rarity"]],
-                "description": "AI 选定主题、由像素部件库组装的 " + RARITY_LABELS[skin["rarity"]] + " 猫咪。",
+                "description": THEME_DESCRIPTIONS.get(
+                    str(skin.get("theme") or ""),
+                    "AI 选定主题、由像素部件库组装的 " + RARITY_LABELS[skin["rarity"]] + " 猫咪。",
+                ),
                 "effect": skin.get("effect") or ("star" if skin["rarity"] in {"epic", "legendary"} else "spark" if skin["rarity"] == "rare" else "none"),
                 "created_at": now,
             })
