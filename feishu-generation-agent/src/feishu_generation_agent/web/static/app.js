@@ -57,6 +57,8 @@
   const bitableTaskList = byId("bitable-task-list");
   const bitableStatus = byId("bitable-status");
   const recentRunList = byId("recent-run-list");
+  const runHistorySummary = byId("run-history-summary");
+  const currentRunSwitcher = byId("current-run-switcher");
   const trashButton = byId("trash-button");
   const trashModal = byId("trash-modal");
   const trashList = byId("trash-list");
@@ -94,6 +96,13 @@
     delivery_failed: { label: "写入结果表失败", tone: "danger", action: "生成内容已保留，请重新写入结果表，不需要重新生成。" },
     failed: { label: "执行失败", tone: "danger", action: "查看页面中的失败原因，修正后可重新运行。" },
     cancelled: { label: "已取消", tone: "muted", action: "本次任务已取消，可以重新运行或开始下一条。" },
+    "待审批": { label: "等待你审核", tone: "attention", action: "检查并修改下方计划，确认无误后批准生成。" },
+    "待确认成片": { label: "等待验收成片", tone: "attention", action: "预览生成结果，满意后确认写入结果表。" },
+    "生成中": { label: "正在生成内容", tone: "running", action: "生成服务正在工作。" },
+    "回写中": { label: "正在写入结果表", tone: "running", action: "内容已生成，正在回写飞书。" },
+    "已完成": { label: "已完成", tone: "success", action: "任务已完成并交付。" },
+    "失败": { label: "执行失败", tone: "danger", action: "查看失败原因后可以重新运行。" },
+    "回写失败": { label: "写入结果表失败", tone: "danger", action: "生成内容已保留，可以重新写入。" },
   };
 
   function statusUi(status) {
@@ -244,6 +253,7 @@
     directRunButton.disabled = value;
     directRunUrl.disabled = value;
     directRunMode.disabled = value;
+    currentRunSwitcher.disabled = value || (state.bitable.recentRuns || []).length === 0;
     scanBitableButton.disabled = value || !state.modes.bitable;
     categoryTabs.forEach((tab) => {
       tab.disabled = value || !state.modes.bitable;
@@ -330,17 +340,47 @@
 
   function renderRecentRuns() {
     const runs = state.bitable.recentRuns || [];
+    const activeCount = runs.filter((run) => run.active).length;
+    runHistorySummary.textContent = runs.length
+      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${runs.length} 条`
+      : "进行中与历史任务都在这里";
+    const switchOptions = runs.map((run) => {
+      const option = element("option", "", `${run.display_text || run.run_id} · ${statusUi(run.status).label}`);
+      option.value = run.run_id;
+      return option;
+    });
+    if (!switchOptions.length) {
+      const emptyOption = element("option", "", "暂无任务记录");
+      emptyOption.value = "";
+      switchOptions.push(emptyOption);
+    }
+    currentRunSwitcher.replaceChildren(...switchOptions);
+    currentRunSwitcher.value = runs.some((run) => run.run_id === state.runId)
+      ? state.runId
+      : "";
+    currentRunSwitcher.disabled = state.busy || runs.length === 0;
+
     const nodes = runs.map((run) => {
-      const row = element("article", "recent-run");
-      const details = element("div", "");
+      const selected = run.run_id === state.runId;
+      const row = element("article", `recent-run${selected ? " is-current" : ""}`);
+      row.dataset.runId = run.run_id;
+      const details = element("div", "recent-run-details");
       details.append(
         element("strong", "", run.display_text || run.run_id),
-        element("p", "bitable-task-meta", `状态：${run.status || "—"}`),
+        element(
+          "p",
+          "bitable-task-meta",
+          `${run.active ? "进行中" : "历史"} · ${statusUi(run.status).label}`,
+        ),
       );
       const actions = element("div", "recent-run-actions");
-      const view = element("button", "quiet-button", "查看详情");
+      const view = element(
+        "button",
+        selected ? "quiet-button is-current" : "quiet-button",
+        selected ? "当前查看" : "打开",
+      );
       view.type = "button";
-      view.disabled = state.busy;
+      view.disabled = state.busy || selected;
       view.addEventListener("click", () => viewRecentRun(run.run_id));
       actions.append(view);
       if (run.result_table_url) {
@@ -357,23 +397,37 @@
         rerun.addEventListener("click", () => rerunBitableTask(run.run_id));
         actions.append(rerun);
       }
-      const remove = element("button", "danger", "删除");
-      remove.type = "button";
-      remove.disabled = state.busy;
-      remove.addEventListener("click", () => archiveBitableRun(run.run_id));
-      actions.append(remove);
+      if (!run.active) {
+        const remove = element("button", "danger", "删除");
+        remove.type = "button";
+        remove.disabled = state.busy;
+        remove.addEventListener("click", () => archiveBitableRun(run.run_id));
+        actions.append(remove);
+      }
       row.append(details, actions);
       return row;
     });
-    if (!nodes.length) nodes.push(element("p", "bitable-empty", "暂无已完成任务。"));
+    if (!nodes.length) nodes.push(element("p", "bitable-empty", "暂无任务记录。"));
     recentRunList.replaceChildren(...nodes);
   }
 
   async function loadRecentRuns() {
     if (!state.modes.bitable) return;
     try {
-      const runs = await api("/api/bitable/recent-runs");
-      state.bitable = BitableState.recentSucceeded(state.bitable, runs);
+      const [activeRuns, recentRuns] = await Promise.all([
+        api("/api/bitable/active-runs"),
+        api("/api/bitable/recent-runs"),
+      ]);
+      const merged = [];
+      const seen = new Set();
+      [...(activeRuns || []).slice().reverse().map((run) => ({ ...run, active: true })),
+        ...(recentRuns || []).map((run) => ({ ...run, active: false }))]
+        .forEach((run) => {
+          if (!run?.run_id || seen.has(run.run_id)) return;
+          seen.add(run.run_id);
+          merged.push(run);
+        });
+      state.bitable = BitableState.recentSucceeded(state.bitable, merged);
       renderRecentRuns();
     } catch (error) {
       showError(error);
@@ -1454,6 +1508,7 @@
 
   function render(view, { refreshTasks = true } = {}) {
     state.view = view;
+    renderRecentRuns();
     const statusInfo = statusUi(view.status);
     const statusBadge = byId("status-badge");
     statusBadge.textContent = statusInfo.label;
@@ -1578,8 +1633,10 @@
 
   async function poll(force = false, resetDraft = false) {
     if (!state.runId || (state.busy && !force)) return;
+    const requestedRunId = state.runId;
     try {
-      const serverView = await api(`/api/runs/${state.runId}`);
+      const serverView = await api(`/api/runs/${requestedRunId}`);
+      if (state.runId !== requestedRunId) return;
       const previousReview = state.review;
       const nextReview = resetDraft
         ? ReviewState.mergeServerView(ReviewState.createReviewState(), serverView)
@@ -1599,7 +1656,7 @@
         pollingNote.textContent = statusUi(serverView.status).action;
       }
     } catch (error) {
-      showError(error);
+      if (state.runId === requestedRunId) showError(error);
     }
   }
 
@@ -1615,11 +1672,14 @@
       state.referenceMutations = ReferenceMutationState.createState();
       state.artifactPreviewSignature = null;
       await poll(true);
+      startPolling();
+      renderRecentRuns();
       document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
     } catch (error) {
       showError(error);
     } finally {
       setBusy(false);
+      renderRecentRuns();
     }
   }
 
@@ -1681,6 +1741,7 @@
       state.artifactPreviewSignature = null;
       await poll(true);
       startPolling();
+      await loadRecentRuns();
       document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
     } catch (error) {
       showError(error);
@@ -1852,6 +1913,10 @@
       body.hidden = !body.hidden;
       toggle.setAttribute("aria-expanded", String(!body.hidden));
     });
+  });
+  currentRunSwitcher.addEventListener("change", async () => {
+    const runId = currentRunSwitcher.value;
+    if (runId && runId !== state.runId) await viewRecentRun(runId);
   });
   trashButton.addEventListener("click", openTrash);
   trashClose.addEventListener("click", closeTrash);

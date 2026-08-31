@@ -98,7 +98,7 @@
         </p>
         <div id="bitable-task-list" class="bitable-task-list"></div>
       </div>
-      <section class="recent-runs" aria-label="最近完成任务">
+      <section class="recent-runs" aria-label="任务记录">
         <div class="recent-runs-heading">
           <button
             id="recent-runs-toggle"
@@ -108,7 +108,8 @@
             aria-controls="recent-run-list"
           >
             <span class="collapse-chevron" aria-hidden="true"></span>
-            <span class="collapse-title">最近完成任务</span>
+            <span class="collapse-title">任务记录</span>
+            <span id="run-history-summary" class="run-history-summary">进行中与历史任务都在这里</span>
           </button>
           <button
             id="trash-button"
@@ -161,7 +162,13 @@
             <p class="eyebrow">REVIEW</p>
             <h2 id="document-title">等待提交飞书文档</h2>
           </div>
-          <a id="source-link" href="#" target="_blank" rel="noreferrer">查看源文档</a>
+          <div class="review-heading-actions">
+            <label class="run-switcher-label" for="current-run-switcher">切换任务</label>
+            <select id="current-run-switcher" class="run-switcher" aria-label="切换任务" disabled>
+              <option value="">暂无任务记录</option>
+            </select>
+            <a id="source-link" href="#" target="_blank" rel="noreferrer">查看源文档</a>
+          </div>
         </div>
         <p class="document-meta">文档版本 <span id="document-revision">—</span></p>
         <p id="delivery-target" class="document-meta" hidden></p>

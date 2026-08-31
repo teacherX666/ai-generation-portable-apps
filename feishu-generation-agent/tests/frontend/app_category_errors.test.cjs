@@ -195,6 +195,94 @@ test("claim errors do not remain in the global box after a cached category switc
   );
 });
 
+test("task history includes reruns and allows switching between active and cancelled runs", async () => {
+  const activeRun = {
+    run_id: "run-rerun-active",
+    thread_id: "thread-rerun-active",
+    source_url: "https://acme.feishu.cn/docx/active",
+    status: "waiting_approval",
+    events: [],
+    privacy: {},
+    approval: {
+      document_title: "重新运行后的任务",
+      revision: 2,
+      document_summary: "",
+      tasks: [],
+      media_assets: [],
+      excluded_assets: [],
+      selected_task_ids: [],
+      coverage: {},
+      validation_issues: [],
+      ingest_issue_records: [],
+      vision_issues: [],
+    },
+  };
+  const cancelledRun = {
+    ...activeRun,
+    run_id: "run-cancelled",
+    thread_id: "thread-cancelled",
+    status: "cancelled",
+    approval: { ...activeRun.approval, document_title: "已取消任务" },
+  };
+  const views = new Map([
+    [activeRun.run_id, activeRun],
+    [cancelledRun.run_id, cancelledRun],
+  ]);
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [{
+        run_id: activeRun.run_id,
+        display_text: "重新运行后的任务",
+        status: "待审批",
+      }]);
+    }
+    if (url === "/api/bitable/recent-runs") {
+      return jsonResponse(200, [{
+        run_id: cancelledRun.run_id,
+        display_text: "已取消任务",
+        status: "失败",
+        rerunnable: true,
+      }]);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    if (url.startsWith("/api/runs/")) {
+      const runId = url.split("/").at(-1);
+      return jsonResponse(200, views.get(runId));
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  let rows = app.getNode("recent-run-list").children;
+  assert.deepEqual(rows.map((row) => row.dataset.runId), [
+    activeRun.run_id,
+    cancelledRun.run_id,
+  ]);
+  assert.equal(app.getNode("run-history-summary").textContent, "1 个进行中 · 共 2 条");
+  assert.equal(rows[0].querySelectorAll("button")[0].textContent, "当前查看");
+  assert.equal(rows[0].querySelectorAll("button").length, 1);
+
+  const switcher = app.getNode("current-run-switcher");
+  assert.equal(switcher.disabled, false);
+  assert.deepEqual(switcher.children.map((option) => option.value), [
+    activeRun.run_id,
+    cancelledRun.run_id,
+  ]);
+
+  switcher.value = cancelledRun.run_id;
+  await switcher.dispatch("change");
+  assert.equal(app.getNode("document-title").textContent, "已取消任务");
+
+  rows = app.getNode("recent-run-list").children;
+  assert.equal(rows[0].querySelectorAll("button")[0].textContent, "打开");
+  switcher.value = activeRun.run_id;
+  await switcher.dispatch("change");
+  assert.equal(app.getNode("document-title").textContent, "重新运行后的任务");
+  assert.equal(app.getNode("status-badge").textContent, "等待你审核");
+});
+
 test("approval view distinguishes blocking document and nonblocking asset issues", async () => {
   const runView = {
     run_id: "run-ingest-issues",
