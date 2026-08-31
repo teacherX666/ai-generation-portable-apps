@@ -20,12 +20,13 @@ from feishu_generation_agent.domain.document import (
     NormalizedDocument,
     PlanningPromptSnapshot,
     RequirementRequest,
+    VisionDescription,
     build_planning_prompt_snapshot,
     make_ingest_issue_record,
     resolve_ingest_issue_records,
 )
 from feishu_generation_agent.domain.errors import AgentError
-from feishu_generation_agent.ports import DeliveryWriter
+from feishu_generation_agent.ports import DeliveryWriter, DocumentSource, VisionAnalyzer
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
     ArtifactReviewDecision,
@@ -89,12 +90,16 @@ class GraphRuntime:
         file_store: FileStore,
         settings: Settings,
         delivery_writer: DeliveryWriter | None = None,
+        document_source: DocumentSource | None = None,
+        vision_analyzer: VisionAnalyzer | None = None,
     ) -> None:
         self.graph = graph
         self.repository = repository
         self.file_store = file_store
         self.settings = settings
         self.delivery_writer = delivery_writer
+        self.document_source = document_source
+        self.vision_analyzer = vision_analyzer
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._run_locks: dict[str, asyncio.Lock] = {}
         self._start_lock = asyncio.Lock()
@@ -203,7 +208,12 @@ class GraphRuntime:
         run_id: str,
         thread_id: str,
     ) -> str:
-        """Create an independent approval checkpoint from a prior run's draft."""
+        """Create a rerun from a prior run.
+
+        Reuse the approved plan when one exists. Runs cancelled before approval do
+        not have an approved plan, so re-read and re-plan the original document
+        instead of exposing a rerun action that can only fail.
+        """
         if self._closed:
             raise RunConflict("运行时正在关闭")
         async with self._start_lock:
@@ -217,7 +227,8 @@ class GraphRuntime:
                 raise RunConflict("重跑运行 ID 已存在")
             snapshot = await self.graph.aget_state(self._config(source["thread_id"]))
             source_state = dict(snapshot.values or {})
-            if self._planning_prompt_from_state(source_state) is None:
+            planning_prompt = self._planning_prompt_from_state(source_state)
+            if planning_prompt is None:
                 raise RunValidationError("原运行缺少有效提示词快照")
             try:
                 approved_plan = approved_plan_from_state(
@@ -225,9 +236,29 @@ class GraphRuntime:
                     max_output_count=self.settings.max_output_count,
                 )
             except (TypeError, ValueError):
-                raise RunValidationError("原运行没有可重跑的审批计划") from None
-            if not approved_plan.tasks:
-                raise RunValidationError("原运行没有已批准任务")
+                approved_plan = None
+            if approved_plan is None or not approved_plan.tasks:
+                await self.repository.create_run(
+                    run_id,
+                    thread_id,
+                    request.source_url,
+                    status="created",
+                    owner_user_id=planning_prompt.owner_user_id,
+                )
+                fresh_request = request.model_copy(
+                    update={"planning_prompt": planning_prompt}
+                )
+                await self.repository.append_event(
+                    run_id,
+                    "rerun_source",
+                    "started",
+                    "Original document queued for fresh analysis",
+                )
+                self._start_background(
+                    self._run_to_approval(run_id, thread_id, fresh_request),
+                    name=f"approval-run-{run_id}",
+                )
+                return run_id
             approved_plan_json = approved_plan.model_dump(mode="json")
             approved_tasks = [
                 task.model_dump(mode="json") for task in approved_plan.tasks
@@ -636,10 +667,15 @@ class GraphRuntime:
                 "ingest_issue_records": [
                     record.model_dump(
                         mode="json",
+                        exclude_none=True,
                         include={
                             "severity",
                             "code",
                             "display_message",
+                            "source_block_id",
+                            "asset_id",
+                            "asset_kind",
+                            "failure_reason",
                         },
                     )
                     for record in ingest_issue_records
@@ -1177,6 +1213,148 @@ class GraphRuntime:
                 break
             return resolved_path, artifact.mime_type
         raise RunNotFound("成片产物不存在")
+
+    async def retry_failed_assets(self, run_id: str) -> dict[str, int]:
+        if self.document_source is None:
+            raise RunConflict("飞书素材读取服务尚未配置")
+        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
+        if lock.locked():
+            raise RunConflict("运行正在处理其他操作")
+        async with lock:
+            run, state = await self._waiting_state(run_id)
+            try:
+                document = NormalizedDocument.model_validate(
+                    state.get("normalized_document")
+                )
+            except Exception:
+                raise RunValidationError("当前文档素材状态无效") from None
+            failed_before = {
+                asset.asset_id
+                for asset in document.media_assets
+                if asset.download_error is not None
+                and asset.asset_id.startswith(("image-", "video-"))
+            }
+            if not failed_before:
+                raise RunValidationError("当前没有可重新读取的失败素材")
+            await self.repository.append_event(
+                run_id,
+                "retry_failed_assets",
+                "started",
+                f"Retrying {len(failed_before)} failed assets",
+            )
+            try:
+                refreshed = await self.document_source.retry_failed_assets(document)
+            except AgentError as exc:
+                await self.repository.append_event(
+                    run_id,
+                    "retry_failed_assets",
+                    "failed",
+                    exc.detail.message,
+                )
+                raise RunConflict(exc.detail.message) from None
+            except Exception:
+                await self.repository.append_event(
+                    run_id,
+                    "retry_failed_assets",
+                    "failed",
+                    "Failed asset retry did not complete",
+                )
+                raise RunConflict("重新读取失败素材未完成，请稍后重试") from None
+
+            remaining = {
+                asset.asset_id
+                for asset in refreshed.media_assets
+                if asset.download_error is not None
+                and asset.asset_id in failed_before
+            }
+            recovered = failed_before - remaining
+            descriptions = [
+                VisionDescription.model_validate(item)
+                for item in state.get("vision_descriptions", [])
+            ]
+            descriptions = [
+                item for item in descriptions if item.asset_id not in recovered
+            ]
+            vision_issues = [
+                issue for issue in state.get("vision_issues", [])
+                if not any(f"素材 {asset_id} " in issue for asset_id in recovered)
+            ]
+            if self.vision_analyzer is not None:
+                for asset in refreshed.media_assets:
+                    if asset.asset_id not in recovered or not asset.mime_type.startswith("image/"):
+                        continue
+                    try:
+                        descriptions.append(await self.vision_analyzer.analyze(asset))
+                    except Exception as exc:
+                        reason = (
+                            exc.detail.message
+                            if isinstance(exc, AgentError)
+                            else "图片无法完成视觉分析"
+                        )
+                        vision_issues.append(
+                            f"素材 {asset.asset_id} 视觉分析失败：{reason}"
+                        )
+
+            checkpoint_document = refreshed.model_copy(
+                update={
+                    "media_assets": [
+                        asset.model_copy(update={"file_token": None})
+                        for asset in refreshed.media_assets
+                    ]
+                }
+            )
+            refreshed_json = checkpoint_document.model_dump(mode="json")
+            plan = self._state_plan(state)
+            validation_issues = [
+                record.display_message
+                for record in resolve_ingest_issue_records(refreshed)
+                if record.severity is IngestIssueSeverity.BLOCKING
+            ]
+            validation_issues.extend(
+                validate_plan(
+                    plan,
+                    refreshed,
+                    max_output_count=self.settings.max_output_count,
+                )
+            )
+            revision = state.get("draft_revision")
+            if not isinstance(revision, int):
+                revision = state.get(
+                    "document_revision", state.get("source_revision", 0)
+                )
+            updates = {
+                "normalized_document": refreshed_json,
+                "source_document": refreshed_json,
+                "media_assets": refreshed_json["media_assets"],
+                "vision_descriptions": [
+                    item.model_dump(mode="json") for item in descriptions
+                ],
+                "vision_issues": vision_issues,
+                "validation_issues": validation_issues,
+                "draft_revision": revision + 1,
+                "status": "waiting_approval",
+            }
+            config = self._config(run["thread_id"])
+            try:
+                await self._graph_aupdate_state(
+                    config, updates, as_node="validate_plan"
+                )
+                result = await self._graph_ainvoke(None, config=config)
+            except Exception:
+                raise RunConflict("更新审批 checkpoint 失败") from None
+            if not self._has_interrupt(result):
+                raise RunConflict("更新后未恢复到等待审批状态")
+            await self.repository.update_run_status(run_id, "waiting_approval")
+            await self.repository.append_event(
+                run_id,
+                "retry_failed_assets",
+                "completed",
+                f"Recovered {len(recovered)} assets; {len(remaining)} still failed",
+            )
+            return {
+                "recovered_count": len(recovered),
+                "remaining_count": len(remaining),
+            }
 
     async def _waiting_state(
         self,

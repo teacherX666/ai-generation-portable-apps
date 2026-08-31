@@ -23,6 +23,22 @@
       </div>
     </div>
 
+    <div class="mobile-app-switcher">
+      <label for="mobileAppSelect">当前应用</label>
+      <select id="mobileAppSelect" aria-label="切换应用">
+        <option value="seedance">Seedance</option>
+        <option value="nb">图像生成模块</option>
+        <option value="feishu-generation-agent">飞书任务 Agent</option>
+        <option value="dreamina">Dreamina</option>
+        <option value="volcengine-portrait">人像生成</option>
+        <option value="infinite-canvas">无限画布</option>
+        <option value="keys">密钥库</option>
+        <option value="rag-assistant">报错问答助手</option>
+        <option value="history">历史记录</option>
+        <option value="stats">统计</option>
+      </select>
+    </div>
+
     <div class="app-tabs-bar ui-tabs" role="tablist" aria-label="应用模块">
       <button id="tab-btn-seedance" class="app-tab ui-tab active" role="tab" aria-selected="true" aria-controls="tab-seedance" tabindex="0" data-tab="seedance">Seedance</button>
       <button id="tab-btn-nb" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-nb" tabindex="-1" data-tab="nb">图像生成模块</button>
@@ -44,17 +60,17 @@
 
   <!-- SEEDANCE -->
   <div class="tab-panel iframe-panel active" id="tab-seedance" role="tabpanel" aria-labelledby="tab-btn-seedance">
-    <iframe class="portal-iframe" id="iframe-seedance" src="/seedance/index.html" allow="fullscreen"></iframe>
+    <iframe class="portal-iframe" id="iframe-seedance" src="/seedance/index.html" title="Seedance 视频生成" allow="fullscreen"></iframe>
   </div>
 
   <!-- NANO BANANA -->
   <div class="tab-panel iframe-panel" id="tab-nb" role="tabpanel" aria-labelledby="tab-btn-nb" hidden>
-    <iframe class="portal-iframe" id="iframe-nb" src="/nano-banana/index.html" allow="fullscreen"></iframe>
+    <iframe class="portal-iframe" id="iframe-nb" data-src="/nano-banana/index.html" title="图像生成模块" allow="fullscreen"></iframe>
   </div>
 
   <!-- FEISHU GENERATION AGENT -->
   <div class="tab-panel iframe-panel" id="tab-feishu-generation-agent" role="tabpanel" aria-labelledby="tab-btn-feishu-generation-agent" hidden>
-    <iframe class="portal-iframe" id="iframe-feishu-generation-agent" data-app="feishu-generation-agent" data-fallback-src="/feishu-generation-agent/" src="/feishu-generation-agent/" allow="fullscreen"></iframe>
+    <iframe class="portal-iframe" id="iframe-feishu-generation-agent" data-app="feishu-generation-agent" data-fallback-src="/feishu-generation-agent/" title="飞书任务 Agent" allow="fullscreen"></iframe>
   </div>
 
   <!-- INFINITE CANVAS -->
@@ -62,12 +78,12 @@
        （portal/static/app.js:80），拼错会 null.classList 抛错并卡死整个 tab 栏。
        src 由 initConfiguredIframes() 从 /api/apps 注入，不写死。 -->
   <div class="tab-panel iframe-panel" id="tab-infinite-canvas" role="tabpanel" aria-labelledby="tab-btn-infinite-canvas" hidden>
-    <iframe class="portal-iframe" id="iframe-infinite-canvas" data-app="infinite-canvas" data-fallback-src="/infinite-canvas/" src="/infinite-canvas/" allow="fullscreen"></iframe>
+    <iframe class="portal-iframe" id="iframe-infinite-canvas" data-app="infinite-canvas" data-fallback-src="/infinite-canvas/" title="无限画布" allow="fullscreen"></iframe>
   </div>
 
   <!-- RAG ASSISTANT -->
   <div class="tab-panel iframe-panel" id="tab-rag-assistant" role="tabpanel" aria-labelledby="tab-btn-rag-assistant" hidden>
-    <iframe class="portal-iframe" id="iframe-rag-assistant" data-app="rag-assistant" data-fallback-src="/rag-assistant/" src="/rag-assistant/" allow="fullscreen"></iframe>
+    <iframe class="portal-iframe" id="iframe-rag-assistant" data-app="rag-assistant" data-fallback-src="/rag-assistant/" title="报错问答助手" allow="fullscreen"></iframe>
   </div>
 
   <!-- HISTORY -->
@@ -1095,7 +1111,7 @@
     </div>
   </aside>
 
-  <script src="https://unpkg.com/petite-vue@0.4.1/dist/petite-vue.iife.js"></script>
+  <script src="/vendor/petite-vue.iife.js"></script>
   <script src="/app.js"></script>
   <script src="/effects.js"></script>
   <script src="/dino.js"></script>

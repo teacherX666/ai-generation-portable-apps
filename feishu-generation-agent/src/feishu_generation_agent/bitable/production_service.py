@@ -247,6 +247,20 @@ class ProductionBitableService:
             raise RunConflict("只有已经结束的多维表格任务可以重跑")
         if source.snapshot.task_type not in self._enabled_task_types:
             raise RunConflict(f"{source.snapshot.task_type or '未分类'}任务暂未启用")
+        active_for_record = next(
+            (
+                binding
+                for binding in await self._store.list_active(
+                    source.source_location.app_token or "",
+                    source.source_location.table_id,
+                    owner_user_id=owner_user_id,
+                )
+                if binding.record_id == source.record_id
+            ),
+            None,
+        )
+        if active_for_record is not None:
+            return active_for_record.run_id
         task = ProductionTaskSummary(
             record_id=source.record_id,
             display_text=source.display_text,

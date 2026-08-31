@@ -35,6 +35,12 @@ for (const [entry, href] of entryExpectations) {
 }
 
 const portal = read('portal/static/index.html');
+const login = read('portal/static/login.html');
+const portalBackend = read('portal/app.py');
+assert.match(login, /href="\/ui\/portal-ui-core\.css"/, 'Login should use the shared UI Core when it is available');
+assert.match(login, /--ui-bg-canvas:\s*#f3f6fa[\s\S]*?\.login-card\s*\{[^}]*background:\s*var\(--ui-bg-surface\)[^}]*border:/s, 'Login must keep a complete inline fallback before authentication');
+assert.match(portalBackend, /_AUTH_EXEMPT_PREFIXES\s*=\s*\("\/ui\/",\)/, 'Shared login styles must be publicly readable before authentication');
+assert.match(portalBackend, /path\.startswith\(_AUTH_EXEMPT_PREFIXES\)/, 'Portal GET dispatch must honor the public UI style prefix');
 const tabNames = [...portal.matchAll(/<button\b[^>]*class="[^"]*app-tab[^"]*"[^>]*data-tab="([^"]+)"/g)].map((match) => match[1]);
 const panelNames = [...portal.matchAll(/<div\b[^>]*class="[^"]*tab-panel[^"]*"[^>]*id="tab-([^"]+)"/g)].map((match) => match[1]);
 assert.equal(tabNames.length, 10, 'Portal should expose ten application tabs');
@@ -130,3 +136,22 @@ assert.match(rag, /main[^>]*style="[^"]*overflow-y:\s*auto|class="[^"]*ui-main[^
 assert.match(rag, /html,\s*body|overflow-hidden/, 'RAG assistant should suppress root-level duplicate scrolling');
 
 console.log('ui core structure: ok');
+
+// Portal delivery hardening: browser dependencies are local, hidden iframe
+// applications load on first visit, and narrow screens use a discoverable
+// application selector instead of a long horizontally scrolling tab strip.
+assert.doesNotMatch(portal, /https:\/\/unpkg\.com\/petite-vue/, 'Portal must not depend on the public unpkg CDN');
+assert.match(portal, /src="\/vendor\/petite-vue\.iife\.js"/, 'Portal should load the vendored Petite Vue runtime');
+assert.match(portal, /id="mobileAppSelect"[\s\S]*?<option value="stats">统计<\/option>/, 'Portal should expose all application tabs in the mobile selector');
+assert.match(portal, /id="iframe-nb"[^>]*data-src="\/nano-banana\/index\.html"[^>]*title="图像生成模块"/, 'Hidden iframe apps should keep their URL in data-src and expose an accessible title');
+assert.doesNotMatch(portal, /id="iframe-(?:nb|feishu-generation-agent|infinite-canvas|rag-assistant)"[^>]*\ssrc=/, 'Hidden iframe apps must not navigate during initial Portal load');
+assert.match(portalScript, /function loadPortalIframe[\s\S]*iframe\.dataset\.loaded === 'true'[\s\S]*iframe\.src = target/, 'Portal should mount each iframe once on first activation');
+assert.match(portalScript, /mobileAppSelect\.addEventListener\('change'[\s\S]*activatePortalTab/, 'Mobile selector should use the same tab activation path as desktop navigation');
+assert.match(portalStyles, /@media \(max-width: 680px\)[\s\S]*\.mobile-app-switcher\s*\{\s*display:\s*flex;[\s\S]*\.app-tabs-bar\s*\{\s*display:\s*none;/, 'Narrow screens should replace the desktop tab strip with the application selector');
+assert.match(portalStyles, /@media \(prefers-reduced-motion: reduce\)/, 'Portal should respect reduced-motion preferences');
+
+for (const entry of ['seedance/static/index.html', 'nano-banana/static/index.html']) {
+  const html = read(entry);
+  assert.doesNotMatch(html, /https:\/\/unpkg\.com\/petite-vue/, `${entry} must not depend on the public unpkg CDN`);
+  assert.match(html, /src="vendor\/petite-vue\.iife\.js"/, `${entry} should load the vendored Petite Vue runtime`);
+}

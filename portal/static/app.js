@@ -117,9 +117,63 @@ function openPreview(kind, url) {
 }
 
 // === Tab Switching (vanilla) ===
-// Keep the visual class, hidden state, and ARIA state in sync. This matters for
-// native Portal panels as well as iframes: a panel that is merely visually
-// hidden can still retain focus and create a second scroll context.
+// Keep the visual class, hidden state, ARIA state, mobile selector, and lazy
+// iframe lifecycle in sync. Only the initial Seedance iframe loads eagerly;
+// other iframe applications are mounted on their first visit and then kept
+// alive so drafts and running-task views are preserved when switching away.
+function iframeTarget(iframe) {
+  return iframe?.dataset.resolvedSrc || iframe?.dataset.src || iframe?.dataset.fallbackSrc || '';
+}
+
+function setIframeLoadState(iframe, state, message = '') {
+  const panel = iframe?.closest('.iframe-panel');
+  if (!panel) return;
+  panel.classList.toggle('is-loading', state === 'loading');
+  panel.classList.toggle('has-load-error', state === 'error');
+  const status = panel.querySelector('.iframe-load-status');
+  if (!status) return;
+  status.hidden = state === 'ready';
+  status.querySelector('.iframe-load-message').textContent = message || (state === 'error' ? '应用加载失败' : '正在加载应用…');
+  status.querySelector('.iframe-retry').hidden = state !== 'error';
+}
+
+function ensureIframeStatus(iframe) {
+  const panel = iframe?.closest('.iframe-panel');
+  if (!panel || panel.querySelector('.iframe-load-status')) return;
+  const status = document.createElement('div');
+  status.className = 'iframe-load-status';
+  status.setAttribute('role', 'status');
+  status.innerHTML = '<div class="spinner" aria-hidden="true"></div><p class="iframe-load-message">正在加载应用…</p><button class="iframe-retry ui-btn ui-btn--secondary" type="button" hidden>重新加载</button>';
+  status.querySelector('.iframe-retry').addEventListener('click', () => loadPortalIframe(iframe, { force: true }));
+  panel.insertBefore(status, iframe);
+  iframe.addEventListener('load', () => setIframeLoadState(iframe, 'ready'));
+  iframe.addEventListener('error', () => setIframeLoadState(iframe, 'error', '应用加载失败，请检查服务状态后重试。'));
+}
+
+function loadPortalIframe(iframe, { force = false } = {}) {
+  if (!iframe) return;
+  ensureIframeStatus(iframe);
+  const target = iframeTarget(iframe);
+  if (!target) {
+    setIframeLoadState(iframe, 'error', '应用地址尚未配置。');
+    return;
+  }
+  if (!force && iframe.dataset.loaded === 'true') return;
+  setIframeLoadState(iframe, 'loading');
+  iframe.dataset.loaded = 'true';
+  if (force && iframe.getAttribute('src') === target) {
+    iframe.src = 'about:blank';
+    requestAnimationFrame(() => { iframe.src = target; });
+  } else {
+    iframe.src = target;
+  }
+}
+
+function loadIframeForPanel(panel) {
+  const iframe = panel?.querySelector('iframe.portal-iframe');
+  if (iframe) loadPortalIframe(iframe);
+}
+
 function activatePortalTab(btn, { focus = false } = {}) {
   if (!btn) return;
   const panel = document.getElementById('tab-' + btn.dataset.tab);
@@ -135,10 +189,20 @@ function activatePortalTab(btn, { focus = false } = {}) {
     p.classList.toggle('active', active);
     p.hidden = !active;
   });
+  const mobileSelect = document.getElementById('mobileAppSelect');
+  if (mobileSelect && mobileSelect.value !== btn.dataset.tab) mobileSelect.value = btn.dataset.tab;
+  loadIframeForPanel(panel);
   if (focus) btn.focus();
 }
 
 const portalTabButtons = Array.from(document.querySelectorAll('.app-tab'));
+const mobileAppSelect = document.getElementById('mobileAppSelect');
+if (mobileAppSelect) {
+  mobileAppSelect.addEventListener('change', () => {
+    const btn = portalTabButtons.find(item => item.dataset.tab === mobileAppSelect.value);
+    activatePortalTab(btn);
+  });
+}
 
 // Fixed overlays must follow the real stacked header height. The title row can
 // wrap on narrow screens and the application tab strip can change height as
@@ -172,28 +236,40 @@ portalTabButtons.forEach(btn => {
   });
 });
 
-// Defensive normalization for older cached HTML where `hidden` was absent.
-const initialPortalTab = document.querySelector('.app-tab.active') || portalTabButtons[0];
-if (initialPortalTab) activatePortalTab(initialPortalTab);
-
 // Iframe URLs are supplied by the Portal's app registry so they stay relative
 // to whichever origin, protocol, and hostname serves this Portal instance.
+// Registry discovery only resolves URLs; it does not eagerly navigate hidden
+// iframes. If a user opens a tab before discovery completes, its fallback URL
+// loads immediately and remains usable.
 async function initConfiguredIframes() {
-  // Keep a working local route even if the registry request is temporarily
-  // unavailable (for example during a backend restart). The registry remains
-  // the source of truth when it responds, but a failed request must not turn
-  // a valid module tab into a blank iframe.
-  document.querySelectorAll('iframe[data-app]').forEach(iframe => {
-    if (!iframe.getAttribute('src')) {
-      const fallback = iframe.dataset.fallbackSrc;
-      if (fallback) iframe.src = fallback;
+  document.querySelectorAll('iframe.portal-iframe').forEach(iframe => {
+    ensureIframeStatus(iframe);
+    if (iframe.getAttribute('src')) {
+      iframe.dataset.loaded = 'true';
+      // The eager Seedance iframe may have completed before this late script
+      // attaches its load listener. Do not leave a loading mask over an
+      // already-visible application; future navigations still use load/error.
+      setIframeLoadState(iframe, 'ready');
     }
+    const fallback = iframe.dataset.src || iframe.dataset.fallbackSrc || iframe.getAttribute('src');
+    if (fallback) iframe.dataset.resolvedSrc = fallback;
   });
+
+  const initialPortalTab = document.querySelector('.app-tab.active') || portalTabButtons[0];
+  if (initialPortalTab) activatePortalTab(initialPortalTab);
+
   const res = await api('/api/apps');
   if (!res?.ok || !Array.isArray(res.apps)) return;
   document.querySelectorAll('iframe[data-app]').forEach(iframe => {
     const app = res.apps.find(item => item.name === iframe.dataset.app);
-    if (app?.mount === 'iframe' && app.iframe_url) iframe.src = app.iframe_url;
+    if (!app?.iframe_url) return;
+    const fallback = iframe.dataset.fallbackSrc || '';
+    // The registry may return either an explicit iframe mount or a proxy-style
+    // entry whose URL is still the correct browser route. Prefer the configured
+    // URL without making lazy loading depend on the mount label.
+    if (app.mount === 'iframe' || !fallback || app.iframe_url !== fallback) {
+      iframe.dataset.resolvedSrc = app.iframe_url;
+    }
   });
 }
 initConfiguredIframes();

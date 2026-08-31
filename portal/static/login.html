@@ -6,10 +6,35 @@
 <title>AI Generation Portal — 登录</title>
 <link rel="stylesheet" href="/ui/portal-ui-core.css">
 <style>
-body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;background:var(--ui-bg-canvas)}
-.login-card{width:100%;max-width:400px;padding:32px}
-h1{font-size:var(--ui-font-size-lg);font-weight:var(--ui-font-weight-bold);margin-bottom:6px;color:var(--ui-text-primary)}
-.sub{font-size:var(--ui-font-size-base);color:var(--ui-text-muted);margin-bottom:24px}
+/* 登录发生在认证之前，因此这里必须保留一套可独立工作的最小样式。
+   即使共享 UI Core 因网络或认证配置暂时不可用，页面也不能退化成裸 HTML。 */
+:root{
+  --ui-bg-canvas:#f3f6fa;
+  --ui-bg-surface:#fff;
+  --ui-bg-sunken:#eef2f7;
+  --ui-text-primary:#172033;
+  --ui-text-secondary:#475569;
+  --ui-text-muted:#748196;
+  --ui-border-default:#d7dee8;
+  --ui-action-primary:#235fd6;
+  --ui-action-primary-hover:#184fbf;
+  --ui-color-danger-text:#b42318;
+  --ui-font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --ui-font-size-base:13px;
+  --ui-font-size-md:15px;
+  --ui-font-size-lg:20px;
+  --ui-font-weight-medium:600;
+  --ui-font-weight-bold:700;
+  --ui-radius-md:8px;
+  --ui-focus-ring:0 0 0 3px rgba(35,95,214,.16);
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;background:var(--ui-bg-canvas);color:var(--ui-text-primary);font-family:var(--ui-font-family);font-size:var(--ui-font-size-base);line-height:1.5;-webkit-font-smoothing:antialiased}
+button,input{font:inherit}
+.login-card{width:100%;max-width:400px;padding:32px;background:var(--ui-bg-surface);border:1px solid var(--ui-border-default);border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.08)}
+h1{font-size:var(--ui-font-size-lg);font-weight:var(--ui-font-weight-bold);margin:0 0 6px;color:var(--ui-text-primary)}
+.sub{font-size:var(--ui-font-size-base);color:var(--ui-text-muted);margin:0 0 24px}
 label{display:block;font-size:var(--ui-font-size-base);color:var(--ui-text-secondary);margin-bottom:16px}
 label span{display:block;margin-bottom:4px}
 input[type=text],input[type=password]{width:100%;min-height:36px;padding:0 12px;background:var(--ui-bg-surface);border:1px solid var(--ui-border-default);border-radius:var(--ui-radius-md);color:var(--ui-text-primary);font-size:var(--ui-font-size-md);outline:none}

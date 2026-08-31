@@ -98,7 +98,7 @@
         </p>
         <div id="bitable-task-list" class="bitable-task-list"></div>
       </div>
-      <section class="recent-runs" aria-label="最近完成任务">
+      <section class="recent-runs" aria-label="任务记录">
         <div class="recent-runs-heading">
           <button
             id="recent-runs-toggle"
@@ -108,7 +108,8 @@
             aria-controls="recent-run-list"
           >
             <span class="collapse-chevron" aria-hidden="true"></span>
-            <span class="collapse-title">最近完成任务</span>
+            <span class="collapse-title">任务记录</span>
+            <span id="run-history-summary" class="run-history-summary">进行中与历史任务都在这里</span>
           </button>
           <button
             id="trash-button"
@@ -136,13 +137,20 @@
           </div>
           <span id="status-badge" class="status-badge">尚未创建</span>
         </div>
+        <div id="run-guidance" class="run-guidance" role="status" aria-live="polite">
+          <strong>还没有进行中的任务</strong>
+          <span>从上方粘贴飞书文档，或在多维表格任务中选择一条开始。</span>
+        </div>
         <dl class="run-meta">
-          <div><dt>当前节点</dt><dd id="current-node">—</dd></div>
-          <div><dt>当前状态</dt><dd id="run-status">—</dd></div>
-          <div><dt>thread ID</dt><dd id="thread-id">—</dd></div>
+          <div><dt>当前阶段</dt><dd id="current-node">—</dd></div>
+          <div><dt>任务状态</dt><dd id="run-status">—</dd></div>
+          <div><dt>任务编号</dt><dd id="thread-id">—</dd></div>
           <div><dt>累计耗时</dt><dd id="run-duration">—</dd></div>
         </dl>
-        <ol id="event-list" class="event-list"></ol>
+        <details class="workflow-details">
+          <summary>查看技术执行轨迹</summary>
+          <ol id="event-list" class="event-list"></ol>
+        </details>
         <p id="langsmith-warning" class="privacy-warning" hidden>
           LangSmith 追踪已开启：工作流输入和输出会发送到外部追踪服务。
         </p>
@@ -154,7 +162,13 @@
             <p class="eyebrow">REVIEW</p>
             <h2 id="document-title">等待提交飞书文档</h2>
           </div>
-          <a id="source-link" href="#" target="_blank" rel="noreferrer">查看源文档</a>
+          <div class="review-heading-actions">
+            <label class="run-switcher-label" for="current-run-switcher">切换任务</label>
+            <select id="current-run-switcher" class="run-switcher" aria-label="切换任务" disabled>
+              <option value="">暂无任务记录</option>
+            </select>
+            <a id="source-link" href="#" target="_blank" rel="noreferrer">查看源文档</a>
+          </div>
         </div>
         <p class="document-meta">文档版本 <span id="document-revision">—</span></p>
         <p id="delivery-target" class="document-meta" hidden></p>
@@ -163,7 +177,15 @@
         <div id="execution-errors" class="execution-errors" role="alert" hidden></div>
         <div id="validation-issues" class="validation-issues" hidden></div>
         <div id="blocking-ingest-issues" class="blocking-ingest-issues" role="alert" hidden></div>
-        <div id="asset-ingest-issues" class="asset-issue-message" hidden></div>
+        <div id="asset-ingest-issues" class="asset-issue-message" hidden>
+          <div id="asset-ingest-issue-list"></div>
+          <div class="asset-retry-actions">
+            <button id="retry-failed-assets-button" type="button" class="quiet-button">
+              重新读取失败素材
+            </button>
+            <span id="retry-failed-assets-feedback" role="status" aria-live="polite"></span>
+          </div>
+        </div>
         <div id="vision-issues" class="asset-issue-message" hidden></div>
         <div id="review-conflict" class="review-conflict" role="alert" hidden>
           <span id="review-conflict-text"></span>
@@ -186,11 +208,11 @@
 
         <section id="artifact-review" class="artifact-review" aria-label="成片预览" hidden>
           <div class="panel-heading">
-            <h3>成片预览</h3>
-            <p class="mode-message">确认满意后才会把产物写回多维表格「结果」列。</p>
+            <h3>成片与结果</h3>
+            <p id="artifact-review-message" class="mode-message">查看生成素材，确认满意后导出到多维表格「结果」列。</p>
           </div>
           <div id="artifact-list" class="artifact-list"></div>
-          <div class="feedback-box">
+          <div id="artifact-review-feedback-box" class="feedback-box">
             <label for="artifact-review-feedback">调整意见（不满意时填写）</label>
             <textarea
               id="artifact-review-feedback"
@@ -198,15 +220,12 @@
               placeholder="说明哪里不满意、希望如何调整"
             ></textarea>
           </div>
-          <div class="artifact-review-actions">
+          <div id="artifact-review-actions" class="artifact-review-actions">
             <button id="confirm-artifacts-button" type="button" class="primary">
-              确认并回写结果表
+              导出到结果表
             </button>
             <button id="adjust-artifacts-button" type="button" class="secondary">
               不满意，退回调整
-            </button>
-            <button id="cancel-artifacts-button" type="button" class="danger">
-              取消本次运行
             </button>
           </div>
         </section>
@@ -220,15 +239,16 @@
     </main>
 
     <footer class="action-bar ui-shell__footer">
-      <span id="polling-note">每 1 秒自动刷新运行状态</span>
+      <div class="action-status">
+        <strong id="action-title">等待任务</strong>
+        <span id="polling-note">请选择一条任务开始处理</span>
+      </div>
       <div class="action-buttons">
-        <button id="next-task-button" type="button" class="secondary" disabled>开始下一任务</button>
-        <button id="rerun-button" type="button" class="secondary" disabled>重跑此任务</button>
-        <button id="retry-delivery-button" type="button" class="secondary">仅重试交付</button>
-        <button id="delete-run-button" type="button" class="quiet-button">删除本地运行</button>
-        <button id="reject-button" type="button" class="secondary">退回重新规划</button>
-        <button id="cancel-button" type="button" class="danger">全部取消</button>
-        <button id="approve-button" type="button" class="primary">批准所选任务</button>
+        <button id="rerun-button" type="button" class="secondary" disabled hidden>重新运行</button>
+        <button id="retry-delivery-button" type="button" class="primary" hidden>重新写入结果表</button>
+        <button id="reject-button" type="button" class="secondary" hidden>退回修改计划</button>
+        <button id="approve-button" type="button" class="primary" hidden>批准并开始生成</button>
+        <button id="cancel-button" type="button" class="danger" hidden>取消本次任务</button>
       </div>
     </footer>
 
@@ -263,8 +283,26 @@
           </div>
           <button id="trash-close" type="button" class="quiet-button">关闭</button>
         </div>
-        <p class="mode-message">删除的任务会保留在这里，可以随时恢复回最近完成任务。</p>
+        <p class="mode-message">删除的任务会保留在这里，可以随时恢复到任务记录。</p>
+        <div class="trash-toolbar" role="search">
+          <label class="trash-search-field" for="trash-search">
+            <span>搜索</span>
+            <input id="trash-search" type="search" placeholder="搜索任务名称或任务 ID" autocomplete="off">
+          </label>
+          <label class="trash-filter-field" for="trash-status-filter">
+            <span>状态</span>
+            <select id="trash-status-filter">
+              <option value="">全部状态</option>
+            </select>
+          </label>
+        </div>
+        <p id="trash-result-summary" class="trash-result-summary" aria-live="polite"></p>
         <div id="trash-list" class="trash-list"></div>
+        <nav id="trash-pagination" class="trash-pagination" aria-label="回收站分页" hidden>
+          <button id="trash-prev" type="button" class="secondary">上一页</button>
+          <span id="trash-page-info">第 1 / 1 页</span>
+          <button id="trash-next" type="button" class="secondary">下一页</button>
+        </nav>
       </section>
     </div>
 

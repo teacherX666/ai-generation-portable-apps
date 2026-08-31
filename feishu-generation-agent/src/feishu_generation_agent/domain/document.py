@@ -18,6 +18,21 @@ class IngestIssueSeverity(StrEnum):
     ASSET = "asset"
 
 
+class IngestIssueAssetKind(StrEnum):
+    IMAGE = "image"
+    VIDEO = "video"
+    FILE = "file"
+
+
+class IngestIssueFailureReason(StrEnum):
+    TEMPORARY = "temporary"
+    PERMISSION = "permission"
+    UNAVAILABLE = "unavailable"
+    INVALID = "invalid"
+    SAVE_FAILED = "save_failed"
+    UNKNOWN = "unknown"
+
+
 class IngestIssueCode(StrEnum):
     SHEET_REFERENCE_INVALID = "sheet_reference_invalid"
     SHEET_EXPORTER_UNAVAILABLE = "sheet_exporter_unavailable"
@@ -99,6 +114,8 @@ class IngestIssueRecord(BaseModel):
         default=None,
         pattern=rf"^{_SAFE_ISSUE_ID}$",
     )
+    asset_kind: IngestIssueAssetKind | None = None
+    failure_reason: IngestIssueFailureReason | None = None
 
     @model_validator(mode="after")
     def validate_spec(self) -> "IngestIssueRecord":
@@ -130,6 +147,8 @@ def make_ingest_issue_record(
     *,
     source_block_id: str | None = None,
     asset_id: str | None = None,
+    asset_kind: IngestIssueAssetKind | None = None,
+    failure_reason: IngestIssueFailureReason | None = None,
 ) -> IngestIssueRecord:
     severity, message = _INGEST_ISSUE_SPECS[code]
     return IngestIssueRecord(
@@ -138,6 +157,8 @@ def make_ingest_issue_record(
         display_message=message,
         source_block_id=source_block_id,
         asset_id=asset_id,
+        asset_kind=asset_kind,
+        failure_reason=failure_reason,
     )
 
 

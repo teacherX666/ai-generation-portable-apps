@@ -17,6 +17,8 @@ from feishu_generation_agent.domain.errors import (
 _BASE_URL = "https://open.feishu.cn"
 _TOKEN_PATH = "/open-apis/auth/v3/tenant_access_token/internal"
 _TOKEN_INVALID_CODE = 99991663
+_MEDIA_RETRY_DELAYS = (1.0, 2.0)
+
 _PERMISSION_CODES = frozenset(
     {
         _TOKEN_INVALID_CODE,
@@ -173,31 +175,43 @@ class FeishuClient:
     ) -> tuple[bytes, str]:
         path = f"/open-apis/drive/v1/medias/{file_token}/download"
         token = await self.tenant_token()
-        for attempt in range(2):
+        auth_refreshed = False
+        transient_attempt = 0
+        while True:
             request_sensitive_values = (*sensitive_values, file_token, token)
-            response = await self._send(
-                "GET",
-                path,
-                token,
-                sensitive_values=request_sensitive_values,
-            )
-            payload = self._optional_response_json(response)
-            if self._authentication_failed(response, payload) and attempt == 0:
-                token = await self._refresh_after_auth_failure(token)
-                continue
-            if response.status_code >= 400 or self._api_code(payload) != 0:
-                self._raise_for_api_error(
-                    response,
-                    payload,
+            try:
+                response = await self._send(
                     "GET",
                     path,
+                    token,
                     sensitive_values=request_sensitive_values,
                 )
-            return (
-                response.content,
-                response.headers.get("Content-Type", "application/octet-stream"),
-            )
-        raise AssertionError("download retry loop exhausted")
+                payload = self._optional_response_json(response)
+                if self._authentication_failed(response, payload) and not auth_refreshed:
+                    token = await self._refresh_after_auth_failure(token)
+                    auth_refreshed = True
+                    continue
+                if response.status_code >= 400 or self._api_code(payload) != 0:
+                    self._raise_for_api_error(
+                        response,
+                        payload,
+                        "GET",
+                        path,
+                        sensitive_values=request_sensitive_values,
+                    )
+                return (
+                    response.content,
+                    response.headers.get("Content-Type", "application/octet-stream"),
+                )
+            except AgentError as exc:
+                if (
+                    not exc.detail.retryable
+                    or transient_attempt >= len(_MEDIA_RETRY_DELAYS)
+                ):
+                    raise
+                delay = _MEDIA_RETRY_DELAYS[transient_attempt]
+                transient_attempt += 1
+                await asyncio.sleep(delay)
 
     async def download_export_file(
         self,

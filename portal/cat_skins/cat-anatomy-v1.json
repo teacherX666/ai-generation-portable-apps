@@ -1,0 +1,118 @@
+{
+  "schema_version": "cat-anatomy-v1",
+  "canvas": {
+    "width": 16,
+    "height": 16,
+    "transparent": ".",
+    "facing": "right",
+    "coordinate_system": "zero_based_xy",
+    "coordinate_note": "左上角是 (0,0)，x 向右增加，y 向下增加。"
+  },
+  "design_strategy": {
+    "description": "锚点负责保证像猫，可设计区域负责让 AI 逐像素创作，而不是只给固定轮廓换色。",
+    "locked_features": [
+      "双耳",
+      "左右分离的双眼和双竖瞳",
+      "居中的小鼻子",
+      "鼻子下方分开的两点猫嘴",
+      "连续平整的下巴",
+      "闭合的头部区域",
+      "闭合的臀部",
+      "从臀部后方连续伸出的上翘尾巴",
+      "前后两条可辨识的腿"
+    ],
+    "variable_features": [
+      "毛色和花纹",
+      "脸部面罩或特殊眼框",
+      "身体内部像素布局",
+      "尾巴内部花纹和允许范围内的小幅轮廓变化",
+      "高稀有度的皇冠、光环、角、翅膀、披风和盔甲",
+      "史诗和传说主题下的大面积逐像素重绘"
+    ]
+  },
+  "anatomy": {
+    "ears": {
+      "left_required": [[7,1],[7,2],[8,2],[9,2]],
+      "right_required": [[15,1],[13,2],[14,2],[15,2]],
+      "inner_ear_slots": [[8,2],[14,2]],
+      "rule": "必须保留两个尖耳轮廓；皇冠或光环可以覆盖一部分耳朵颜色，但不能让两只耳朵都消失。"
+    },
+    "head": {
+      "required_occupied_rows": {
+        "3": [[7,15]],
+        "4": [[7,15]],
+        "5": [[7,15]],
+        "6": [[7,15]],
+        "7": [[7,15]],
+        "8": [[8,14]],
+        "9": [[9,13]]
+      },
+      "outline_anchors": [[7,3],[15,3],[7,4],[15,4],[7,5],[15,5],[7,6],[15,6],[7,7],[15,7],[8,8],[14,8]],
+      "flat_chin": [[9,9],[10,9],[11,9],[12,9],[13,9]],
+      "rule": "required_occupied_rows 中的范围不得出现透明像素。头部外轮廓从双耳到两侧圆颚再到下巴必须形成闭环；下巴五格连续且平整，不能缺口、尖底或悬空。"
+    },
+    "eyes": {
+      "left_eye_box": [[9,5],[10,5],[9,6],[10,6]],
+      "right_eye_box": [[12,5],[13,5],[12,6],[13,6]],
+      "left_pupil": [[10,5],[10,6]],
+      "right_pupil": [[12,5],[12,6]],
+      "separator": [[11,5],[11,6]],
+      "rule": "左右眼必须各占 2×2；两条瞳孔各自竖直连续；x=11 的两格不得使用瞳孔色，保证双眼有明确间隔。主题面罩可以改变眼睛外形，但仍须保留左右两只独立眼睛。"
+    },
+    "muzzle": {
+      "nose": [[11,7]],
+      "mouth_corners": [[10,8],[12,8]],
+      "mouth_center": [[11,8]],
+      "chin_below": [[9,9],[10,9],[11,9],[12,9],[13,9]],
+      "rule": "鼻子保持一格小三角鼻的抽象符号；鼻子下方左右各有一点猫嘴，中间可用一格连接。嘴部不得与下巴糊成同一色块。"
+    },
+    "torso": {
+      "design_box": {"x_min": 4,"x_max": 10,"y_min": 8,"y_max": 14},
+      "required_core": [[5,9],[6,9],[7,9],[8,9],[5,10],[6,10],[7,10],[8,10],[9,10],[6,11],[7,11],[8,11],[9,11],[10,11],[6,12],[7,12],[8,12],[9,12]],
+      "shoulder_connection": [[7,8],[8,8],[8,9],[9,9]],
+      "closed_rump_boundary": [[4,9],[4,10],[5,11],[5,12],[5,13],[6,14]],
+      "rule": "身体必须与头部相连，尺寸保持中等。身体左后侧必须连续封闭，不能因为尾巴或翅膀出现透明缺口。"
+    },
+    "tail": {
+      "design_box": {"x_min": 0,"x_max": 5,"y_min": 5,"y_max": 11},
+      "root": [[4,9],[4,10],[5,10]],
+      "reference_route": [[4,10],[3,10],[2,9],[1,9],[0,8],[0,7],[1,6],[2,6],[3,7],[4,8]],
+      "tip_zone": {"x_min": 0,"x_max": 2,"y_min": 5,"y_max": 7},
+      "forbidden": [[0,12],[1,12],[2,12],[3,12],[0,13],[1,13],[2,13],[3,13],[0,14],[1,14],[2,14],[3,14],[0,15],[1,15],[2,15],[3,15]],
+      "rule": "尾巴从臀部后层伸出，整体向左上轻微翘起，不拖地。所有尾巴像素必须与 root 八方向连通；尾尖应比根部细；不得出现悬空点，也不得与翅膀共用像素。"
+    },
+    "legs": {
+      "animation_box": {"x_min": 4,"x_max": 13,"y_min": 12,"y_max": 15},
+      "hind_leg_zone": {"x_min": 4,"x_max": 8,"y_min": 12,"y_max": 15},
+      "front_leg_zone": {"x_min": 9,"x_max": 12,"y_min": 11,"y_max": 15},
+      "frame_a_ground_pixels": [[5,15],[6,15],[10,15],[11,15],[12,15]],
+      "frame_b_ground_pixels": [[4,15],[5,15],[11,15],[12,15]],
+      "rule": "两帧只能在 animation_box 内改变像素。每帧都必须看出一条后腿和一条前腿，脚掌不能全部离地。"
+    },
+    "wing": {
+      "optional": true,
+      "design_box": {"x_min": 0,"x_max": 6,"y_min": 1,"y_max": 8},
+      "attachment_zone": [[5,7],[6,7],[5,8],[6,8]],
+      "rule": "仅高稀有主题使用。翅膀朝左上展开，轮廓尽量闭合并连接 attachment_zone；不能覆盖眼、鼻、嘴，不能与尾巴共用像素。"
+    },
+    "head_accessory": {
+      "optional": true,
+      "design_box": {"x_min": 5,"x_max": 15,"y_min": 0,"y_max": 3},
+      "rule": "皇冠、光环或角可以与耳朵和头顶重叠。未在 floating_regions 声明的像素必须连接主体；只有光环等合理装饰允许悬浮。"
+    }
+  },
+  "rarity_limits": {
+    "common": {"max_palette_colors": 6,"max_accessories": 0,"silhouette_change": "minimal"},
+    "rare": {"max_palette_colors": 6,"max_accessories": 1,"silhouette_change": "small"},
+    "epic": {"max_palette_colors": 8,"max_accessories": 2,"silhouette_change": "large"},
+    "legendary": {"max_palette_colors": 10,"max_accessories": 3,"silhouette_change": "large"}
+  },
+  "global_rules": [
+    "每帧必须恰好 16 行，每行恰好 16 个字符。",
+    "只能使用 palette 已声明的单字符键和透明字符点号。",
+    "除 floating_regions 中声明的合理悬浮装饰外，禁止孤立像素。",
+    "猫主体必须组成一个八方向连通区域。",
+    "frame_a 与 frame_b 在腿部动画区之外必须完全一致。",
+    "视觉画布固定为 16×16；游戏碰撞盒继续独立使用 12×13。"
+  ]
+}

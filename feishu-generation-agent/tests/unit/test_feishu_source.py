@@ -1240,3 +1240,121 @@ async def test_file_store_oserror_path_is_not_exposed_in_asset_or_issue(
     )
     assert secret not in document.media_assets[0].download_error
     assert secret not in "；".join(document.ingest_issues)
+
+async def test_download_media_retries_transient_responses_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    attempts = 0
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(
+        "feishu_generation_agent.integrations.feishu_client.asyncio.sleep",
+        fake_sleep,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "tenant_access_token": "token", "expire": 7200},
+            )
+        attempts += 1
+        if attempts < 3:
+            return httpx.Response(503, json={"code": 1, "msg": "busy"})
+        return httpx.Response(200, content=b"image", headers={"Content-Type": "image/png"})
+
+    async with httpx.AsyncClient(
+        base_url="https://open.feishu.cn",
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        client = FeishuClient(
+            Settings(lark_app_id="fiction-app", lark_app_secret="fiction-secret"),
+            http_client=http_client,
+        )
+        content, mime_type = await client.download_media("fiction-file-token")
+
+    assert content == b"image"
+    assert mime_type == "image/png"
+    assert attempts == 3
+    assert delays == [1.0, 2.0]
+
+
+async def test_download_media_does_not_retry_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    attempts = 0
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(
+        "feishu_generation_agent.integrations.feishu_client.asyncio.sleep",
+        fake_sleep,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "tenant_access_token": "token", "expire": 7200},
+            )
+        attempts += 1
+        return httpx.Response(403, json={"code": 131006, "msg": "denied"})
+
+    async with httpx.AsyncClient(
+        base_url="https://open.feishu.cn",
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        client = FeishuClient(
+            Settings(lark_app_id="fiction-app", lark_app_secret="fiction-secret"),
+            http_client=http_client,
+        )
+        with pytest.raises(AgentError) as raised:
+            await client.download_media("fiction-file-token")
+
+    assert raised.value.detail.category is ErrorCategory.PERMISSION
+    assert attempts == 1
+    assert delays == []
+
+
+async def test_retry_failed_assets_only_downloads_failed_items(
+    file_store: FileStore,
+):
+    fixture = _fixture("feishu_docx_blocks.json")
+    fixture["items"][0]["children"].remove("fiction-sheet")
+    fixture["items"] = [
+        item for item in fixture["items"] if item["block_id"] != "fiction-sheet"
+    ]
+    media = base64.b64decode(fixture["media_base64"])
+    client = FakeFeishuClient(fixture["items"], media)
+    client.download_error = AgentError(
+        ErrorDetail(
+            category=ErrorCategory.TRANSIENT,
+            message="飞书服务暂时不可用，请稍后重试",
+            technical_detail="safe transient failure",
+            retryable=True,
+        )
+    )
+    source = FeishuDocumentSource(client, file_store)
+    document = await source.ingest(
+        RequirementRequest(source_url="https://fiction.feishu.cn/docx/doccn123")
+    )
+    assert document.media_assets[0].download_error is not None
+    assert document.ingest_issue_records[0].asset_kind == "image"
+    assert document.ingest_issue_records[0].failure_reason == "temporary"
+
+    client.download_calls.clear()
+    client.download_error = None
+    refreshed = await source.retry_failed_assets(document)
+
+    assert client.download_calls == ["fiction-file-token"]
+    assert refreshed.media_assets[0].asset_id == "image-1"
+    assert refreshed.media_assets[0].download_error is None
+    assert refreshed.media_assets[0].mime_type == "image/png"
+    assert refreshed.ingest_issue_records == []

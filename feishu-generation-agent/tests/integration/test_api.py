@@ -836,23 +836,31 @@ async def test_clone_run_fails_closed_without_source_prompt_snapshot(
             )
 
 
-async def test_clone_run_for_approval_requires_a_previously_approved_task(
+async def test_clone_run_without_approved_tasks_reanalyzes_original_document(
     tmp_path: Path,
 ) -> None:
-    async with _environment(tmp_path) as (client, runtime, _graph, _repository):
+    async with _environment(tmp_path) as (client, runtime, graph, _repository):
         created = await client.post(
             "/api/runs", json={"source_url": "https://tenant.feishu.cn/docx/source"}
         )
         original_run_id = created.json()["run_id"]
         original = await _wait_for_status(client, original_run_id, "waiting_approval")
 
-        with pytest.raises(Exception, match="原运行没有已批准任务"):
-            await runtime.clone_run_for_approval(
-                original_run_id,
-                RequirementRequest(source_url=original["source_url"]),
-                run_id="rerun-without-approval",
-                thread_id="rerun-without-approval-thread",
-            )
+        rerun_id = await runtime.clone_run_for_approval(
+            original_run_id,
+            RequirementRequest(source_url=original["source_url"]),
+            run_id="rerun-without-approval",
+            thread_id="rerun-without-approval-thread",
+        )
+        rerun = await _wait_for_status(client, rerun_id, "waiting_approval")
+
+    assert rerun_id == "rerun-without-approval"
+    assert rerun["approval"]["tasks"]
+    assert graph.states[rerun["thread_id"]]["planning_prompt"]
+    assert any(
+        event["node"] == "rerun_source" and event["status"] == "started"
+        for event in rerun["events"]
+    )
 
 
 async def test_clone_run_for_approval_initializes_a_real_langgraph_checkpoint(
@@ -1624,6 +1632,8 @@ async def test_structured_asset_issue_drives_api_view_and_approval(
             "severity",
             "code",
             "display_message",
+            "source_block_id",
+            "asset_id",
         }
         assert view["approval"]["blocking_ingest_issues"] == []
         assert response.status_code == 202
@@ -2709,17 +2719,17 @@ async def test_static_review_workspace_is_served_and_uses_safe_dom_updates():
     assert styles.headers["content-type"].startswith("text/css")
     for text in (
         "节点轨迹",
-        "当前节点",
-        "当前状态",
-        "耗时",
-        "thread ID",
+        "当前阶段",
+        "任务状态",
+        "累计耗时",
+        "任务编号",
         "负面约束",
         "参考图片",
         "素材覆盖",
         "排除素材",
-        "退回重新规划",
-        "全部取消",
-        "批准所选任务",
+        "退回修改计划",
+        "取消本次任务",
+        "批准并开始生成",
     ):
         assert text in page.text
     assert "setInterval" in script.text

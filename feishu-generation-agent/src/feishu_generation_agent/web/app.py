@@ -216,6 +216,8 @@ def create_app(
                 file_store=active_services.file_store,
                 settings=active_services.settings,
                 delivery_writer=active_services.delivery_writer,
+                document_source=active_services.document_source,
+                vision_analyzer=active_services.vision_analyzer,
             )
             try:
                 if resume:
@@ -993,6 +995,23 @@ def create_app(
         except RunValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
         return {"run_id": run_id, "status": "accepted"}
+
+    @app.post(
+        "/api/runs/{run_id}/retry-failed-assets",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def retry_failed_assets(
+        run_id: str, request: Request
+    ) -> dict[str, str | int]:
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                result = await active.retry_failed_assets(run_id)
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"run_id": run_id, "status": "updated", **result}
 
     @app.post(
         "/api/runs/{run_id}/retry-delivery",
