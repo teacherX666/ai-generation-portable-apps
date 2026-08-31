@@ -568,7 +568,6 @@ import { emptyProject, newShot, sanitizeFilename, dataUrlToBlob, renderSizeFor }
 let project = null;        // 当前项目 JSON（内存态）
 let activeShotId = null;
 let saveTimer = null;
-let lastRender = null;     // Task 9 渲染结果 {dataUrl, shotId, width, height}
 
 // ============ toast ============
 let toastTimer = null;
@@ -907,13 +906,12 @@ export async function renderShot() {
   const dataUrl = captureShot(width, height);
   if (!dataUrl) return;   // captureShot 内部已 toast 提示
   const thumb = await makeThumbnail(dataUrl);
-  document.getElementById('render-img').src = dataUrl;
-  anno.svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  annoReset(dataUrl);   // 新快照 → 清上一张的标注状态
-  document.getElementById('render-title').textContent = `${shot.order + 1} · ${shot.name} · ${width}×${height}`;
-  document.getElementById('render-status').textContent = '';
-  document.getElementById('render-modal').hidden = false;
-  lastRender = { dataUrl, shotId: shot.id, width, height };
+  openAnnoModal({
+    dataUrl,
+    filenameBase: sanitizeFilename(`${shot.order + 1}-${shot.name}`),
+    width, height,
+    title: `${shot.order + 1} · ${shot.name} · ${width}×${height}`,
+  });
   try {
     const fd = new FormData();
     fd.append('shot_id', shot.id);
@@ -931,12 +929,10 @@ export async function renderShot() {
 window.__renderShot = renderShot;
 
 export async function downloadRender() {
-  if (!lastRender) return toast('先渲染一张快照', true);
-  const shot = project.shots.find((s) => s.id === lastRender.shotId) || currentShotData();
-  const name = shot ? sanitizeFilename(`${shot.order + 1}-${shot.name}`) : 'shot';
+  if (!annoSource) return toast('先渲染或上传一张图片', true);
   const a = document.createElement('a');
-  a.href = lastRender.dataUrl;
-  a.download = `${name}.png`;
+  a.href = annoSource.dataUrl;
+  a.download = `${annoSource.filenameBase}.png`;
   a.click();
 }
 window.__downloadRender = downloadRender;
@@ -947,6 +943,7 @@ const anno = {          // 当前快照的标注状态
   svg: null, active: false, drawing: null,     // drawing: {x0,y0,el}
   baseUrl: null,        // 渲染原始 data URL（合并前的底图）
 };
+let annoSource = null;  // 当前标注会话：{ dataUrl, filenameBase, width, height, title }
 
 function annoReset(baseUrl) {
   anno.items = [];
@@ -968,7 +965,7 @@ export function initAnno() {
     anno.active = !anno.active;
     $('anno-tools').hidden = !anno.active;
     $('anno-layer').style.display = anno.active ? 'block' : 'none';
-    if (!anno.baseUrl && lastRender) annoReset(lastRender.dataUrl);
+    if (!anno.baseUrl && annoSource) annoReset(annoSource.dataUrl);
   };
   $('anno-rect').onclick = () => { anno.tool = 'rect'; $('anno-rect').classList.add('active'); $('anno-text').classList.remove('active'); };
   $('anno-text').onclick = () => { anno.tool = 'text'; $('anno-text').classList.add('active'); $('anno-rect').classList.remove('active'); };
@@ -1089,20 +1086,37 @@ function bakeAnno() {
     const baked = c.toDataURL('image/png');
     anno.baseUrl = baked;              // 合并结果成为新底图
     anno.items = []; anno.svg.innerHTML = '';
-    lastRender.dataUrl = baked;        // 下载/送画布走标注版
+    annoSource.dataUrl = baked;        // 下载/送画布走标注版
     document.getElementById('render-img').src = baked;
     toast('标注已合并进图片 ✓');
   };
   img.src = anno.baseUrl;
 }
 
+// 打开标注模态（渲染快照 / 上传图共用）：每次都是干净的标注会话
+function openAnnoModal(src) {
+  document.getElementById('render-img').src = src.dataUrl;
+  anno.svg.setAttribute('viewBox', `0 0 ${src.width} ${src.height}`);
+  annoReset(src.dataUrl);
+  annoSource = src;
+  // 关闭标注模式（每次打开都是干净的：默认矩形框工具 + 工具条隐藏）
+  anno.active = false;
+  anno.tool = 'rect';
+  document.getElementById('anno-rect').classList.add('active');
+  document.getElementById('anno-text').classList.remove('active');
+  document.getElementById('anno-tools').hidden = true;
+  document.getElementById('anno-layer').style.display = 'none';
+  document.getElementById('render-title').textContent = src.title;
+  document.getElementById('render-status').textContent = '';
+  document.getElementById('render-modal').hidden = false;
+}
+
 // ============ 送画布 ============
 export async function sendRenderToCanvas() {
-  if (!lastRender) return toast('先渲染一张快照', true);
-  const shot = project.shots.find((s) => s.id === lastRender.shotId) || currentShotData();
-  const filename = `${sanitizeFilename(shot ? shot.name : 'shot')}.png`;
+  if (!annoSource) return toast('先渲染或上传一张图片', true);
+  const filename = `${annoSource.filenameBase}.png`;
   const fd = new FormData();
-  fd.append('file', dataUrlToBlob(lastRender.dataUrl), filename);
+  fd.append('file', dataUrlToBlob(annoSource.dataUrl), filename);
   fd.append('media_type', 'image');
   fd.append('kind', 'reference');
   try {
@@ -1121,8 +1135,8 @@ export async function sendRenderToCanvas() {
 }
 window.__sendRender = sendRenderToCanvas;
 window.__toCanvas = () => {
-  // 顶栏按钮：直接送最近一张渲染图；没有则提示
-  if (!lastRender) return toast('先渲染一张快照', true);
+  // 顶栏按钮：直接送当前标注会话的图；没有则提示
+  if (!annoSource) return toast('先渲染或上传一张图片', true);
   sendRenderToCanvas();
 };
 
@@ -1331,6 +1345,34 @@ document.getElementById('btn-add-prop').onclick = () => {
   picker.hidden = !picker.hidden;
 };
 initPropPicker();
+// 图片标注上传入口（任意图片进标注画板）
+document.getElementById('btn-anno-image').onclick = () => {
+  document.getElementById('anno-file').click();
+};
+document.getElementById('anno-file').onchange = (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';   // 允许重复选同一文件
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) return toast('图片超过 20MB', true);
+  if (!file.type.startsWith('image/')) return toast('请选择图片文件', true);
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      openAnnoModal({
+        dataUrl: reader.result,
+        filenameBase: sanitizeFilename(file.name.replace(/\.[^.]+$/, '')) || '标注图',
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+        title: `${file.name} · ${img.naturalWidth}×${img.naturalHeight}`,
+      });
+    };
+    img.onerror = () => toast('图片读取失败', true);
+    img.src = reader.result;
+  };
+  reader.onerror = () => toast('文件读取失败', true);
+  reader.readAsDataURL(file);
+};
 // Task 9/10 挂载点
 document.getElementById('btn-render').onclick = () => window.__renderShot && window.__renderShot();
 document.getElementById('btn-to-canvas').onclick = () => window.__toCanvas && window.__toCanvas();

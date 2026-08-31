@@ -16,6 +16,7 @@
 
 import { chromium } from '/Users/260413a/ai-generation-portable-apps/infinite-canvas/web/node_modules/playwright/index.mjs';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 const URL = process.env.PREVIZ_SMOKE_URL || 'http://127.0.0.1:8897/';
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -168,7 +169,61 @@ try {
   }, textSrcBefore, { timeout: 5000 });
   const textSrcAfter = await page.locator('#render-img').getAttribute('src');
   assert.notEqual(textSrcAfter, textSrcBefore, '文字合并后 img src 应变更为标注版');
-  assert.ok(!pageErrors.length, '标注流程后不应有 pageerror: ' + pageErrors.join(' | '));
+
+  // 6. 上传路径：canvas 生成 16×8 PNG → 上传进标注画板 → 画框合并 → 尺寸/下载断言
+  const pngB64 = await page.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 16; c.height = 8;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#4488cc';
+    ctx.fillRect(0, 0, 16, 8);
+    return c.toDataURL('image/png').split(',')[1];
+  });
+  fs.writeFileSync('/tmp/anno-upload.png', Buffer.from(pngB64, 'base64'));
+  await page.setInputFiles('#anno-file', '/tmp/anno-upload.png');
+  await page.waitForTimeout(600);
+  assert.equal(await page.locator('#render-modal').evaluate((el) => el.hidden), false,
+    '上传后预览弹窗应可见');
+  const upTitle = (await page.locator('#render-title').textContent()) || '';
+  assert.ok(upTitle.includes('anno-upload.png'), '上传后标题应含文件名，实际: ' + upTitle);
+  assert.ok(upTitle.includes('16×8'), '上传后标题应含 16×8，实际: ' + upTitle);
+  const upSrc = await page.locator('#render-img').getAttribute('src');
+  assert.ok(upSrc.startsWith('data:image/png'), '上传图 img src 应为 PNG data URL');
+  assert.equal(await page.locator('#anno-layer').getAttribute('viewBox'), '0 0 16 8',
+    'viewBox 应等于上传图尺寸 16×8');
+  // 上传图同样可标注：画框 → 合并 → 尺寸保持 16×8
+  // （小图场景下打开标注会让 anno-tools 出现、modal 重排居中——bbox 必须在切换后
+  //   且布局稳定后再取，否则拖拽坐标会落在 modal-box 上）
+  await page.click('#btn-render-anno');
+  await page.waitForTimeout(300);
+  const upStage = await page.locator('#render-stage').boundingBox();
+  await page.mouse.move(upStage.x + upStage.width * 0.25, upStage.y + upStage.height * 0.25);
+  await page.mouse.down();
+  await page.mouse.move(upStage.x + upStage.width * 0.5, upStage.y + upStage.height * 0.5, { steps: 3 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('#anno-layer rect').count(), 1, '上传图应能画矩形框');
+  const upBefore = await page.locator('#render-img').getAttribute('src');
+  await page.click('#anno-bake');
+  await page.waitForFunction((before) => {
+    const img = document.getElementById('render-img');
+    return img.src !== before && img.src.startsWith('data:image/png');
+  }, upBefore, { timeout: 5000 });
+  const upDims = await page.evaluate(async (src) => {
+    const img = new Image();
+    img.src = src;
+    await img.decode();
+    return { w: img.naturalWidth, h: img.naturalHeight };
+  }, await page.locator('#render-img').getAttribute('src'));
+  assert.equal(upDims.w, 16, `上传图合并后宽度应为 16，实际 ${upDims.w}`);
+  assert.equal(upDims.h, 8, `上传图合并后高度应为 8，实际 ${upDims.h}`);
+  // 下载入口在新会话（上传图）上可用，文件名走 filenameBase
+  const dlPromise = page.waitForEvent('download');
+  await page.click('#btn-render-download');
+  const dl = await dlPromise;
+  assert.equal(dl.suggestedFilename(), 'anno-upload.png',
+    '上传会话下载文件名应为 anno-upload.png，实际: ' + dl.suggestedFilename());
+  assert.ok(!pageErrors.length, '上传标注流程后不应有 pageerror: ' + pageErrors.join(' | '));
 
   console.log('SMOKE-PASS');
 } finally {
