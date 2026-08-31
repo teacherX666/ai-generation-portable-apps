@@ -59,9 +59,9 @@ export function buildMannequin(color) {
   const torso = part(new THREE.CapsuleGeometry(0.17, 0.44, 8, 16), mat);
   torso.position.y = 0.22; spine.add(torso);
   const chest = new THREE.Group(); chest.position.y = 0.38; spine.add(chest);
-  const neck = new THREE.Group(); neck.position.y = 0.06; chest.add(neck);
+  const neck = new THREE.Group(); neck.position.y = 0.12; chest.add(neck);   // 世界 y≈1.45
   const head = part(new THREE.SphereGeometry(0.14, 20, 20), mat);
-  head.position.y = 0.17; neck.add(head);
+  head.position.y = 0.16; neck.add(head);                                    // 头中心≈1.61，头顶≈1.75
   const joints = {};
   // 腿（大腿胶囊 + 膝盖/踝关节组 + 小腿 + 脚）
   const makeLeg = (side) => {
@@ -79,7 +79,7 @@ export function buildMannequin(color) {
   const leftLeg = makeLeg(-1), rightLeg = makeLeg(1);
   // 手臂（大臂胶囊 + 肘/腕关节组 + 小臂 + 手球）
   const makeArm = (side) => {
-    const shoulderJ = new THREE.Group(); shoulderJ.position.set(side * 0.24, 0.33, 0); chest.add(shoulderJ);
+    const shoulderJ = new THREE.Group(); shoulderJ.position.set(side * 0.24, 0.10, 0); chest.add(shoulderJ);  // 世界 y≈1.43，低于头底
     const upper = part(new THREE.CapsuleGeometry(0.065, 0.22, 8, 16), mat);
     upper.position.y = -0.14; shoulderJ.add(upper);
     const elbowJ = new THREE.Group(); elbowJ.position.y = -0.3; shoulderJ.add(elbowJ);
