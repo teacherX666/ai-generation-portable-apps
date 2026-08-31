@@ -33,6 +33,8 @@
   const cancelButton = byId("cancel-button");
   const approveButton = byId("approve-button");
   const retryDeliveryButton = byId("retry-delivery-button");
+  const retryFailedAssetsButton = byId("retry-failed-assets-button");
+  const retryFailedAssetsFeedback = byId("retry-failed-assets-feedback");
   const confirmArtifactsButton = byId("confirm-artifacts-button");
   const adjustArtifactsButton = byId("adjust-artifacts-button");
   const cancelArtifactsButton = byId("cancel-artifacts-button");
@@ -594,6 +596,10 @@
     cancelButton.disabled = state.busy || !canReview;
     approveButton.disabled = state.busy || !ReviewState.canApprove(state.review);
     retryDeliveryButton.disabled = state.busy || state.view?.status !== "delivery_failed";
+    const retryableAssetIssues = (state.view?.approval?.ingest_issue_records || [])
+      .filter((record) => record.severity === "asset" && record.code === "media_download_failed");
+    retryFailedAssetsButton.disabled = state.busy || !canReview || retryableAssetIssues.length === 0;
+    retryFailedAssetsButton.hidden = !canReview || retryableAssetIssues.length === 0;
     confirmArtifactsButton.disabled = state.busy || !canReviewArtifacts;
     adjustArtifactsButton.disabled = state.busy || !canReviewArtifacts;
     cancelArtifactsButton.disabled = state.busy || !canReviewArtifacts;
@@ -1524,13 +1530,32 @@
       : "";
     blockingIngestBox.hidden = blockingIngestIssues.length === 0;
     const assetIngestIssues = ingestIssueRecords
-      .filter((record) => record.severity === "asset")
-      .map((record) => record.display_message);
+      .filter((record) => record.severity === "asset");
     const assetIngestBox = byId("asset-ingest-issues");
-    assetIngestBox.textContent = assetIngestIssues.length
-      ? `素材读取失败（不影响其他素材）：${assetIngestIssues.join("；")}`
-      : "";
+    const assetIngestList = byId("asset-ingest-issue-list");
+    const kindLabel = { image: "图片", video: "视频", file: "文件" };
+    const reasonText = {
+      temporary: "暂时下载失败，可点击重新读取",
+      permission: "无权读取，请检查飞书素材权限",
+      unavailable: "不存在或已失效",
+      invalid: "格式或内容无法读取",
+      save_failed: "已下载但本地保存失败",
+      unknown: "下载失败",
+    };
+    assetIngestList.replaceChildren(...assetIngestIssues.map((record) => {
+      if (!record.asset_kind || !record.failure_reason) {
+        return element("div", "asset-issue-row", record.display_message);
+      }
+      const label = kindLabel[record.asset_kind] || "素材";
+      const asset = record.asset_id ? `${record.asset_id}：` : "";
+      return element(
+        "div",
+        "asset-issue-row",
+        `${label} ${asset}${reasonText[record.failure_reason] || reasonText.unknown}`,
+      );
+    }));
     assetIngestBox.hidden = assetIngestIssues.length === 0;
+    if (assetIngestIssues.length === 0) retryFailedAssetsFeedback.textContent = "";
     const visionIssues = view.approval.vision_issues || [];
     const visionIssueBox = byId("vision-issues");
     visionIssueBox.textContent = visionIssues.length
@@ -1619,15 +1644,13 @@
     artifactList.replaceChildren();
     artifactReviewFeedback.value = "";
     state.artifactPreviewSignature = null;
-    [
-      "validation-issues",
-      "blocking-ingest-issues",
-      "asset-ingest-issues",
-      "vision-issues",
-    ].forEach((id) => {
+    ["validation-issues", "blocking-ingest-issues", "vision-issues"].forEach((id) => {
       byId(id).textContent = "";
       byId(id).hidden = true;
     });
+    byId("asset-ingest-issue-list").replaceChildren();
+    byId("asset-ingest-issues").hidden = true;
+    retryFailedAssetsFeedback.textContent = "";
     byId("event-list").replaceChildren();
     taskList.replaceChildren();
     pollingNote.textContent = "请选择下一条任务开始分析";
@@ -1730,6 +1753,26 @@
   cancelArtifactsButton.addEventListener("click", () => submitArtifactReview("cancel"));
   nextTaskButton.addEventListener("click", resetForNextTask);
   rerunButton.addEventListener("click", () => rerunBitableTask());
+  retryFailedAssetsButton.addEventListener("click", async () => {
+    if (!state.runId || state.busy || state.view?.status !== "waiting_approval") return;
+    setBusy(true);
+    clearError();
+    retryFailedAssetsFeedback.textContent = "正在重新读取失败素材…";
+    try {
+      const result = await api(`/api/runs/${state.runId}/retry-failed-assets`, {
+        method: "POST",
+      });
+      retryFailedAssetsFeedback.textContent = result.remaining_count
+        ? `已恢复 ${result.recovered_count} 个，仍有 ${result.remaining_count} 个读取失败`
+        : `已恢复 ${result.recovered_count} 个素材`;
+      await poll(true);
+    } catch (error) {
+      retryFailedAssetsFeedback.textContent = "重新读取失败";
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  });
   retryDeliveryButton.addEventListener("click", async () => {
     if (!state.runId || state.busy) return;
     const url = state.runMode === "bitable"

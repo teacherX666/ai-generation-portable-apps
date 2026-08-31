@@ -6,7 +6,9 @@ from urllib.parse import unquote, urlsplit
 
 from feishu_generation_agent.domain.document import (
     DocumentBlock,
+    IngestIssueAssetKind,
     IngestIssueCode,
+    IngestIssueFailureReason,
     IngestIssueRecord,
     MediaAsset,
     NormalizedDocument,
@@ -14,6 +16,7 @@ from feishu_generation_agent.domain.document import (
     SourceType,
     legacy_ingest_issue_text,
     make_ingest_issue_record,
+    resolve_ingest_issue_records,
 )
 from feishu_generation_agent.domain.errors import (
     AgentError,
@@ -198,6 +201,89 @@ class FeishuDocumentSource:
                 legacy_ingest_issue_text(record)
                 for record in ingest_issue_records
             ],
+        )
+
+    async def retry_failed_assets(
+        self,
+        document: NormalizedDocument,
+    ) -> NormalizedDocument:
+        failed_assets = [
+            asset for asset in document.media_assets
+            if asset.download_error is not None
+            and asset.asset_id.startswith(("image-", "video-"))
+        ]
+        if not failed_assets:
+            return document
+        raw_blocks = await self._client.iter_items(
+            f"/open-apis/docx/v1/documents/{document.document_id}/blocks"
+        )
+        blocks_by_id = {
+            raw.get("block_id"): raw
+            for raw in raw_blocks
+            if isinstance(raw, dict) and isinstance(raw.get("block_id"), str)
+        }
+        replacements: dict[str, MediaAsset] = {}
+        replacement_issues: dict[str, IngestIssueRecord] = {}
+        cache: dict[str, StoredFile | Exception] = {}
+        for failed in failed_assets:
+            raw = blocks_by_id.get(failed.source_block_id)
+            if raw is None:
+                kind = (
+                    IngestIssueAssetKind.VIDEO
+                    if failed.asset_id.startswith("video-")
+                    else IngestIssueAssetKind.IMAGE
+                )
+                asset, issue = self._failed_media_asset(
+                    document.document_id,
+                    failed.asset_id,
+                    failed.source_block_id,
+                    None,
+                    asset_kind=kind,
+                    failure_reason=IngestIssueFailureReason.UNAVAILABLE,
+                )
+            elif failed.asset_id.startswith("video-"):
+                asset, issue = await self._file_asset(
+                    raw,
+                    document_id=document.document_id,
+                    asset_id=failed.asset_id,
+                    cache=cache,
+                )
+                if asset is None:
+                    asset, issue = self._failed_media_asset(
+                        document.document_id,
+                        failed.asset_id,
+                        failed.source_block_id,
+                        None,
+                        asset_kind=IngestIssueAssetKind.VIDEO,
+                        failure_reason=IngestIssueFailureReason.INVALID,
+                    )
+            else:
+                asset, issue = await self._media_asset(
+                    raw,
+                    document_id=document.document_id,
+                    asset_id=failed.asset_id,
+                    cache=cache,
+                )
+            replacements[failed.asset_id] = asset
+            if issue is not None:
+                replacement_issues[failed.asset_id] = issue
+
+        failed_ids = set(replacements)
+        issues = [
+            record for record in resolve_ingest_issue_records(document)
+            if not (
+                record.code is IngestIssueCode.MEDIA_DOWNLOAD_FAILED
+                and record.asset_id in failed_ids
+            )
+        ]
+        issues.extend(replacement_issues.values())
+        assets = [replacements.get(asset.asset_id, asset) for asset in document.media_assets]
+        return document.model_copy(
+            update={
+                "media_assets": assets,
+                "ingest_issue_records": issues,
+                "ingest_issues": [legacy_ingest_issue_text(record) for record in issues],
+            }
         )
 
     async def _embedded_sheet(
@@ -672,23 +758,37 @@ class FeishuDocumentSource:
         block_id = raw["block_id"]
         if not isinstance(file_token, str) or not file_token:
             return self._failed_media_asset(
-                document_id, asset_id, block_id, None
+                document_id,
+                asset_id,
+                block_id,
+                None,
+                asset_kind=IngestIssueAssetKind.IMAGE,
+                failure_reason=IngestIssueFailureReason.UNAVAILABLE,
             )
 
         cached = cache.get(file_token)
         if cached is None:
             try:
                 content, _content_type = await self._client.download_media(file_token)
-                cached = self._file_store.save_input(
-                    document_id, f"{asset_id}.image", content
-                )
             except Exception as exc:
                 cached = exc
+            else:
+                try:
+                    cached = self._file_store.save_input(
+                        document_id, f"{asset_id}.image", content
+                    )
+                except Exception as exc:
+                    cached = exc
             cache[file_token] = cached
 
         if isinstance(cached, Exception):
             return self._failed_media_asset(
-                document_id, asset_id, block_id, file_token
+                document_id,
+                asset_id,
+                block_id,
+                file_token,
+                asset_kind=IngestIssueAssetKind.IMAGE,
+                failure_reason=self._failure_reason(cached),
             )
 
         width = image.get("width") if isinstance(image, Mapping) else None
@@ -741,7 +841,12 @@ class FeishuDocumentSource:
         block_id = raw["block_id"]
         if not isinstance(file_token, str) or not file_token:
             return self._failed_media_asset(
-                document_id, asset_id, block_id, None
+                document_id,
+                asset_id,
+                block_id,
+                None,
+                asset_kind=IngestIssueAssetKind.VIDEO,
+                failure_reason=IngestIssueFailureReason.UNAVAILABLE,
             )
 
         cached = cache.get(file_token)
@@ -769,7 +874,12 @@ class FeishuDocumentSource:
 
         if isinstance(cached, Exception):
             return self._failed_media_asset(
-                document_id, asset_id, block_id, file_token
+                document_id,
+                asset_id,
+                block_id,
+                file_token,
+                asset_kind=IngestIssueAssetKind.VIDEO,
+                failure_reason=self._failure_reason(cached),
             )
         if not cached.mime_type.startswith("video/"):
             # 文件名像视频但内容不是视频时，当作无关附件跳过，不产生噪音。
@@ -791,22 +901,44 @@ class FeishuDocumentSource:
         )
 
     @staticmethod
+    def _failure_reason(error: Exception) -> IngestIssueFailureReason:
+        if isinstance(error, AgentError):
+            if error.detail.category is ErrorCategory.PERMISSION:
+                return IngestIssueFailureReason.PERMISSION
+            if error.detail.category is ErrorCategory.TRANSIENT or error.detail.retryable:
+                return IngestIssueFailureReason.TEMPORARY
+            if error.detail.category is ErrorCategory.DOCUMENT:
+                return IngestIssueFailureReason.INVALID
+        if isinstance(error, OSError):
+            return IngestIssueFailureReason.SAVE_FAILED
+        return IngestIssueFailureReason.UNKNOWN
+
+    @staticmethod
     def _failed_media_asset(
         document_id: str,
         asset_id: str,
         block_id: str,
         file_token: str | None,
+        *,
+        asset_kind: IngestIssueAssetKind,
+        failure_reason: IngestIssueFailureReason,
     ) -> tuple[MediaAsset, IngestIssueRecord]:
         issue = make_ingest_issue_record(
             IngestIssueCode.MEDIA_DOWNLOAD_FAILED,
             source_block_id=block_id,
             asset_id=asset_id,
+            asset_kind=asset_kind,
+            failure_reason=failure_reason,
         )
         return (
             MediaAsset(
                 asset_id=asset_id,
                 source_block_id=block_id,
-                origin="feishu",
+                origin=(
+                    "feishu_video"
+                    if asset_kind is IngestIssueAssetKind.VIDEO
+                    else "feishu"
+                ),
                 file_token=file_token,
                 local_path=Path("__missing__")
                 / document_id

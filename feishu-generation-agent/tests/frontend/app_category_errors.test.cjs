@@ -229,6 +229,9 @@ test("approval view distinguishes blocking document and nonblocking asset issues
           severity: "asset",
           code: "media_download_failed",
           display_message: "文档图片下载失败，其他素材可继续处理",
+          asset_id: "image-4",
+          asset_kind: "image",
+          failure_reason: "temporary",
         },
       ],
       blocking_ingest_issues: [],
@@ -260,10 +263,11 @@ test("approval view distinguishes blocking document and nonblocking asset issues
   );
   assert.equal(app.getNode("blocking-ingest-issues").hidden, false);
   assert.equal(
-    app.getNode("asset-ingest-issues").textContent,
-    "素材读取失败（不影响其他素材）：文档图片下载失败，其他素材可继续处理",
+    app.getNode("asset-ingest-issue-list").children[0].textContent,
+    "图片 image-4：暂时下载失败，可点击重新读取",
   );
   assert.equal(app.getNode("asset-ingest-issues").hidden, false);
+  assert.equal(app.getNode("retry-failed-assets-button").hidden, false);
   assert.equal(
     app.getNode("vision-issues").textContent,
     "素材识别失败（不影响其他素材）：素材 asset-2 视觉分析失败：图片无法识别",

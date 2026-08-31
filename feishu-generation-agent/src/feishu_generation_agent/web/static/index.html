@@ -170,7 +170,15 @@
         <div id="execution-errors" class="execution-errors" role="alert" hidden></div>
         <div id="validation-issues" class="validation-issues" hidden></div>
         <div id="blocking-ingest-issues" class="blocking-ingest-issues" role="alert" hidden></div>
-        <div id="asset-ingest-issues" class="asset-issue-message" hidden></div>
+        <div id="asset-ingest-issues" class="asset-issue-message" hidden>
+          <div id="asset-ingest-issue-list"></div>
+          <div class="asset-retry-actions">
+            <button id="retry-failed-assets-button" type="button" class="quiet-button">
+              重新读取失败素材
+            </button>
+            <span id="retry-failed-assets-feedback" role="status" aria-live="polite"></span>
+          </div>
+        </div>
         <div id="vision-issues" class="asset-issue-message" hidden></div>
         <div id="review-conflict" class="review-conflict" role="alert" hidden>
           <span id="review-conflict-text"></span>

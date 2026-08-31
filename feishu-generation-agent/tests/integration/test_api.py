@@ -1624,6 +1624,8 @@ async def test_structured_asset_issue_drives_api_view_and_approval(
             "severity",
             "code",
             "display_message",
+            "source_block_id",
+            "asset_id",
         }
         assert view["approval"]["blocking_ingest_issues"] == []
         assert response.status_code == 202
@@ -2709,17 +2711,17 @@ async def test_static_review_workspace_is_served_and_uses_safe_dom_updates():
     assert styles.headers["content-type"].startswith("text/css")
     for text in (
         "节点轨迹",
-        "当前节点",
-        "当前状态",
-        "耗时",
-        "thread ID",
+        "当前阶段",
+        "任务状态",
+        "累计耗时",
+        "任务编号",
         "负面约束",
         "参考图片",
         "素材覆盖",
         "排除素材",
-        "退回重新规划",
-        "全部取消",
-        "批准所选任务",
+        "退回修改计划",
+        "取消本次任务",
+        "批准并开始生成",
     ):
         assert text in page.text
     assert "setInterval" in script.text
