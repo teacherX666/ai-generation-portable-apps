@@ -33,13 +33,22 @@ export function initScene() {
   const dir = new THREE.DirectionalLight(0xffffff, 1.3);
   dir.position.set(4, 8, 3);
   state.scene.add(dir);
+  // 实体地面（渲染成图保留，提供落点与深度参照；编辑态网格线叠加其上）
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(200, 200),
+    new THREE.MeshStandardMaterial({ color: 0x182338, roughness: 1 }));
+  ground.rotation.x = -Math.PI / 2;
+  state.scene.add(ground);
   const grid = new THREE.GridHelper(20, 20, 0x475569, 0x1e293b);
+  state.grid = grid;
   state.scene.add(grid);
-  // 地平线参考：一条远处横线，落在 y=0 平面上 z=-9
+  // 地平线参考：编辑辅助件（渲染时随 hideEditHelpers 隐藏），
+  // 取网格线同色 0x334155 且更细，避免与灰色道具混淆
   const horizon = new THREE.Mesh(
-    new THREE.BoxGeometry(0.06, 0.06, 20),
-    new THREE.MeshBasicMaterial({ color: 0x64748b }));
+    new THREE.BoxGeometry(0.03, 0.03, 20),
+    new THREE.MeshBasicMaterial({ color: 0x334155 }));
   horizon.position.set(0, 1.4, -9);
+  state.horizon = horizon;
   state.scene.add(horizon);
   state.editHelpers = new THREE.Group();
   state.scene.add(state.editHelpers);
@@ -766,7 +775,11 @@ function hideEditHelpers() {
     balls: [],
     labels: [],
     overlay: document.getElementById('frame-overlay').classList.contains('on'),
+    horizon: state.horizon ? state.horizon.visible : false,
+    grid: state.grid ? state.grid.visible : false,
   };
+  if (state.horizon) state.horizon.visible = false;
+  if (state.grid) state.grid.visible = false;   // 成图无任何线条
   for (const rec of state.mannequins.values()) {
     hidden.balls.push(rec.group.userData.balls.map((b) => b.visible));
     setJointBallsVisible(rec.group, false);
@@ -786,6 +799,8 @@ function restoreEditHelpers(hidden) {
     i++;
   }
   if (hidden.overlay) document.getElementById('frame-overlay').classList.add('on');
+  if (state.horizon) state.horizon.visible = hidden.horizon;
+  if (state.grid) state.grid.visible = hidden.grid;
 }
 
 function makeThumbnail(dataUrl, w = 320) {
