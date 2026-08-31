@@ -145,7 +145,7 @@ export function addMannequin(data) {
   labelEl.textContent = data.label || data.id;
   document.getElementById('viewport-wrap').appendChild(labelEl);
   state.mannequins.set(data.id, { group, data, labelEl });
-  return group;
+  return { group, data, labelEl };
 }
 
 export function updateLabels() {
@@ -294,6 +294,28 @@ function propGeometry(type) {
       }
       return group;
     }
+    case 'bench': { // 长椅：座面 + 两腿，params=[w, h, d]
+      const [w, h, d] = params;
+      const group = new THREE.Group();
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(w, 0.08, d), _propMat);
+      seat.position.y = h; group.add(seat);
+      const legGeo = new THREE.BoxGeometry(0.08, h, d * 0.9);
+      for (const x of [-1, 1]) {
+        const leg = new THREE.Mesh(legGeo, _propMat);
+        leg.position.set(x * (w / 2 - 0.08), h / 2, 0);
+        group.add(leg);
+      }
+      return group;
+    }
+    case 'tree': { // 树木：树干圆柱 + 树冠圆锥，params=[总高]
+      const [h] = params;
+      const group = new THREE.Group();
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, h * 0.5, 10), _propMat);
+      trunk.position.y = h * 0.25; group.add(trunk);
+      const foliage = new THREE.Mesh(new THREE.ConeGeometry(h * 0.45, h * 0.6, 10), _propMat);
+      foliage.position.y = h * 0.5 + h * 0.3; group.add(foliage);
+      return group;
+    }
     default: return new THREE.BoxGeometry(...params);
   }
 }
@@ -301,13 +323,70 @@ function propGeometry(type) {
 export function addProp(data) {
   const group = new THREE.Group();
   group.add(propGeometry(data.type));
+  const box = new THREE.Box3().setFromObject(group);   // 局部坐标（group 尚未变换）
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const rec = { group, data, footprint: { hx: size.x / 2, hz: size.z / 2 } };
   group.position.set(data.position[0], data.position[1], data.position[2]);
   group.rotation.y = (data.rotation_y || 0) * Math.PI / 180;
   const s = data.scale || [1, 1, 1];
   group.scale.set(s[0], s[1], s[2]);
   state.scene.add(group);
-  state.props.set(data.id, { group, data });
-  return group;
+  state.props.set(data.id, rec);
+  return rec;   // 注意：返回值是 rec（原为 group），调用方按 rec 使用（group 在 rec.group）
+}
+
+// ============ 碰撞体积（XZ 平面 OBB） ============
+// 道具：addProp 构建时测局部 XZ 半宽（几何在 group 局部空间、未加变换前）
+// 木人：固定半径 0.4（×scale）
+function footprintOf(rec) {
+  if (!rec.footprint) {   // 木人路径：数据流层没有 footprint，动态生成
+    return { x: rec.group.position.x, z: rec.group.position.z,
+             hx: 0.4 * Math.abs(rec.group.scale.x), hz: 0.4 * Math.abs(rec.group.scale.x),
+             ry: rec.group.rotation.y };
+  }
+  const sx = Math.abs(rec.group.scale.x), sz = Math.abs(rec.group.scale.z);
+  return { x: rec.group.position.x, z: rec.group.position.z,
+           hx: rec.footprint.hx * sx, hz: rec.footprint.hz * sz,
+           ry: rec.group.rotation.y };
+}
+
+function obbOverlap(a, b) {
+  const ca = Math.cos(a.ry), sa = Math.sin(a.ry);
+  const cb = Math.cos(b.ry), sb = Math.sin(b.ry);
+  const dx = b.x - a.x, dz = b.z - a.z;
+  const axes = [[ca, sa], [-sa, ca], [cb, sb], [-sb, cb]];
+  for (const [ux, uz] of axes) {
+    const projA = a.hx * Math.abs(ux * ca + uz * sa) + a.hz * Math.abs(ux * -sa + uz * ca);
+    const projB = b.hx * Math.abs(ux * cb + uz * sb) + b.hz * Math.abs(ux * -sb + uz * cb);
+    if (Math.abs(ux * dx + uz * dz) > projA + projB) return false;
+  }
+  return true;
+}
+
+function allActorRecs() {
+  return [...state.mannequins.values(), ...state.props.values()];
+}
+
+export function resolveCollisions(rec, maxSteps = 12) {
+  // 将 rec 从重叠中推挤出去（沿对方→自己方向，步长 0.06m，最多 maxSteps 步）
+  for (let step = 0; step < maxSteps; step++) {
+    const me = footprintOf(rec);
+    let overlap = null;
+    for (const other of allActorRecs()) {
+      if (other === rec) continue;
+      const o = footprintOf(other);
+      if (obbOverlap(me, o)) {
+        const dx = me.x - o.x, dz = me.z - o.z;
+        const len = Math.hypot(dx, dz);
+        overlap = { nx: len > 1e-6 ? dx / len : 1, nz: len > 1e-6 ? dz / len : 0 };
+        break;
+      }
+    }
+    if (!overlap) return;
+    rec.group.position.x += overlap.nx * 0.06;
+    rec.group.position.z += overlap.nz * 0.06;
+  }
 }
 
 // ============ 对象面板 ============
@@ -925,9 +1004,10 @@ export function onViewportDown(e) {
   if (!hit) { select(null); return; }
   select(hit);
   state.controls.enabled = false;   // 命中对象时禁用轨道，避免拖拽与转相机打架
-  const group = hit.kind === 'char' ? state.mannequins.get(hit.id).group : state.props.get(hit.id).group;
+  const rec = hit.kind === 'char' ? state.mannequins.get(hit.id) : state.props.get(hit.id);
+  const group = rec.group;
   const p = groundPoint(e.clientX, e.clientY);
-  if (p) dragState = { group, offset: p.clone().sub(group.position) };
+  if (p) dragState = { group, rec, offset: p.clone().sub(group.position) };
 }
 
 export function onViewportMove(e) {
@@ -936,6 +1016,7 @@ export function onViewportMove(e) {
   if (!p) return;
   const group = dragState.group;
   group.position.set(p.x - dragState.offset.x, 0, p.z - dragState.offset.z);
+  resolveCollisions(dragState.rec);
   // 数据回写由 data flow 层（Task 8）在 pointerup 时统一做
 }
 
@@ -1048,18 +1129,43 @@ async function _blobDownload(url, filename) {
     toast('下载失败：' + err.message, true);
   }
 }
+// 道具类型选择面板
+function initPropPicker() {
+  const picker = document.getElementById('prop-picker');
+  for (const p of PROP_TYPES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = p.label;
+    b.onclick = () => {
+      const rec = addProp({ id: newId('prop-'), type: p.type, position: [0, 0, 0], rotation_y: 0, scale: [1, 1, 1] });
+      resolveCollisions(rec);
+      markDirty();
+      picker.hidden = true;
+    };
+    picker.appendChild(b);
+  }
+  // 点外部关闭
+  document.addEventListener('click', (e) => {
+    if (picker.hidden) return;
+    if (!picker.contains(e.target) && e.target !== document.getElementById('btn-add-prop')) {
+      picker.hidden = true;
+    }
+  });
+}
 // 对象工具
 document.getElementById('btn-add-char').onclick = () => {
   const c = newCharacter(String.fromCharCode(65 + state.mannequins.size), '人物' + (state.mannequins.size + 1));
   c.id = 'char-' + newId('');
   c.color = CHARACTER_COLORS[state.mannequins.size % CHARACTER_COLORS.length];
-  addMannequin(c);
+  const rec = addMannequin(c);
+  resolveCollisions(rec);
   markDirty();
 };
 document.getElementById('btn-add-prop').onclick = () => {
-  addProp({ id: newId('prop-'), type: 'box', position: [0, 0, 0], rotation_y: 0, scale: [1, 1, 1] });
-  markDirty();
+  const picker = document.getElementById('prop-picker');
+  picker.hidden = !picker.hidden;
 };
+initPropPicker();
 // Task 9/10 挂载点
 document.getElementById('btn-render').onclick = () => window.__renderShot && window.__renderShot();
 document.getElementById('btn-to-canvas').onclick = () => window.__toCanvas && window.__toCanvas();
@@ -1068,3 +1174,5 @@ document.getElementById('btn-render-canvas').onclick = () => window.__sendRender
 document.getElementById('btn-render-close').onclick = () => {
   document.getElementById('render-modal').hidden = true;
 };
+// 调试钩子：headless 冒烟验证与排障用
+window.__previzDebug = state;

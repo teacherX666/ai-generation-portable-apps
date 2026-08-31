@@ -73,8 +73,8 @@ test('dataUrlToBlob 解析 data URL', () => {
   assert.equal(blob.size, 8);   // 8 字节 PNG 签名头
 });
 
-test('PROP_TYPES 六类结构完整', () => {
-  assert.equal(PROP_TYPES.length, 6);
+test('PROP_TYPES 十类结构完整', () => {
+  assert.equal(PROP_TYPES.length, 10);
   for (const p of PROP_TYPES) {
     assert.ok(p.type && p.label);
     assert.equal(p.geo.length, 2);

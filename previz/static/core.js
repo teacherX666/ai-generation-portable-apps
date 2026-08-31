@@ -77,6 +77,10 @@ export const PROP_TYPES = [
   { type: 'steps', label: '台阶', geo: ['steps', [0.5, 0.15, 0.3]] },
   { type: 'mountain', label: '山形', geo: ['cone', [0.7, 0.8, 4]] },
   { type: 'table', label: '桌子', geo: ['table', [1.2, 0.75, 0.8]] },
+  { type: 'wall', label: '墙壁', geo: ['box', [3.0, 2.4, 0.25]] },
+  { type: 'pillar', label: '柱子', geo: ['box', [0.4, 3.0, 0.4]] },
+  { type: 'bench', label: '长椅', geo: ['bench', [1.6, 0.45, 0.45]] },
+  { type: 'tree', label: '树木', geo: ['tree', [1.8]] },
 ];
 
 export const CHARACTER_COLORS = ['#f59e0b', '#3b82f6', '#22c55e', '#a855f7'];
