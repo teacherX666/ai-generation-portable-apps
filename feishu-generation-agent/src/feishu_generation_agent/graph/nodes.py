@@ -1,4 +1,5 @@
 import asyncio
+import tempfile
 from inspect import Parameter, signature
 import json
 import logging
@@ -31,6 +32,8 @@ from feishu_generation_agent.domain.document import (
     NormalizedDocument,
     PlanningPromptSnapshot,
     RequirementRequest,
+    VideoReferenceAnalysis,
+    VideoReferenceKind,
     VisionDescription,
     IngestIssueSeverity,
     build_planning_prompt_snapshot,
@@ -43,6 +46,7 @@ from feishu_generation_agent.domain.errors import (
 )
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
+    ArtifactReviewDecision,
     AuditReport,
     GenerationTask,
     TaskPlan,
@@ -70,6 +74,10 @@ from feishu_generation_agent.ports import (
 )
 from feishu_generation_agent.storage.files import FileStore
 from feishu_generation_agent.storage.repository import Repository
+from feishu_generation_agent.integrations.video_reference import (
+    ExtractedVideoFrame,
+    extract_video_frames,
+)
 
 from .state import AgentState
 
@@ -109,6 +117,7 @@ _NODE_SUMMARIES = {
     "check_source_revision": "Source revision check",
     "execute_selected_tasks": "Approved task execution",
     "verify_and_download_artifacts": "Artifact verification",
+    "review_artifacts": "Artifact review",
     "deliver_to_feishu": "Feishu delivery",
 }
 
@@ -590,6 +599,147 @@ def _infer_planning_mode(text: str) -> str:
     return "image" if wants_image and not wants_video else "video"
 
 
+_VIDEO_FRAME_COUNT = 3
+
+
+async def _analyze_video_reference(
+    services: GraphServices,
+    document_id: str,
+    video: MediaAsset,
+) -> tuple[MediaAsset | None, VideoReferenceAnalysis | None]:
+    """把文档里的参考视频转成一张可被 Seedance/火山消费的参考图。
+
+    视频本体在火山 Bearer 模式下不可上传，所以统一抽帧：视觉模型判断这段
+    视频到底在表达「人物形象 / 运镜 / 剪辑节奏 / 场景画风」，并选出最有代表
+    性的一帧落成图片素材。判断失败时退回中间帧，保证任务不会因为没有参考图
+    而直接失败。
+    """
+    analyzer = getattr(services.vision_analyzer, "analyze_video", None)
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="feishu-video-ref-"
+        ) as work_dir:
+            frame_paths = await asyncio.to_thread(
+                extract_video_frames,
+                video.local_path,
+                _VIDEO_FRAME_COUNT,
+                Path(work_dir),
+            )
+            frames = [
+                ExtractedVideoFrame(index=index + 1, path=path)
+                for index, path in enumerate(frame_paths)
+            ]
+            insight: VideoReferenceAnalysis | None = None
+            if callable(analyzer):
+                try:
+                    insight = await analyzer(video, frames)
+                except Exception:
+                    _LOGGER.warning(
+                        "视频参考语义分析失败，退回中间帧 video=%s",
+                        video.asset_id,
+                        exc_info=True,
+                    )
+            if insight is None:
+                insight = VideoReferenceAnalysis(
+                    asset_id=video.asset_id,
+                    kind=VideoReferenceKind.OTHER,
+                    summary="视频参考语义未识别，已抽取中间帧作为画面参考",
+                    representative_frame_index=(len(frames) + 1) // 2,
+                    uncertainties=["视频语义分析不可用或失败，未对视频内容作猜测"],
+                )
+            chosen_index = min(
+                max(insight.representative_frame_index, 1),
+                len(frames),
+            )
+            chosen = frames[chosen_index - 1]
+            frame_content = chosen.path.read_bytes()
+            stored = services.file_store.save_input(
+                document_id,
+                f"{video.asset_id}-frame.jpg",
+                frame_content,
+            )
+            frame_asset = MediaAsset(
+                asset_id=f"{video.asset_id}-frame",
+                source_block_id=video.source_block_id,
+                origin="feishu_video_frame",
+                file_token=None,
+                local_path=stored.local_path,
+                mime_type=stored.mime_type,
+                size=stored.size,
+                sha256=stored.sha256,
+                width=stored.width,
+                height=stored.height,
+            )
+            return frame_asset, insight.model_copy(
+                update={"asset_id": frame_asset.asset_id}
+            )
+    except Exception:
+        _LOGGER.warning(
+            "视频参考抽帧失败，保留原始视频素材 video=%s",
+            video.asset_id,
+            exc_info=True,
+        )
+        return None, None
+
+
+async def _materialize_video_references(
+    document: NormalizedDocument,
+    services: GraphServices,
+) -> NormalizedDocument:
+    video_assets = [
+        asset
+        for asset in document.media_assets
+        if asset.mime_type.startswith("video/")
+    ]
+    if not video_assets:
+        return document
+
+    replacements: dict[str, MediaAsset] = {}
+    semantics: list[VideoReferenceAnalysis] = list(document.video_semantics)
+    for video in video_assets:
+        frame_asset, insight = await _analyze_video_reference(
+            services,
+            document.document_id,
+            video,
+        )
+        if frame_asset is not None:
+            replacements[video.asset_id] = frame_asset
+        if insight is not None:
+            semantics.append(insight)
+
+    if not replacements:
+        return document.model_copy(update={"video_semantics": semantics})
+
+    media_assets: list[MediaAsset] = []
+    text_view = document.text_view
+    for asset in document.media_assets:
+        replacement = replacements.get(asset.asset_id)
+        if replacement is None:
+            media_assets.append(asset)
+            continue
+        media_assets.append(replacement)
+        text_view = text_view.replace(
+            f"[video:{asset.asset_id}]",
+            f"[image:{replacement.asset_id}]",
+        )
+
+    for video in video_assets:
+        replacement = replacements.get(video.asset_id)
+        if replacement is None:
+            continue
+        marker = f"[image:{replacement.asset_id}]"
+        if marker not in text_view:
+            text_view = f"{text_view}\n{marker}"
+
+    return document.model_copy(
+        update={
+            "media_assets": media_assets,
+            "text_view": text_view,
+            "video_semantics": semantics,
+        }
+    )
+
+
 def _planner_mode_argument(
     planner: RequirementPlanner,
     mode: str,
@@ -723,15 +873,25 @@ async def analyze_images(
 ) -> AgentState:
     async def operation() -> AgentState:
         _ensure_thread_id(state, config)
+        document = NormalizedDocument.model_validate(
+            state.get("normalized_document")
+        )
+        mode = await _planning_mode_for_run(state["run_id"], services, state)
+        if mode != "image":
+            document = await _materialize_video_references(document, services)
+        document_json = _json_model(document)
         if services.vision_analyzer is None:
             return {
                 "vision_descriptions": [],
                 "vision_issues": [],
+                "normalized_document": document_json,
+                "media_assets": document_json["media_assets"],
             }
-        document = NormalizedDocument.model_validate(
-            state.get("normalized_document")
-        )
-        assets = list(document.media_assets)
+        assets = [
+            asset
+            for asset in document.media_assets
+            if asset.mime_type.startswith("image/")
+        ]
         semaphore = asyncio.Semaphore(_VISION_MAX_CONCURRENCY)
 
         async def analyze_one(asset: MediaAsset) -> VisionDescription | Exception:
@@ -764,6 +924,8 @@ async def analyze_images(
                 _json_model(description) for description in descriptions
             ],
             "vision_issues": issues,
+            "normalized_document": document_json,
+            "media_assets": document_json["media_assets"],
         }
 
     return await _run_node(state, "analyze_images", services, operation)
@@ -2069,21 +2231,109 @@ async def verify_and_download_artifacts(
             ):
                 raise _provider_terminal_error("生成产物记录或文件校验失败")
             verified.extend(state_items)
-        all_succeeded = len(successful) == len(records)
         return {
             "artifacts": [_json_model(artifact) for artifact in verified],
-            "status": (
-                "succeeded"
-                if all_succeeded
-                else "completed_with_errors"
-                if verified
-                else "failed"
-            ),
+            "status": "waiting_review" if verified else "failed",
         }
 
     return await _run_node(
         state, "verify_and_download_artifacts", services, operation
     )
+
+
+def _artifact_review_payload(state: AgentState) -> dict[str, Any]:
+    payload = {
+        "action": "review_artifacts",
+        "run_id": state.get("run_id"),
+        "thread_id": state.get("thread_id"),
+        "status": "waiting_review",
+        "artifacts": state.get("artifacts", []),
+    }
+    json.dumps(payload, ensure_ascii=False)
+    return payload
+
+
+def _parse_artifact_review(value: Any) -> ArtifactReviewDecision:
+    if not isinstance(value, dict):
+        raise _validation_error("成片确认请求格式无效：期望 JSON 对象")
+    allowed_keys = {"action", "feedback"}
+    extra_keys = set(value) - allowed_keys
+    if extra_keys:
+        raise _validation_error(
+            "成片确认请求包含未知字段："
+            + "、".join(sorted(str(key) for key in extra_keys))
+        )
+    try:
+        decision = ArtifactReviewDecision.model_validate(value)
+    except ValidationError as exc:
+        compact = "; ".join(
+            ".".join(str(part) for part in item["loc"]) + ": " + str(item["msg"])
+            for item in exc.errors(include_url=False, include_input=False)[:6]
+        )
+        raise _validation_error(f"成片确认载荷无效：{compact}") from None
+
+    if decision.action == "adjust":
+        if not isinstance(decision.feedback, str) or not decision.feedback.strip():
+            raise _validation_error("退回调整时必须填写调整意见")
+    elif decision.feedback is not None:
+        raise _validation_error("确认或取消时不能携带调整意见")
+    return decision
+
+
+async def review_artifacts(
+    state: AgentState,
+    config: RunnableConfig,
+    *,
+    services: GraphServices,
+) -> Command:
+    _ensure_thread_id(state, config)
+    resume_value = interrupt(_artifact_review_payload(state))
+
+    async def operation() -> Command:
+        decision = _parse_artifact_review(resume_value)
+        decision_json = _json_model(decision)
+        if decision.action == "confirm":
+            return Command(
+                update={
+                    "artifact_review_decision": decision_json,
+                    "artifact_review_feedback": None,
+                    "status": "review_confirmed",
+                },
+                goto="deliver_to_feishu",
+            )
+        if decision.action == "adjust":
+            # 清空本 run 已落库的产物与提交操作记录，避免重新规划后复用旧成片
+            # 或因为旧提交指纹不一致被判为 submission_uncertain。
+            run_id = state.get("run_id")
+            if isinstance(run_id, str) and run_id:
+                await services.repository.delete_run_operations(run_id)
+                await services.repository.delete_run_artifacts(run_id)
+            return Command(
+                update={
+                    "artifact_review_decision": decision_json,
+                    "artifact_review_feedback": decision.feedback.strip(),
+                    "planner_feedback": decision.feedback.strip(),
+                    "approval_decision": None,
+                    "approval_revision": None,
+                    "approved_tasks": [],
+                    "approved_plan": None,
+                    "execution_records": [],
+                    "artifacts": [],
+                    "delivery_record": None,
+                    "status": "running",
+                },
+                goto="plan_requirements",
+            )
+        return Command(
+            update={
+                "artifact_review_decision": decision_json,
+                "artifact_review_feedback": None,
+                "status": "cancelled",
+            },
+            goto=END,
+        )
+
+    return await _run_node(state, "review_artifacts", services, operation)
 
 
 async def deliver_to_feishu(

@@ -42,6 +42,7 @@ class FakeFeishuClient:
     def __init__(self, blocks: list[dict[str, Any]], media: bytes) -> None:
         self.blocks = blocks
         self.media = media
+        self.media_content_type = "image/png"
         self.download_calls: list[str] = []
         self.wiki_type = "docx"
         self.download_error: Exception | None = None
@@ -89,7 +90,7 @@ class FakeFeishuClient:
         self.download_calls.append(file_token)
         if self.download_error is not None:
             raise self.download_error
-        return self.media, "image/png"
+        return self.media, self.media_content_type
 
 
 class FakeFeishuSheetExporter:
@@ -279,6 +280,7 @@ async def test_request_json_does_not_refresh_twice_and_maps_errors():
     [
         (403, {"code": 0}, ErrorCategory.PERMISSION, False),
         (200, {"code": 99991672, "msg": "forbidden"}, ErrorCategory.PERMISSION, False),
+        (400, {"code": 131006, "msg": "permission denied"}, ErrorCategory.PERMISSION, False),
         (429, {"code": 1, "msg": "busy"}, ErrorCategory.TRANSIENT, True),
         (503, {"code": 1, "msg": "down"}, ErrorCategory.TRANSIENT, True),
         (400, {"code": 1770001, "msg": "invalid"}, ErrorCategory.DOCUMENT, False),
@@ -566,6 +568,59 @@ async def test_ingest_docx_preserves_hierarchy_and_stable_references(
         "doccn123",
         "inputs",
     )
+
+
+def _mp4_bytes() -> bytes:
+    return (
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+        b"\x00\x00\x00\x08free"
+    )
+
+
+async def test_ingest_video_file_block_becomes_video_asset(
+    file_store: FileStore,
+):
+    blocks = [
+        {
+            "block_id": "video-page",
+            "block_type": 1,
+            "children": ["video-view"],
+            "page": {"elements": [{"text_run": {"content": "参考视频"}}]},
+        },
+        {
+            "block_id": "video-view",
+            "parent_id": "video-page",
+            "block_type": 33,
+            "children": ["video-file"],
+            "view": {"view_type": 2},
+        },
+        {
+            "block_id": "video-file",
+            "parent_id": "video-view",
+            "block_type": 23,
+            "file": {"token": "video-file-token", "name": "11.mp4"},
+        },
+    ]
+    client = FakeFeishuClient(blocks, _mp4_bytes())
+    client.media_content_type = "video/mp4"
+    source = FeishuDocumentSource(client, file_store)
+
+    document = await source.ingest(
+        RequirementRequest(source_url="https://fiction.feishu.cn/docx/doccn123")
+    )
+
+    assert client.download_calls == ["video-file-token"]
+    assert "[video:video-1]" in document.text_view
+    video_assets = [
+        asset
+        for asset in document.media_assets
+        if asset.mime_type.startswith("video/")
+    ]
+    assert len(video_assets) == 1
+    assert video_assets[0].asset_id == "video-1"
+    assert video_assets[0].origin == "feishu_video"
+    assert video_assets[0].file_token == "video-file-token"
+    assert video_assets[0].local_path.is_file()
 
 
 async def test_ingest_merges_target_sheet_export_at_sheet_block_order(
@@ -1185,3 +1240,121 @@ async def test_file_store_oserror_path_is_not_exposed_in_asset_or_issue(
     )
     assert secret not in document.media_assets[0].download_error
     assert secret not in "；".join(document.ingest_issues)
+
+async def test_download_media_retries_transient_responses_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    attempts = 0
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(
+        "feishu_generation_agent.integrations.feishu_client.asyncio.sleep",
+        fake_sleep,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "tenant_access_token": "token", "expire": 7200},
+            )
+        attempts += 1
+        if attempts < 3:
+            return httpx.Response(503, json={"code": 1, "msg": "busy"})
+        return httpx.Response(200, content=b"image", headers={"Content-Type": "image/png"})
+
+    async with httpx.AsyncClient(
+        base_url="https://open.feishu.cn",
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        client = FeishuClient(
+            Settings(lark_app_id="fiction-app", lark_app_secret="fiction-secret"),
+            http_client=http_client,
+        )
+        content, mime_type = await client.download_media("fiction-file-token")
+
+    assert content == b"image"
+    assert mime_type == "image/png"
+    assert attempts == 3
+    assert delays == [1.0, 2.0]
+
+
+async def test_download_media_does_not_retry_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    attempts = 0
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(
+        "feishu_generation_agent.integrations.feishu_client.asyncio.sleep",
+        fake_sleep,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "tenant_access_token": "token", "expire": 7200},
+            )
+        attempts += 1
+        return httpx.Response(403, json={"code": 131006, "msg": "denied"})
+
+    async with httpx.AsyncClient(
+        base_url="https://open.feishu.cn",
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        client = FeishuClient(
+            Settings(lark_app_id="fiction-app", lark_app_secret="fiction-secret"),
+            http_client=http_client,
+        )
+        with pytest.raises(AgentError) as raised:
+            await client.download_media("fiction-file-token")
+
+    assert raised.value.detail.category is ErrorCategory.PERMISSION
+    assert attempts == 1
+    assert delays == []
+
+
+async def test_retry_failed_assets_only_downloads_failed_items(
+    file_store: FileStore,
+):
+    fixture = _fixture("feishu_docx_blocks.json")
+    fixture["items"][0]["children"].remove("fiction-sheet")
+    fixture["items"] = [
+        item for item in fixture["items"] if item["block_id"] != "fiction-sheet"
+    ]
+    media = base64.b64decode(fixture["media_base64"])
+    client = FakeFeishuClient(fixture["items"], media)
+    client.download_error = AgentError(
+        ErrorDetail(
+            category=ErrorCategory.TRANSIENT,
+            message="飞书服务暂时不可用，请稍后重试",
+            technical_detail="safe transient failure",
+            retryable=True,
+        )
+    )
+    source = FeishuDocumentSource(client, file_store)
+    document = await source.ingest(
+        RequirementRequest(source_url="https://fiction.feishu.cn/docx/doccn123")
+    )
+    assert document.media_assets[0].download_error is not None
+    assert document.ingest_issue_records[0].asset_kind == "image"
+    assert document.ingest_issue_records[0].failure_reason == "temporary"
+
+    client.download_calls.clear()
+    client.download_error = None
+    refreshed = await source.retry_failed_assets(document)
+
+    assert client.download_calls == ["fiction-file-token"]
+    assert refreshed.media_assets[0].asset_id == "image-1"
+    assert refreshed.media_assets[0].download_error is None
+    assert refreshed.media_assets[0].mime_type == "image/png"
+    assert refreshed.ingest_issue_records == []

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -88,6 +88,28 @@ it("previews, removes, drags, and keyboard-reorders one ordered image collection
     rerender(<MediaCollectionNode node={collectionNode("image", current)} onItemsChange={change} />);
     fireEvent.click(screen.getByRole("button", { name: "移除 @图片2" }));
     expect(changes.at(-1)?.map((item) => item.assetId)).toEqual(["asset-c", "asset-a"]);
+});
+
+it("opens a large preview with details when an image thumbnail is clicked", () => {
+    render(<MediaCollectionNode node={collectionNode("image", [{ id: "big", assetId: "asset-big", displayName: "风景.png", mimeType: "image/png", bytes: 2 * 1024 * 1024, width: 1920, height: 1080 }])} onItemsChange={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "查看 @图片1 详情" }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeVisible();
+    expect(within(dialog).getByRole("img", { name: "@图片1 风景.png" })).toHaveAttribute("src", "/api/v1/assets/asset-big/content");
+    expect(screen.getByText("风景.png")).toBeVisible();
+    expect(screen.getByText("格式：image/png")).toBeVisible();
+    expect(screen.getByText("大小：2.0 MB")).toBeVisible();
+    expect(screen.getByText("尺寸：1920 × 1080")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "关闭预览" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("closes the image preview dialog with Escape", () => {
+    render(<MediaCollectionNode node={collectionNode("image", [{ id: "big", assetId: "asset-big", displayName: "风景.png", mimeType: "image/png", bytes: 20 }])} onItemsChange={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "查看 @图片1 详情" }));
+    expect(screen.getByRole("dialog")).toBeVisible();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 it("uploads multiple files with progress, persists only active safe assets in selection order, and revokes previews", async () => {

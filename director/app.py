@@ -122,6 +122,27 @@ def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: Any,
 DEEPSEEK_MODEL = PROVIDERS.get("deepseek", {}).get("model", "deepseek-chat")
 DEEPSEEK_BASE = PROVIDERS.get("deepseek", {}).get("base_url", "https://api.deepseek.com/v1")
 
+# 导演台 v2 词库资产（来源见 tools/extract_director_assets.py 与各 JSON 的 source 字段）
+ASSETS_DIR = ROOT / "assets"
+ASSETS_VERSION = "2026-08-28-v2"
+_ASSET_FILES = {
+    "gpt_image_templates": "gpt_image_templates.json",
+    "nano_banana_styles": "nano_banana_styles.json",
+    "shortcut_inspirations": "shortcut_inspirations.json",
+    "negative_tags": "negative_tags.json",
+}
+
+
+def assets_payload() -> dict[str, Any]:
+    out: dict[str, Any] = {"version": ASSETS_VERSION}
+    for key, fname in _ASSET_FILES.items():
+        path = ASSETS_DIR / fname
+        try:
+            out[key] = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            out[key] = {}
+    return out
+
 JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 
@@ -235,7 +256,16 @@ def optimize_prompt(text: str, mode: str) -> dict[str, Any]:
             "提示词优化未配置 DeepSeek API Key，"
             "请联系管理员把 sk-... 写入 director/state/deepseek.key"
         )}
-    mode_text = "按「优化 refine」规则改写" if mode == "refine" else "按「扩写 expand」规则改写"
+    if mode == "langgpt":
+        mode_text = (
+            "把上面的内容改写成 LangGPT 结构化提示词：\n"
+            "# Role（角色定义，一句话）\n## Profile（专业背景/能力）\n"
+            "## Rules（规则：输出格式、禁止事项）\n"
+            "## Workflow（步骤）\n## Initialization（开场白）\n"
+            "保持用户原意，直接输出结构化结果，不要解释。"
+        )
+    else:
+        mode_text = "按「优化 refine」规则改写" if mode == "refine" else "按「扩写 expand」规则改写"
     body = {
         "model": DEEPSEEK_MODEL,
         "messages": [
@@ -247,7 +277,8 @@ def optimize_prompt(text: str, mode: str) -> dict[str, Any]:
     }
     try:
         result = request_json(
-            "POST", f"{DEEPSEEK_BASE}/chat/completions", api_key, body, timeout=120,
+            # 推理模型长指令延迟可达 2-3 分钟（上游 c5d1c10 同款放宽 30s→180s）
+            "POST", f"{DEEPSEEK_BASE}/chat/completions", api_key, body, timeout=180,
         )
         content = (result.get("choices") or [{}])[0].get("message", {}).get("content", "")
         if not content.strip():
@@ -270,6 +301,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self.path.startswith("/outputs/"):
             self._serve_output()
+            return
+        if self.path == "/api/assets":
+            json_response(self, 200, {"ok": True, **assets_payload()})
             return
         if self.path == "/api/config":
             json_response(self, 200, {"ok": True, **config_payload()})

@@ -18,6 +18,25 @@ async function api(url, method, body) {
 
 function escHtml(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''; }
 
+function jobStatusLabel(status) {
+  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消' };
+  return map[String(status || '').toLowerCase()] || String(status || '未知');
+}
+
+function jobStatusClass(status) {
+  const s = String(status || '').toLowerCase();
+  if (['succeeded', 'success', 'completed'].includes(s)) return 'is-success';
+  if (['failed', 'failure'].includes(s)) return 'is-failed';
+  if (['pending', 'queued'].includes(s)) return 'is-pending';
+  if (s === 'querying') return 'is-querying';
+  return 'is-running';
+}
+
+function jobStatusBadgeTone(status) {
+  const state = jobStatusClass(status);
+  return state === 'is-success' ? 'success' : state === 'is-failed' ? 'danger' : state === 'is-pending' ? 'warning' : 'info';
+}
+
 // Status-aware single poll for the Dreamina tab, mirroring seedance's
 // pollJobOnce (seedance/static/app.js). The portal-wide api() returns null on
 // network errors, but a truthy {ok:false, error:...} JSON body on HTTP 404/5xx
@@ -25,11 +44,14 @@ function escHtml(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').
 // looped forever rendering "unknown". This distinguishes:
 //   {kind:'ok', job}   HTTP 200 + a job object carrying a status field
 //   {kind:'gone'}      HTTP 404 — job no longer exists (sub-app restarted)
+//   {kind:'unauthorized'} HTTP 401 — Portal 会话过期；立即停轮询（上游 1470fa3），
+//                       别让 15 次退避把日志刷满
 //   {kind:'error'}     network error / 5xx / non-JSON — transient, retry with backoff
 async function dmPollOnce(url) {
   try {
     const res = await fetch(url, { method: 'GET', headers: { 'X-Workspace-Id': workspaceId() } });
     if (res.status === 404) return { kind: 'gone' };
+    if (res.status === 401) return { kind: 'unauthorized' };
     if (!res.ok) return { kind: 'error' };
     const body = await res.json();
     const job = body && body.job ? body.job : body;
@@ -95,21 +117,159 @@ function openPreview(kind, url) {
 }
 
 // === Tab Switching (vanilla) ===
-document.querySelectorAll('.app-tab').forEach(btn => btn.addEventListener('click', () => {
-  document.querySelectorAll('.app-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-}));
+// Keep the visual class, hidden state, ARIA state, mobile selector, and lazy
+// iframe lifecycle in sync. Only the initial Seedance iframe loads eagerly;
+// other iframe applications are mounted on their first visit and then kept
+// alive so drafts and running-task views are preserved when switching away.
+function iframeTarget(iframe) {
+  return iframe?.dataset.resolvedSrc || iframe?.dataset.src || iframe?.dataset.fallbackSrc || '';
+}
+
+function setIframeLoadState(iframe, state, message = '') {
+  const panel = iframe?.closest('.iframe-panel');
+  if (!panel) return;
+  panel.classList.toggle('is-loading', state === 'loading');
+  panel.classList.toggle('has-load-error', state === 'error');
+  const status = panel.querySelector('.iframe-load-status');
+  if (!status) return;
+  status.hidden = state === 'ready';
+  status.querySelector('.iframe-load-message').textContent = message || (state === 'error' ? '应用加载失败' : '正在加载应用…');
+  status.querySelector('.iframe-retry').hidden = state !== 'error';
+}
+
+function ensureIframeStatus(iframe) {
+  const panel = iframe?.closest('.iframe-panel');
+  if (!panel || panel.querySelector('.iframe-load-status')) return;
+  const status = document.createElement('div');
+  status.className = 'iframe-load-status';
+  status.setAttribute('role', 'status');
+  status.innerHTML = '<div class="spinner" aria-hidden="true"></div><p class="iframe-load-message">正在加载应用…</p><button class="iframe-retry ui-btn ui-btn--secondary" type="button" hidden>重新加载</button>';
+  status.querySelector('.iframe-retry').addEventListener('click', () => loadPortalIframe(iframe, { force: true }));
+  panel.insertBefore(status, iframe);
+  iframe.addEventListener('load', () => setIframeLoadState(iframe, 'ready'));
+  iframe.addEventListener('error', () => setIframeLoadState(iframe, 'error', '应用加载失败，请检查服务状态后重试。'));
+}
+
+function loadPortalIframe(iframe, { force = false } = {}) {
+  if (!iframe) return;
+  ensureIframeStatus(iframe);
+  const target = iframeTarget(iframe);
+  if (!target) {
+    setIframeLoadState(iframe, 'error', '应用地址尚未配置。');
+    return;
+  }
+  if (!force && iframe.dataset.loaded === 'true') return;
+  setIframeLoadState(iframe, 'loading');
+  iframe.dataset.loaded = 'true';
+  if (force && iframe.getAttribute('src') === target) {
+    iframe.src = 'about:blank';
+    requestAnimationFrame(() => { iframe.src = target; });
+  } else {
+    iframe.src = target;
+  }
+}
+
+function loadIframeForPanel(panel) {
+  const iframe = panel?.querySelector('iframe.portal-iframe');
+  if (iframe) loadPortalIframe(iframe);
+}
+
+function activatePortalTab(btn, { focus = false } = {}) {
+  if (!btn) return;
+  const panel = document.getElementById('tab-' + btn.dataset.tab);
+  if (!panel) return;
+  document.querySelectorAll('.app-tab').forEach(t => {
+    const active = t === btn;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', active ? 'true' : 'false');
+    t.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    const active = p === panel;
+    p.classList.toggle('active', active);
+    p.hidden = !active;
+  });
+  const mobileSelect = document.getElementById('mobileAppSelect');
+  if (mobileSelect && mobileSelect.value !== btn.dataset.tab) mobileSelect.value = btn.dataset.tab;
+  loadIframeForPanel(panel);
+  if (focus) btn.focus();
+}
+
+const portalTabButtons = Array.from(document.querySelectorAll('.app-tab'));
+const mobileAppSelect = document.getElementById('mobileAppSelect');
+if (mobileAppSelect) {
+  mobileAppSelect.addEventListener('change', () => {
+    const btn = portalTabButtons.find(item => item.dataset.tab === mobileAppSelect.value);
+    activatePortalTab(btn);
+  });
+}
+
+// Fixed overlays must follow the real stacked header height. The title row can
+// wrap on narrow screens and the application tab strip can change height as
+// modules are added, so a hard-coded top offset eventually places the director
+// toggle underneath navigation.
+function syncPortalHeaderHeight() {
+  if (typeof document.querySelector !== 'function') return;
+  const header = document.querySelector('.topbar-stack');
+  if (!header) return;
+  document.documentElement.style.setProperty('--portal-header-height', `${Math.ceil(header.getBoundingClientRect().height)}px`);
+}
+syncPortalHeaderHeight();
+if (typeof window.addEventListener === 'function') {
+  window.addEventListener('resize', syncPortalHeaderHeight, { passive: true });
+}
+if ('ResizeObserver' in window && typeof document.querySelector === 'function') {
+  const portalHeader = document.querySelector('.topbar-stack');
+  if (portalHeader) new ResizeObserver(syncPortalHeaderHeight).observe(portalHeader);
+}
+
+portalTabButtons.forEach(btn => {
+  btn.addEventListener('click', () => activatePortalTab(btn));
+  btn.addEventListener('keydown', e => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const index = portalTabButtons.indexOf(btn);
+    const nextIndex = e.key === 'Home' ? 0
+      : e.key === 'End' ? portalTabButtons.length - 1
+      : (index + (e.key === 'ArrowRight' ? 1 : -1) + portalTabButtons.length) % portalTabButtons.length;
+    activatePortalTab(portalTabButtons[nextIndex], { focus: true });
+  });
+});
 
 // Iframe URLs are supplied by the Portal's app registry so they stay relative
 // to whichever origin, protocol, and hostname serves this Portal instance.
+// Registry discovery only resolves URLs; it does not eagerly navigate hidden
+// iframes. If a user opens a tab before discovery completes, its fallback URL
+// loads immediately and remains usable.
 async function initConfiguredIframes() {
+  document.querySelectorAll('iframe.portal-iframe').forEach(iframe => {
+    ensureIframeStatus(iframe);
+    if (iframe.getAttribute('src')) {
+      iframe.dataset.loaded = 'true';
+      // The eager Seedance iframe may have completed before this late script
+      // attaches its load listener. Do not leave a loading mask over an
+      // already-visible application; future navigations still use load/error.
+      setIframeLoadState(iframe, 'ready');
+    }
+    const fallback = iframe.dataset.src || iframe.dataset.fallbackSrc || iframe.getAttribute('src');
+    if (fallback) iframe.dataset.resolvedSrc = fallback;
+  });
+
+  const initialPortalTab = document.querySelector('.app-tab.active') || portalTabButtons[0];
+  if (initialPortalTab) activatePortalTab(initialPortalTab);
+
   const res = await api('/api/apps');
   if (!res?.ok || !Array.isArray(res.apps)) return;
   document.querySelectorAll('iframe[data-app]').forEach(iframe => {
     const app = res.apps.find(item => item.name === iframe.dataset.app);
-    if (app?.mount === 'iframe' && app.iframe_url) iframe.src = app.iframe_url;
+    if (!app?.iframe_url) return;
+    const fallback = iframe.dataset.fallbackSrc || '';
+    // The registry may return either an explicit iframe mount or a proxy-style
+    // entry whose URL is still the correct browser route. Prefer the configured
+    // URL without making lazy loading depend on the mount label.
+    if (app.mount === 'iframe' || !fallback || app.iframe_url !== fallback) {
+      iframe.dataset.resolvedSrc = app.iframe_url;
+    }
   });
 }
 initConfiguredIframes();
@@ -368,11 +528,10 @@ function DreaminaApp() {
       if (!jobId) return;
       const el = document.getElementById('dm-jobsList');
       const card = document.createElement('div');
-      card.className = 'result';
+      card.className = 'result ui-job-status-card is-running';
       const cardId = 'card-' + jobId.slice(0, 8);
       card.id = cardId;
-      card.style.cssText = 'border-color:#4f46e5;background:#101828;color:#e2e8f0;grid-column:1/-1';
-      card.innerHTML = `<div class="meta">Job ${jobId.slice(0, 8)} - 提交中...</div>`;
+      card.innerHTML = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--info">处理中</span> · Job ${jobId.slice(0, 8)}</div>`;
       el.prepend(card);
       // Guard against stacked loops: loadJobs() can run repeatedly (login poll,
       // manual refresh) and must not spawn a second poller for the same job.
@@ -381,7 +540,6 @@ function DreaminaApp() {
       this._pollingJobs.add(jobId);
       const stop = () => {
         this._pollingJobs.delete(jobId);
-        card.style.cssText = '';
         card.id = '';
       };
       let fails = 0;
@@ -389,18 +547,27 @@ function DreaminaApp() {
       while (true) {
         const r = await dmPollOnce(`/dreamina/api/jobs/${jobId}`);
         if (r.kind === 'gone') {
-          card.innerHTML = '<div class="meta" style="color:#fca5a5">任务已失效（服务可能重启过），请查看历史记录或重新提交</div>';
+          card.className = 'ui-job-status-card is-failed';
+          card.innerHTML = '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--danger">任务已失效</span></div><div class="ui-job-status-card__error">服务可能重启过，请查看历史记录或重新提交</div>';
+          stop();
+          break;
+        }
+        if (r.kind === 'unauthorized') {
+          card.className = 'ui-job-status-card is-failed';
+          card.innerHTML = '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--danger">登录已过期</span></div><div class="ui-job-status-card__error">会话已过期，请重新登录后刷新页面，任务仍在后台运行</div>';
           stop();
           break;
         }
         if (r.kind === 'error') {
           fails++;
           if (fails >= 15) {
-            card.innerHTML = '<div class="meta" style="color:#fca5a5">网络不稳定，已停止轮询（任务可能仍在后台运行，请稍后在历史记录中查看）</div>';
+            card.className = 'ui-job-status-card is-failed';
+            card.innerHTML = '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--danger">轮询已停止</span></div><div class="ui-job-status-card__error">网络不稳定，任务可能仍在后台运行，请稍后在历史记录中查看</div>';
             stop();
             break;
           }
-          card.innerHTML = `<div class="meta" style="color:#fbbf24">网络连接中断，正在重试 (${fails}/15)...</div>`;
+          card.className = 'ui-job-status-card is-pending';
+          card.innerHTML = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--warning">连接重试中</span> · ${fails}/15</div>`;
           await new Promise(res => setTimeout(res, backoff));
           backoff = Math.min(backoff * 1.5, 10000);
           continue;
@@ -408,11 +575,13 @@ function DreaminaApp() {
         fails = 0;
         backoff = 2500;
         const job = r.job;
-        const events = (job.events || []).slice(-6).map(e => `<div style="font-size:11px;color:#d1e0ff;padding:2px 0"><span style="color:#697386">${escHtml(e.time)}</span> ${escHtml(e.message)}</div>`).join('');
-        let html = `<div class="meta" style="color:#818cf8;font-weight:600;margin-bottom:6px">${job.task_type || ''} · ${job.status || 'unknown'} · ${job.done || 0}/${job.total || 0}</div>`;
-        if (events) html += events;
-        else html += '<div style="color:#697386;font-size:11px">等待服务器响应...</div>';
-        if (job.status === 'failed') html += `<div class="meta" style="color:#ef4444">${escHtml(job.error || '生成失败')}</div>`;
+        const events = (job.events || []).slice(-6).map(e => `<div><span class="ui-job-status-card__event-time">${escHtml(e.time)}</span> ${escHtml(e.message)}</div>`).join('');
+        const status = String(job.status || '').toLowerCase();
+        card.className = `ui-job-status-card ${jobStatusClass(status)}`;
+        let html = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--${jobStatusBadgeTone(status)}">${jobStatusLabel(status)}</span> · ${job.task_type || ''} · ${job.done || 0}/${job.total || 0}</div>`;
+        if (events) html += `<div class="ui-job-status-card__events">${events}</div>`;
+        else html += '<div class="ui-job-status-card__events">等待服务器响应...</div>';
+        if (job.status === 'failed') html += `<div class="ui-job-status-card__error">${escHtml(job.error || '生成失败')}</div>`;
         const allFiles = [];
         for (const r of job.results || []) { if (r.files) allFiles.push(...r.files); }
         if (job.result?.files) allFiles.push(...job.result.files);
@@ -983,13 +1152,13 @@ window.openPreview = openPreview;
     const style = document.createElement('style');
     style.textContent = `
       #_dlProgWrap{position:fixed;left:16px;bottom:16px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
-      #_dlProgWrap .dlp{background:#17191f;color:#e2e8f0;border-radius:8px;padding:10px 12px;min-width:240px;max-width:340px;box-shadow:0 4px 16px rgba(0,0,0,.35);font-size:12px;pointer-events:auto}
+      #_dlProgWrap .dlp{background:var(--surface,#fff);color:var(--text,#172033);border:1px solid var(--border,#d9e0ea);border-radius:8px;padding:10px 12px;min-width:240px;max-width:340px;box-shadow:var(--shadow-md,0 8px 22px rgba(20,32,51,.08));font-size:12px;pointer-events:auto}
       #_dlProgWrap .dlp .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px}
-      #_dlProgWrap .dlp .track{height:6px;background:#2d3340;border-radius:3px;overflow:hidden}
-      #_dlProgWrap .dlp .fill{height:100%;width:0;background:#3b82f6;transition:width .15s ease}
-      #_dlProgWrap .dlp .txt{margin-top:5px;color:#94a3b8;font-size:11px}
-      #_dlProgWrap .dlp.done .fill{background:#22c55e}
-      #_dlProgWrap .dlp.fail .fill{background:#ef4444}
+      #_dlProgWrap .dlp .track{height:6px;background:var(--surface-sunken,#eef2f7);border-radius:3px;overflow:hidden}
+      #_dlProgWrap .dlp .fill{height:100%;width:0;background:var(--accent,#235fd6);transition:width .15s ease}
+      #_dlProgWrap .dlp .txt{margin-top:5px;color:var(--muted,#687386);font-size:11px}
+      #_dlProgWrap .dlp.done .fill{background:var(--success,#10b981)}
+      #_dlProgWrap .dlp.fail .fill{background:var(--danger,#ef4444)}
     `;
     document.head.appendChild(style);
     container = document.createElement('div');
@@ -2194,12 +2363,106 @@ function VolcenginePortraitApp() {
   };
 }
 
+// ============ 历史记录（全局任务历史，方案二媒体卡片） ============
+function HistoryApp() {
+  return {
+    items: [], total: 0, page: 1, pageSize: 20,
+    isAdmin: false, userList: [], userFilter: "",
+    kind: "all", status: "all", days: 30, q: "",
+    detail: null, detailTab: "req",
+    get totalPages() {
+      return Math.max(1, Math.ceil(this.total / this.pageSize));
+    },
+    async init() {
+      try {
+        const me = await api("/api/platform/me", "GET");
+        this.isAdmin = !!(me && me.role === "admin");
+        if (this.isAdmin) {
+          const u = await api("/api/platform/history-users", "GET");
+          this.userList = (u && u.users) || [];
+        }
+      } catch (e) { /* 权限信息拿不到时按普通用户渲染 */ }
+      this.reload();
+    },
+    async reload() {
+      this.page = 1;
+      await this._fetch();
+    },
+    async goPage(p) {
+      if (p < 1 || p > this.totalPages) return;
+      this.page = p;
+      await this._fetch();
+    },
+    async _fetch() {
+      const params = new URLSearchParams({
+        days: this.days, kind: this.kind, status: this.status,
+        q: this.q, limit: this.pageSize, offset: (this.page - 1) * this.pageSize,
+      });
+      if (this.isAdmin && this.userFilter) params.set("user", this.userFilter);
+      const res = await api("/api/platform/history?" + params.toString(), "GET");
+      if (!res || !res.ok) { this.items = []; this.total = 0; return; }
+      this.items = res.items || [];
+      this.total = res.total || 0;
+      if (this.page > this.totalPages) { this.page = this.totalPages; return this._fetch(); }
+      this.detail = null;
+    },
+    openDetail(it) { this.detail = it; this.detailTab = "req"; },
+    // 视频卡片走服务端抽帧缩略图端点；图片直接用原 URL
+    thumbFor(it) {
+      if (!it || !it.thumb_url) return "";
+      if (it.kind !== "video") return "/" + it.app + it.thumb_url;
+      return "/api/platform/thumb?app=" + encodeURIComponent(it.app) + "&url=" + encodeURIComponent(it.thumb_url);
+    },
+    statusText(s) {
+      return { done: "已成功", failed: "已失败", running: "生成中", queued: "排队中", pending: "排队中" }[s] || s;
+    },
+    shortTime(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts * 1000);
+      const now = new Date();
+      const sameDay = d.toDateString() === now.toDateString();
+      const pad = (n) => String(n).padStart(2, "0");
+      return sameDay ? `${pad(d.getHours())}:${pad(d.getMinutes())}`
+                     : `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    },
+    fullTime(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts * 1000);
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    },
+    async downloadItem(r, index) {
+      const url = "/" + this.detail.app + r.url;
+      const ext = r.kind === "video" ? ".mp4" : ".png";
+      const filename = `${this.detail.app}-${index}${ext}`;
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl; a.download = filename; a.style.display = "none";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+      } catch (e) {
+        this.detailTab = "ret";
+      }
+    },
+  };
+}
+window.HistoryApp = HistoryApp;
+
 // ============ 导演台（右侧栏） ============
 function DirectorApp() {
   return {
     skills: [
       { id: "refine", label: "提示词优化" },
       { id: "expand", label: "提示词扩写" },
+      { id: "langgpt", label: "结构化提示词" },
+      { id: "template", label: "工业模板" },
+      { id: "style", label: "风格参考" },
+      { id: "inspire", label: "场景灵感" },
+      { id: "negative", label: "负面词生成" },
       { id: "text2image", label: "文生图" },
     ],
     skill: "refine",
@@ -2210,6 +2473,11 @@ function DirectorApp() {
     count: 1,
     ratios: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9", "9:21"],
     resolutions: ["1K", "1.5K", "2K"],
+    assets: { version: "", gpt_image_templates: { cases: [], categories: [] },
+              nano_banana_styles: { styles: [] },
+              shortcut_inspirations: { items: [] },
+              negative_tags: { negative: [], styles: [] } },
+    templateCategory: "", stylePick: "", inspireIndex: 0,
     running: false,
     error: "",
     statusText: "",
@@ -2217,6 +2485,8 @@ function DirectorApp() {
     images: [],
     collapsed: false,
     async init() {
+      document.body.classList.toggle("director-collapsed", this.collapsed);
+      document.body.classList.toggle("director-open", !this.collapsed);
       try {
         const cfg = await api("/director/api/config", "GET");
         if (cfg && cfg.ok) {
@@ -2234,13 +2504,57 @@ function DirectorApp() {
       } catch (e) {
         this.error = "导演台服务不可用：" + (e && e.message ? e.message : "网络错误");
       }
+      try {
+        const cached = localStorage.getItem("director-assets-v2");
+        if (cached) { try { this.assets = JSON.parse(cached); } catch (e) {} }
+        const res = await api("/director/api/assets", "GET");
+        if (res && res.ok && res.version) {
+          this.assets = res;
+          localStorage.setItem("director-assets-v2", JSON.stringify(res));
+        }
+      } catch (e) { /* 词库加载失败时词库类 skill 显示空态 */ }
     },
     async run() {
       this.error = "";
       this.statusText = "";
-      if (!this.input.trim()) return;
+      const needsInput = ["refine", "expand", "langgpt", "text2image"].includes(this.skill);
+      if (needsInput && !this.input.trim()) return;
       this.running = true;
       try {
+        if (this.skill === "template") {
+          const pool = (this.assets.gpt_image_templates.cases || []).slice(0, 120);
+          const list = this.templateCategory
+            ? pool.filter((c) => (c.title || "").includes(this.templateCategory)) : pool;
+          const picked = list.length ? list[Math.floor(Math.random() * list.length)] : null;
+          this.resultText = picked
+            ? `【${picked.title}】\n${picked.prompt}\n\n—— 将「主体/风格」替换为你的需求后使用`
+            : "该分类暂无模板";
+          this.statusText = "已生成模板参考";
+          return;
+        }
+        if (this.skill === "style") {
+          const styles = this.assets.nano_banana_styles.styles || [];
+          const picked = styles.find((s) => s.name === this.stylePick) || styles[0];
+          this.resultText = picked
+            ? `【风格：${picked.name}】\n${picked.prompt}`
+            : "风格库为空";
+          this.statusText = "已输出风格片段";
+          return;
+        }
+        if (this.skill === "inspire") {
+          const items = this.assets.shortcut_inspirations.items || [];
+          this.inspireIndex = (this.inspireIndex + 1) % Math.max(1, items.length);
+          const it = items[this.inspireIndex];
+          this.resultText = it ? `【${it.title}】\n${it.prompt}` : "灵感库为空";
+          this.statusText = "换一条灵感（再点一次换下一条）";
+          return;
+        }
+        if (this.skill === "negative") {
+          const neg = this.assets.negative_tags.negative || [];
+          this.resultText = "负面词：\n" + neg.join(", ");
+          this.statusText = "已生成负面词，可并入文生图";
+          return;
+        }
         if (this.skill === "text2image") {
           this.resultText = "";
           this.images = [];
@@ -2341,6 +2655,7 @@ PetiteVue.createApp({
   StatsApp,
   KeysApp,
   DirectorApp,
+  HistoryApp,
   openPreview
 }).mount();
 
@@ -2374,6 +2689,7 @@ PetiteVue.createApp({
       const st = await res.json();
       if (!st || st.ok === false) return;
       const msgs = [];
+      let severity = 'warning';
       const host = location.hostname;
       if (st.lan_ip && host !== st.lan_ip && host !== 'localhost' && !host.startsWith('127.')) {
         const base = `${location.protocol}//${st.lan_ip}:${st.portal_port || location.port || 9090}/`;
@@ -2382,14 +2698,19 @@ PetiteVue.createApp({
       if (typeof st.disk_free_gb === 'number') {
         if (st.disk_free_gb < 10) {
           msgs.push(`🟥 服务器磁盘仅剩 ${st.disk_free_gb.toFixed(1)} GB，新任务可能失败，请尽快联系管理员清理`);
+          severity = 'danger';
         } else if (st.disk_free_gb < 20) {
           msgs.push(`🟨 服务器磁盘剩余 ${st.disk_free_gb.toFixed(1)} GB，建议管理员尽快清理`);
         }
       }
       if (msgs.length) {
         banner.innerHTML = msgs.join('&nbsp;&nbsp;&nbsp;');
+        banner.classList.toggle('is-danger', severity === 'danger');
+        banner.classList.toggle('ui-banner--danger', severity === 'danger');
+        banner.classList.toggle('ui-banner--warning', severity !== 'danger');
         banner.style.display = 'block';
       } else {
+        banner.classList.remove('is-danger', 'ui-banner--danger', 'ui-banner--warning');
         banner.style.display = 'none';
       }
     } catch (e) { /* banner is best-effort */ }

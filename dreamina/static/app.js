@@ -408,7 +408,7 @@ function renderJobsList(jobs) {
   const recent = jobs.filter(j => j.status === 'completed' || j.status === 'failed').slice(0, 10);
   const all = [...active, ...recent];
   $('#runningCount').textContent = active.length ? `${active.length} 进行中` : '';
-  if (!all.length) { list.innerHTML = '<p style="color:#697386;font-size:13px;">暂无任务</p>'; return; }
+  if (!all.length) { list.innerHTML = '<p class="ui-empty ui-empty--compact">暂无任务</p>'; return; }
   list.innerHTML = all.map(renderJobCard).join('');
   bindRetryButtons();
   bindThumbClicks();
@@ -460,11 +460,11 @@ function renderJobCard(job) {
   let eventsHtml = '';
   if (job.events && job.events.length > 0) {
     const recent = job.events.slice(-3);
-    eventsHtml = '<div class="job-events">' + recent.map(e => `<div>${e.time} ${escHtml(e.message)}</div>`).join('') + '</div>';
+    eventsHtml = '<div class="job-events ui-job-status-card__events">' + recent.map(e => `<div><span class="ui-job-status-card__event-time">${escHtml(e.time)}</span> ${escHtml(e.message)}</div>`).join('') + '</div>';
   }
   let errorHtml = '';
   if (job.status === 'failed' && job.error) {
-    errorHtml = `<div class="job-error">${escHtml(job.error.slice(0, 200))}</div>`;
+    errorHtml = `<div class="job-error ui-job-status-card__error">${escHtml(job.error.slice(0, 200))}</div>`;
   }
   let actionsHtml = '';
   if (job.status === 'failed' && job.retryable) {
@@ -482,17 +482,17 @@ function renderJobCard(job) {
       const cmdDisp = escHtml(l.command || '');
       const outDisp = escHtml((l.stdout || '').slice(0, 800));
       const errDisp = l.stderr ? escHtml(l.stderr.slice(0, 300)) : '';
-      return `<div style="margin-bottom:6px"><div style="color:#a78bfa">$ ${cmdDisp}</div><div style="color:#6ee7b7">exitcode: ${l.returncode}</div>${outDisp ? `<div style="color:#e2e8f0;white-space:pre-wrap;word-break:break-all">${outDisp}</div>` : ''}${errDisp ? `<div style="color:#fca5a5">${errDisp}</div>` : ''}</div>`;
+      return `<div class="dm-cli-entry"><div class="dm-cli-command">$ ${cmdDisp}</div><div class="dm-cli-exitcode">exitcode: ${l.returncode}</div>${outDisp ? `<div class="dm-cli-output">${outDisp}</div>` : ''}${errDisp ? `<div class="dm-cli-error">${errDisp}</div>` : ''}</div>`;
     }).join('');
-    cliLogHtml = `<div style="margin-top:6px"><span style="cursor:pointer;color:#818cf8;user-select:none;font-size:12px" onclick="var el=document.getElementById('${logId}');el.style.display=el.style.display==='none'?'block':'none'">CLI 详情 ▾</span><div id="${logId}" style="display:none;margin-top:4px;background:#1e1b2e;color:#e2e8f0;font-family:monospace;font-size:11px;padding:8px;border-radius:6px;max-height:240px;overflow:auto">${logBody}</div></div>`;
+    cliLogHtml = `<div class="dm-cli-wrap"><button type="button" class="dm-cli-toggle" aria-expanded="false" onclick="var el=document.getElementById('${logId}');var open=el.hidden;el.hidden=!open;this.setAttribute('aria-expanded',open?'true':'false')">CLI 详情 ▾</button><div id="${logId}" class="dm-cli-log" hidden>${logBody}</div></div>`;
   }
   const runtime = formatRuntime(job);
-  const userTag = job.username ? `<span class="job-user" style="font-size:11px;color:#697386;margin-left:6px">@${escHtml(job.username)}</span>` : '';
-  const runtimeTag = runtime ? `<span class="job-runtime" style="font-size:11px;color:#475569;margin-left:6px">${runtime}</span>` : '';
-  return `<div class="job-card">
+  const userTag = job.username ? `<span class="job-user">@${escHtml(job.username)}</span>` : '';
+  const runtimeTag = runtime ? `<span class="job-runtime">${runtime}</span>` : '';
+  return `<div class="job-card ui-result-card">
     <div class="job-card-header">
       <span class="job-type">${typeLabel(job.task_type)}</span>
-      <span class="job-status ${job.status}">${statusLabel(job.status)}</span>
+      <span class="job-status ${job.status} ui-badge ui-badge--${statusTone(job.status)}">${statusLabel(job.status)}</span>
       ${userTag}${runtimeTag}
     </div>
     <div class="job-prompt">${escHtml(job.params?.prompt || '')}</div>
@@ -538,7 +538,7 @@ function renderHistory(items) {
   if (filter === 'image') filtered = filtered.filter(i => i.task_type?.includes('image'));
   if (filter === 'video') filtered = filtered.filter(i => i.task_type?.includes('video'));
   filtered = filtered.slice(0, 50);
-  if (!filtered.length) { list.innerHTML = '<p style="color:#697386;font-size:13px;">暂无历史记录</p>'; return; }
+  if (!filtered.length) { list.innerHTML = '<p class="ui-empty ui-empty--compact">暂无历史记录</p>'; return; }
   list.innerHTML = filtered.map(renderJobCard).join('');
   bindThumbClicks();
   bindRetryButtons();
@@ -898,6 +898,11 @@ function typeLabel(t) {
 function statusLabel(s) {
   const map = { pending: '等待中', running: '生成中', completed: '已完成', failed: '失败', querying: '查询中' };
   return map[s] || s;
+}
+
+function statusTone(s) {
+  const map = { pending: 'warning', running: 'info', completed: 'success', failed: 'danger', querying: 'info' };
+  return map[String(s || '').toLowerCase()] || 'neutral';
 }
 
 function escHtml(s) {

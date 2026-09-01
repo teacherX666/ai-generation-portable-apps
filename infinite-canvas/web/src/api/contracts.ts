@@ -14,7 +14,7 @@ export type ModelSpec = {
     input_ports?: ModelInputPort[];
     parameter_mappings?: Record<string, string>;
 };
-export type AssetRef = { id: string; kind: "reference" | "portrait" | "library"; status: "processing" | "active" | "failed"; mime_type: string; media_type?: "image" | "video" | "audio"; size_bytes?: number; content_url?: string };
+export type AssetRef = { id: string; kind: "reference" | "portrait" | "library"; status: "processing" | "active" | "failed"; mime_type: string; media_type?: "image" | "video" | "audio"; size_bytes?: number; content_url?: string; upstream_asset_id?: string };
 export type LibraryAsset = AssetRef & { kind: "library"; media_type: "image" };
 export type OwnedMediaAsset = AssetRef & { kind: "reference"; status: "active"; media_type: "image" | "video" | "audio"; size_bytes: number; content_url: string };
 export type JobRequest = { operation: ModelOperation; model_id: string; prompt: string; params: Record<string, unknown>; asset_ids: string[]; inputs?: Record<string, string[]>; idempotency_key: string };

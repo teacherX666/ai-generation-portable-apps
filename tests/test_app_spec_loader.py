@@ -51,6 +51,7 @@ class AppSpecLoaderTests(unittest.TestCase):
                 "infinite-canvas",
                 "feishu-generation-agent",
                 "director",
+                "previz",
                 "rag-assistant",
             ],
         )

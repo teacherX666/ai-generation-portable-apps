@@ -5,6 +5,8 @@ import { nanoid } from "nanoid";
 
 import type { JobState, ModelOperation, ModelSpec } from "@/api/contracts";
 import { fetchModels } from "@/api/models";
+import { uploadMediaAsset } from "@/api/assets";
+import { safeApiPath } from "@/api/client";
 import { DraggableCanvasNode } from "@/components/canvas/draggable-canvas-node";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
@@ -23,6 +25,7 @@ import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION, type GraphMediaType, type GraphModelMetadata, type GraphParameterValue } from "@/features/graph/contracts";
 import { compileGraphJob, CompileJobError } from "@/features/graph/compile-job";
 import { graphPortsForModel } from "@/features/graph/model-capabilities";
+import { nextMediaCollectionTitle, safeMediaDisplayName } from "@/features/graph/media-collection";
 import { parameterControls } from "@/components/model-picker";
 import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphConnectionRejectionMessage, graphConnectionTransientKey, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
 import { nodeRegistry } from "@/features/nodes/registry";
@@ -34,6 +37,47 @@ import { useGenerationJob, type PendingRef } from "@/features/generation/use-gen
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType } from "@/types/canvas";
 import type { CanvasNodeData, ContextMenuState, Position, ViewportTransform } from "@/types/canvas";
+
+// Seedance 参考视频必须 4–30 秒；提交前实测时长，超范围快速失败（上游 7c37c93）
+const REFERENCE_VIDEO_MIN_SECONDS = 4;
+const REFERENCE_VIDEO_MAX_SECONDS = 30;
+const videoDurationCache = new Map<string, number | null>();
+
+function measureVideoDuration(url: string): Promise<number | null> {
+    return new Promise((resolve) => {
+        const video = document.createElement("video");
+        const timer = window.setTimeout(() => {
+            video.src = "";
+            resolve(null);
+        }, 8000);
+        video.preload = "metadata";
+        video.onloadedmetadata = () => {
+            window.clearTimeout(timer);
+            const duration = Number.isFinite(video.duration) ? video.duration : null;
+            video.src = "";
+            resolve(duration);
+        };
+        video.onerror = () => {
+            window.clearTimeout(timer);
+            video.src = "";
+            resolve(null);
+        };
+        video.src = url;
+    });
+}
+
+async function validateReferenceVideoDurations(inputs: Record<string, readonly string[]>) {
+    for (const assetId of inputs.reference_video ?? []) {
+        if (!videoDurationCache.has(assetId)) {
+            videoDurationCache.set(assetId, await measureVideoDuration(safeApiPath(`/api/v1/assets/${encodeURIComponent(assetId)}/content`)));
+        }
+        const seconds = videoDurationCache.get(assetId) ?? null;
+        if (seconds === null) continue;
+        if (seconds < REFERENCE_VIDEO_MIN_SECONDS || seconds > REFERENCE_VIDEO_MAX_SECONDS) {
+            throw new CompileJobError(`参考视频时长需在 4–30 秒之间（当前 ${seconds.toFixed(1)} 秒），请更换或剪辑后重试。`);
+        }
+    }
+}
 
 export default function CanvasProjectPage() {
     const { id = "" } = useParams();
@@ -132,12 +176,12 @@ export default function CanvasProjectPage() {
         },
         [id, readOnly, updateProject],
     );
-    const changeNodeScale = useCallback(
-        (nodeId: string, scale: number) => {
+    const changeNodeSize = useCallback(
+        (nodeId: string, size: { width: number; height: number }) => {
             if (readOnly) return;
             const current = useCanvasStore.getState().openProject(id);
             if (!current) return;
-            updateProject(id, { nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, scale } : node)) });
+            updateProject(id, { nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, width: size.width, height: size.height, resized: true } : node)) });
         },
         [id, readOnly, updateProject],
     );
@@ -215,9 +259,34 @@ export default function CanvasProjectPage() {
     }, [clearPendingConnection, clientToWorld]);
 
     useEffect(() => {
-        void fetchModels()
-            .then(setModels)
-            .catch(() => setModels([]));
+        let cancelled = false;
+        let retryTimer: number | undefined;
+        let attempts = 0;
+
+        const loadModels = async () => {
+            try {
+                const nextModels = await fetchModels();
+                if (cancelled) return;
+                if (nextModels.length > 0) {
+                    setModels(nextModels);
+                    return;
+                }
+            } catch {
+                if (cancelled) return;
+            }
+
+            // Portal 与子应用并行启动时，画布可能比 Seedance / Nano Banana
+            // 更早拿到一次空目录。不能因此永久禁用图片/视频生成；短间隔重试，
+            // 成功后立即停止，同时保留已有目录避免瞬时抖动让按钮再次失效。
+            attempts += 1;
+            if (attempts < 6) retryTimer = window.setTimeout(loadModels, 1_500);
+        };
+
+        void loadModels();
+        return () => {
+            cancelled = true;
+            if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+        };
     }, []);
 
     // 模型目录与节点声明对账:旧版本保存的模型节点可能缺失端口(如本地演示模型当时未声明任何端口),
@@ -526,6 +595,7 @@ export default function CanvasProjectPage() {
 
     const runModelNode = useCallback(
         (nodeId: string) => {
+            void (async () => {
             if (readOnly) return;
             const current = useCanvasStore.getState().openProject(id);
             const sourceNode = current?.nodes.find((node) => node.id === nodeId);
@@ -538,6 +608,7 @@ export default function CanvasProjectPage() {
             }
             try {
                 const frozen = compileGraphJob(current.nodes, current.connections, nodeId, model);
+                if (frozen.inputs.reference_video?.length) await validateReferenceVideoDurations(frozen.inputs);
                 updateProject(id, {
                     nodes: current.nodes.map((node) =>
                         node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: "loading" as const, prompt: frozen.prompt, params: { ...frozen.params }, assetIds: Object.values(frozen.inputs).flat() } } : node,
@@ -550,6 +621,7 @@ export default function CanvasProjectPage() {
             } catch (error) {
                 setModelMessages((messages) => ({ ...messages, [nodeId]: error instanceof CompileJobError ? error.message : "无法编译这个模型任务。" }));
             }
+            })();
         },
         [generation, id, models, readOnly, updateProject],
     );
@@ -626,11 +698,15 @@ export default function CanvasProjectPage() {
 
     const addMediaCollectionNode = useCallback(
         (mediaType: GraphMediaType, position?: Position) => {
-            if (readOnly) return;
+            if (readOnly) return undefined;
             const current = useCanvasStore.getState().openProject(id);
-            if (!current) return;
+            if (!current) return undefined;
             const nodeType = mediaType === "image" ? CanvasNodeType.Image : mediaType === "video" ? CanvasNodeType.Video : CanvasNodeType.Audio;
-            const title = mediaType === "image" ? "参考图片" : mediaType === "video" ? "参考视频" : "参考音频";
+            // 按媒体类型顺延编号（上游 14608d3）：参考图片1/2/3…，自定义标题不参与计数
+            const title = nextMediaCollectionTitle(
+                current.nodes.flatMap((node) => (node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === mediaType ? [node.title] : [])),
+                mediaType,
+            );
             const node: CanvasNodeData = {
                 id: nanoid(),
                 type: nodeType,
@@ -645,6 +721,7 @@ export default function CanvasProjectPage() {
             };
             updateProject(id, { nodes: [...current.nodes, node] });
             setSelectedNodeIds(new Set([node.id]));
+            return node.id;
         },
         [id, readOnly, updateProject],
     );
@@ -665,6 +742,47 @@ export default function CanvasProjectPage() {
             return found;
         },
         [id, readOnly, updateProject],
+    );
+
+    // 拖文件进画布（上游 49cf8cd 的拖拽部分）：按媒体类型分组上传，
+    // 在落点创建对应素材节点并填进素材（同类型多文件合进一个节点）。
+    const handleCanvasDrop = useCallback(
+        async (event: React.DragEvent<HTMLDivElement>) => {
+            if (readOnly) return;
+            const files = Array.from(event.dataTransfer.files ?? []);
+            const byType = new Map<GraphMediaType, File[]>();
+            for (const file of files) {
+                if (file.type.startsWith("image/")) byType.set("image", [...(byType.get("image") ?? []), file]);
+                else if (file.type.startsWith("video/")) byType.set("video", [...(byType.get("video") ?? []), file]);
+                else if (file.type.startsWith("audio/")) byType.set("audio", [...(byType.get("audio") ?? []), file]);
+            }
+            if (byType.size === 0) return;
+            event.preventDefault();
+            const position = clientToWorld(event.clientX, event.clientY);
+            let created = 0;
+            let failed = 0;
+            for (const [mediaType, group] of byType) {
+                try {
+                    const assets = await Promise.all(group.map((file) => uploadMediaAsset(file, mediaType)));
+                    const items = assets.map((asset, index) => ({
+                        id: nanoid(),
+                        assetId: asset.id,
+                        displayName: safeMediaDisplayName(group[index]?.name ?? "素材", mediaType),
+                        mimeType: asset.mime_type,
+                        bytes: asset.size_bytes,
+                    }));
+                    const nodeId = addMediaCollectionNode(mediaType, { x: position.x + created * 24, y: position.y + created * 24 });
+                    if (nodeId) {
+                        updateMediaCollection(nodeId, (current) => [...current, ...items]);
+                        created += 1;
+                    }
+                } catch {
+                    failed += group.length;
+                }
+            }
+            setCanvasCommandMessage(created > 0 ? (failed > 0 ? `已创建 ${created} 个节点，${failed} 个文件上传失败。` : `已创建 ${created} 个节点。`) : "拖入的文件上传失败，请检查格式与大小。");
+        },
+        [addMediaCollectionNode, clientToWorld, readOnly, updateMediaCollection],
     );
 
     const addComfyWorkflowNode = useCallback((position?: Position) => {
@@ -732,9 +850,12 @@ export default function CanvasProjectPage() {
 
     const libraryTargets = useMemo(() => {
         if (!project) return [];
-        return project.nodes
-            .filter((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image")
-            .map((node) => ({ nodeId: node.id, label: node.title || node.id }));
+        // itemCount 供面板目标选择器展示（上游 6307ed3）
+        return project.nodes.flatMap((node) => {
+            const graph = node.metadata?.graph;
+            if (graph?.role !== "media-collection" || graph.mediaType !== "image") return [];
+            return [{ nodeId: node.id, label: node.title || node.id, itemCount: graph.items.length }];
+        });
     }, [project]);
 
     if (!project) {
@@ -840,6 +961,7 @@ export default function CanvasProjectPage() {
                             clearPendingConnection();
                         }}
                         onContextMenu={readOnly ? undefined : openCanvasContextMenu}
+                        onDrop={readOnly ? undefined : handleCanvasDrop}
                     >
                         <svg className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible" width="1" height="1" aria-label="画布连接">
                             {resolvedConnections.map(({ connection, connectionKey, active: connectionActive, reason }) => {
@@ -901,7 +1023,7 @@ export default function CanvasProjectPage() {
                                     onContextMenu={readOnly ? undefined : openNodeContextMenu}
                                     onPositionChange={moveNode}
                                     onMeasuredSize={recordMeasuredNodeSize}
-                                    onScaleChange={readOnly ? undefined : changeNodeScale}
+                                    onResize={readOnly ? undefined : changeNodeSize}
                                     overlays={[...ports.targets, ...ports.sources].map((port) => (
                                         <NodePort
                                             key={`${port.direction}:${port.portId}`}

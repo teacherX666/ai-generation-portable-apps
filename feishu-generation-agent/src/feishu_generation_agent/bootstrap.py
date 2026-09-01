@@ -36,7 +36,10 @@ from feishu_generation_agent.integrations.feishu_sheet_export import (
 from feishu_generation_agent.integrations.planner import DeepSeekPlanner
 from feishu_generation_agent.integrations.routing_delivery import RoutingDeliveryWriter
 from feishu_generation_agent.integrations.production_bitable import ProductionBitableClient
-from feishu_generation_agent.integrations.production_delivery import ProductionResultWriter
+from feishu_generation_agent.integrations.production_delivery import (
+    ProductionResultWriter,
+    make_result_table_target,
+)
 from feishu_generation_agent.integrations.production_routing import (
     ProductionRoutingDeliveryWriter,
 )
@@ -82,9 +85,7 @@ CAPABILITY_FIELDS: dict[str, tuple[str, ...]] = {
         "lark_bitable_table_id", "lark_bitable_view_id",
     ),
     "production_bitable": (
-        "lark_app_id", "lark_app_secret", "lark_production_bitable_url",
-        "lark_production_table_id", "lark_production_view_id",
-        "lark_result_folder_token",
+        "lark_app_id", "lark_app_secret",
     ),
     "local_claim": ("lark_local_operator_open_id",),
     "legacy_delivery": (
@@ -277,8 +278,9 @@ async def _open_application_services(
     bitable_configured = enable_bitable and capability_is_configured(
         settings, "bitable"
     )
-    production_bitable_configured = enable_bitable and capability_is_configured(
-        settings, "production_bitable"
+    production_bitable_configured = enable_bitable and (
+        capability_is_configured(settings, "production_bitable")
+        and settings.production_bitable_configured
     )
     legacy_configured = capability_is_configured(settings, "legacy_delivery")
     if not bitable_configured and not production_bitable_configured and not legacy_configured:
@@ -453,11 +455,24 @@ async def _open_application_services(
                     else frozenset({"动画类", "图片类"})
                 ),
             )
+            explicit_result_table = None
+            if settings.lark_result_bitable_url and settings.lark_result_table_id:
+                result_location = parse_bitable_url(
+                    settings.lark_result_bitable_url,
+                    settings.lark_result_table_id,
+                    "",
+                )
+                explicit_result_table = make_result_table_target(
+                    app_token=result_location.app_token or "",
+                    table_id=result_location.table_id,
+                    url=settings.lark_result_bitable_url,
+                )
             production_writer = ProductionResultWriter(
                 client=feishu,
                 store=production_store,
                 repository=repository,
                 result_folder_token=settings.lark_result_folder_token or "",
+                result_table=explicit_result_table,
             )
             if isinstance(delivery_writer, RoutingDeliveryWriter):
                 # 直连入口的 run 没有任何 bitable 绑定：legacy 未配置时

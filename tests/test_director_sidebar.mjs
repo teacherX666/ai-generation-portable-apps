@@ -11,6 +11,7 @@ const elStub = () => ({
 });
 globalThis.document = {
   getElementById: () => elStub(),
+  querySelector: () => null,
   querySelectorAll: () => [],
   body: elStub(),
   addEventListener() {},
@@ -36,9 +37,13 @@ if (typeof DirectorApp !== "function") {
   throw new Error("DirectorApp not defined");
 }
 const app = DirectorApp();
-if (app.skills.length !== 3) throw new Error("skills must contain 3 entries");
+if (app.skills.length !== 8) throw new Error("skills must contain 8 entries");
+if (typeof app.assets !== "object") throw new Error("assets state missing");
 if (typeof app.run !== "function" || typeof app.fillToImage !== "function") {
   throw new Error("run/fillToImage missing");
+}
+if (!/async init\(\)\s*\{[\s\S]*?classList\.toggle\("director-collapsed", this\.collapsed\)[\s\S]*?classList\.toggle\("director-open", !this\.collapsed\)/.test(appJs)) {
+  throw new Error("director layout state must initialize before the first toggle");
 }
 app.resultText = "测试提示词";
 app.fillToImage();

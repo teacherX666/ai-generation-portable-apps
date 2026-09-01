@@ -35,3 +35,30 @@ export function safeMediaDisplayName(name: string, mediaType: GraphMediaType) {
     const cleaned = basename.trim().slice(0, 120);
     return cleaned || `${mediaLabels[mediaType]}文件`;
 }
+
+export const DEFAULT_MEDIA_COLLECTION_TITLES: Readonly<Record<GraphMediaType, string>> = {
+    image: "参考图片",
+    video: "参考视频",
+    audio: "参考音频",
+};
+
+/** 标题为「族名+正整数编号」时返回编号，否则 null。 */
+export function mediaCollectionTitleNumber(title: string, mediaType: GraphMediaType): number | null {
+    const base = DEFAULT_MEDIA_COLLECTION_TITLES[mediaType];
+    if (!title.startsWith(base)) return null;
+    const rest = title.slice(base.length);
+    if (!/^\d+$/.test(rest)) return null;
+    const number = Number(rest);
+    return Number.isSafeInteger(number) && number >= 1 ? number : null;
+}
+
+/** 标题恰好等于族名（未编号）时为 true。 */
+export function isBareDefaultMediaCollectionTitle(title: string, mediaType: GraphMediaType): boolean {
+    return title === DEFAULT_MEDIA_COLLECTION_TITLES[mediaType];
+}
+
+/** 顺延编号：从既有编号最大值的下一个开始（至少 1）。自定义标题不参与计数。 */
+export function nextMediaCollectionTitle(titles: readonly string[], mediaType: GraphMediaType): string {
+    const largest = Math.max(0, ...titles.map((title) => mediaCollectionTitleNumber(title, mediaType) ?? 0));
+    return `${DEFAULT_MEDIA_COLLECTION_TITLES[mediaType]}${largest + 1}`;
+}

@@ -24,6 +24,30 @@ def test_production_settings_require_source_and_result_folder() -> None:
     assert settings.lark_include_completed_for_test is False
 
 
+def test_production_settings_accept_explicit_result_table() -> None:
+    settings = Settings(
+        _env_file=None,
+        lark_production_bitable_url="https://tenant.feishu.cn/wiki/wikiProd",
+        lark_production_table_id="tblProd",
+        lark_production_view_id="vewProd",
+        lark_result_bitable_url="https://tenant.feishu.cn/base/appResult",
+        lark_result_table_id="tblResult",
+    )
+
+    assert settings.production_bitable_configured is True
+
+
+def test_production_settings_require_a_result_target() -> None:
+    settings = Settings(
+        _env_file=None,
+        lark_production_bitable_url="https://tenant.feishu.cn/wiki/wikiProd",
+        lark_production_table_id="tblProd",
+        lark_production_view_id="vewProd",
+    )
+
+    assert settings.production_bitable_configured is False
+
+
 def test_exports_production_task_models() -> None:
     assert hasattr(domain, "ProductionSourceSnapshot")
     assert hasattr(domain, "ProductionTaskSummary")

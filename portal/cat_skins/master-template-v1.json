@@ -1,0 +1,5164 @@
+{
+  "schema_version": "cat-master-template-v1",
+  "template_id": "classic-black-master-v1",
+  "source_skin": "classic-black-v1.json",
+  "status": "frozen",
+  "canvas": {
+    "width": 16,
+    "height": 16,
+    "coordinate_system": "zero_based_xy",
+    "facing": "right",
+    "transparent": "."
+  },
+  "frame_basis": "a",
+  "base_frame": [
+    "................",
+    ".......O.......O",
+    ".......OSO...OSO",
+    ".......OFFFFFFFO",
+    ".......OFFFFFFFO",
+    ".......OFIPFIPFO",
+    ".OO....OFIPFIPFO",
+    "OFFO..FOFFFNFFFO",
+    "OOFFOFFFOFOSOFO.",
+    ".OFFOFFFFOOOOO..",
+    "..OFOFFFFFFSS...",
+    "...OOFFFFFFSO...",
+    "....OOFFFFOSS...",
+    "....OOFFOOOSS...",
+    ".....OFF..OSS...",
+    ".....OOO..OOO..."
+  ],
+  "part_legend": {
+    "background": "透明背景",
+    "ear": "耳朵外形",
+    "inner_ear": "耳内",
+    "head_outline": "头部边缘",
+    "head": "脸部内部",
+    "eye": "眼睛",
+    "pupil": "竖瞳",
+    "nose": "小三角鼻",
+    "mouth_corner": "两点猫嘴",
+    "mouth_center": "嘴部中心",
+    "chin": "平整闭环下巴",
+    "body_outline": "身体边缘",
+    "body": "身体内部",
+    "rump_boundary": "封闭臀部",
+    "tail": "尾巴",
+    "tail_root": "尾巴根部/臀部连接",
+    "leg": "腿",
+    "paw": "脚掌"
+  },
+  "permission_legend": {
+    "locked_occupancy": "位置和占用必须保留；允许按语义角色换色，不允许删除或移动",
+    "color_only": "必须保持占用状态，仅允许改变颜色角色",
+    "patternable": "保持占用状态，允许主毛色/副毛色/花纹角色切换",
+    "shape_optional": "高稀有度可在规则范围内改变轮廓；普通测试阶段仍按 patternable 处理",
+    "transparent_only": "基础猫层必须透明；只有获准的装饰图层可以覆盖"
+  },
+  "render_layers": [
+    "base_anatomy",
+    "fur_pattern",
+    "costume",
+    "accessory",
+    "face_foreground"
+  ],
+  "cells": [
+    {
+      "x": 0,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 0,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear",
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear",
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 1,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 1,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 1,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear",
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear",
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 2,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 2,
+      "base_code": "S",
+      "base_part": "inner_ear",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 2,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 2,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 2,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 2,
+      "base_code": "S",
+      "base_part": "inner_ear",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 2,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 3,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 3,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 3,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 3,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 3,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 3,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear",
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 3,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear",
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 3,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 3,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "headwear",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 3,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "headwear",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 3,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "headwear",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 3,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "headwear",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 3,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "headwear",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 3,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "headwear",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 3,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "headwear",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 3,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 4,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 4,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 4,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 4,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 4,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 4,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 4,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 4,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 4,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "headwear",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 4,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 4,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 4,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 4,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 4,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 4,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "headwear",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 4,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "headwear"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 5,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 5,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 5,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 5,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 5,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 5,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 5,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 5,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 5,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 5,
+      "base_code": "I",
+      "base_part": "eye",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 10,
+      "y": 5,
+      "base_code": "P",
+      "base_part": "pupil",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 11,
+      "y": 5,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 5,
+      "base_code": "I",
+      "base_part": "pupil",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 13,
+      "y": 5,
+      "base_code": "P",
+      "base_part": "eye",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 14,
+      "y": 5,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 5,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 6,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 6,
+      "base_code": "O",
+      "base_part": "tail",
+      "permission": "shape_optional",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 6,
+      "base_code": "O",
+      "base_part": "tail",
+      "permission": "shape_optional",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 6,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 6,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 6,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 6,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 6,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 6,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 6,
+      "base_code": "I",
+      "base_part": "eye",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 10,
+      "y": 6,
+      "base_code": "P",
+      "base_part": "pupil",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 11,
+      "y": 6,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 6,
+      "base_code": "I",
+      "base_part": "pupil",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 13,
+      "y": 6,
+      "base_code": "P",
+      "base_part": "eye",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 14,
+      "y": 6,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 6,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 7,
+      "base_code": "O",
+      "base_part": "tail",
+      "permission": "shape_optional",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 7,
+      "base_code": "F",
+      "base_part": "tail",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 7,
+      "base_code": "F",
+      "base_part": "tail",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 7,
+      "base_code": "O",
+      "base_part": "tail",
+      "permission": "shape_optional",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 7,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 7,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 7,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 7,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 7,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 7,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 7,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 7,
+      "base_code": "N",
+      "base_part": "nose",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 12,
+      "y": 7,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 7,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 7,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 7,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 8,
+      "base_code": "O",
+      "base_part": "tail",
+      "permission": "shape_optional",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 8,
+      "base_code": "O",
+      "base_part": "tail",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 8,
+      "base_code": "F",
+      "base_part": "tail",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 8,
+      "base_code": "F",
+      "base_part": "tail",
+      "permission": "shape_optional",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 8,
+      "base_code": "O",
+      "base_part": "rump_boundary",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 8,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 8,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 8,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 8,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape",
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 8,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 8,
+      "base_code": "O",
+      "base_part": "mouth_corner",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 11,
+      "y": 8,
+      "base_code": "S",
+      "base_part": "mouth_center",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 12,
+      "y": 8,
+      "base_code": "O",
+      "base_part": "mouth_corner",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": true
+    },
+    {
+      "x": 13,
+      "y": 8,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 8,
+      "base_code": "O",
+      "base_part": "head_outline",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "face_costume"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 8,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 9,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 9,
+      "base_code": "O",
+      "base_part": "tail",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 9,
+      "base_code": "F",
+      "base_part": "tail",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 9,
+      "base_code": "F",
+      "base_part": "tail",
+      "permission": "shape_optional",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 9,
+      "base_code": "O",
+      "base_part": "tail_root",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 9,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 9,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 9,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 9,
+      "base_code": "F",
+      "base_part": "head",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 9,
+      "base_code": "O",
+      "base_part": "chin",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": true
+    },
+    {
+      "x": 10,
+      "y": 9,
+      "base_code": "O",
+      "base_part": "chin",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": true
+    },
+    {
+      "x": 11,
+      "y": 9,
+      "base_code": "O",
+      "base_part": "chin",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": true
+    },
+    {
+      "x": 12,
+      "y": 9,
+      "base_code": "O",
+      "base_part": "chin",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": true
+    },
+    {
+      "x": 13,
+      "y": 9,
+      "base_code": "O",
+      "base_part": "chin",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": true
+    },
+    {
+      "x": 14,
+      "y": 9,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 9,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 10,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 10,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 10,
+      "base_code": "O",
+      "base_part": "tail",
+      "permission": "shape_optional",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 10,
+      "base_code": "F",
+      "base_part": "tail",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 10,
+      "base_code": "O",
+      "base_part": "tail_root",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 10,
+      "base_code": "F",
+      "base_part": "tail_root",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 10,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "wing",
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 10,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 10,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 10,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 10,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 10,
+      "base_code": "S",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 10,
+      "base_code": "S",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 10,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 10,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 10,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 11,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 11,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 11,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 11,
+      "base_code": "O",
+      "base_part": "rump_boundary",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 11,
+      "base_code": "O",
+      "base_part": "rump_boundary",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 11,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 11,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 11,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 11,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 11,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 11,
+      "base_code": "F",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 11,
+      "base_code": "S",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 11,
+      "base_code": "O",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 11,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 11,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 11,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 12,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 12,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 12,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 12,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 12,
+      "base_code": "O",
+      "base_part": "rump_boundary",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 12,
+      "base_code": "O",
+      "base_part": "body_outline",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 12,
+      "base_code": "F",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 12,
+      "base_code": "F",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 12,
+      "base_code": "F",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 12,
+      "base_code": "F",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 12,
+      "base_code": "O",
+      "base_part": "body_outline",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 12,
+      "base_code": "S",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 12,
+      "base_code": "S",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 12,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 12,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 12,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 13,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 13,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 13,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 13,
+      "base_code": "O",
+      "base_part": "rump_boundary",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 13,
+      "base_code": "O",
+      "base_part": "rump_boundary",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 13,
+      "base_code": "F",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 13,
+      "base_code": "F",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 13,
+      "base_code": "O",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [
+        "cape"
+      ],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 13,
+      "base_code": "O",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 13,
+      "base_code": "O",
+      "base_part": "body_outline",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 13,
+      "base_code": "S",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 13,
+      "base_code": "S",
+      "base_part": "body",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 13,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 13,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 13,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 14,
+      "base_code": "O",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 14,
+      "base_code": "F",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 14,
+      "base_code": "F",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 14,
+      "base_code": "O",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 14,
+      "base_code": "S",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 14,
+      "base_code": "S",
+      "base_part": "leg",
+      "permission": "patternable",
+      "pattern_allowed": true,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 14,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 0,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 1,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 2,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 3,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 4,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 5,
+      "y": 15,
+      "base_code": "O",
+      "base_part": "paw",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 6,
+      "y": 15,
+      "base_code": "O",
+      "base_part": "paw",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 7,
+      "y": 15,
+      "base_code": "O",
+      "base_part": "paw",
+      "permission": "color_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 8,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 9,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 10,
+      "y": 15,
+      "base_code": "O",
+      "base_part": "paw",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 11,
+      "y": 15,
+      "base_code": "O",
+      "base_part": "paw",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 12,
+      "y": 15,
+      "base_code": "O",
+      "base_part": "paw",
+      "permission": "locked_occupancy",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 13,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 14,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    },
+    {
+      "x": 15,
+      "y": 15,
+      "base_code": ".",
+      "base_part": "background",
+      "permission": "transparent_only",
+      "pattern_allowed": false,
+      "overlay_zones": [],
+      "final_face_foreground": false
+    }
+  ],
+  "regions": {
+    "locked_occupancy": [
+      [
+        7,
+        1
+      ],
+      [
+        15,
+        1
+      ],
+      [
+        7,
+        2
+      ],
+      [
+        8,
+        2
+      ],
+      [
+        9,
+        2
+      ],
+      [
+        13,
+        2
+      ],
+      [
+        14,
+        2
+      ],
+      [
+        15,
+        2
+      ],
+      [
+        7,
+        3
+      ],
+      [
+        15,
+        3
+      ],
+      [
+        7,
+        4
+      ],
+      [
+        15,
+        4
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        9,
+        5
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        12,
+        5
+      ],
+      [
+        13,
+        5
+      ],
+      [
+        15,
+        5
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        9,
+        6
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        12,
+        6
+      ],
+      [
+        13,
+        6
+      ],
+      [
+        15,
+        6
+      ],
+      [
+        7,
+        7
+      ],
+      [
+        11,
+        7
+      ],
+      [
+        15,
+        7
+      ],
+      [
+        8,
+        8
+      ],
+      [
+        10,
+        8
+      ],
+      [
+        11,
+        8
+      ],
+      [
+        12,
+        8
+      ],
+      [
+        14,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        9,
+        9
+      ],
+      [
+        10,
+        9
+      ],
+      [
+        11,
+        9
+      ],
+      [
+        12,
+        9
+      ],
+      [
+        13,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        5,
+        10
+      ],
+      [
+        5,
+        15
+      ],
+      [
+        6,
+        15
+      ],
+      [
+        10,
+        15
+      ],
+      [
+        11,
+        15
+      ],
+      [
+        12,
+        15
+      ]
+    ],
+    "color_only": [
+      [
+        4,
+        8
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        4,
+        12
+      ],
+      [
+        5,
+        12
+      ],
+      [
+        10,
+        12
+      ],
+      [
+        4,
+        13
+      ],
+      [
+        5,
+        13
+      ],
+      [
+        10,
+        13
+      ],
+      [
+        7,
+        15
+      ]
+    ],
+    "patternable": [
+      [
+        8,
+        3
+      ],
+      [
+        9,
+        3
+      ],
+      [
+        10,
+        3
+      ],
+      [
+        11,
+        3
+      ],
+      [
+        12,
+        3
+      ],
+      [
+        13,
+        3
+      ],
+      [
+        14,
+        3
+      ],
+      [
+        8,
+        4
+      ],
+      [
+        9,
+        4
+      ],
+      [
+        10,
+        4
+      ],
+      [
+        11,
+        4
+      ],
+      [
+        12,
+        4
+      ],
+      [
+        13,
+        4
+      ],
+      [
+        14,
+        4
+      ],
+      [
+        8,
+        5
+      ],
+      [
+        11,
+        5
+      ],
+      [
+        14,
+        5
+      ],
+      [
+        8,
+        6
+      ],
+      [
+        11,
+        6
+      ],
+      [
+        14,
+        6
+      ],
+      [
+        1,
+        7
+      ],
+      [
+        2,
+        7
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        9,
+        7
+      ],
+      [
+        10,
+        7
+      ],
+      [
+        12,
+        7
+      ],
+      [
+        13,
+        7
+      ],
+      [
+        14,
+        7
+      ],
+      [
+        1,
+        8
+      ],
+      [
+        2,
+        8
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        6,
+        8
+      ],
+      [
+        7,
+        8
+      ],
+      [
+        9,
+        8
+      ],
+      [
+        13,
+        8
+      ],
+      [
+        1,
+        9
+      ],
+      [
+        2,
+        9
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        6,
+        9
+      ],
+      [
+        7,
+        9
+      ],
+      [
+        8,
+        9
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        6,
+        10
+      ],
+      [
+        7,
+        10
+      ],
+      [
+        8,
+        10
+      ],
+      [
+        9,
+        10
+      ],
+      [
+        10,
+        10
+      ],
+      [
+        11,
+        10
+      ],
+      [
+        12,
+        10
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        11
+      ],
+      [
+        7,
+        11
+      ],
+      [
+        8,
+        11
+      ],
+      [
+        9,
+        11
+      ],
+      [
+        10,
+        11
+      ],
+      [
+        11,
+        11
+      ],
+      [
+        12,
+        11
+      ],
+      [
+        6,
+        12
+      ],
+      [
+        7,
+        12
+      ],
+      [
+        8,
+        12
+      ],
+      [
+        9,
+        12
+      ],
+      [
+        11,
+        12
+      ],
+      [
+        12,
+        12
+      ],
+      [
+        6,
+        13
+      ],
+      [
+        7,
+        13
+      ],
+      [
+        8,
+        13
+      ],
+      [
+        9,
+        13
+      ],
+      [
+        11,
+        13
+      ],
+      [
+        12,
+        13
+      ],
+      [
+        5,
+        14
+      ],
+      [
+        6,
+        14
+      ],
+      [
+        7,
+        14
+      ],
+      [
+        10,
+        14
+      ],
+      [
+        11,
+        14
+      ],
+      [
+        12,
+        14
+      ]
+    ],
+    "shape_optional": [
+      [
+        1,
+        6
+      ],
+      [
+        2,
+        6
+      ],
+      [
+        0,
+        7
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        0,
+        8
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        2,
+        10
+      ]
+    ],
+    "transparent_only": [
+      [
+        0,
+        0
+      ],
+      [
+        1,
+        0
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        4,
+        0
+      ],
+      [
+        5,
+        0
+      ],
+      [
+        6,
+        0
+      ],
+      [
+        7,
+        0
+      ],
+      [
+        8,
+        0
+      ],
+      [
+        9,
+        0
+      ],
+      [
+        10,
+        0
+      ],
+      [
+        11,
+        0
+      ],
+      [
+        12,
+        0
+      ],
+      [
+        13,
+        0
+      ],
+      [
+        14,
+        0
+      ],
+      [
+        15,
+        0
+      ],
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        5,
+        1
+      ],
+      [
+        6,
+        1
+      ],
+      [
+        8,
+        1
+      ],
+      [
+        9,
+        1
+      ],
+      [
+        10,
+        1
+      ],
+      [
+        11,
+        1
+      ],
+      [
+        12,
+        1
+      ],
+      [
+        13,
+        1
+      ],
+      [
+        14,
+        1
+      ],
+      [
+        0,
+        2
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        5,
+        2
+      ],
+      [
+        6,
+        2
+      ],
+      [
+        10,
+        2
+      ],
+      [
+        11,
+        2
+      ],
+      [
+        12,
+        2
+      ],
+      [
+        0,
+        3
+      ],
+      [
+        1,
+        3
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        0,
+        4
+      ],
+      [
+        1,
+        4
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        0,
+        5
+      ],
+      [
+        1,
+        5
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        0,
+        6
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        15,
+        8
+      ],
+      [
+        0,
+        9
+      ],
+      [
+        14,
+        9
+      ],
+      [
+        15,
+        9
+      ],
+      [
+        0,
+        10
+      ],
+      [
+        1,
+        10
+      ],
+      [
+        13,
+        10
+      ],
+      [
+        14,
+        10
+      ],
+      [
+        15,
+        10
+      ],
+      [
+        0,
+        11
+      ],
+      [
+        1,
+        11
+      ],
+      [
+        2,
+        11
+      ],
+      [
+        13,
+        11
+      ],
+      [
+        14,
+        11
+      ],
+      [
+        15,
+        11
+      ],
+      [
+        0,
+        12
+      ],
+      [
+        1,
+        12
+      ],
+      [
+        2,
+        12
+      ],
+      [
+        3,
+        12
+      ],
+      [
+        13,
+        12
+      ],
+      [
+        14,
+        12
+      ],
+      [
+        15,
+        12
+      ],
+      [
+        0,
+        13
+      ],
+      [
+        1,
+        13
+      ],
+      [
+        2,
+        13
+      ],
+      [
+        3,
+        13
+      ],
+      [
+        13,
+        13
+      ],
+      [
+        14,
+        13
+      ],
+      [
+        15,
+        13
+      ],
+      [
+        0,
+        14
+      ],
+      [
+        1,
+        14
+      ],
+      [
+        2,
+        14
+      ],
+      [
+        3,
+        14
+      ],
+      [
+        4,
+        14
+      ],
+      [
+        8,
+        14
+      ],
+      [
+        9,
+        14
+      ],
+      [
+        13,
+        14
+      ],
+      [
+        14,
+        14
+      ],
+      [
+        15,
+        14
+      ],
+      [
+        0,
+        15
+      ],
+      [
+        1,
+        15
+      ],
+      [
+        2,
+        15
+      ],
+      [
+        3,
+        15
+      ],
+      [
+        4,
+        15
+      ],
+      [
+        8,
+        15
+      ],
+      [
+        9,
+        15
+      ],
+      [
+        13,
+        15
+      ],
+      [
+        14,
+        15
+      ],
+      [
+        15,
+        15
+      ]
+    ],
+    "face_foreground": [
+      [
+        9,
+        5
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        12,
+        5
+      ],
+      [
+        13,
+        5
+      ],
+      [
+        9,
+        6
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        12,
+        6
+      ],
+      [
+        13,
+        6
+      ],
+      [
+        11,
+        7
+      ],
+      [
+        10,
+        8
+      ],
+      [
+        11,
+        8
+      ],
+      [
+        12,
+        8
+      ],
+      [
+        9,
+        9
+      ],
+      [
+        10,
+        9
+      ],
+      [
+        11,
+        9
+      ],
+      [
+        12,
+        9
+      ],
+      [
+        13,
+        9
+      ]
+    ],
+    "animation_zone": [
+      [
+        4,
+        12
+      ],
+      [
+        5,
+        12
+      ],
+      [
+        6,
+        12
+      ],
+      [
+        7,
+        12
+      ],
+      [
+        8,
+        12
+      ],
+      [
+        9,
+        12
+      ],
+      [
+        10,
+        12
+      ],
+      [
+        11,
+        12
+      ],
+      [
+        12,
+        12
+      ],
+      [
+        13,
+        12
+      ],
+      [
+        4,
+        13
+      ],
+      [
+        5,
+        13
+      ],
+      [
+        6,
+        13
+      ],
+      [
+        7,
+        13
+      ],
+      [
+        8,
+        13
+      ],
+      [
+        9,
+        13
+      ],
+      [
+        10,
+        13
+      ],
+      [
+        11,
+        13
+      ],
+      [
+        12,
+        13
+      ],
+      [
+        13,
+        13
+      ],
+      [
+        4,
+        14
+      ],
+      [
+        5,
+        14
+      ],
+      [
+        6,
+        14
+      ],
+      [
+        7,
+        14
+      ],
+      [
+        8,
+        14
+      ],
+      [
+        9,
+        14
+      ],
+      [
+        10,
+        14
+      ],
+      [
+        11,
+        14
+      ],
+      [
+        12,
+        14
+      ],
+      [
+        13,
+        14
+      ],
+      [
+        4,
+        15
+      ],
+      [
+        5,
+        15
+      ],
+      [
+        6,
+        15
+      ],
+      [
+        7,
+        15
+      ],
+      [
+        8,
+        15
+      ],
+      [
+        9,
+        15
+      ],
+      [
+        10,
+        15
+      ],
+      [
+        11,
+        15
+      ],
+      [
+        12,
+        15
+      ],
+      [
+        13,
+        15
+      ]
+    ]
+  },
+  "overlay_zones": {
+    "headwear": {
+      "allowed": [
+        [
+          5,
+          0
+        ],
+        [
+          6,
+          0
+        ],
+        [
+          7,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          9,
+          0
+        ],
+        [
+          10,
+          0
+        ],
+        [
+          11,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          13,
+          0
+        ],
+        [
+          14,
+          0
+        ],
+        [
+          15,
+          0
+        ],
+        [
+          5,
+          1
+        ],
+        [
+          6,
+          1
+        ],
+        [
+          7,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          9,
+          1
+        ],
+        [
+          10,
+          1
+        ],
+        [
+          11,
+          1
+        ],
+        [
+          12,
+          1
+        ],
+        [
+          13,
+          1
+        ],
+        [
+          14,
+          1
+        ],
+        [
+          15,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          6,
+          2
+        ],
+        [
+          7,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          9,
+          2
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          11,
+          2
+        ],
+        [
+          12,
+          2
+        ],
+        [
+          13,
+          2
+        ],
+        [
+          14,
+          2
+        ],
+        [
+          15,
+          2
+        ],
+        [
+          5,
+          3
+        ],
+        [
+          6,
+          3
+        ],
+        [
+          7,
+          3
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          9,
+          3
+        ],
+        [
+          10,
+          3
+        ],
+        [
+          11,
+          3
+        ],
+        [
+          12,
+          3
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          14,
+          3
+        ],
+        [
+          15,
+          3
+        ],
+        [
+          7,
+          4
+        ],
+        [
+          8,
+          4
+        ],
+        [
+          14,
+          4
+        ],
+        [
+          15,
+          4
+        ]
+      ],
+      "rarities": [
+        "epic",
+        "legendary"
+      ],
+      "may_cover_base_parts": [
+        "background",
+        "ear",
+        "inner_ear",
+        "head_outline",
+        "head"
+      ],
+      "forbidden_parts": [
+        "eye",
+        "pupil",
+        "nose",
+        "mouth_corner",
+        "mouth_center",
+        "chin"
+      ],
+      "connection_rule": "皇冠/角必须接触头或耳；光环可悬浮，但必须声明 floating_region。"
+    },
+    "wing": {
+      "allowed": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          5,
+          1
+        ],
+        [
+          6,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          6,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          4,
+          3
+        ],
+        [
+          5,
+          3
+        ],
+        [
+          6,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          1,
+          4
+        ],
+        [
+          2,
+          4
+        ],
+        [
+          3,
+          4
+        ],
+        [
+          4,
+          4
+        ],
+        [
+          5,
+          4
+        ],
+        [
+          6,
+          4
+        ],
+        [
+          0,
+          5
+        ],
+        [
+          1,
+          5
+        ],
+        [
+          2,
+          5
+        ],
+        [
+          3,
+          5
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          5,
+          5
+        ],
+        [
+          6,
+          5
+        ],
+        [
+          0,
+          6
+        ],
+        [
+          1,
+          6
+        ],
+        [
+          2,
+          6
+        ],
+        [
+          3,
+          6
+        ],
+        [
+          4,
+          6
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          6,
+          6
+        ],
+        [
+          0,
+          7
+        ],
+        [
+          1,
+          7
+        ],
+        [
+          2,
+          7
+        ],
+        [
+          3,
+          7
+        ],
+        [
+          4,
+          7
+        ],
+        [
+          5,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          0,
+          8
+        ],
+        [
+          1,
+          8
+        ],
+        [
+          2,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          4,
+          8
+        ],
+        [
+          5,
+          8
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          5,
+          9
+        ],
+        [
+          6,
+          9
+        ],
+        [
+          6,
+          10
+        ]
+      ],
+      "rarities": [
+        "epic",
+        "legendary"
+      ],
+      "attachment_zone": [
+        [
+          5,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          5,
+          8
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          5,
+          9
+        ],
+        [
+          6,
+          9
+        ]
+      ],
+      "may_cover_base_parts": [
+        "background",
+        "body",
+        "body_outline"
+      ],
+      "forbidden_parts": [
+        "tail",
+        "tail_root",
+        "eye",
+        "pupil",
+        "nose",
+        "mouth_corner",
+        "mouth_center",
+        "chin"
+      ],
+      "connection_rule": "必须触碰 attachment_zone；与尾巴像素集合不得相交。"
+    },
+    "cape": {
+      "allowed": [
+        [
+          3,
+          7
+        ],
+        [
+          4,
+          7
+        ],
+        [
+          5,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          7,
+          7
+        ],
+        [
+          8,
+          7
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          4,
+          8
+        ],
+        [
+          5,
+          8
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          7,
+          8
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          9
+        ],
+        [
+          4,
+          9
+        ],
+        [
+          5,
+          9
+        ],
+        [
+          6,
+          9
+        ],
+        [
+          7,
+          9
+        ],
+        [
+          8,
+          9
+        ],
+        [
+          3,
+          10
+        ],
+        [
+          4,
+          10
+        ],
+        [
+          5,
+          10
+        ],
+        [
+          6,
+          10
+        ],
+        [
+          7,
+          10
+        ],
+        [
+          8,
+          10
+        ],
+        [
+          3,
+          11
+        ],
+        [
+          4,
+          11
+        ],
+        [
+          5,
+          11
+        ],
+        [
+          6,
+          11
+        ],
+        [
+          7,
+          11
+        ],
+        [
+          8,
+          11
+        ],
+        [
+          3,
+          12
+        ],
+        [
+          4,
+          12
+        ],
+        [
+          5,
+          12
+        ],
+        [
+          6,
+          12
+        ],
+        [
+          7,
+          12
+        ],
+        [
+          8,
+          12
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          4,
+          13
+        ],
+        [
+          5,
+          13
+        ],
+        [
+          6,
+          13
+        ],
+        [
+          7,
+          13
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "rarities": [
+        "epic",
+        "legendary"
+      ],
+      "may_cover_base_parts": [
+        "background",
+        "body",
+        "body_outline",
+        "leg"
+      ],
+      "forbidden_parts": [
+        "tail_root",
+        "eye",
+        "pupil",
+        "nose",
+        "mouth_corner",
+        "mouth_center",
+        "chin",
+        "paw"
+      ],
+      "connection_rule": "必须接触肩背，不能切断臀部闭环或遮掉全部腿。"
+    },
+    "face_costume": {
+      "allowed": [
+        [
+          8,
+          3
+        ],
+        [
+          9,
+          3
+        ],
+        [
+          10,
+          3
+        ],
+        [
+          11,
+          3
+        ],
+        [
+          12,
+          3
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          14,
+          3
+        ],
+        [
+          8,
+          4
+        ],
+        [
+          9,
+          4
+        ],
+        [
+          10,
+          4
+        ],
+        [
+          11,
+          4
+        ],
+        [
+          12,
+          4
+        ],
+        [
+          13,
+          4
+        ],
+        [
+          14,
+          4
+        ],
+        [
+          8,
+          5
+        ],
+        [
+          9,
+          5
+        ],
+        [
+          10,
+          5
+        ],
+        [
+          11,
+          5
+        ],
+        [
+          12,
+          5
+        ],
+        [
+          13,
+          5
+        ],
+        [
+          14,
+          5
+        ],
+        [
+          8,
+          6
+        ],
+        [
+          9,
+          6
+        ],
+        [
+          10,
+          6
+        ],
+        [
+          11,
+          6
+        ],
+        [
+          12,
+          6
+        ],
+        [
+          13,
+          6
+        ],
+        [
+          14,
+          6
+        ],
+        [
+          8,
+          7
+        ],
+        [
+          9,
+          7
+        ],
+        [
+          10,
+          7
+        ],
+        [
+          11,
+          7
+        ],
+        [
+          12,
+          7
+        ],
+        [
+          13,
+          7
+        ],
+        [
+          14,
+          7
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          9,
+          8
+        ],
+        [
+          10,
+          8
+        ],
+        [
+          11,
+          8
+        ],
+        [
+          12,
+          8
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          14,
+          8
+        ]
+      ],
+      "rarities": [
+        "epic",
+        "legendary"
+      ],
+      "may_cover_base_parts": [
+        "head",
+        "eye",
+        "head_outline"
+      ],
+      "forbidden_parts": [
+        "pupil",
+        "nose",
+        "mouth_corner",
+        "mouth_center",
+        "chin"
+      ],
+      "connection_rule": "面罩位于毛色层之上，但 face_foreground 最后重绘，保证五官可读。"
+    }
+  },
+  "pattern_contract": {
+    "ai_may_choose": [
+      "pattern_pixel_layout",
+      "secondary_color_placement",
+      "controlled_asymmetry",
+      "theme_specific_marks"
+    ],
+    "program_must_choose": [
+      "rarity",
+      "pattern_family",
+      "palette_roles",
+      "density",
+      "symmetry_bias",
+      "seed",
+      "accessory_family"
+    ],
+    "output_format": "AI returns palette role assignments and coordinate operations only; renderer owns the final 16x16 frames.",
+    "connectivity_rules": [
+      "单个毛色斑块不得由孤立单像素构成，除非主题规则明确允许。",
+      "斑点和三花色块默认每块至少两个八方向相邻像素。",
+      "条纹必须从预设锚区开始并沿额头、背部或尾巴方向延伸。",
+      "花纹不得改变透明/占用状态，不得覆盖最终五官前景。"
+    ]
+  },
+  "animation_contract": {
+    "source": "classic-black-v1 frames a/b",
+    "rule": "AI只设计静态母帧的非腿部外观；程序复用经典黑猫腿部A/B差异派生第二帧。"
+  }
+}

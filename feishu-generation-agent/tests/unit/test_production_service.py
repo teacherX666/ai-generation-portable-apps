@@ -151,6 +151,39 @@ async def test_completed_with_errors_releases_production_task_as_failed(
     assert active == []
 
 
+async def test_service_archive_and_restore_recent_runs(tmp_path) -> None:
+    service, store = await _production_service(
+        tmp_path,
+        bitable=_MixedCategoryBitable(),
+        sources=_category_sources(),
+    )
+    try:
+        binding = await store.claim(
+            _location(),
+            _task(),
+            run_id="run-1",
+            thread_id="thread-1",
+            owner_user_id="prime-local",
+        )
+        await store.release(
+            binding.run_id,
+            status=TableTaskStatus.COMPLETED,
+            owner_user_id="prime-local",
+        )
+
+        assert [item.run_id for item in await service.recent_runs()] == ["run-1"]
+
+        await service.archive_run("run-1")
+        assert await service.recent_runs() == []
+        assert [item.run_id for item in await service.archived_runs()] == ["run-1"]
+
+        await service.restore_run("run-1")
+        assert [item.run_id for item in await service.recent_runs()] == ["run-1"]
+        assert await service.archived_runs() == []
+    finally:
+        await store.close()
+
+
 async def test_portrait_claim_uses_the_portrait_source_location(tmp_path) -> None:
     service, store = await _production_service(
         tmp_path,
@@ -443,6 +476,46 @@ async def test_service_rerun_archives_original_binding_and_lists_it_as_recent(tm
     assert cloned_from == original_run_id
     assert cloned_run_id == rerun_id
     assert cloned_thread_id != original.thread_id
+
+
+async def test_service_rerun_returns_existing_active_run_for_same_record(tmp_path) -> None:
+    from feishu_generation_agent.domain.bitable import TableTaskStatus
+    from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_calls = 0
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, *args, **kwargs):
+            self.clone_calls += 1
+            if self.clone_calls > 1:
+                raise AssertionError("existing active run should be reused")
+            return kwargs["run_id"]
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.FAILED)
+        current_run_id = await service.rerun(original_run_id)
+
+        reused_run_id = await service.rerun(original_run_id)
+    finally:
+        await store.close()
+
+    assert reused_run_id == current_run_id
+    assert runtime.clone_calls == 1
 
 
 async def test_service_rejects_rerun_of_non_animation_task(tmp_path) -> None:

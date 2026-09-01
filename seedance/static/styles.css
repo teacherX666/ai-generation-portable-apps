@@ -190,17 +190,23 @@ button {
 
 .rowButtons {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   gap: 8px;
   margin: -4px 0 12px;
 }
 
 .rowButtons button {
+  min-width: 0;
+  width: 100%;
   height: 34px;
+  padding-inline: 8px;
   border: 1px solid var(--border-strong);
   background: var(--surface);
   color: #293244;
   font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bottomActions {
@@ -242,7 +248,11 @@ button:disabled {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  /* Prompt / 素材 / 结果是三个直接子项。之前这里只声明两行，浏览器会把
+     中间素材行压成 0px，素材内容因此穿进结果面板。工作区本身负责滚动，
+     三块内容都按真实高度参与布局。 */
+  grid-template-rows: max-content max-content minmax(260px, auto);
+  align-content: start;
   gap: 18px;
   padding: 20px;
   overflow: auto;
@@ -250,6 +260,7 @@ button:disabled {
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -264,9 +275,41 @@ button:disabled {
 }
 
 .tabBtn.isActive {
-  border-color: #17191f;
-  background: #17191f;
-  color: var(--surface);
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.sub-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.sub-tabs > .sub-tab {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 72px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: #293244;
+}
+
+.sub-tabs > .sub-tab:hover {
+  color: #172033;
+  border-color: #94a3b8;
+  background: #eef2f7;
+}
+
+.sub-tabs > .sub-tab.isActive,
+.sub-tabs > .sub-tab.active {
+  color: #fff;
+  border-color: var(--accent);
+  background: var(--accent);
 }
 
 .workspaceView {
@@ -425,14 +468,30 @@ audio.preview {
   max-height: 82vh;
   object-fit: contain;
   border-radius: 6px;
-  background: #111827;
+  background: var(--surface-sunken);
 }
 
 .resultHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 12px;
+}
+
+.resultHeader h2 {
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.resultHeader h2 button {
+  display: inline-flex;
+  width: auto;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
 #statusText {
@@ -693,9 +752,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .tabBtn:hover,
 .removeMediaBtn:hover,
 #closePreviewBtn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
+  border-color: #94a3b8;
+  color: #172033;
+  background: #eef2f7;
   box-shadow: none;
 }
 .rowButtons button:active,
@@ -897,7 +956,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: #94a3b8;
   border: 1px dashed #475569;
 }
-.app-tab.plus:hover { background: #1e293b; }
+.app-tab.plus:hover { background: #1e293b; color: #f1f5f9; }
 
 .modal-overlay {
   position: fixed;
@@ -922,6 +981,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .modal-body { color: var(--text-secondary); line-height: 1.5; }
 .modal-btns {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 14px;
@@ -952,4 +1012,57 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: #dc2626;
   border-color: #dc2626;
   color: var(--surface);
+}
+
+/* 活动详情长 JSON 不撑宽布局 */
+.workspace { min-width: 0; max-width: 100%; grid-template-columns: minmax(0, 1fr); }
+.resultPanel { min-width: 0; max-width: 100%; }
+.activity-panel-inner { min-width: 0; max-width: 100%; }
+.activity-records { min-width: 0; max-width: 100%; }
+.act-item { min-width: 0; max-width: 100%; }
+.act-detail { min-width: 0; max-width: 100%; }
+.act-detail pre { max-width: 100%; overflow-x: auto; overflow-y: auto; white-space: pre; word-break: normal; }
+.act-detail-meta { overflow-wrap: anywhere; }
+.workspace-nav-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 112px);
+  align-items: center;
+  justify-content: start;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.workspace-nav-grid .workspace-nav-btn {
+  width: 112px;
+  min-width: 112px;
+  height: 36px;
+  margin: 0;
+  padding: 0 12px;
+}
+.workspace-nav-grid .workspace-nav-btn:not(.isActive):not(.ui-btn--primary):hover {
+  color: #172033;
+  border-color: #7f8da1;
+  background: #e2e8f0;
+}
+/* 结果/活动内容必须参与卡片本身的高度计算；只由 .workspace 外层滚动。 */
+.workspace > .ui-workbench__output {
+  box-sizing: border-box;
+  height: max-content;
+  min-height: 260px;
+  align-self: start;
+  overflow: visible;
+}
+
+/* 页面级 Tab 栏 + 工作区只共享一个视口，避免 body 与 .workspace 嵌套滚动。
+   侧栏/结果区仍保留各自必要的局部滚动。 */
+html, body { height: 100%; overflow: hidden; }
+#sd-app { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+#sd-app > .app-tabs { flex: 0 0 auto; }
+#sd-app > .app.ui-shell__body { flex: 1 1 auto; height: auto; min-height: 0; }
+
+/* Shared Core compatibility: keep explicitly primary compact actions blue. */
+.btn-small.ui-btn--primary,
+.btn-small.ui-btn--primary:hover:not(:disabled) {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
 }

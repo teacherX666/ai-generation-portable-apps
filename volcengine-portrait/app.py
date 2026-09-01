@@ -35,6 +35,7 @@ _PORTAL_DIR = str(ROOT.parent / "portal")
 if _PORTAL_DIR not in sys.path:
     sys.path.insert(0, _PORTAL_DIR)
 from ark_errors import translate_ark_error  # noqa: E402
+from error_explainer import explain_error  # noqa: E402
 OUTPUT_DIR = _DATA_BASE / "outputs"
 STATE_DIR = _DATA_BASE / "state"
 LOG_DIR = _DATA_BASE / "logs"
@@ -1013,7 +1014,12 @@ def handle_virtual_groups_post(handler):
 
 
 def handle_virtual_groups_get(handler):
-    """List asset groups via ListAssetGroups."""
+    """List asset groups via ListAssetGroups.
+
+    上游 849e699 经验：Ark 单页最多 100 条，不翻页时第 2 页之后的组在前端
+    「消失」，删除旧组后又会重新浮出。客户端不显式传 page 时循环翻页拉全量
+    （cap 200），显式传了 page 则维持单页行为。
+    """
     ak = None  # company-wide; admin-managed via /api/config (X-Is-Admin)
     sk = None
 
@@ -1025,20 +1031,30 @@ def handle_virtual_groups_get(handler):
     if "group_ids" in query_params and query_params["group_ids"][0].strip():
         filter_body["GroupIds"] = [g.strip() for g in query_params["group_ids"][0].split(",") if g.strip()]
 
-    result = openapi_call("ListAssetGroups", {
-        "Filter": filter_body,
-        "PageNumber": int(query_params.get("page", ["1"])[0]),
-        "PageSize": int(query_params.get("page_size", ["50"])[0]),
-        "ProjectName": PROJECT_NAME,
-    }, ak=ak, sk=sk)
-    if "error" in result:
-        code = 401 if "Missing AK/SK" in result.get("error", "") else 502
-        json_response(handler, code, {"ok": False, "error": result["error"], "detail": result.get("detail")})
-        return
+    explicit_page = query_params.get("page", [None])[0]
+    fetch_all = not (explicit_page and str(explicit_page).strip())
+    page_number = int(explicit_page) if not fetch_all else 1
+    page_size = int(query_params.get("page_size", ["100"])[0]) if not fetch_all else 100
 
-    items = openapi_result(result).get("Items") or []
+    all_items: list = []
+    for page in (range(page_number, page_number + 1) if not fetch_all else range(1, 51)):
+        result = openapi_call("ListAssetGroups", {
+            "Filter": filter_body,
+            "PageNumber": page,
+            "PageSize": page_size,
+            "ProjectName": PROJECT_NAME,
+        }, ak=ak, sk=sk)
+        if "error" in result:
+            code = 401 if "Missing AK/SK" in result.get("error", "") else 502
+            json_response(handler, code, {"ok": False, "error": result["error"], "detail": result.get("detail")})
+            return
+        items = openapi_result(result).get("Items") or []
+        all_items.extend(items)
+        if fetch_all and (len(items) < page_size or len(all_items) >= 200):
+            break
+
     groups = []
-    for item in items:
+    for item in all_items:
         groups.append({
             "group_id": item.get("Id", ""),
             "name": item.get("Name", ""),
@@ -1905,11 +1921,19 @@ def _run_virtual_job_impl(job_id, job):
                     detail = f"{code}: {message}" if code else message
                     summary = f"Run {idx}: {zh} 原始错误：{detail}"
                 else:
-                    # Compose from whatever pieces Ark provided so nothing gets
-                    # swallowed: message alone, code alone, or both together.
+                    # 本地规则未命中 → doubao-seed 模型兜底（三级降级：规则→模型→原文）
+                    explanation = None
+                    if (code or message) and api_key:
+                        try:
+                            explanation = explain_error(job_id, code, message, api_key)
+                        except Exception:
+                            explanation = None
                     detail_bits = [b for b in (code, message) if b]
                     detail = ": ".join(detail_bits) if len(detail_bits) == 2 else (detail_bits[0] if detail_bits else "")
-                    summary = f"Run {idx}: {t_status}" + (f" — {detail}" if detail else "")
+                    if explanation:
+                        summary = f"Run {idx}: {explanation}" + (f" 原始错误：{detail}" if detail else "")
+                    else:
+                        summary = f"Run {idx}: {t_status}" + (f" — {detail}" if detail else "")
                 with JOBS_LOCK:
                     job["errors"].append(summary)
                     job["done"] += 1

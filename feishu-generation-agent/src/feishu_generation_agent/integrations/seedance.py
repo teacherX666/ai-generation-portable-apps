@@ -563,6 +563,9 @@ class SeedanceVideoGenerator:
     ) -> tuple[list[Any], list[MediaAsset], list[bytes]]:
         self._validate_video_parameters(task)
         references = sorted(task.reference_images, key=lambda item: item.order)
+        if not references and not assets:
+            # Seedance 的文生视频模式：content 只保留 text，不传任何参考素材。
+            return [], [], []
         if not references or not assets:
             raise self._validation_error(
                 task.task_id,

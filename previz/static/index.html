@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>分镜布局</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="styles.css">
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js"}}</script>
+</head>
+<body>
+<header id="topbar">
+  <span id="app-title">🎬 分镜布局</span>
+  <select id="project-select" title="当前项目"></select>
+  <button id="btn-project-new" type="button">＋新项目</button>
+  <button id="btn-project-delete" type="button">删项目</button>
+  <button id="btn-project-rename" type="button">改名</button>
+  <span id="save-state" class="muted">已保存</span>
+  <span class="spacer"></span>
+  <button id="btn-add-char" type="button">＋人物</button>
+  <button id="btn-add-prop" type="button">＋道具</button>
+  <div id="prop-picker" class="prop-picker" hidden></div>
+  <button id="btn-anno-image" type="button">🖼 图片标注</button>
+  <input id="anno-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden>
+  <button id="btn-render" type="button" class="primary">📷 渲染快照</button>
+  <button id="btn-to-canvas" type="button" class="primary green">→ 送画布</button>
+</header>
+<aside id="shot-list">
+  <button id="btn-shot-new" type="button" class="block">＋ 新镜头</button>
+  <div id="shot-items"></div>
+  <button id="btn-export" type="button" class="block">导出整套 (zip)</button>
+</aside>
+<main id="viewport-wrap">
+  <div id="viewport"></div>
+  <div id="camera-hud">方位 0° · 俯仰 15° · 中景</div>
+  <div id="frame-overlay">
+    <div class="third v1"></div><div class="third v2"></div>
+    <div class="third h1"></div><div class="third h2"></div>
+  </div>
+</main>
+<aside id="side-panel">
+  <div id="panel-tabs">
+    <button id="ptab-object" class="active" type="button">对象</button>
+    <button id="ptab-camera" type="button">相机</button>
+  </div>
+  <div id="panel-object">
+    <div id="object-empty" class="muted">未选中对象<br>点击视口中的木人或道具</div>
+    <div id="object-detail" hidden>
+      <div class="row"><span>类型</span><b id="obj-type"></b></div>
+      <div class="row"><span>标签</span><input id="obj-label"></div>
+      <div class="row" id="row-color" hidden><span>颜色</span>
+        <select id="obj-color"></select></div>
+      <div class="row"><span>朝向</span>
+        <input id="obj-rotation" type="range" min="0" max="360" value="0">
+        <b id="obj-rotation-val">0°</b></div>
+      <div class="row"><span>身高/缩放</span>
+        <input id="obj-scale" type="range" min="0.6" max="1.6" step="0.05" value="1">
+        <b id="obj-scale-val">1.0</b></div>
+      <div id="pose-row" class="row" hidden>
+        <span>姿势</span>
+        <select id="obj-pose"></select></div>
+      <div id="joint-rows"></div>
+      <button id="btn-obj-delete" type="button" class="danger">删除</button>
+    </div>
+  </div>
+  <div id="panel-camera" hidden>
+    <div class="row"><span>景别</span>
+      <div id="shot-size-chips"></div></div>
+    <div class="row"><span>画幅</span>
+      <select id="cam-aspect"></select></div>
+    <div class="row"><span>辅助线</span>
+      <label><input type="checkbox" id="cam-guides" checked> 三分线</label></div>
+    <div class="row"><span>渲染尺寸</span>
+      <select id="cam-quality">
+        <option value="default">默认（宽边 1920）</option>
+        <option value="hd">高清（宽边 2560）</option>
+        <option value="custom">自定义宽度</option>
+      </select></div>
+    <div class="row" id="custom-width-row" hidden><span>宽度 px</span>
+      <input id="cam-custom-width" type="number" min="640" max="4096" step="64" value="1920"></div>
+    <div class="row"><span>镜头备注</span>
+      <textarea id="shot-notes" rows="3" placeholder="这条镜头的内容备注"></textarea></div>
+  </div>
+</aside>
+<div id="render-modal" class="modal" hidden>
+  <div class="modal-box">
+    <h3 id="render-title">快照预览</h3>
+    <div id="render-stage">
+      <img id="render-img" alt="快照">
+      <svg id="anno-layer" style="display:none"></svg>
+    </div>
+    <div id="anno-tools" class="anno-tools" hidden>
+      <button id="anno-rect" type="button" class="active">▭ 矩形框</button>
+      <button id="anno-text" type="button">T 文字</button>
+      <span class="anno-colors" id="anno-colors">
+        <button data-color="#ef4444" type="button" class="swatch active" style="background:#ef4444"></button>
+        <button data-color="#facc15" type="button" class="swatch" style="background:#facc15"></button>
+        <button data-color="#22c55e" type="button" class="swatch" style="background:#22c55e"></button>
+      </span>
+      <button id="anno-undo" type="button">撤销</button>
+      <button id="anno-clear" type="button">清空</button>
+      <button id="anno-bake" type="button" class="primary">合并到图片</button>
+    </div>
+    <div class="modal-actions">
+      <button id="btn-render-anno" type="button">✏️ 标注</button>
+      <button id="btn-render-download" type="button" class="primary">下载 PNG</button>
+      <button id="btn-render-canvas" type="button" class="primary green">送画布</button>
+      <button id="btn-render-close" type="button">关闭</button>
+    </div>
+    <div id="render-status" class="muted"></div>
+  </div>
+</div>
+<div id="toast"></div>
+<div id="webgl-error" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

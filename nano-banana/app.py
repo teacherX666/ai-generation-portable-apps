@@ -267,8 +267,35 @@ MAX_SEED = 2147483647
 
 JOBS: dict[str, dict[str, Any]] = {}
 FILES: dict[str, Path] = {}
+FILES_MAP_PATH = STATE_DIR / "download_files.json"
 LOCK = threading.Lock()
 STATE_LOCK = threading.Lock()
+
+
+def load_files_map() -> dict[str, Path]:
+    """Load persisted download-token → file-path mapping from disk."""
+    try:
+        if FILES_MAP_PATH.exists():
+            data = json.loads(FILES_MAP_PATH.read_text(encoding="utf-8"))
+            result: dict[str, Path] = {}
+            for token, path_str in data.items():
+                p = Path(path_str)
+                if p.exists():
+                    result[token] = p
+            return result
+    except Exception:
+        pass
+    return {}
+
+
+def save_files_map() -> None:
+    """Persist the current FILES mapping to disk atomically.
+    调用方必须已持有 LOCK（threading.Lock 不可重入，内部再抢会死锁）。"""
+    try:
+        data = {token: str(p) for token, p in FILES.items()}
+        _atomic_write(FILES_MAP_PATH, json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
 
 # JOBS is in-memory and used to be unbounded: every job stayed forever, so a
 # service machine running for weeks only grew. We evict *finished* jobs once
@@ -1683,13 +1710,13 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             raise RuntimeError("托管供应商缺少官方 Base URL 配置")
     if provider_cfg.get("api_style") == "ark_seedream":
         image_data_urls: list[str] = []
-        if mode != "text2img":
-            for i in range(1, 15):
-                file_data = get_file_or_saved(form, f"image_{i}", ws_id)
-                if not file_data:
-                    continue
-                filename, blob = file_data
-                image_data_urls.append(file_to_data_url(filename, blob))
+        # text2img 带参考图时一并发送（上游语义：纯文生也可挂可选参考图）
+        for i in range(1, 15):
+            file_data = get_file_or_saved(form, f"image_{i}", ws_id)
+            if not file_data:
+                continue
+            filename, blob = file_data
+            image_data_urls.append(file_to_data_url(filename, blob))
         max_images = int(provider_cfg.get("max_reference_images") or 10)
         if len(image_data_urls) > max_images:
             raise ValueError(f"Seedream 5.0 Pro 最多支持 {max_images} 张参考图")
@@ -1721,6 +1748,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             token = uuid.uuid4().hex
             with LOCK:
                 FILES[token] = Path(local_path)
+                save_files_map()
             file_token_results.append({
                 "image_url": image_url,
                 "download_url": f"/api/download/{token}",
@@ -1740,14 +1768,13 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         image_count = 0
         if common["model"] == "gpt-image-2":
             content: list[dict[str, Any]] = [{"type": "text", "text": common["prompt"]}]
-            if mode != "text2img":
-                for i in range(1, 15):
-                    file_data = get_file_or_saved(form, f"image_{i}", ws_id)
-                    if not file_data:
-                        continue
-                    filename, blob = file_data
-                    content.append({"type": "image_url", "image_url": {"url": file_to_data_url(filename, blob)}})
-                    image_count += 1
+            for i in range(1, 15):
+                file_data = get_file_or_saved(form, f"image_{i}", ws_id)
+                if not file_data:
+                    continue
+                filename, blob = file_data
+                content.append({"type": "image_url", "image_url": {"url": file_to_data_url(filename, blob)}})
+                image_count += 1
             payload = {
                 "model": common["model"],
                 "messages": [{"role": "user", "content": content}],
@@ -1812,6 +1839,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                 token = uuid.uuid4().hex
                 with LOCK:
                     FILES[token] = Path(local_path)
+                    save_files_map()
                 file_token_results.append({
                     "image_url": image_url,
                     "download_url": f"/api/download/{token}",
@@ -1822,19 +1850,18 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             return {"index": index, "task_id": task_id, "status": "succeeded", "seed": seed or None, "images": file_token_results}
 
         parts: list[dict[str, Any]] = [{"text": common["prompt"]}]
-        if mode != "text2img":
-            for i in range(1, 15):
-                file_data = get_file_or_saved(form, f"image_{i}", ws_id)
-                if not file_data:
-                    continue
-                filename, blob = file_data
-                parts.append({
-                    "inline_data": {
-                        "mime_type": mimetypes.guess_type(filename)[0] or "image/png",
-                        "data": base64.b64encode(blob).decode("utf-8"),
-                    }
-                })
-                image_count += 1
+        for i in range(1, 15):
+            file_data = get_file_or_saved(form, f"image_{i}", ws_id)
+            if not file_data:
+                continue
+            filename, blob = file_data
+            parts.append({
+                "inline_data": {
+                    "mime_type": mimetypes.guess_type(filename)[0] or "image/png",
+                    "data": base64.b64encode(blob).decode("utf-8"),
+                }
+            })
+            image_count += 1
         generation_config: dict[str, Any] = {"imageConfig": {}}
         if common.get("aspect_ratio") and common["aspect_ratio"] != "auto":
             generation_config["imageConfig"]["aspectRatio"] = common["aspect_ratio"]
@@ -1866,6 +1893,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             token = uuid.uuid4().hex
             with LOCK:
                 FILES[token] = Path(local_path)
+                save_files_map()
             file_token_results.append({
                 "image_url": image_url,
                 "download_url": f"/api/download/{token}",
@@ -1875,23 +1903,24 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         add_event(job_id, f"Run {index}: saved {len(file_token_results)} image(s), input_images:{image_count}")
         return {"index": index, "task_id": task_id, "status": "succeeded", "seed": seed or None, "images": file_token_results}
 
-    if mode == "text2img":
+    # text2img 带参考图时按 img2img 处理（上游语义：纯文生也可挂可选参考图）
+    files_payload = []
+    image_count = 0
+    for i in range(1, 15):
+        file_data = get_file_or_saved(form, f"image_{i}", ws_id)
+        if not file_data:
+            continue
+        filename, blob = file_data
+        mime = mimetypes.guess_type(filename)[0] or "image/png"
+        files_payload.append(("image", filename, blob, mime))
+        image_count += 1
+
+    if mode == "text2img" and image_count == 0:
         payload = dict(common)
         if seed > 0:
             payload["seed"] = seed
         result = request_json("POST", f"{base_url}/v1/images/generations?async=true", api_key, payload)
-        image_count = 0
     else:
-        files_payload = []
-        image_count = 0
-        for i in range(1, 15):
-            file_data = get_file_or_saved(form, f"image_{i}", ws_id)
-            if not file_data:
-                continue
-            filename, blob = file_data
-            mime = mimetypes.guess_type(filename)[0] or "image/png"
-            files_payload.append(("image", filename, blob, mime))
-            image_count += 1
         result = multipart_post(f"{base_url}/v1/images/edits?async=true", api_key, common, files_payload)
 
     task_id = result.get("task_id") or result.get("id") or f"sync_{uuid.uuid4().hex[:12]}"
@@ -1935,6 +1964,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         token = uuid.uuid4().hex
         with LOCK:
             FILES[token] = Path(local_path)
+            save_files_map()
         file_token_results.append({
             "image_url": image_url,
             "download_url": f"/api/download/{token}",
@@ -2431,6 +2461,11 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Restore persisted download token → file mappings (survives server restart)
+    restored = load_files_map()
+    if restored:
+        FILES.update(restored)
+        print(f"Restored {len(restored)} download file mapping(s)")
     port = int(os.environ.get("PORT", "8797"))
     host = os.environ.get("HOST", "127.0.0.1")
     server = ThreadingHTTPServer((host, port), Handler)

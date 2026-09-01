@@ -4,27 +4,52 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AI Generation Portal — 登录</title>
+<link rel="stylesheet" href="/ui/portal-ui-core.css">
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:32px;width:100%;max-width:380px}
-h1{font-size:20px;font-weight:700;margin-bottom:6px;color:#f1f5f9}
-.sub{font-size:13px;color:#94a3b8;margin-bottom:24px}
-label{display:block;font-size:13px;color:#94a3b8;margin-bottom:16px}
+/* 登录发生在认证之前，因此这里必须保留一套可独立工作的最小样式。
+   即使共享 UI Core 因网络或认证配置暂时不可用，页面也不能退化成裸 HTML。 */
+:root{
+  --ui-bg-canvas:#f3f6fa;
+  --ui-bg-surface:#fff;
+  --ui-bg-sunken:#eef2f7;
+  --ui-text-primary:#172033;
+  --ui-text-secondary:#475569;
+  --ui-text-muted:#748196;
+  --ui-border-default:#d7dee8;
+  --ui-action-primary:#235fd6;
+  --ui-action-primary-hover:#184fbf;
+  --ui-color-danger-text:#b42318;
+  --ui-font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --ui-font-size-base:13px;
+  --ui-font-size-md:15px;
+  --ui-font-size-lg:20px;
+  --ui-font-weight-medium:600;
+  --ui-font-weight-bold:700;
+  --ui-radius-md:8px;
+  --ui-focus-ring:0 0 0 3px rgba(35,95,214,.16);
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;background:var(--ui-bg-canvas);color:var(--ui-text-primary);font-family:var(--ui-font-family);font-size:var(--ui-font-size-base);line-height:1.5;-webkit-font-smoothing:antialiased}
+button,input{font:inherit}
+.login-card{width:100%;max-width:400px;padding:32px;background:var(--ui-bg-surface);border:1px solid var(--ui-border-default);border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.08)}
+h1{font-size:var(--ui-font-size-lg);font-weight:var(--ui-font-weight-bold);margin:0 0 6px;color:var(--ui-text-primary)}
+.sub{font-size:var(--ui-font-size-base);color:var(--ui-text-muted);margin:0 0 24px}
+label{display:block;font-size:var(--ui-font-size-base);color:var(--ui-text-secondary);margin-bottom:16px}
 label span{display:block;margin-bottom:4px}
-input[type=text],input[type=password]{width:100%;padding:9px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:14px;outline:none}
-input:focus{border-color:#4f46e5}
-button{width:100%;padding:10px;background:#4f46e5;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;margin-top:8px}
-button:hover{background:#4338ca}
-button:disabled{background:#334155;cursor:default}
-.err{color:#f87171;font-size:13px;margin-top:12px;text-align:center;min-height:20px}
-.toggle{margin-top:14px;text-align:center;font-size:13px;color:#94a3b8}
-.toggle a{color:#818cf8;cursor:pointer;text-decoration:underline}
-.toggle a:hover{color:#a5b4fc}
+input[type=text],input[type=password]{width:100%;min-height:36px;padding:0 12px;background:var(--ui-bg-surface);border:1px solid var(--ui-border-default);border-radius:var(--ui-radius-md);color:var(--ui-text-primary);font-size:var(--ui-font-size-md);outline:none}
+input:focus{border-color:var(--ui-action-primary);box-shadow:var(--ui-focus-ring)}
+button{width:100%;min-height:38px;padding:0 14px;background:var(--ui-action-primary);color:#fff;border:1px solid var(--ui-action-primary);border-radius:var(--ui-radius-md);font-size:var(--ui-font-size-base);font-weight:var(--ui-font-weight-medium);cursor:pointer;margin-top:8px}
+button:hover{background:var(--ui-action-primary-hover);border-color:var(--ui-action-primary-hover)}
+button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-default);color:var(--ui-text-muted);cursor:default}
+.err{color:var(--ui-color-danger-text);font-size:var(--ui-font-size-base);margin-top:12px;text-align:center;min-height:20px}
+.toggle{margin-top:14px;text-align:center;font-size:var(--ui-font-size-base);color:var(--ui-text-muted)}
+.toggle a{color:var(--ui-action-primary);cursor:pointer;text-decoration:underline}
+.toggle a:hover{color:var(--ui-action-primary-hover)}
 </style>
 </head>
-<body>
-<div class="card">
+<body class="ui-page">
+<div class="login-card ui-panel">
   <h1 id="title">登录</h1>
   <p class="sub" id="subtitle">AI Generation Portal</p>
   <form id="form">

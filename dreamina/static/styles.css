@@ -82,14 +82,22 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
-body { min-height: 100vh; }
+html, body { height: 100%; margin: 0; overflow: hidden; }
 
 /* === App Layout === */
 .app {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
-  min-height: 100vh;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: #eef2f7; }
+::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }
 
 /* === Sidebar === */
 .sidebar {
@@ -97,7 +105,8 @@ body { min-height: 100vh; }
   border-right: 1px solid var(--border);
   padding: 20px;
   overflow-y: auto;
-  height: 100vh;
+  min-height: 0;
+  height: 100%;
   position: sticky;
   top: 0;
 }
@@ -433,7 +442,7 @@ textarea { min-height: 100px; line-height: 1.5; }
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100vh;
+  min-height: 100%;
   padding: 20px;
   background: #f6f7f9;
 }
@@ -454,8 +463,8 @@ textarea { min-height: 100px; line-height: 1.5; }
 
 .setup-log {
   text-align: left;
-  border: 1px solid #1d293d;
-  background: #111827;
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
   border-radius: 7px;
   padding: 12px;
   font-size: 12px;
@@ -464,7 +473,7 @@ textarea { min-height: 100px; line-height: 1.5; }
   margin-top: 16px;
   white-space: pre-wrap;
   word-break: break-all;
-  color: #dbe7ff;
+  color: var(--text-secondary);
   line-height: 1.45;
 }
 
@@ -483,7 +492,8 @@ textarea { min-height: 100px; line-height: 1.5; }
 .workspace {
   padding: 20px 24px;
   overflow-y: auto;
-  height: 100vh;
+  min-height: 0;
+  height: 100%;
 }
 
 .workspace-panel {
@@ -670,8 +680,35 @@ textarea { min-height: 100px; line-height: 1.5; }
   margin: 0 auto;
   border-radius: 6px;
   object-fit: contain;
-  background: #111827;
+  background: var(--surface-sunken);
 }
+
+/* CLI history uses a readable light code surface in the standalone app. */
+.dm-cli-log {
+  display: block;
+  margin-top: 4px;
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  padding: 8px;
+  border-radius: var(--radius-md);
+  max-height: 240px;
+  overflow: auto;
+}
+.dm-cli-log[hidden] { display: none; }
+.dm-cli-wrap { margin-top: 6px; }
+.dm-cli-toggle { border: 0; padding: 0; background: transparent; cursor: pointer; }
+.job-user, .job-runtime { margin-left: 6px; color: var(--muted); font-size: var(--font-size-xs); }
+.job-runtime { color: var(--text-secondary); }
+.ui-empty--compact { margin: 0; }
+.dm-cli-entry { margin-bottom: 6px; }
+.dm-cli-command { color: var(--accent); word-break: break-all; }
+.dm-cli-exitcode { color: var(--success-text); }
+.dm-cli-output { color: var(--text-secondary); white-space: pre-wrap; word-break: break-all; }
+.dm-cli-error { color: var(--danger-text); white-space: pre-wrap; word-break: break-all; }
+.dm-cli-toggle { cursor: pointer; color: var(--accent); user-select: none; font-size: 12px; }
 
 .close-btn {
   position: absolute;
@@ -772,7 +809,7 @@ textarea { min-height: 100px; line-height: 1.5; }
 
 /* === Scrollbar === */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-track { background: #eef2f7; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--radius-pill); }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 

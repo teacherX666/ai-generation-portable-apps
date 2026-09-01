@@ -1,0 +1,8 @@
+/* Browser-native distribution entrypoint. No npm/build step required. */
+@import url("tokens/core.css");
+@import url("tokens/semantic.css");
+@import url("tokens/legacy-aliases.css");
+@import url("styles/reset.css");
+@import url("styles/layout.css");
+@import url("styles/components.css");
+@import url("styles/accessibility.css");

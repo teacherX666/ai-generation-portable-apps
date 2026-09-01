@@ -788,6 +788,18 @@ class Repository:
             (run_id, task_id),
         )
 
+    async def delete_run_artifacts(self, run_id: str) -> None:
+        await self._write(
+            "DELETE FROM artifacts WHERE run_id = ?",
+            (run_id,),
+        )
+
+    async def delete_run_operations(self, run_id: str) -> None:
+        await self._write(
+            "DELETE FROM operations WHERE run_id = ?",
+            (run_id,),
+        )
+
     async def get_artifact(self, artifact_id: str) -> Artifact | None:
         cursor = await self._connection.execute(
             """

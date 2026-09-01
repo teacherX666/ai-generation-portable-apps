@@ -198,6 +198,65 @@ class PortalStartupTests(unittest.TestCase):
         self.assertNotEqual(captured.get("stderr"), subprocess.PIPE)
         manager.log_handles["demo"].close()
 
+    def test_start_app_uses_fastapi_entrypoint_when_engine_is_enabled(self):
+        """The RAG assistant and the other production apps must not fall back
+        to their compatibility app.py when the FastAPI engine is selected."""
+        module = load_portal_module()
+        manager = module.AppManager()
+        captured = {}
+
+        class FakeProc:
+            pid = 1235
+
+            def poll(self):
+                return None
+
+        def fake_popen(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return FakeProc()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp)
+            (app_dir / "app.py").write_text("raise SystemExit(1)\n", encoding="utf-8")
+            (app_dir / "app_fastapi.py").write_text("app = object()\n", encoding="utf-8")
+            config = {"dir": app_dir, "port": 9900, "spec": None}
+            with mock.patch.object(module.subprocess, "Popen", side_effect=fake_popen), \
+                 mock.patch.object(manager, "_kill_port_squatter"), \
+                 mock.patch.dict(module.os.environ, {"DEMO_ENGINE": "fastapi"}, clear=False):
+                manager.start_app("demo", config)
+
+        command = list(captured["args"][0])
+        self.assertEqual(
+            command,
+            [
+                str(module.ROOT.parent / ".venv" / "bin" / "uvicorn"),
+                "app_fastapi:app",
+                "--host", "127.0.0.1",
+                "--port", "9900",
+                "--log-level", "warning",
+            ],
+        )
+        self.assertEqual(captured["kwargs"]["cwd"], str(app_dir))
+        self.assertEqual(captured["kwargs"]["env"]["PORT"], "9900")
+        manager.log_handles["demo"].close()
+
+    def test_manual_start_script_defaults_all_managed_engines_to_fastapi(self):
+        script = (ROOT / "Start All.command").read_text(encoding="utf-8")
+        for name in (
+            "SEEDANCE_ENGINE",
+            "NANO_BANANA_ENGINE",
+            "DREAMINA_ENGINE",
+            "VOLCENGINE_PORTRAIT_ENGINE",
+            "INFINITE_CANVAS_ENGINE",
+            "RAG_ASSISTANT_ENGINE",
+        ):
+            self.assertRegex(
+                script,
+                rf"export {name}=\$\{{{name}:-fastapi\}}",
+                f"manual startup should default {name} to fastapi",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

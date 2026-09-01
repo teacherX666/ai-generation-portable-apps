@@ -52,26 +52,39 @@
    --page-bg #f3f6fa / --surface #fff / --border #d9e0ea / --text #172033 /
    --accent #235fd6。这里用 oklch 表达同一组颜色，色相 264 ≈ Portal 蓝。 */
 :root {
+    /* Portal UI Core bridge: the canvas keeps its React/Tailwind/shadcn
+       implementation, while sharing the same enterprise workbench palette. */
+    --portal-bg-canvas: #f3f6fa;
+    --portal-bg-surface: #ffffff;
+    --portal-bg-subtle: #f8fafc;
+    --portal-border: #d9e0ea;
+    --portal-border-strong: #c3ccd9;
+    --portal-text: #172033;
+    --portal-text-secondary: #465267;
+    --portal-text-muted: #687386;
+    --portal-primary: #235fd6;
+    --portal-primary-hover: #194fb8;
+    --portal-primary-soft: #eef5ff;
     --radius: 0.625rem;
-    --border: oklch(0.90 0.012 255);
-    --ring: oklch(0.55 0.17 264);
-    --background: oklch(0.975 0.005 255);
-    --foreground: oklch(0.25 0.03 264);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.25 0.03 264);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.25 0.03 264);
-    --primary: oklch(0.52 0.17 264);
+    --border: var(--portal-border);
+    --ring: var(--portal-primary);
+    --background: var(--portal-bg-canvas);
+    --foreground: var(--portal-text);
+    --card: var(--portal-bg-surface);
+    --card-foreground: var(--portal-text);
+    --popover: var(--portal-bg-surface);
+    --popover-foreground: var(--portal-text);
+    --primary: var(--portal-primary);
     --primary-foreground: oklch(1 0 0);
-    --secondary: oklch(0.96 0.008 255);
-    --secondary-foreground: oklch(0.32 0.03 264);
-    --muted: oklch(0.955 0.008 255);
-    --muted-foreground: oklch(0.52 0.02 260);
-    --accent: oklch(0.96 0.02 258);
-    --accent-foreground: oklch(0.38 0.13 264);
+    --secondary: var(--portal-bg-subtle);
+    --secondary-foreground: var(--portal-text-secondary);
+    --muted: var(--portal-bg-subtle);
+    --muted-foreground: var(--portal-text-muted);
+    --accent: var(--portal-primary-soft);
+    --accent-foreground: var(--portal-primary);
     --destructive: oklch(0.577 0.245 27.325);
-    --input: oklch(0.90 0.012 255);
-    --chart-1: oklch(0.52 0.17 264);
+    --input: var(--portal-border);
+    --chart-1: var(--portal-primary);
     --chart-2: oklch(0.62 0.13 230);
     --chart-3: oklch(0.70 0.11 200);
     --chart-4: oklch(0.76 0.09 175);

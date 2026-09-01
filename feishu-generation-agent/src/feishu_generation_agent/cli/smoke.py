@@ -122,14 +122,13 @@ class ProductionBitableReadOnlySmokeRunner:
     settings: Settings
 
     async def run(self) -> int:
-        self.settings.require(
-            "lark_app_id",
-            "lark_app_secret",
-            "lark_production_bitable_url",
-            "lark_production_table_id",
-            "lark_production_view_id",
-            "lark_result_folder_token",
-        )
+        self.settings.require("lark_app_id", "lark_app_secret")
+        if not self.settings.production_bitable_configured:
+            raise ValueError(
+                "生产表或结果表配置不完整：需要 LARK_PRODUCTION_*，以及"
+                " LARK_RESULT_FOLDER_TOKEN 或"
+                " LARK_RESULT_BITABLE_URL+LARK_RESULT_TABLE_ID"
+            )
         self.settings.ensure_paths()
         client = FeishuClient(self.settings)
         file_store = FileStore(

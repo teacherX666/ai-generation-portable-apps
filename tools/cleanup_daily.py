@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """每日定时清理（launchd: com.ai-portal-cleanup，每日 03:47）。
 
-默认 dry-run（只报告，不动任何文件）；加 --apply 才真执行。四个职责：
+默认 dry-run（只报告，不动任何文件）；加 --apply 才真执行。六个职责：
 
   1. outputs 产物按龄清理（--outputs-retention，默认 14 天）：
      文件已在飞书多维表格同步过的（feishu-output-sync 的 synced 表，
@@ -18,6 +18,10 @@
   4. 日志截断：feishu agent access log > 100MB、portal 子应用日志 > 50MB
      直接截断。日志由进程持有 append fd（launchd 重定向/Popen stdout），
      截断后继续写入不受影响（O_APPEND 每次写都落在文件末尾）。
+  5. 历史记录剪枝：history.json 超 30 天/超 10000 条的条目移除。
+  6. 回收站二次清理（--trash-days，默认 30 天）：第 1 步移进
+     ~/.Trash/ai-portable-cleanup-<ts>/ 的兜底文件超过 N 天后彻底删除，
+     磁盘真正释放。只认精确目录名模式，回收站其余内容一律不碰。
 
 统计保护：usage.json / activity_log.json / users.json 一律不碰；
 state/workspaces 之外的其他 state 内容不碰；cloudflared 隧道日志
@@ -30,6 +34,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import re
 import shutil
 import sqlite3
 import sys
@@ -315,6 +320,82 @@ def truncate_logs(apply: bool) -> list[str]:
     return done
 
 
+# ── 5. 历史记录剪枝（只碰 history.json；usage.json 等统计文件一律不碰） ──
+
+HISTORY_PATH = REPO_ROOT / "portal" / "state" / "history.json"
+HISTORY_RETENTION_DAYS = 30
+HISTORY_MAX_ENTRIES = 10000
+
+
+def prune_history(apply: bool) -> int:
+    """剪掉超龄/超量的任务历史记录。与统计无关，独立于 usage.json。"""
+    if not HISTORY_PATH.exists():
+        return 0
+    try:
+        data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return 0
+        before = len(data)
+        cutoff = dt.datetime.now().timestamp() - HISTORY_RETENTION_DAYS * 86400
+        data = {k: v for k, v in data.items()
+                if isinstance(v, dict) and float(v.get("submitted_at") or 0) >= cutoff}
+        if len(data) > HISTORY_MAX_ENTRIES:
+            items = sorted(data.items(),
+                           key=lambda kv: float(kv[1].get("submitted_at") or 0))
+            data = dict(items[-HISTORY_MAX_ENTRIES:])
+        removed = before - len(data)
+        if removed and apply:
+            tmp = HISTORY_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(HISTORY_PATH)
+        return removed
+    except Exception as exc:
+        print(f"      history 剪枝失败（忽略）: {exc}")
+        return 0
+
+
+# ── 6. 回收站二次清理（ai-portable-cleanup-* 目录超 N 天后彻底删除） ──
+
+TRASH_ROOT = HOME / ".Trash"
+_TRASH_DIR_RE = re.compile(r"ai-portable-cleanup-\d{8}_\d{6}\Z")
+TRASH_RETENTION_DAYS = 30
+
+
+def collect_trash_dirs(retention_days: int) -> list[tuple[Path, int]]:
+    """返回 (dir, 字节数)。只认精确目录名模式（ai-portable-cleanup-<ts>），
+    回收站里其它内容一律不动；名字不符或统计失败都跳过（方向安全）。"""
+    if not TRASH_ROOT.is_dir():
+        return []
+    cutoff = dt.date.today() - dt.timedelta(days=retention_days)
+    hits: list[tuple[Path, int]] = []
+    for d in TRASH_ROOT.iterdir():
+        if not d.is_dir() or _TRASH_DIR_RE.fullmatch(d.name) is None:
+            continue
+        try:
+            if dt.date.fromtimestamp(d.stat().st_mtime) >= cutoff:
+                continue
+            size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        except OSError:
+            continue
+        hits.append((d, size))
+    hits.sort(key=lambda x: x[0])
+    return hits
+
+
+def run_trash_purge(hits: list[tuple[Path, int]], apply: bool) -> int:
+    """彻底删除到期回收站目录，返回释放字节数。"""
+    freed = 0
+    for d, size in hits:
+        if apply:
+            try:
+                shutil.rmtree(d)
+            except OSError as e:
+                print(f"  删除失败 {d}: {e}", file=sys.stderr)
+                continue
+        freed += size
+    return freed
+
+
 # ── main ───────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -324,6 +405,8 @@ def main() -> int:
                     help="outputs 保留天数（默认 14）")
     ap.add_argument("--workspace-days", type=int, default=30,
                     help="workspace preset.json 超过该天数未编辑才清 media/（默认 30）")
+    ap.add_argument("--trash-days", type=int, default=TRASH_RETENTION_DAYS,
+                    help="回收站 ai-portable-cleanup-* 目录保留天数（默认 30）")
     args = ap.parse_args()
 
     mode = "执行" if args.apply else "dry-run"
@@ -332,7 +415,7 @@ def main() -> int:
     print()
 
     synced = load_synced_fingerprints()
-    print(f"[1/4] outputs 产物（> {args.outputs_retention} 天）")
+    print(f"[1/5] outputs 产物（> {args.outputs_retention} 天）")
     print(f"      飞书已同步指纹表：{len(synced)} 条（命中 → 直接删；未命中 → 回收站）")
     hits = collect_outputs(dt.date.today() - dt.timedelta(days=args.outputs_retention))
     if hits:
@@ -345,7 +428,7 @@ def main() -> int:
         print("      无超龄文件")
     print()
 
-    print(f"[2/4] workspaces 草稿参考素材（preset.json 超 {args.workspace_days} 天未编辑）")
+    print(f"[2/5] workspaces 草稿参考素材（preset.json 超 {args.workspace_days} 天未编辑）")
     ws_hits = collect_workspace_media(args.workspace_days)
     if ws_hits:
         ws_total = sum(sz for _, sz in ws_hits)
@@ -356,18 +439,33 @@ def main() -> int:
         print("      无超龄 workspace")
     print()
 
-    print("[3/4] download_files.json 失效 token 剪枝")
+    print("[3/5] download_files.json 失效 token 剪枝")
     pruned = prune_download_maps(args.apply)
     print(f"      共移除 {pruned} 个失效条目")
     print()
 
-    print("[4/4] 日志截断")
+    print("[4/5] 日志截断")
     truncated = truncate_logs(args.apply)
     if truncated:
         for t in truncated:
             print(f"      截断: {t}")
     else:
         print("      无超限日志")
+    print()
+
+    print("[5/5] 历史记录剪枝（history.json）")
+    hist_removed = prune_history(args.apply)
+    print(f"      移除 {hist_removed} 条超龄/超量记录" + ("" if args.apply else "（dry-run）"))
+    print()
+
+    print(f"[6/6] 回收站二次清理（ai-portable-cleanup-* 超 {args.trash_days} 天彻底删除）")
+    trash_hits = collect_trash_dirs(args.trash_days)
+    if trash_hits:
+        trash_freed = run_trash_purge(trash_hits, args.apply)
+        print(f"      命中 {len(trash_hits)} 个目录 {human_size(trash_freed)}"
+              + ("，已彻底删除" if args.apply else "（dry-run，未删除）"))
+    else:
+        print("      无到期回收站目录")
     print()
 
     print(f"=== 完成（{mode}）===")

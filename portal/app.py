@@ -37,6 +37,14 @@ STATIC_DIR = ROOT / "static"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import daily_report as _daily_report_module
+from cat_skins.experiment import CatExperimentService
+from cat_skins.service import (
+    CatDailyLimitError,
+    CatGenerationBusyError,
+    CatGenerationError,
+    CatSkinGenerator,
+    CatSkinManager,
+)
 
 _POPEN_EXTRA: dict[str, Any] = {}
 if hasattr(subprocess, "CREATE_NO_WINDOW"):
@@ -45,9 +53,17 @@ if hasattr(subprocess, "CREATE_NO_WINDOW"):
 STATE_DIR = _DATA_BASE / "state"
 USAGE_PATH = STATE_DIR / "usage.json"
 USAGE_JSONL_RETENTION_DAYS = 30
+HISTORY_PATH = STATE_DIR / "history.json"
+HISTORY_CAP = 10000
+HISTORY_DAYS = 30
 USERS_PATH = STATE_DIR / "users.json"
 SESSIONS_PATH = STATE_DIR / "sessions.json"
 USER_KEYS_PATH = STATE_DIR / "user_keys.json"
+CAT_SKINS_DIR = ROOT / "cat_skins"
+CAT_SKINS_PATH = STATE_DIR / "cat_skins.json"
+CAT_ANATOMY_PATH = CAT_SKINS_DIR / "cat-anatomy-v1.json"
+CAT_PROMPT_PATH = CAT_SKINS_DIR / "generation-prompt-v1.md"
+CAT_CLASSIC_PATH = CAT_SKINS_DIR / "classic-black-v1.json"
 
 SESSION_MAX_AGE = 86400 * 30  # 30 days
 
@@ -90,6 +106,10 @@ APPS = _AppsView(SPECS)
 
 PORTAL_PORT = int(os.environ.get("PORTAL_PORT", "9090"))
 REDIRECT_PORT = int(os.environ.get("REDIRECT_PORT", "9089"))
+
+# 视频缩略图缓存目录与 ffmpeg 并发上限（历史记录卡片抽帧用）
+THUMB_DIR = STATE_DIR / "thumbnails"
+_THUMB_SEM = threading.Semaphore(2)
 
 
 def _default_allowed_origins() -> frozenset[str]:
@@ -139,6 +159,109 @@ def _sign_admin_header(username: str, is_admin: bool, ts: int) -> str:
     older than PORTAL_SIG_WINDOW seconds (default 60)."""
     msg = f"{ts}:{'1' if is_admin else '0'}:{username}".encode("utf-8")
     return hmac.new(INTERNAL_TOKEN.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+_METADATA_WHITELIST = {
+    "prompt", "text", "content", "aspect_ratio", "ratio", "duration",
+    "resolution", "image_size", "count", "mode", "style",
+    "negative_prompt", "seed", "generate_audio", "model",
+}
+_METADATA_BLOCKLIST_SUBSTR = ("key", "token", "secret", "password")
+_METADATA_MAX_BODY = 5 * 1024 * 1024
+
+
+def extract_job_metadata(content_type: str, body: bytes) -> dict:
+    """从任务创建请求体提取提示词与白名单参数。永不采集密钥类字段。
+    解析失败/超大 body 静默降级为空——采集绝不抛异常。"""
+    result: dict = {"prompt": "", "model": "", "params": {}}
+    try:
+        if not body or len(body) > _METADATA_MAX_BODY:
+            return result
+        fields: dict = {}
+        ctype = (content_type or "").split(";")[0].strip().lower()
+        if ctype == "application/json":
+            data = json.loads(body.decode("utf-8", errors="replace"))
+            if isinstance(data, dict):
+                fields = data
+        elif ctype == "multipart/form-data":
+            import cgi
+            import io
+            # 只走 environ 的 CONTENT_TYPE：headers 参数用普通 dict 时
+            # 内部大小写不敏感查找会静默失效，导致 multipart 被当 urlencoded
+            form = cgi.FieldStorage(
+                fp=io.BytesIO(body),
+                environ={"REQUEST_METHOD": "POST",
+                         "CONTENT_TYPE": content_type,
+                         "CONTENT_LENGTH": str(len(body))},
+                keep_blank_values=True,
+            )
+            for key in form.keys():
+                item = form[key]
+                if isinstance(item, list):
+                    item = item[0] if item else None
+                if item is None or getattr(item, "filename", None):
+                    continue
+                fields[key] = item.value
+        else:
+            return result
+        for key, value in fields.items():
+            k = str(key)
+            low = k.lower()
+            if any(blocked in low for blocked in _METADATA_BLOCKLIST_SUBSTR):
+                continue
+            if low in _METADATA_WHITELIST:
+                if isinstance(value, (str, int, float, bool)):
+                    if low == "prompt":
+                        result["prompt"] = str(value).strip()
+                    elif low == "model":
+                        result["model"] = str(value).strip()
+                    else:
+                        result["params"][low] = value
+        return result
+    except Exception:
+        return result
+
+
+_STATUS_DONE = {"succeeded", "done", "completed", "success"}
+_STATUS_FAILED = {"failed", "cancelled", "canceled", "error"}
+_STATUS_RUNNING = {"running", "processing", "generating", "uploading"}
+
+
+def normalize_history_status(status: str) -> str:
+    s = (status or "").lower()
+    if s in _STATUS_DONE:
+        return "done"
+    if s in _STATUS_FAILED:
+        return "failed"
+    if s in _STATUS_RUNNING:
+        return "running"
+    return "queued"
+
+
+def history_result_items(data: dict, kind: str) -> list[dict]:
+    """从子应用 /api/jobs/{id} 响应提取结果清单（最多 4 条，供弹窗下载）。
+
+    各子应用 results 结构不同：seedance/portrait 顶层有 download_url；
+    nano-banana 是 run 级结果，URL 嵌套在 result["images"][i]["download_url"]。
+    """
+    nested = data.get("job") if isinstance(data.get("job"), dict) else {}
+    raw = data.get("results") or nested.get("results") or []
+    items = []
+    for r in raw[:4]:
+        if not isinstance(r, dict):
+            continue
+        url = (r.get("url") or r.get("download_url") or r.get("path")
+               or r.get("image_url") or "")
+        if not url and isinstance(r.get("images"), list) and r["images"]:
+            first = r["images"][0]
+            if isinstance(first, dict):
+                url = (first.get("download_url") or first.get("image_url")
+                       or first.get("url") or "")
+        if not url:
+            continue
+        item_kind = "video" if kind == "video" else "image"
+        items.append({"url": str(url), "kind": item_kind})
+    return items
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "admin": {"use_apps", "view_stats_all", "manage_users", "manage_dreamina_accounts"},
@@ -831,6 +954,9 @@ def _prune_old_usage_jsonl(today: str):
 class UsageTracker:
     def __init__(self):
         self._lock = threading.Lock()
+        # 历史记录独立锁：history_upsert 会被 register_job（已持 self._lock）
+        # 调用，threading.Lock 不可重入，同锁会死锁。
+        self._history_lock = threading.Lock()
         self._data = self._load()
         self._pending_jobs: list[dict] = []
         # Debounced persistence: hot paths (record/register_job/inc_daily_jobs/
@@ -1009,7 +1135,7 @@ class UsageTracker:
         except Exception:
             pass
 
-    def register_job(self, app: str, job_id: str, username: str, job_type: str = "image", duration_per_item: int = 0):
+    def register_job(self, app: str, job_id: str, username: str, job_type: str = "image", duration_per_item: int = 0, metadata: dict | None = None):
         with self._lock:
             self._pending_jobs.append({
                 "app": app, "job_id": job_id, "username": username,
@@ -1022,12 +1148,125 @@ class UsageTracker:
             if len(owners) > 5000:
                 kept = sorted(owners.items(), key=lambda kv: kv[1].get("ts", 0))[-3000:]
                 self._data["job_owners"] = dict(kept)
+            # 历史记录 pending 落库（采集失败不影响统计）
+            meta = metadata or {}
+            self.history_upsert({
+                "app": app, "job_id": job_id, "username": username,
+                "kind": "video" if job_type == "video" else "image",
+                "prompt": str(meta.get("prompt", "")).strip()[:2000],
+                "model": str(meta.get("model", ""))[:200],
+                "params": meta.get("params") if isinstance(meta.get("params"), dict) else {},
+                "status": "pending",
+                "submitted_at": time.time(),
+                "completed_at": None,
+                "duration": 0,
+                "thumb_url": "",
+                "results": [],
+                "error": "",
+            })
             self._save()
 
     def get_job_owner(self, app: str, job_id: str) -> str:
         with self._lock:
             o = self._data.get("job_owners", {}).get(f"{app}:{job_id}")
             return o.get("username", "") if isinstance(o, dict) else ""
+
+    # ── 历史记录（任务级留档，与统计计数互不干扰） ──────────────────────
+    def _load_history(self) -> dict:
+        if not HISTORY_PATH.exists():
+            return {}
+        try:
+            return json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def history_records(self) -> dict:
+        """任务级历史记录（区别于统计页按天 get_history）。"""
+        return self._load_history()
+
+    def history_update_terminal(self, app: str, job_id: str, status: str,
+                                data: dict, job_type: str) -> None:
+        """轮询到终态时更新历史记录：状态/结果清单/缩略图/时长/错误。"""
+        try:
+            rec = self.history_records().get(f"{app}:{job_id}")
+            if not rec:
+                return
+            nested = data.get("job") if isinstance(data.get("job"), dict) else {}
+            done = int(data.get("done") or nested.get("done") or 0)
+            per_item = (int(data.get("duration") or 0)
+                        or int(data.get("duration_seconds") or 0)
+                        or int(nested.get("duration") or 0)
+                        or 0)
+            results = history_result_items(data, job_type)
+            errors = data.get("errors") or nested.get("errors") or []
+            error_text = str(data.get("error") or nested.get("error") or "").strip()
+            if not error_text and isinstance(errors, list) and errors:
+                first = errors[0]
+                error_text = str(first.get("message") or first.get("error") or first
+                                 if isinstance(first, dict) else first).strip()
+            rec["status"] = normalize_history_status(status)
+            rec["completed_at"] = time.time()
+            rec["duration"] = int(done * per_item) if done > 0 and per_item else 0
+            rec["thumb_url"] = results[0]["url"] if results else ""
+            rec["results"] = results
+            rec["error"] = error_text[:500]
+            self.history_upsert(rec)
+        except Exception:
+            pass
+
+    def query_history(self, *, username: str, is_admin: bool,
+                      days: int = 30, kind: str = "all", status: str = "all",
+                      q: str = "", user_filter: str = "",
+                      limit: int = 60, offset: int = 0) -> tuple[list, int]:
+        """返回 (items, total)。admin 全量，普通用户强制只看本人。"""
+        data = self._load_history()
+        cutoff = time.time() - max(1, min(int(days), 365)) * 86400
+        rows = []
+        for rec in data.values():
+            if not isinstance(rec, dict):
+                continue
+            if float(rec.get("submitted_at") or 0) < cutoff:
+                continue
+            if not is_admin and rec.get("username") != username:
+                continue
+            if user_filter and rec.get("username") != user_filter:
+                continue
+            if kind != "all" and rec.get("kind") != kind:
+                continue
+            if status != "all" and rec.get("status") != status:
+                continue
+            if q:
+                hay = f"{rec.get('prompt', '')} {rec.get('job_id', '')}".lower()
+                if q.lower() not in hay:
+                    continue
+            rows.append(rec)
+        rows.sort(key=lambda r: float(r.get("submitted_at") or 0), reverse=True)
+        total = len(rows)
+        return rows[offset:offset + limit], total
+
+    def history_upsert(self, record: dict) -> None:
+        """写/更新一条历史记录；同次写入顺带剪枝（>N 天 + 总量上限）。
+        任何异常吞掉——历史采集失败绝不影响统计与代理。"""
+        try:
+            with self._history_lock:
+                data = self._load_history()
+                key = f"{record['app']}:{record['job_id']}"
+                data[key] = record
+                cutoff = time.time() - HISTORY_DAYS * 86400
+                data = {k: v for k, v in data.items()
+                        if float(v.get("submitted_at") or 0) >= cutoff}
+                if len(data) > HISTORY_CAP:
+                    sorted_items = sorted(
+                        data.items(),
+                        key=lambda kv: float(kv[1].get("submitted_at") or 0),
+                    )
+                    data = dict(sorted_items[-HISTORY_CAP:])
+                HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+                tmp = HISTORY_PATH.with_suffix(".tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(HISTORY_PATH)
+        except Exception:
+            pass
 
     def _job_poll_loop(self):
         while True:
@@ -1049,6 +1288,17 @@ class UsageTracker:
                         # 立即停止轮询，避免统计虚高为「成功」。
                         try:
                             self.finalize_job(job["app"], job["job_id"], "failed")
+                        except Exception:
+                            pass
+                        # 历史记录：子应用重启导致任务丢失 → 标失败
+                        try:
+                            hist = self.history_records()
+                            rec = hist.get(f"{job['app']}:{job['job_id']}")
+                            if rec:
+                                rec["status"] = "failed"
+                                rec["completed_at"] = time.time()
+                                rec["error"] = "任务丢失（子应用可能已重启）"
+                                self.history_upsert(rec)
                         except Exception:
                             pass
                         done_ids.append(job["job_id"])
@@ -1090,6 +1340,7 @@ class UsageTracker:
                             # failure). Skip the stat write entirely — no phantom
                             # image, no meaningless 0-row — but still drop it from
                             # pending below so we stop polling it.
+                            per_item = 0
                             if done > 0:
                                 if job_type == "video":
                                     # Prefer per-item duration the subapp reports directly.
@@ -1100,6 +1351,9 @@ class UsageTracker:
                                     self._add_user_stat(job["date"], job["username"], job["app"], 0, done * per_item)
                                 else:
                                     self._add_user_stat(job["date"], job["username"], job["app"], done, 0)
+                            # 历史记录终态更新（采集失败不影响统计）
+                            self.history_update_terminal(
+                                job["app"], job["job_id"], status, data, job_type)
                             done_ids.append(job["job_id"])
                     conn.close()
                 except Exception:
@@ -1110,6 +1364,17 @@ class UsageTracker:
                     # finalize_job 幂等：若任务之后真的成功并回调，也不会重复回滚。
                     try:
                         self.finalize_job(job["app"], job["job_id"], "failed")
+                    except Exception:
+                        pass
+                    # 历史记录：2 小时超时 → 标失败
+                    try:
+                        hist = self.history_records()
+                        rec = hist.get(f"{job['app']}:{job['job_id']}")
+                        if rec:
+                            rec["status"] = "failed"
+                            rec["completed_at"] = time.time()
+                            rec["error"] = "任务超时（2 小时未完成）"
+                            self.history_upsert(rec)
                     except Exception:
                         pass
                     done_ids.append(job["job_id"])
@@ -1361,11 +1626,20 @@ auth = AuthManager()
 key_manager = KeyManager()
 manager = AppManager()
 tracker = UsageTracker()
+cat_skin_generator = CatSkinGenerator(
+    CAT_SKINS_DIR,
+    key_loader=lambda: _daily_report_module._load_deepseek_key(STATE_DIR),
+)
+cat_skin_manager = CatSkinManager(CAT_SKINS_PATH, CAT_CLASSIC_PATH, cat_skin_generator)
+cat_experiment_service = CatExperimentService(CAT_SKINS_DIR)
 
 
 # ─── HTTP Handler ──────────────────────────────────────────────────────────────
 
 _AUTH_EXEMPT = {"/login", "/api/auth/login", "/api/auth/register"}
+# 登录页在认证前就需要 UI Core。这里只公开无业务数据的共享样式目录；
+# 其他 Portal 静态资源仍然经过认证，避免意外扩大匿名访问范围。
+_AUTH_EXEMPT_PREFIXES = ("/ui/",)
 
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
@@ -1459,7 +1733,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/auth/first-run":
             self._json(200, {"ok": True, "first_run": auth.first_run(), "signup_enabled": auth.signup_enabled()})
             return
-        if path in _AUTH_EXEMPT or path == "/login":
+        if path in _AUTH_EXEMPT or path == "/login" or path.startswith(_AUTH_EXEMPT_PREFIXES):
             self._serve_portal(path if path != "/login" else "/login.html")
             return
         user = self._require_auth(path)
@@ -1479,6 +1753,16 @@ class Handler(SimpleHTTPRequestHandler):
             self._platform_stats_export(user)
         elif path == "/api/platform/activity":
             self._platform_activity(user)
+        # 注意顺序：history-users 必须先于 startswith("/api/platform/history")
+        # 判断，否则被前缀匹配吞掉，前端用户下拉永远只有「全部用户」。
+        elif path == "/api/platform/history-users":
+            self._platform_history_users(user)
+        elif path.startswith("/api/platform/history"):
+            self._platform_history(user)
+        elif path == "/api/platform/me":
+            self._json(200, {"ok": True, "username": user["username"], "role": user["role"]})
+        elif path == "/api/platform/thumb":
+            self._platform_thumb(user)
         elif self._try_company_key_route(path, "GET", user):
             pass
         elif path == "/api/feishu/config":
@@ -1488,6 +1772,10 @@ class Handler(SimpleHTTPRequestHandler):
             self._report_csv_download(user, date)
         elif path == "/api/auth/me":
             self._json(200, {"ok": True, "username": user["username"], "role": user["role"]})
+        elif path == "/api/cat/wardrobe":
+            self._json(200, cat_skin_manager.wardrobe(user))
+        elif path == "/api/cat/experiment/config":
+            self._cat_experiment_config(user)
         elif path == "/api/users":
             if not auth.has_permission(user, "manage_users"):
                 self._json(403, {"ok": False, "error": "forbidden"})
@@ -1540,6 +1828,18 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", "12")
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
+            return
+        if path == "/api/cat/open":
+            self._cat_open(user)
+            return
+        if path == "/api/cat/experiment/generate":
+            self._cat_experiment_generate(user)
+            return
+        if path == "/api/cat/equip":
+            self._cat_equip(user)
+            return
+        if path == "/api/cat/release":
+            self._cat_release(user)
             return
         if path == "/api/auth/create-user":
             if not auth.has_permission(user, "manage_users"):
@@ -1639,6 +1939,88 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     # ── Auth endpoint handlers ────────────────────────────────────────────────
+
+    def _cat_open(self, user: dict):
+        try:
+            skin = cat_skin_manager.open_gift(user)
+        except CatDailyLimitError as exc:
+            self._json(409, {"ok": False, "code": "daily_limit", "error": str(exc)})
+            return
+        except CatGenerationBusyError as exc:
+            self._json(409, {"ok": False, "code": "generating", "error": str(exc)})
+            return
+        except CatGenerationError as exc:
+            print(f"  [cat-skin] generation failed for {user['username']}: {exc}", flush=True)
+            self._json(502, {"ok": False, "code": "generation_failed", "error": "猫咪生成失败，本次机会未消耗，请稍后重试"})
+            return
+        except Exception as exc:
+            print(f"  [cat-skin] unexpected error for {user['username']}: {exc}", flush=True)
+            self._json(500, {"ok": False, "code": "generation_failed", "error": "猫咪生成失败，本次机会未消耗"})
+            return
+        wardrobe = cat_skin_manager.wardrobe(user)
+        self._json(200, {"ok": True, "skin": skin, "can_open": wardrobe["can_open"], "equipped_skin_id": skin["id"]})
+
+    def _cat_experiment_config(self, user: dict):
+        if user.get("role") != "admin":
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
+            return
+        self._json(200, cat_experiment_service.config())
+
+    def _cat_experiment_generate(self, user: dict):
+        if user.get("role") != "admin":
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
+            return
+        body = self._read_json()
+        if body is None:
+            return
+        experiment_id = str(body.get("experiment_id") or "orange_tabby").strip()
+        raw_seed = body.get("seed")
+        try:
+            seed = int(raw_seed) if raw_seed not in (None, "") else None
+            result = cat_experiment_service.generate(experiment_id, seed)
+        except KeyError as exc:
+            self._json(400, {"ok": False, "error": str(exc).strip("'")})
+            return
+        except (TypeError, ValueError):
+            self._json(400, {"ok": False, "error": "seed 必须是整数"})
+            return
+        if not result["validation"]["passed"]:
+            self._json(422, result)
+            return
+        self._json(200, result)
+
+    def _cat_equip(self, user: dict):
+        body = self._read_json()
+        if body is None:
+            return
+        skin_id = str(body.get("skin_id") or "").strip()
+        if not skin_id:
+            self._json(400, {"ok": False, "error": "skin_id required"})
+            return
+        try:
+            result = cat_skin_manager.equip(user, skin_id)
+        except KeyError as exc:
+            self._json(404, {"ok": False, "error": str(exc).strip("'")})
+            return
+        self._json(200, result)
+
+    def _cat_release(self, user: dict):
+        body = self._read_json()
+        if body is None:
+            return
+        skin_id = str(body.get("skin_id") or "").strip()
+        if not skin_id:
+            self._json(400, {"ok": False, "error": "skin_id required"})
+            return
+        try:
+            result = cat_skin_manager.release(user, skin_id)
+        except PermissionError as exc:
+            self._json(403, {"ok": False, "error": str(exc)})
+            return
+        except KeyError as exc:
+            self._json(404, {"ok": False, "error": str(exc).strip("'")})
+            return
+        self._json(200, result)
 
     def _auth_login(self):
         body = self._read_json()
@@ -2049,6 +2431,120 @@ class Handler(SimpleHTTPRequestHandler):
         merged.sort(key=lambda x: x.get("created_at") or x.get("time") or "", reverse=True)
         self._json(200, {"ok": True, "activity": merged[:50]})
 
+    def _platform_thumb(self, user: dict):
+        """服务端视频缩略图（上游 77c4802+cfe65c3 方案 A）：把媒体 URL 直接喂给
+        ffmpeg 抽帧。ffmpeg 的 http demuxer 支持 Range 寻址，能自己找到 MP4
+        尾部的 moov atom，无需整片下载；抽出的 480 宽 JPEG 按 sha1(app+url)
+        落盘缓存终身复用（原子写入）。失败返回 404，前端 <img onerror>
+        回退到 <video preload=metadata>。"""
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        app = (qs.get("app", [None])[0] or "").strip()
+        url = (qs.get("url", [None])[0] or "").strip()
+        if app not in APPS or not url or len(url) > 512:
+            self._json(400, {"ok": False, "error": "bad request"})
+            return
+        # 只接受子应用媒体路径：以 / 开头、白名单字符、无路径穿越。
+        if not re.fullmatch(r"/[A-Za-z0-9._/-]+", url) or ".." in url:
+            self._json(400, {"ok": False, "error": "bad request"})
+            return
+        port = APPS[app].get("port")
+        if not port:
+            self._json(404, {"ok": False})
+            return
+        key = hashlib.sha1(f"{app}\0{url}".encode("utf-8")).hexdigest()
+        THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        cached = THUMB_DIR / f"{key}.jpg"
+        if not cached.is_file():
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                print("  [thumb] ffmpeg not found", flush=True)
+                self._json(404, {"ok": False})
+                return
+            source = f"http://127.0.0.1:{port}{url}"
+            tmp = THUMB_DIR / f".{key}.jpg.tmp"
+            try:
+                with _THUMB_SEM:
+                    proc = subprocess.run(
+                        [ffmpeg, "-hide_banner", "-loglevel", "error",
+                         "-i", source, "-ss", "0.2", "-frames:v", "1",
+                         "-vf", "scale=480:-2", "-f", "mjpeg", "pipe:1"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=90)
+                if proc.returncode != 0 or len(proc.stdout) < 64:
+                    print(f"  [thumb] ffmpeg failed for {app}{url}: {proc.stderr[:300]!r}", flush=True)
+                    self._json(404, {"ok": False})
+                    return
+                tmp.write_bytes(proc.stdout)
+                os.replace(tmp, cached)
+                try:
+                    os.chmod(cached, 0o600)
+                except OSError:
+                    pass
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                tmp.unlink(missing_ok=True)
+                print(f"  [thumb] ffmpeg failed for {app}{url}: {exc}", flush=True)
+                self._json(404, {"ok": False})
+                return
+        try:
+            content = cached.read_bytes()
+        except OSError:
+            self._json(404, {"ok": False})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _platform_history(self, user: dict):
+        """任务级历史记录查询：admin 全量（可按人筛），普通用户仅本人。"""
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+
+        def _first(key: str, default: str) -> str:
+            vals = qs.get(key)
+            return vals[0] if vals else default
+
+        is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
+        try:
+            limit = max(1, min(int(_first("limit", "60")), 200))
+        except ValueError:
+            limit = 60
+        try:
+            offset = max(0, int(_first("offset", "0")))
+        except ValueError:
+            offset = 0
+        try:
+            days = int(_first("days", "30"))
+        except ValueError:
+            days = 30
+        items, total = tracker.query_history(
+            username=user.get("username", ""),
+            is_admin=is_admin,
+            days=days,
+            kind=_first("kind", "all"),
+            status=_first("status", "all"),
+            q=_first("q", ""),
+            user_filter=_first("user", ""),
+            limit=limit,
+            offset=offset,
+        )
+        out = []
+        for rec in items:
+            spec = SPEC_BY_NAME.get(rec.get("app", ""))
+            out.append({**rec,
+                        "display_name": spec.display_name if spec else rec.get("app", "")})
+        self._json(200, {"ok": True, "total": total, "items": out})
+
+    def _platform_history_users(self, user: dict):
+        if not (auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"):
+            self._json(403, {"ok": False, "error": "forbidden"})
+            return
+        users = sorted({r.get("username", "") for r in tracker.history_records().values()
+                        if isinstance(r, dict) and r.get("username")})
+        self._json(200, {"ok": True, "users": users})
+
     # ── Proxy ─────────────────────────────────────────────────────────────────
 
     def _try_proxy(self, path: str, method: str, user: dict) -> bool:
@@ -2178,7 +2674,12 @@ class Handler(SimpleHTTPRequestHandler):
             if is_job and resp.status in (200, 201):
                 jid_header = resp.getheader("X-Job-Id", "").strip()
                 if jid_header:
-                    tracker.register_job(app_name, jid_header, user["username"], job_type)
+                    metadata = {}
+                    if method == "POST" and body:
+                        metadata = extract_job_metadata(
+                            self.headers.get("Content-Type", ""), body)
+                    tracker.register_job(app_name, jid_header, user["username"],
+                                         job_type, metadata=metadata)
                     tracker.inc_daily_jobs(app_name)
 
             content_type = resp.getheader("Content-Type", "")

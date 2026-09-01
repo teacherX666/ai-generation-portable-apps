@@ -87,6 +87,12 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 ├── app.py        → Wraps `dreamina` CLI tool, manages login/env, polls submit_id for results
 ├── config.json   → Runtime config (port, max_concurrent, poll intervals)
 └── static/
+
+previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人 + 6 道具 + 景别五档相机），
+│                   多镜头项目存档，渲染快照可下载 / 一键送画布（POST /infinite-canvas/api/v1/assets）
+├── app.py        → stdlib 后端：项目 CRUD（state/projects/{id}/project.json）+ 渲染存档 + export.zip；无模型调用、不发 X-Job-Id
+├── static/       → 纯静态前端：vendor three r170（ES module + import map，无构建链）；core.js 为 node 可测纯逻辑
+└── tests/        → 后端 unittest + core.js node:test
 ```
 
 ## Key Patterns
@@ -150,13 +156,14 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 | Dreamina | 8888 | 8890 |
 | Volcengine Portrait | 8891 | 8892 |
 | Infinite Canvas | 8893 | 8894 |
+| Previz（分镜布局） | 8896 | 8897 |
 | Feishu Generation Agent | 8765 | — |
 
 - **证书文件**：`portal/state/portal.pem` + `portal.key`；LAN IP 变化时 `ensure_certs()` 自动重生（`portal/app.py:101-131`）
 - **下载映射持久化**：`state/download_files.json`（token→文件路径）
 - **数据布局（2026-07-22 起）**：各子应用的 `outputs/`、`state/`、`archives/`、`uploads/`、`accounts/` 以及 `portal/state/` 已从软链改为**主仓库内的真实目录**，不再依赖 `ai-generation-portable-apps-backup-2026-07-14-1653/`（该 backup 目录已删除，主干数据打包留档在 `~/backup-trunk-2026-07-22.zip`）。迁移时**弃掉了草稿缓存** `state/workspaces/` 和 `state/media/`（历史参考图需用户重传）以及 `portal/state/logs/`。`activity_log.json` / `usage.json` / `users.json` / `accounts.json` 等主干与统计数据完整保留。
 - **飞书产出搬运**：独立服务 `com.feishu-output-sync`（launchd，**独立于 com.ai-portal**）常驻轮询 `feishu-output-sync/sync.py`，把各子应用 outputs 增量搬进「每人一张多维表格」（组织内可编辑）。日志 `~/Library/Logs/feishu-output-sync.log`；配置 `feishu-output-sync/config.json`（gitignored）。
-- **每日清理**：独立服务 `com.ai-portal-cleanup`（launchd，每日 03:47）跑 `tools/cleanup_daily.py --apply`：outputs 保留 14 天（命中飞书 synced 表指纹→直接删，未命中→回收站）、workspaces 超 30 天未编辑的 media/ 删除（preset.json 保留）、download_files.json 失效 token 剪枝、超大日志截断（agent 日志 >100MB、portal 子应用日志 >50MB）。**统计数据（usage.json 等）一律不碰**。日志 `~/Library/Logs/ai-portal-cleanup.log`；脚本改动即时生效，plist 改动需 unload+load。
+- **每日清理**：独立服务 `com.ai-portal-cleanup`（launchd，每日 03:47）跑 `tools/cleanup_daily.py --apply`：outputs 保留 14 天（命中飞书 synced 表指纹→直接删，未命中→回收站；`volcengine-portrait/视频生成合集` 也在 outputs 白名单内）、workspaces 超 30 天未编辑的 media/ 删除（preset.json 保留）、download_files.json 失效 token 剪枝、超大日志截断（agent 日志 >100MB、portal 子应用日志 >50MB）、回收站二次清理（`~/.Trash/ai-portable-cleanup-*` 超 30 天彻底删除，只认精确目录名模式）。**统计数据（usage.json 等）一律不碰**。日志 `~/Library/Logs/ai-portal-cleanup.log`；脚本改动即时生效，plist 改动需 unload+load。
 
 ## 无限画布 2026-08-19 上游同步（新增功能）
 
@@ -275,6 +282,18 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 - **拼装模板的「参考图一」**：`build_image_prompt` 里固定句式「画面风格严格参考图一」指风格参考图整体；风格槽位有多张 token 时必须列全（`image_prompt.py::_style_tokens` 从「的画风」前缀提取），否则需求方读起来像只参考第一张
 - **画面比例 ≠ 交付尺寸**（2026-08-20 需求方反馈）：文档里的 1700\*2500 是交付尺寸（进 size_variants），生成模型只接受离散比例（`plan.py::IMAGE_ASPECT_RATIOS` 9 档，与 seedream 一致）；`nearest_image_aspect_ratio` 把抄错的比例确定性归一到数值最近档（1700:2500 → 2:3）。**交付裁剪是人工开关 `delivery_crop`**（默认 False 原图直出；True 才按 size_variants 居中 cover_crop）——此前一律强制裁到 1700x2500，低分辨率成图被放大后观感像「过度拉伸」
 - **t8star 令牌会被面板禁用**（HTTP 401「该令牌状态不可用」）：排障时逐个 key 实测，别假设 key 还活着。2026-08-20 实测：agent 视觉 key 与 nano-banana `state/secrets.json` 的 key 可用；seedance 预设 key 和 openclaw 两个 `.cn` key 已禁用
+
+### 分镜布局（previz）3D 子应用要点
+
+- **静态目录注入是死代码**：`Handler.directory = str(STATIC_DIR)` 在 `SimpleHTTPRequestHandler.__init__` 里被忽略（directory=None → `os.getcwd()`）；正确做法是 `functools.partial(Handler, directory=str(STATIC_DIR))`。任何 cwd 非 app 目录的启动（含 launchd）都会静默 404 全部静态文件
+- **three r170 只支持 WebGL2**（无 WebGL1 回退，构造 renderer 直接抛）；浏览器探针要测 `webgl2` 且必须在 `new THREE.WebGLRenderer` **之前**执行，否则兜底页不可达
+- **ES module + import map 是零构建约束下的选型**：vendor 是 `build/three.module.js` + `examples/jsm/controls/OrbitControls.js`（后者裸 `import 'three'`，靠 `<script type="importmap">` 解析）；需要 Chrome 89+ / Safari 16.4+
+- **import map 的值必须是 URL（带 `./` 前缀）**：`{"imports":{"three":"vendor/three.module.js"}}` 是裸 specifier，HTML 规范拒绝、Chrome 忽略该条目 → `import 'three'` 解析失败 → **整个模块脚本从未执行**，UI 是静态 HTML 照样显示、按钮全死——curl 和静态检查都发现不了，必须真浏览器跑（`previz/tests/smoke-browser.mjs` 就是为这个加的，playwright 复用 `infinite-canvas/web/node_modules` + 系统 Chrome）
+- **`[hidden]` 会被作者样式覆盖**：`display:flex` 类样式会盖掉 UA 的 `[hidden]{display:none}`，全屏遮罩（modal/错误页）必须补 `[hidden]{display:none !important}` 全局兜底
+- **三个对象的 `add()` 有 removeFromParent 语义**：同一 mesh 不能既挂关节又挂集合组（第二次 add 会把第一次摘掉）
+- **OrbitControls 与对象拖拽冲突**：pointerdown 命中对象时 `controls.enabled=false`，pointerup 恢复
+- **渲染必须按需，禁用常驻 rAF 循环**：空闲 60fps 持续 WebGL 会压满 GPU、把 macOS WindowServer 图形合成进程饿死（主线程 80s 无响应 → 看门狗强杀 = 整机崩溃/注销，2026-08-31 实锤两次）。模式：模块级 `requestRender()`（rAF 合并去重，帧内 controls.update + updateLabels + render），从 setDirty/select/onViewportMove/controls change/loadShotIntoScene/resize 等所有交互路径触发；冒烟测试用 `renderer.info.render.frame` 断言「空闲 2.5s 帧计数静止、拖拽后增长」
+- 前端模块单文件 app.js（ES module，`<script type="module">`）；core.js 是 node 可测纯逻辑（姿势表/景别/画幅常量都在这里）；node 语法检查要复制成 `.mjs` 再 `node --check`（否则按 CommonJS 解析误报）
 
 ### 通用调试直觉
 

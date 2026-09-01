@@ -25,6 +25,11 @@ class DocumentSource(Protocol):
     async def get_revision(self, source_url: str) -> int:
         raise NotImplementedError
 
+    async def retry_failed_assets(
+        self, document: NormalizedDocument
+    ) -> NormalizedDocument:
+        raise NotImplementedError
+
 
 class VisionAnalyzer(Protocol):
     async def analyze(self, asset: MediaAsset) -> VisionDescription:

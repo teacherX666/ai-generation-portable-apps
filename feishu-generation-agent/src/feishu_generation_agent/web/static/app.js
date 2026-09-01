@@ -24,6 +24,7 @@
     referenceUploads: ReferenceUploadState.createState(),
     referenceMutations: ReferenceMutationState.createState(),
     plannerPrompt: PlannerPromptState?.createPlannerPromptState?.() || null,
+    artifactPreviewSignature: null,
   };
   const byId = (id) => document.getElementById(id);
   const errorMessage = byId("error-message");
@@ -32,7 +33,16 @@
   const cancelButton = byId("cancel-button");
   const approveButton = byId("approve-button");
   const retryDeliveryButton = byId("retry-delivery-button");
-  const deleteRunButton = byId("delete-run-button");
+  const retryFailedAssetsButton = byId("retry-failed-assets-button");
+  const retryFailedAssetsFeedback = byId("retry-failed-assets-feedback");
+  const confirmArtifactsButton = byId("confirm-artifacts-button");
+  const adjustArtifactsButton = byId("adjust-artifacts-button");
+  const artifactReview = byId("artifact-review");
+  const artifactList = byId("artifact-list");
+  const artifactReviewMessage = byId("artifact-review-message");
+  const artifactReviewFeedbackBox = byId("artifact-review-feedback-box");
+  const artifactReviewActions = byId("artifact-review-actions");
+  const artifactReviewFeedback = byId("artifact-review-feedback");
   const conflictBox = byId("review-conflict");
   const conflictText = byId("review-conflict-text");
   const discardButton = byId("discard-review-draft");
@@ -48,9 +58,23 @@
   const bitableTaskList = byId("bitable-task-list");
   const bitableStatus = byId("bitable-status");
   const recentRunList = byId("recent-run-list");
-  const nextTaskButton = byId("next-task-button");
+  const runHistorySummary = byId("run-history-summary");
+  const currentRunSwitcher = byId("current-run-switcher");
+  const trashButton = byId("trash-button");
+  const trashModal = byId("trash-modal");
+  const trashList = byId("trash-list");
+  const trashClose = byId("trash-close");
+  const trashSearch = byId("trash-search");
+  const trashStatusFilter = byId("trash-status-filter");
+  const trashResultSummary = byId("trash-result-summary");
+  const trashPagination = byId("trash-pagination");
+  const trashPrev = byId("trash-prev");
+  const trashNext = byId("trash-next");
+  const trashPageInfo = byId("trash-page-info");
   const rerunButton = byId("rerun-button");
   const pollingNote = byId("polling-note");
+  const actionTitle = byId("action-title");
+  const runGuidance = byId("run-guidance");
   const plannerPromptEntry = byId("planner-prompt-entry");
   const plannerPromptButton = byId("planner-prompt-button");
   const plannerPromptMode = byId("planner-prompt-mode");
@@ -66,6 +90,35 @@
   const RERUNNABLE_RUN_STATUSES = new Set([
     "succeeded", "completed_with_errors", "failed", "cancelled",
   ]);
+  const RUN_STATUS_UI = {
+    planning: { label: "正在生成计划", tone: "running", action: "系统正在读取文档并拆解任务，请稍候。" },
+    running: { label: "正在执行", tone: "running", action: "任务正在处理中，页面会自动更新进度。" },
+    resuming: { label: "正在恢复", tone: "running", action: "正在恢复上次中断的任务，请稍候。" },
+    waiting_approval: { label: "等待你审核", tone: "attention", action: "检查并修改下方计划，确认无误后批准生成。" },
+    waiting_provider: { label: "正在生成内容", tone: "running", action: "生成服务正在工作，可以留在此页等待自动更新。" },
+    waiting_review: { label: "成片与结果", tone: "attention", action: "查看生成素材，确认满意后导出到结果表。" },
+    delivering: { label: "正在写入结果表", tone: "running", action: "内容已生成，正在回写飞书，请不要重复提交。" },
+    succeeded: { label: "成片与结果", tone: "success", action: "素材已导出到结果表，仍可在这里继续查看。" },
+    completed_with_errors: { label: "部分完成", tone: "warning", action: "部分内容生成失败，可查看错误后重新运行。" },
+    delivery_failed: { label: "写入结果表失败", tone: "danger", action: "生成内容已保留，请重新写入结果表，不需要重新生成。" },
+    failed: { label: "执行失败", tone: "danger", action: "查看页面中的失败原因，修正后可重新运行。" },
+    cancelled: { label: "已取消", tone: "muted", action: "本次任务已取消，可以重新运行或开始下一条。" },
+    "待审批": { label: "等待你审核", tone: "attention", action: "检查并修改下方计划，确认无误后批准生成。" },
+    "待确认成片": { label: "成片与结果", tone: "attention", action: "查看生成素材，确认满意后导出到结果表。" },
+    "生成中": { label: "正在生成内容", tone: "running", action: "生成服务正在工作。" },
+    "回写中": { label: "正在写入结果表", tone: "running", action: "内容已生成，正在回写飞书。" },
+    "已完成": { label: "成片与结果", tone: "success", action: "素材已导出到结果表，仍可继续查看。" },
+    "失败": { label: "执行失败", tone: "danger", action: "查看失败原因后可以重新运行。" },
+    "回写失败": { label: "写入结果表失败", tone: "danger", action: "生成内容已保留，可以重新写入。" },
+  };
+
+  function statusUi(status) {
+    return RUN_STATUS_UI[status] || {
+      label: status || "尚未创建",
+      tone: "muted",
+      action: "从上方选择任务开始处理。",
+    };
+  }
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -204,6 +257,10 @@
 
   function setBusy(value) {
     state.busy = value;
+    directRunButton.disabled = value;
+    directRunUrl.disabled = value;
+    directRunMode.disabled = value;
+    currentRunSwitcher.disabled = value || (state.bitable.recentRuns || []).length === 0;
     scanBitableButton.disabled = value || !state.modes.bitable;
     categoryTabs.forEach((tab) => {
       tab.disabled = value || !state.modes.bitable;
@@ -212,6 +269,7 @@
       control.disabled = value;
     });
     updateActionAvailability();
+    renderRecentRuns();
   }
 
   function stopPolling() {
@@ -290,17 +348,47 @@
 
   function renderRecentRuns() {
     const runs = state.bitable.recentRuns || [];
+    const activeCount = runs.filter((run) => run.active).length;
+    runHistorySummary.textContent = runs.length
+      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${runs.length} 条`
+      : "进行中与历史任务都在这里";
+    const switchOptions = runs.map((run) => {
+      const option = element("option", "", `${run.display_text || run.run_id} · ${statusUi(run.status).label}`);
+      option.value = run.run_id;
+      return option;
+    });
+    if (!switchOptions.length) {
+      const emptyOption = element("option", "", "暂无任务记录");
+      emptyOption.value = "";
+      switchOptions.push(emptyOption);
+    }
+    currentRunSwitcher.replaceChildren(...switchOptions);
+    currentRunSwitcher.value = runs.some((run) => run.run_id === state.runId)
+      ? state.runId
+      : "";
+    currentRunSwitcher.disabled = state.busy || runs.length === 0;
+
     const nodes = runs.map((run) => {
-      const row = element("article", "recent-run");
-      const details = element("div", "");
+      const selected = run.run_id === state.runId;
+      const row = element("article", `recent-run${selected ? " is-current" : ""}`);
+      row.dataset.runId = run.run_id;
+      const details = element("div", "recent-run-details");
       details.append(
         element("strong", "", run.display_text || run.run_id),
-        element("p", "bitable-task-meta", `状态：${run.status || "—"}`),
+        element(
+          "p",
+          "bitable-task-meta",
+          `${run.active ? "进行中" : "历史"} · ${statusUi(run.status).label}`,
+        ),
       );
       const actions = element("div", "recent-run-actions");
-      const view = element("button", "quiet-button", "查看详情");
+      const view = element(
+        "button",
+        selected ? "quiet-button is-current" : "quiet-button",
+        selected ? "当前查看" : "打开",
+      );
       view.type = "button";
-      view.disabled = state.busy;
+      view.disabled = state.busy || selected;
       view.addEventListener("click", () => viewRecentRun(run.run_id));
       actions.append(view);
       if (run.result_table_url) {
@@ -317,22 +405,192 @@
         rerun.addEventListener("click", () => rerunBitableTask(run.run_id));
         actions.append(rerun);
       }
+      if (!run.active) {
+        const remove = element("button", "danger", "删除");
+        remove.type = "button";
+        remove.disabled = state.busy;
+        remove.addEventListener("click", () => archiveBitableRun(run.run_id));
+        actions.append(remove);
+      }
       row.append(details, actions);
       return row;
     });
-    if (!nodes.length) nodes.push(element("p", "bitable-empty", "暂无已完成任务。"));
+    if (!nodes.length) nodes.push(element("p", "bitable-empty", "暂无任务记录。"));
     recentRunList.replaceChildren(...nodes);
   }
 
   async function loadRecentRuns() {
     if (!state.modes.bitable) return;
     try {
-      const runs = await api("/api/bitable/recent-runs");
-      state.bitable = BitableState.recentSucceeded(state.bitable, runs);
+      const [activeRuns, recentRuns] = await Promise.all([
+        api("/api/bitable/active-runs"),
+        api("/api/bitable/recent-runs"),
+      ]);
+      const merged = [];
+      const seen = new Set();
+      [...(activeRuns || []).slice().reverse().map((run) => ({ ...run, active: true })),
+        ...(recentRuns || []).map((run) => ({ ...run, active: false }))]
+        .forEach((run) => {
+          if (!run?.run_id || seen.has(run.run_id)) return;
+          seen.add(run.run_id);
+          merged.push(run);
+        });
+      state.bitable = BitableState.recentSucceeded(state.bitable, merged);
       renderRecentRuns();
     } catch (error) {
       showError(error);
     }
+  }
+
+  async function archiveBitableRun(runId) {
+    if (state.busy) return;
+    try {
+      await api(
+        `/api/bitable/runs/${encodeURIComponent(runId)}/archive`,
+        { method: "POST" },
+      );
+      await loadRecentRuns();
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  const trashState = {
+    runs: [],
+    query: "",
+    status: "",
+    page: 1,
+    pageSize: 8,
+  };
+
+  function archivedStatusLabel(run) {
+    return statusUi(run?.status).label;
+  }
+
+  function formatArchivedTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+
+  function syncTrashStatusOptions() {
+    const statuses = [...new Set(trashState.runs.map(archivedStatusLabel).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right, "zh-CN"));
+    const options = [element("option", "", "全部状态")];
+    options[0].value = "";
+    statuses.forEach((status) => {
+      const option = element("option", "", status);
+      option.value = status;
+      options.push(option);
+    });
+    if (trashState.status && !statuses.includes(trashState.status)) {
+      trashState.status = "";
+    }
+    trashStatusFilter.replaceChildren(...options);
+    trashStatusFilter.value = trashState.status;
+  }
+
+  function filteredArchivedRuns() {
+    const query = trashState.query.trim().toLocaleLowerCase("zh-CN");
+    return trashState.runs.filter((run) => {
+      if (trashState.status && archivedStatusLabel(run) !== trashState.status) return false;
+      if (!query) return true;
+      return [run.display_text, run.run_id]
+        .filter(Boolean)
+        .some((value) => String(value).toLocaleLowerCase("zh-CN").includes(query));
+    });
+  }
+
+  function renderArchivedRuns() {
+    const filtered = filteredArchivedRuns();
+    const pageCount = Math.max(1, Math.ceil(filtered.length / trashState.pageSize));
+    trashState.page = Math.min(Math.max(1, trashState.page), pageCount);
+    const start = (trashState.page - 1) * trashState.pageSize;
+    const pageRuns = filtered.slice(start, start + trashState.pageSize);
+    const nodes = pageRuns.map((run) => {
+      const row = element("article", "trash-item");
+      const details = element("div", "");
+      const metadata = [`状态：${archivedStatusLabel(run)}`];
+      const updatedAt = formatArchivedTime(run.updated_at);
+      if (updatedAt) metadata.push(`删除时间：${updatedAt}`);
+      details.append(
+        element("strong", "", run.display_text || run.run_id),
+        element("p", "bitable-task-meta", metadata.join(" · ")),
+      );
+      const actions = element("div", "trash-item-actions");
+      const restore = element("button", "secondary", "恢复");
+      restore.type = "button";
+      restore.disabled = state.busy;
+      restore.addEventListener("click", () => restoreArchivedRun(run.run_id));
+      actions.append(restore);
+      row.append(details, actions);
+      return row;
+    });
+    if (!nodes.length) {
+      nodes.push(element(
+        "p",
+        "trash-empty",
+        trashState.runs.length ? "没有符合条件的任务。" : "回收站是空的。",
+      ));
+    }
+    trashList.replaceChildren(...nodes);
+    trashResultSummary.textContent = trashState.runs.length
+      ? `找到 ${filtered.length} 条，共 ${trashState.runs.length} 条已删除任务`
+      : "暂无已删除任务";
+    trashPagination.hidden = filtered.length <= trashState.pageSize;
+    trashPageInfo.textContent = `第 ${trashState.page} / ${pageCount} 页`;
+    trashPrev.disabled = trashState.page <= 1;
+    trashNext.disabled = trashState.page >= pageCount;
+  }
+
+  async function loadArchivedRuns() {
+    try {
+      const runs = await api("/api/bitable/archived-runs");
+      trashState.runs = Array.isArray(runs) ? runs : [];
+      syncTrashStatusOptions();
+      renderArchivedRuns();
+    } catch (error) {
+      trashState.runs = [];
+      syncTrashStatusOptions();
+      renderArchivedRuns();
+      showError(error);
+    }
+  }
+
+  async function restoreArchivedRun(runId) {
+    if (state.busy) return;
+    try {
+      await api(
+        `/api/bitable/runs/${encodeURIComponent(runId)}/restore`,
+        { method: "POST" },
+      );
+      await loadArchivedRuns();
+      await loadRecentRuns();
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  function openTrash() {
+    trashState.query = "";
+    trashState.status = "";
+    trashState.page = 1;
+    trashSearch.value = "";
+    trashStatusFilter.value = "";
+    trashModal.hidden = false;
+    loadArchivedRuns();
+  }
+
+  function closeTrash() {
+    trashModal.hidden = true;
   }
 
   async function scanBitableTasks() {
@@ -476,21 +734,31 @@
 
   function updateActionAvailability() {
     const canReview = state.view && state.view.status === "waiting_approval";
+    const canReviewArtifacts = state.view && state.view.status === "waiting_review";
+    const status = state.view?.status;
+    const statusInfo = statusUi(status);
     const conflict = ReviewState.conflictMessage(state.review);
     rejectButton.disabled = state.busy || !canReview;
     cancelButton.disabled = state.busy || !canReview;
     approveButton.disabled = state.busy || !ReviewState.canApprove(state.review);
     retryDeliveryButton.disabled = state.busy || state.view?.status !== "delivery_failed";
+    const retryableAssetIssues = (state.view?.approval?.ingest_issue_records || [])
+      .filter((record) => record.severity === "asset" && record.code === "media_download_failed");
+    retryFailedAssetsButton.disabled = state.busy || !canReview || retryableAssetIssues.length === 0;
+    retryFailedAssetsButton.hidden = !canReview || retryableAssetIssues.length === 0;
+    confirmArtifactsButton.disabled = state.busy || !canReviewArtifacts;
+    adjustArtifactsButton.disabled = state.busy || !canReviewArtifacts;
+    artifactReviewFeedback.disabled = state.busy || !canReviewArtifacts;
     const terminal = TERMINAL_RUN_STATUSES.has(state.view?.status);
-    nextTaskButton.disabled = state.busy || !terminal;
     rerunButton.disabled = state.busy
       || state.runMode !== "bitable"
       || !RERUNNABLE_RUN_STATUSES.has(state.view?.status);
-    const deletable = [
-      "waiting_approval", "succeeded", "completed_with_errors",
-      "delivery_failed", "failed", "cancelled",
-    ].includes(state.view?.status);
-    deleteRunButton.disabled = state.busy || !deletable;
+    rerunButton.hidden = state.runMode !== "bitable" || !RERUNNABLE_RUN_STATUSES.has(status);
+    retryDeliveryButton.hidden = status !== "delivery_failed";
+    rejectButton.hidden = !canReview;
+    approveButton.hidden = !canReview;
+    cancelButton.hidden = !canReview;
+    actionTitle.textContent = statusInfo.label;
     byId("reject-feedback").disabled = state.busy || !canReview;
     taskList.querySelectorAll("input, textarea, select, button").forEach((control) => {
       control.disabled = state.busy || !canReview || Boolean(conflict);
@@ -1271,10 +1539,80 @@
     return card;
   }
 
+  function renderArtifactReview(view) {
+    const artifacts = Array.isArray(view.artifacts) ? view.artifacts : [];
+    // 成片预览里的 <video> 重建成本高，而审批页每 1 秒轮询一次。若成片与
+    // 状态都没变就跳过重绘，否则视频元素会被反复销毁重建，导致卡顿/一直加载。
+    const signature = JSON.stringify({
+      status: view.status,
+      artifacts: artifacts.map((artifact) => [
+        artifact.artifact_id,
+        artifact.preview_url,
+        artifact.kind,
+        artifact.size,
+      ]),
+    });
+    if (signature === state.artifactPreviewSignature) {
+      return;
+    }
+    state.artifactPreviewSignature = signature;
+
+    const showsArtifacts = [
+      "waiting_review", "delivering", "delivery_failed", "succeeded", "completed_with_errors",
+    ].includes(view.status) && artifacts.length > 0;
+    if (!showsArtifacts) {
+      artifactReview.hidden = true;
+      artifactList.replaceChildren();
+      return;
+    }
+    const canReviewArtifacts = view.status === "waiting_review";
+    artifactReview.hidden = false;
+    artifactReviewMessage.textContent = canReviewArtifacts
+      ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
+      : view.status === "delivery_failed"
+        ? "素材已生成但结果表写入失败，可继续查看素材并在底部重新写入。"
+        : "本次生成素材已保留，可继续查看；导出结果可通过上方结果表入口打开。";
+    artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
+    artifactReviewActions.hidden = !canReviewArtifacts;
+    artifactList.replaceChildren(...artifacts.map((artifact) => {
+      const card = element("figure", "artifact-card");
+      const label = artifact.kind === "video" ? "视频" : "图片";
+      const size = typeof artifact.size === "number"
+        ? `${(artifact.size / 1024 / 1024).toFixed(1)} MB`
+        : "—";
+      card.append(element("figcaption", "", `${label} · ${size}`));
+      if (artifact.kind === "video") {
+        const video = document.createElement("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.playsInline = true;
+        video.muted = true;
+        video.src = agentUrl(artifact.preview_url);
+        card.prepend(video);
+      } else {
+        const image = document.createElement("img");
+        image.alt = artifact.artifact_id;
+        image.loading = "lazy";
+        image.src = agentUrl(artifact.preview_url);
+        card.prepend(image);
+      }
+      return card;
+    }));
+  }
+
   function render(view, { refreshTasks = true } = {}) {
     state.view = view;
-    byId("status-badge").textContent = view.status;
-    byId("run-status").textContent = view.status;
+    renderRecentRuns();
+    const statusInfo = statusUi(view.status);
+    const statusBadge = byId("status-badge");
+    statusBadge.textContent = statusInfo.label;
+    statusBadge.dataset.tone = statusInfo.tone;
+    byId("run-status").textContent = statusInfo.label;
+    runGuidance.dataset.tone = statusInfo.tone;
+    runGuidance.replaceChildren(
+      element("strong", "", statusInfo.label),
+      element("span", "", statusInfo.action),
+    );
     byId("thread-id").textContent = view.thread_id;
     const latestEvent = (view.events || []).at(-1);
     byId("current-node").textContent = BitableState.runStage(view) || latestEvent?.node || "—";
@@ -1321,8 +1659,17 @@
     const blockingIngestIssues = ingestIssueRecords
       .filter((record) => record.severity === "blocking")
       .map((record) => record.display_message);
-    const issues = (view.approval.validation_issues || [])
+    let issues = (view.approval.validation_issues || [])
       .filter((issue) => !blockingIngestIssues.includes(issue));
+    const lastError = view.last_error;
+    if (lastError && lastError.message) {
+      issues = [
+        lastError.message,
+        ...issues.filter(
+          (issue) => issue !== "审批校验状态无效，请重新读取后再审批",
+        ),
+      ];
+    }
     const issueBox = byId("validation-issues");
     issueBox.textContent = issues.join("；");
     issueBox.hidden = issues.length === 0;
@@ -1332,13 +1679,38 @@
       : "";
     blockingIngestBox.hidden = blockingIngestIssues.length === 0;
     const assetIngestIssues = ingestIssueRecords
-      .filter((record) => record.severity === "asset")
-      .map((record) => record.display_message);
+      .filter((record) => record.severity === "asset");
     const assetIngestBox = byId("asset-ingest-issues");
-    assetIngestBox.textContent = assetIngestIssues.length
-      ? `素材读取失败（不影响其他素材）：${assetIngestIssues.join("；")}`
+    const assetIngestList = byId("asset-ingest-issue-list");
+    const kindLabel = { image: "图片", video: "视频", file: "文件" };
+    const reasonText = {
+      temporary: "暂时下载失败，可点击重新读取",
+      permission: "无权读取，请检查飞书素材权限",
+      unavailable: "不存在或已失效",
+      invalid: "格式或内容无法读取",
+      save_failed: "已下载但本地保存失败",
+      unknown: "下载失败",
+    };
+    assetIngestList.replaceChildren(...assetIngestIssues.map((record) => {
+      if (!record.asset_kind || !record.failure_reason) {
+        return element("div", "asset-issue-row", record.display_message);
+      }
+      const label = kindLabel[record.asset_kind] || "素材";
+      const asset = record.asset_id ? `${record.asset_id}：` : "";
+      return element(
+        "div",
+        "asset-issue-row",
+        `${label} ${asset}${reasonText[record.failure_reason] || reasonText.unknown}`,
+      );
+    }));
+    const recoveredFailedAssets = assetIngestIssues.length === 0
+      && (view.events || []).some(
+        (event) => event.node === "retry_failed_assets" && event.status === "completed",
+      );
+    retryFailedAssetsFeedback.textContent = recoveredFailedAssets
+      ? "失败素材已全部恢复，无需重新读取"
       : "";
-    assetIngestBox.hidden = assetIngestIssues.length === 0;
+    assetIngestBox.hidden = assetIngestIssues.length === 0 && !recoveredFailedAssets;
     const visionIssues = view.approval.vision_issues || [];
     const visionIssueBox = byId("vision-issues");
     visionIssueBox.textContent = visionIssues.length
@@ -1349,13 +1721,16 @@
     if (refreshTasks) {
       taskList.replaceChildren(...(view.approval.tasks || []).map(renderTask));
     }
+    renderArtifactReview(view);
     updateActionAvailability();
   }
 
   async function poll(force = false, resetDraft = false) {
     if (!state.runId || (state.busy && !force)) return;
+    const requestedRunId = state.runId;
     try {
-      const serverView = await api(`/api/runs/${state.runId}`);
+      const serverView = await api(`/api/runs/${requestedRunId}`);
+      if (state.runId !== requestedRunId) return;
       const previousReview = state.review;
       const nextReview = resetDraft
         ? ReviewState.mergeServerView(ReviewState.createReviewState(), serverView)
@@ -1372,10 +1747,10 @@
         pollingNote.textContent = "任务已结束，可开始下一任务或重跑。";
         await loadRecentRuns();
       } else {
-        pollingNote.textContent = "每 1 秒自动刷新运行状态";
+        pollingNote.textContent = statusUi(serverView.status).action;
       }
     } catch (error) {
-      showError(error);
+      if (state.runId === requestedRunId) showError(error);
     }
   }
 
@@ -1389,47 +1764,17 @@
       state.runMode = "bitable";
       state.review = ReviewState.createReviewState();
       state.referenceMutations = ReferenceMutationState.createState();
+      state.artifactPreviewSignature = null;
       await poll(true);
+      startPolling();
+      renderRecentRuns();
       document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
     } catch (error) {
       showError(error);
     } finally {
       setBusy(false);
+      renderRecentRuns();
     }
-  }
-
-  async function resetForNextTask() {
-    stopPolling();
-    state.runId = null;
-    state.runMode = null;
-    state.view = null;
-    state.review = ReviewState.createReviewState();
-    state.referenceUploads = ReferenceUploadState.createState();
-    state.referenceMutations = ReferenceMutationState.createState();
-    state.bitable = BitableState.resetRunContext(state.bitable);
-    byId("status-badge").textContent = "尚未创建";
-    byId("run-status").textContent = "—";
-    byId("thread-id").textContent = "—";
-    byId("current-node").textContent = "—";
-    byId("run-duration").textContent = "—";
-    byId("document-title").textContent = "等待选择多维表格任务";
-    byId("document-summary").textContent = "";
-    byId("delivery-target").hidden = true;
-    [
-      "validation-issues",
-      "blocking-ingest-issues",
-      "asset-ingest-issues",
-      "vision-issues",
-    ].forEach((id) => {
-      byId(id).textContent = "";
-      byId(id).hidden = true;
-    });
-    byId("event-list").replaceChildren();
-    taskList.replaceChildren();
-    pollingNote.textContent = "请选择下一条任务开始分析";
-    updateActionAvailability();
-    await scanBitableTasks();
-    await loadRecentRuns();
   }
 
   async function rerunBitableTask(runId = state.runId) {
@@ -1445,8 +1790,10 @@
       state.review = ReviewState.createReviewState();
       state.referenceUploads = ReferenceUploadState.createState();
       state.referenceMutations = ReferenceMutationState.createState();
+      state.artifactPreviewSignature = null;
       await poll(true);
       startPolling();
+      await loadRecentRuns();
       document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
     } catch (error) {
       showError(error);
@@ -1491,11 +1838,58 @@
     }
   }
 
+  async function submitArtifactReview(action) {
+    if (!state.runId || state.busy) return;
+    const body = { action };
+    if (action === "adjust") {
+      body.feedback = artifactReviewFeedback.value;
+      if (!body.feedback || !body.feedback.trim()) {
+        showError(new Error("请填写调整意见"));
+        return;
+      }
+    }
+    setBusy(true);
+    clearError();
+    try {
+      await api(`/api/runs/${state.runId}/artifact-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      await poll(true);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   byId("reject-button").addEventListener("click", () => submitDecision("reject"));
   byId("cancel-button").addEventListener("click", () => submitDecision("cancel"));
   byId("approve-button").addEventListener("click", () => submitDecision("approve"));
-  nextTaskButton.addEventListener("click", resetForNextTask);
+  confirmArtifactsButton.addEventListener("click", () => submitArtifactReview("confirm"));
+  adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));
   rerunButton.addEventListener("click", () => rerunBitableTask());
+  retryFailedAssetsButton.addEventListener("click", async () => {
+    if (!state.runId || state.busy || state.view?.status !== "waiting_approval") return;
+    setBusy(true);
+    clearError();
+    retryFailedAssetsFeedback.textContent = "正在重新读取失败素材…";
+    try {
+      const result = await api(`/api/runs/${state.runId}/retry-failed-assets`, {
+        method: "POST",
+      });
+      retryFailedAssetsFeedback.textContent = result.remaining_count
+        ? `已恢复 ${result.recovered_count} 个，仍有 ${result.remaining_count} 个读取失败`
+        : `已恢复 ${result.recovered_count} 个素材`;
+      await poll(true);
+    } catch (error) {
+      retryFailedAssetsFeedback.textContent = "重新读取失败";
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  });
   retryDeliveryButton.addEventListener("click", async () => {
     if (!state.runId || state.busy) return;
     const url = state.runMode === "bitable"
@@ -1516,22 +1910,6 @@
       state.bitable = BitableState.retryFailed(state.bitable, error.message);
       showError(error);
     } finally {
-      setBusy(false);
-    }
-  });
-  deleteRunButton.addEventListener("click", async () => {
-    if (!state.runId || state.busy) return;
-    if (!globalThis.confirm("删除此运行的本地记录、输入和产物？飞书交付文档不会删除。")) return;
-    setBusy(true);
-    clearError();
-    try {
-      await api(`/api/runs/${state.runId}`, { method: "DELETE" });
-      state.runId = null;
-      state.view = null;
-      state.review = ReviewState.createReviewState();
-      globalThis.location.reload();
-    } catch (error) {
-      showError(error);
       setBusy(false);
     }
   });
@@ -1559,8 +1937,52 @@
     plannerPromptSave.addEventListener("click", savePlannerPrompt);
     plannerPromptReset.addEventListener("click", resetPlannerPrompt);
   }
+  [
+    ["bitable-tasks-toggle", "bitable-tasks-body"],
+    ["recent-runs-toggle", "recent-run-list"],
+  ].forEach(([toggleId, bodyId]) => {
+    const toggle = byId(toggleId);
+    const body = byId(bodyId);
+    toggle.addEventListener("click", () => {
+      body.hidden = !body.hidden;
+      toggle.setAttribute("aria-expanded", String(!body.hidden));
+    });
+  });
+  currentRunSwitcher.addEventListener("change", async () => {
+    const runId = currentRunSwitcher.value;
+    if (runId && runId !== state.runId) await viewRecentRun(runId);
+  });
+  trashButton.addEventListener("click", openTrash);
+  trashClose.addEventListener("click", closeTrash);
+  trashSearch.addEventListener("input", () => {
+    trashState.query = trashSearch.value;
+    trashState.page = 1;
+    renderArchivedRuns();
+  });
+  trashStatusFilter.addEventListener("change", () => {
+    trashState.status = trashStatusFilter.value;
+    trashState.page = 1;
+    renderArchivedRuns();
+  });
+  trashPrev.addEventListener("click", () => {
+    if (trashState.page <= 1) return;
+    trashState.page -= 1;
+    renderArchivedRuns();
+  });
+  trashNext.addEventListener("click", () => {
+    const pageCount = Math.max(1, Math.ceil(filteredArchivedRuns().length / trashState.pageSize));
+    if (trashState.page >= pageCount) return;
+    trashState.page += 1;
+    renderArchivedRuns();
+  });
+  trashModal.addEventListener("click", (event) => {
+    if (event.target === trashModal) closeTrash();
+  });
   scanBitableButton.addEventListener("click", scanBitableTasks);
   directRunButton.addEventListener("click", startDirectRun);
+  directRunUrl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") startDirectRun();
+  });
   categoryTabs.forEach((tab) => {
     tab.addEventListener("click", () => selectBitableCategory(tab.dataset.category));
   });

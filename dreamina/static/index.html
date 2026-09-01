@@ -4,11 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dreamina 生成器</title>
+  <link rel="stylesheet" href="/ui/portal-ui-core.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body>
-  <div id="setupView" class="setup-view">
-    <div class="setup-card">
+<body class="ui-page ui-shell">
+  <div id="setupView" class="setup-view ui-admin-page">
+    <div class="setup-card ui-panel">
       <h2 id="setupTitle">环境检测中...</h2>
       <p id="setupDesc"></p>
       <button id="setupBtn" class="btn-primary hidden">一键安装</button>
@@ -19,8 +20,8 @@
     </div>
   </div>
 
-  <main id="mainView" class="app hidden">
-    <aside class="sidebar">
+  <main id="mainView" class="app ui-workbench hidden">
+    <aside class="sidebar ui-sidebar">
       <div class="sidebar-header">
         <h1 class="logo">Dreamina</h1>
         <div class="status-info">
@@ -46,7 +47,7 @@
       <div class="output-section form-group">
         <label>输出目录</label>
         <input type="text" id="outputDir" placeholder="留空则保存到 outputs 文件夹">
-        <div class="row-buttons" style="display:flex;gap:4px;margin-top:4px">
+        <div class="row-buttons ui-inline">
           <button type="button" id="chooseOutputBtn" class="btn-small">选择目录</button>
           <button type="button" id="desktopOutputBtn" class="btn-small">桌面 outputs</button>
           <button type="button" id="openOutputBtn" class="btn-small">打开目录</button>
@@ -223,8 +224,8 @@
       </div>
     </aside>
 
-    <section class="workspace">
-      <div class="workspace-panel">
+    <section class="workspace ui-main">
+      <div class="workspace-panel ui-panel">
         <div class="workspace-header">
           <h2>任务</h2>
           <span id="runningCount" class="running-count"></span>
@@ -232,7 +233,7 @@
         <div id="jobsList" class="jobs-list"></div>
       </div>
 
-      <div class="workspace-panel">
+      <div class="workspace-panel ui-panel">
         <div class="workspace-header">
           <h2>历史记录</h2>
           <div class="filter-bar">

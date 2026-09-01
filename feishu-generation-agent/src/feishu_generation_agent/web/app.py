@@ -62,6 +62,7 @@ from feishu_generation_agent.web.schemas import (
     AssetLibraryItem,
     AssetLibraryListResponse,
     AssetLibraryUpdateRequest,
+    ArtifactReviewRequest,
     BitableClaimResponse,
     BitableRetryResponse,
     CreateRunRequest,
@@ -215,6 +216,8 @@ def create_app(
                 file_store=active_services.file_store,
                 settings=active_services.settings,
                 delivery_writer=active_services.delivery_writer,
+                document_source=active_services.document_source,
+                vision_analyzer=active_services.vision_analyzer,
             )
             try:
                 if resume:
@@ -738,6 +741,73 @@ def create_app(
             )
         return payload
 
+    @app.get("/api/bitable/archived-runs")
+    async def list_archived_bitable_runs(request: Request) -> list[dict]:
+        active = get_bitable_service(request)
+        identity = current_identity(request)
+        archived_runs = getattr(active, "archived_runs", None)
+        if archived_runs is None:
+            return []
+        try:
+            bindings = await archived_runs(
+                **owner_argument(
+                    archived_runs, identity.owner_user_id
+                )
+            )
+        except Exception as exc:
+            raise_bitable_error(exc)
+        payload: list[dict] = []
+        for binding in bindings:
+            payload.append(
+                {
+                    "run_id": binding.run_id,
+                    "display_text": binding.display_text,
+                    "status": binding.status.value,
+                    "updated_at": binding.updated_at,
+                }
+            )
+        return payload
+
+    @app.post("/api/bitable/runs/{run_id}/archive")
+    async def archive_bitable_run(
+        run_id: str, request: Request
+    ) -> dict[str, str]:
+        active = get_bitable_service(request)
+        identity = current_identity(request)
+        archive_run = getattr(active, "archive_run", None)
+        if archive_run is None:
+            raise HTTPException(
+                status_code=404, detail="多维表格服务不支持归档"
+            )
+        try:
+            await archive_run(
+                run_id,
+                **owner_argument(archive_run, identity.owner_user_id),
+            )
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"run_id": run_id, "status": "archived"}
+
+    @app.post("/api/bitable/runs/{run_id}/restore")
+    async def restore_bitable_run(
+        run_id: str, request: Request
+    ) -> dict[str, str]:
+        active = get_bitable_service(request)
+        identity = current_identity(request)
+        restore_run = getattr(active, "restore_run", None)
+        if restore_run is None:
+            raise HTTPException(
+                status_code=404, detail="多维表格服务不支持恢复"
+            )
+        try:
+            await restore_run(
+                run_id,
+                **owner_argument(restore_run, identity.owner_user_id),
+            )
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"run_id": run_id, "status": "restored"}
+
     @app.post(
         "/api/bitable/tasks/{record_id}/claim",
         status_code=status.HTTP_202_ACCEPTED,
@@ -900,6 +970,48 @@ def create_app(
         except RunValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
         return {"run_id": run_id, "status": "accepted"}
+
+    @app.post(
+        "/api/runs/{run_id}/artifact-review",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def decide_artifact_review(
+        run_id: str,
+        payload: ArtifactReviewRequest,
+        request: Request,
+    ) -> dict[str, str]:
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                await active.resume_artifact_review(
+                    run_id, payload.to_domain()
+                )
+        except RunNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        except RunConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except RunValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        return {"run_id": run_id, "status": "accepted"}
+
+    @app.post(
+        "/api/runs/{run_id}/retry-failed-assets",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def retry_failed_assets(
+        run_id: str, request: Request
+    ) -> dict[str, str | int]:
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                result = await active.retry_failed_assets(run_id)
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"run_id": run_id, "status": "updated", **result}
 
     @app.post(
         "/api/runs/{run_id}/retry-delivery",
@@ -1072,6 +1184,24 @@ def create_app(
             with runtime_owner_scope(active, identity.owner_user_id):
                 path, mime_type = await active.get_reference_file(
                     run_id, asset_id
+                )
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return FileResponse(path, media_type=mime_type)
+
+    @app.get("/api/runs/{run_id}/artifacts/{artifact_id}/content")
+    async def artifact_content(
+        run_id: str,
+        artifact_id: str,
+        request: Request,
+    ) -> FileResponse:
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                path, mime_type = await active.get_artifact_file(
+                    run_id, artifact_id
                 )
         except (RunNotFound, RunConflict, RunValidationError) as exc:
             raise_runtime_error(exc)

@@ -27,7 +27,10 @@ from feishu_generation_agent.domain.errors import (
     ErrorCategory,
     ErrorDetail,
 )
-from feishu_generation_agent.domain.plan import ApprovalDecision
+from feishu_generation_agent.domain.plan import (
+    ApprovalDecision,
+    ArtifactReviewDecision,
+)
 from feishu_generation_agent.graph.builder import build_graph
 from feishu_generation_agent.graph.nodes import GraphServices
 from feishu_generation_agent.graph.runtime import (
@@ -535,14 +538,13 @@ async def test_run_view_exposes_safe_chinese_validation_field_paths(
             f"/api/runs/{run_id}/decision",
             json={"action": "approve", "selected_task_ids": ["task-1"]},
         )
-        view = await client.get(f"/api/runs/{run_id}")
+        assert response.status_code == 202
+        view = await _wait_for_status(client, run_id, "failed")
+        view_response = await client.get(f"/api/runs/{run_id}")
 
-    assert response.status_code == 422
-    assert "tasks[0].prompt" in response.text
-    assert raw_prompt not in response.text
-    assert view.status_code == 200
-    assert view.json()["last_error"]["message"] == message
-    assert raw_prompt not in view.text
+    assert view["last_error"]["message"] == message
+    assert "tasks[0].prompt" in view["last_error"]["message"]
+    assert raw_prompt not in view_response.text
 
 
 async def test_run_view_exposes_safe_execution_errors(tmp_path: Path) -> None:
@@ -834,23 +836,31 @@ async def test_clone_run_fails_closed_without_source_prompt_snapshot(
             )
 
 
-async def test_clone_run_for_approval_requires_a_previously_approved_task(
+async def test_clone_run_without_approved_tasks_reanalyzes_original_document(
     tmp_path: Path,
 ) -> None:
-    async with _environment(tmp_path) as (client, runtime, _graph, _repository):
+    async with _environment(tmp_path) as (client, runtime, graph, _repository):
         created = await client.post(
             "/api/runs", json={"source_url": "https://tenant.feishu.cn/docx/source"}
         )
         original_run_id = created.json()["run_id"]
         original = await _wait_for_status(client, original_run_id, "waiting_approval")
 
-        with pytest.raises(Exception, match="原运行没有已批准任务"):
-            await runtime.clone_run_for_approval(
-                original_run_id,
-                RequirementRequest(source_url=original["source_url"]),
-                run_id="rerun-without-approval",
-                thread_id="rerun-without-approval-thread",
-            )
+        rerun_id = await runtime.clone_run_for_approval(
+            original_run_id,
+            RequirementRequest(source_url=original["source_url"]),
+            run_id="rerun-without-approval",
+            thread_id="rerun-without-approval-thread",
+        )
+        rerun = await _wait_for_status(client, rerun_id, "waiting_approval")
+
+    assert rerun_id == "rerun-without-approval"
+    assert rerun["approval"]["tasks"]
+    assert graph.states[rerun["thread_id"]]["planning_prompt"]
+    assert any(
+        event["node"] == "rerun_source" and event["status"] == "started"
+        for event in rerun["events"]
+    )
 
 
 async def test_clone_run_for_approval_initializes_a_real_langgraph_checkpoint(
@@ -951,7 +961,26 @@ async def _complete_run_with_approval_edits(
             tasks=[edited_task],
         ),
     )
-    source = await runtime.get_run_view(run_id)
+    # 生成完成后会停在「成片确认」门禁，确认后才回写结果列并到达终态。
+    for _ in range(200):
+        source = await runtime.get_run_view(run_id)
+        if source["status"] == "waiting_review":
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("run did not reach artifact review after approval")
+    await runtime.resume_artifact_review(
+        run_id,
+        ArtifactReviewDecision(action="confirm"),
+    )
+    # resume_run 现在异步执行生成与交付，需轮询到终态再断言。
+    for _ in range(200):
+        source = await runtime.get_run_view(run_id)
+        if source["status"] in {"succeeded", "failed"}:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("run did not reach a terminal status after approval")
     assert source["status"] == "succeeded"
     snapshot = await graph.aget_state(
         {"configurable": {"thread_id": source["thread_id"]}}
@@ -1603,6 +1632,8 @@ async def test_structured_asset_issue_drives_api_view_and_approval(
             "severity",
             "code",
             "display_message",
+            "source_block_id",
+            "asset_id",
         }
         assert view["approval"]["blocking_ingest_issues"] == []
         assert response.status_code == 202
@@ -2551,7 +2582,7 @@ async def test_reference_patch_persists_multi_reference_mode(tmp_path: Path):
         assert view["approval"]["tasks"][0]["reference_mode"] == "multi_reference"
 
 
-async def test_unlink_last_reference_and_oversized_upload_are_rejected(
+async def test_unlink_last_reference_allows_pure_text_to_video_and_rejects_oversized_upload(
     tmp_path: Path,
 ):
     async with _environment(tmp_path) as (client, runtime, graph, repository):
@@ -2566,8 +2597,9 @@ async def test_unlink_last_reference_and_oversized_upload_are_rejected(
         removed = await client.delete(
             f"/api/runs/{run_id}/tasks/task-1/references/asset-1"
         )
-        assert removed.status_code == 422
-        assert "至少一张" in removed.text
+        assert removed.status_code == 200
+        view = (await client.get(f"/api/runs/{run_id}")).json()
+        assert view["approval"]["tasks"][0]["reference_images"] == []
 
         oversized = await client.post(
             f"/api/runs/{run_id}/references",
@@ -2687,17 +2719,17 @@ async def test_static_review_workspace_is_served_and_uses_safe_dom_updates():
     assert styles.headers["content-type"].startswith("text/css")
     for text in (
         "节点轨迹",
-        "当前节点",
-        "当前状态",
-        "耗时",
-        "thread ID",
+        "当前阶段",
+        "任务状态",
+        "累计耗时",
+        "任务编号",
         "负面约束",
         "参考图片",
         "素材覆盖",
         "排除素材",
-        "退回重新规划",
-        "全部取消",
-        "批准所选任务",
+        "退回修改计划",
+        "取消本次任务",
+        "批准并开始生成",
     ):
         assert text in page.text
     assert "setInterval" in script.text

@@ -39,6 +39,7 @@ _PORTAL_DIR = str(ROOT.parent / "portal")
 if _PORTAL_DIR not in sys.path:
     sys.path.insert(0, _PORTAL_DIR)
 from ark_errors import translate_ark_error  # noqa: E402
+from error_explainer import explain_error  # noqa: E402
 OUTPUT_DIR = _DATA_BASE / "outputs"
 STATE_DIR = _DATA_BASE / "state"
 MEDIA_DIR = STATE_DIR / "media"
@@ -2028,6 +2029,16 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
                 zh = translate_ark_error(code, message)
                 if zh:
                     raise RuntimeError(f"Task {task_id}: {zh} 原始错误：{code}: {message}")
+                # 本地规则未命中 → doubao-seed 模型兜底（三级降级：规则→模型→原文）。
+                # 仅 volcengine provider 的 api_key 是 Ark Bearer key；其余 provider 跳过。
+                explanation = None
+                if (code or message) and str(form_values.get("provider") or "") == "volcengine":
+                    try:
+                        explanation = explain_error(job_id, code, message, api_key)
+                    except Exception:
+                        explanation = None
+                if explanation:
+                    raise RuntimeError(f"Task {task_id}: {explanation} 原始错误：{code}: {message}")
                 raise RuntimeError(
                     f"Task {task_id} ended as {status}: {code} — {message}" if code
                     else f"Task {task_id} ended as {status}: {message or status_result}"

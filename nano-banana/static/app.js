@@ -69,6 +69,25 @@ async function pollJobOnce(url, workspaceOverride) {
 
 function escHtml(s) { return s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''; }
 
+function jobStatusLabel(status) {
+  var map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消' };
+  return map[String(status || '').toLowerCase()] || String(status || '未知');
+}
+
+function jobStatusClass(status) {
+  var s = String(status || '').toLowerCase();
+  if (['succeeded', 'success', 'completed'].includes(s)) return 'is-success';
+  if (['failed', 'failure'].includes(s)) return 'is-failed';
+  if (['pending', 'queued'].includes(s)) return 'is-pending';
+  if (s === 'querying') return 'is-querying';
+  return 'is-running';
+}
+
+function jobStatusBadgeTone(status) {
+  var state = jobStatusClass(status);
+  return state === 'is-success' ? 'success' : state === 'is-failed' ? 'danger' : state === 'is-pending' ? 'warning' : 'info';
+}
+
 // ============================================================
 // Module 3: Form Field Helper
 // ============================================================
@@ -803,7 +822,7 @@ function NanoBananaApp() {
       // owning tab is active or cached. Writing #nb-events directly was scope
       // creep in the Task 5 extraction.
       var eventsList = (job.events || []).slice(-8).map(function (e) {
-        return '<div style="font-size:11px;color:#d1e0ff;padding:2px 0"><span style="color:#697386">' + escHtml(e.time) + '</span> ' + escHtml(e.message) + '</div>';
+        return '<div><span class="ui-job-status-card__event-time">' + escHtml(e.time) + '</span> ' + escHtml(e.message) + '</div>';
       }).join('');
 
       // 友好错误提示：识别错误类型，显示用户友好的消息
@@ -825,10 +844,10 @@ function NanoBananaApp() {
         }
       }
 
-      resultsEl.innerHTML = '<article class="result" style="border-color:#4f46e5;background:#101828;color:#e2e8f0;grid-column:1/-1">' +
-        '<div class="meta" style="color:#818cf8;font-weight:600;margin-bottom:6px">' + escHtml(job.status) + ' · ' + (job.done || 0) + '/' + (job.total || 0) +
-        (errorHint ? '<br><span style="color:#fca5a5;font-size:12px;font-weight:400">' + errorHint + '</span>' : '') + '</div>' +
-        (eventsList || '<div style="color:#697386;font-size:11px">等待服务器响应...</div>') +
+      resultsEl.innerHTML = '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">' +
+        '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--' + jobStatusBadgeTone(job.status) + '">' + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0) + '</div>' +
+        (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '') +
+        (eventsList ? '<div class="ui-job-status-card__events">' + eventsList + '</div>' : '<div class="ui-job-status-card__events">等待服务器响应...</div>') +
         '</article>';
       for (var ri = 0; ri < (job.results || []).length; ri++) {
         var r = job.results[ri];
@@ -836,11 +855,11 @@ function NanoBananaApp() {
           var img = r.images[ii];
           var url = APP_PATH + img.download_url;
           var safeFn = escHtml(img.filename);
-          resultsEl.innerHTML += '<article class="result"><img src="' + url + '" style="width:100%;max-height:180px;object-fit:contain;border-radius:6px;cursor:zoom-in" onclick="openPreview(\'image\',\'' + url + '\')"><a href="' + url + '" class="dl-btn" data-url="' + url + '" data-filename="' + safeFn + '">下载</a><div class="meta">Run ' + r.index + '</div></article>';
+          resultsEl.innerHTML += '<article class="result ui-result-card"><img class="ui-result-card__media" src="' + url + '" alt="生成结果" onclick="openPreview(\'image\',\'' + url + '\')"><a href="' + url + '" class="dl-btn ui-result-card__download" data-url="' + url + '" data-filename="' + safeFn + '">下载</a><div class="ui-result-card__meta">Run ' + r.index + '</div></article>';
         }
       }
       for (var ei = 0; ei < (job.errors || []).length; ei++) {
-        resultsEl.innerHTML += '<article class="result" style="color:#ef4444">' + escHtml(job.errors[ei]) + '</article>';
+        resultsEl.innerHTML += '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(job.errors[ei]) + '</article>';
       }
     },
 
@@ -1489,13 +1508,13 @@ document.addEventListener('DOMContentLoaded', function () {
     var style = document.createElement('style');
     style.textContent =
       '#_dlProgWrap{position:fixed;left:16px;bottom:16px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none}' +
-      '#_dlProgWrap .dlp{background:#17191f;color:#e2e8f0;border-radius:8px;padding:10px 12px;min-width:240px;max-width:340px;box-shadow:0 4px 16px rgba(0,0,0,.35);font-size:12px;pointer-events:auto}' +
+      '#_dlProgWrap .dlp{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:240px;max-width:340px;box-shadow:var(--shadow-md);font-size:12px;pointer-events:auto}' +
       '#_dlProgWrap .dlp .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px}' +
-      '#_dlProgWrap .dlp .track{height:6px;background:#2d3340;border-radius:3px;overflow:hidden}' +
-      '#_dlProgWrap .dlp .fill{height:100%;width:0;background:#3b82f6;transition:width .15s ease}' +
-      '#_dlProgWrap .dlp .txt{margin-top:5px;color:#94a3b8;font-size:11px}' +
-      '#_dlProgWrap .dlp.done .fill{background:#22c55e}' +
-      '#_dlProgWrap .dlp.fail .fill{background:#ef4444}';
+      '#_dlProgWrap .dlp .track{height:6px;background:var(--surface-sunken);border-radius:3px;overflow:hidden}' +
+      '#_dlProgWrap .dlp .fill{height:100%;width:0;background:var(--accent);transition:width .15s ease}' +
+      '#_dlProgWrap .dlp .txt{margin-top:5px;color:var(--muted);font-size:11px}' +
+      '#_dlProgWrap .dlp.done .fill{background:var(--success)}' +
+      '#_dlProgWrap .dlp.fail .fill{background:var(--danger)}';
     document.head.appendChild(style);
     container = document.createElement('div');
     container.id = '_dlProgWrap';
