@@ -291,6 +291,59 @@ async function validateReferenceVideoDurations() {
   }
 }
 
+// 参考图/首尾帧尺寸校验（历史失败高频原因：Ark 要求宽高 300~6000px、
+// 宽高比 0.4~2.5，超出会排队后 400）。提交前本地实测拦截。
+const IMAGE_DIM_MIN = 300;
+const IMAGE_DIM_MAX = 6000;
+const IMAGE_ASPECT_MIN = 0.4;
+const IMAGE_ASPECT_MAX = 2.5;
+const imageDimensionCache = new Map();
+
+function measureImageDimensions(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const timer = window.setTimeout(() => resolve(null), 8000);
+    img.onload = () => {
+      window.clearTimeout(timer);
+      resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    };
+    img.onerror = () => {
+      window.clearTimeout(timer);
+      resolve(null);
+    };
+    img.src = url;
+  });
+}
+
+async function validateImageDimensions() {
+  const names = ['first_frame', 'last_frame'];
+  for (let i = 1; i <= 9; i++) names.push('ref_image_' + i);
+  const inputs = Array.from(document.querySelectorAll('#sd-form input[type="file"]'))
+    .filter((input) => names.includes(input.name));
+  for (const input of inputs) {
+    const file = input.files && input.files[0];
+    if (!file) continue;
+    const cacheKey = file.name + ':' + file.size + ':' + (file.lastModified || 0);
+    let dims = imageDimensionCache.get(cacheKey);
+    if (dims === undefined) {
+      const url = URL.createObjectURL(file);
+      try {
+        dims = await measureImageDimensions(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      imageDimensionCache.set(cacheKey, dims);
+    }
+    if (!dims) continue;  // 测不出（损坏文件）放行，由服务端兜底
+    const aspect = dims.width / dims.height;
+    if (dims.width < IMAGE_DIM_MIN || dims.width > IMAGE_DIM_MAX
+        || dims.height < IMAGE_DIM_MIN || dims.height > IMAGE_DIM_MAX
+        || aspect < IMAGE_ASPECT_MIN || aspect > IMAGE_ASPECT_MAX) {
+      throw new Error(`图片「${file.name}」尺寸 ${dims.width}x${dims.height} 不符合要求：边长需在 300~6000px 之间、宽高比在 0.4~2.5 之间，请更换或调整后重试。`);
+    }
+  }
+}
+
 // ============================================================
 // PROVIDER CONFIG HELPER
 // ============================================================
@@ -1051,6 +1104,15 @@ function SeedanceApp() {
       } catch (err) {
         setOwnerState('submitting', false);
         setOwnerState('statusText', err.message || '参考视频时长不合规');
+        return;
+      }
+
+      // 参考图/首尾帧尺寸校验：300~6000px、宽高比 0.4~2.5 之外立即拦截
+      try {
+        await validateImageDimensions();
+      } catch (err) {
+        setOwnerState('submitting', false);
+        setOwnerState('statusText', err.message || '参考图尺寸不合规');
         return;
       }
 
