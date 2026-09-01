@@ -693,3 +693,35 @@ button {
   gap: .55rem;
   margin-top: .8rem;
 }
+
+/* 使用说明悬浮入口（右下角，避开左下角下载进度条与顶部导航） */
+.manual-link {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 5000;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: #235fd6;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+.manual-link:hover {
+  color: #fff;
+  text-decoration: none;
+  background: #194fb8;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.32);
+}
+
+/* 使用说明按钮可拖动 */
+.manual-link { cursor: grab; user-select: none; -webkit-user-select: none; -webkit-user-drag: none; touch-action: none; }
+.manual-link:hover { transform: none; }
+.manual-link.is-dragging { cursor: grabbing; opacity: 0.92; box-shadow: 0 8px 22px rgba(15, 23, 42, 0.35); }
