@@ -12,7 +12,10 @@ if str(PORTAL) not in sys.path:
     sys.path.insert(0, str(PORTAL))
 
 from cat_skins.experiment import CatExperimentService
-from cat_skins.service import CatDailyLimitError, CatGenerationError, CatSkinGenerator, CatSkinManager
+from cat_skins.service import (
+    CatDailyLimitError, CatDailyTaskRequiredError, CatGenerationError,
+    CatSkinGenerator, CatSkinManager,
+)
 from cat_skins.validate_skin import validate_data
 from cat_skins.validate_master_template import validate_master
 
@@ -202,30 +205,34 @@ class CatSkinGeneratorTests(unittest.TestCase):
 
 class CatExperimentServiceTests(unittest.TestCase):
     def setUp(self):
-        self.service = CatExperimentService(PORTAL / "cat_skins")
+        self.generator = CatSkinGenerator(PORTAL / "cat_skins", key_loader=lambda: "")
+        self.service = CatExperimentService(PORTAL / "cat_skins", self.generator)
 
-    def test_config_exposes_three_fixed_admin_experiments(self):
+    def test_config_exposes_four_rarities(self):
         config = self.service.config()
         self.assertEqual("classic-black-master-v1", config["template_id"])
-        self.assertEqual({"orange_tabby", "rare_calico", "epic_angel"}, {item["id"] for item in config["experiments"]})
+        self.assertEqual({"common", "rare", "epic", "legendary"}, {item["value"] for item in config["rarities"]})
+        self.assertFalse(config["configured"])
 
-    def test_experiments_pass_validation_and_are_side_effect_free(self):
-        for experiment_id in ("orange_tabby", "rare_calico", "epic_angel"):
-            result = self.service.generate(experiment_id, 123456)
-            self.assertTrue(result["validation"]["passed"], result["validation"]["errors"])
-            self.assertFalse(result["persisted"])
-            self.assertFalse(result["consumed_daily_chance"])
-            self.assertEqual([], validate_data(result["skin"]))
+    def test_generate_is_side_effect_free_and_locks_name(self):
+        result = self.service.generate("epic", "张雪峰猫", 123456)
+        self.assertTrue(result["validation"]["passed"], result["validation"]["errors"])
+        self.assertFalse(result["persisted"])
+        self.assertFalse(result["consumed_daily_chance"])
+        self.assertEqual([], validate_data(result["skin"]))
+        self.assertEqual("张雪峰猫", result["skin"]["name"])
 
-    def test_same_seed_reproduces_same_coordinate_operations(self):
-        first = self.service.generate("rare_calico", 9988)
-        second = self.service.generate("rare_calico", 9988)
-        self.assertEqual(first["operations"], second["operations"])
-        self.assertEqual(first["skin"]["frames"], second["skin"]["frames"])
+    def test_name_is_auto_suffixed_with_cat(self):
+        result = self.service.generate("rare", "张雪峰", 7)
+        self.assertEqual("张雪峰猫", result["skin"]["name"])
 
-    def test_unknown_experiment_is_rejected(self):
+    def test_unknown_rarity_is_rejected(self):
         with self.assertRaises(KeyError):
-            self.service.generate("unknown", 1)
+            self.service.generate("unknown", "测试猫", 1)
+
+    def test_empty_name_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.service.generate("common", "", 1)
 
 
 class CatSkinManagerTests(unittest.TestCase):
@@ -233,9 +240,11 @@ class CatSkinManagerTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.state_path = Path(self.tmp.name) / "cat_skins.json"
         self.generator = FakeGenerator()
+        self.task_completed = False
         self.manager = CatSkinManager(
             self.state_path, CLASSIC_PATH, self.generator,
             today_fn=lambda: date(2026, 8, 28),
+            task_completed_fn=lambda user, today: self.task_completed,
         )
         self.user_a = {"user_id": "a", "username": "alice", "role": "user"}
         self.user_b = {"user_id": "b", "username": "bob", "role": "user"}
@@ -273,12 +282,27 @@ class CatSkinManagerTests(unittest.TestCase):
             self.assertNotEqual(".", cell["base_code"], (cell["x"], cell["y"]))
             self.assertFalse(cell["final_face_foreground"], (cell["x"], cell["y"]))
 
-    def test_regular_user_only_once_per_day(self):
+    def test_second_daily_open_requires_completed_feishu_task(self):
         self.manager.open_gift(self.user_a)
-        with self.assertRaises(CatDailyLimitError):
+        with self.assertRaises(CatDailyTaskRequiredError):
             self.manager.open_gift(self.user_a)
-        self.assertEqual(1, self.generator.calls)
-        self.assertFalse(self.manager.wardrobe(self.user_a)["can_open"])
+        wardrobe = self.manager.wardrobe(self.user_a)
+        self.assertEqual(1, wardrobe["opens_today"])
+        self.assertFalse(wardrobe["daily_task"]["completed"])
+        self.assertFalse(wardrobe["can_open"])
+
+    def test_completed_feishu_task_unlocks_second_but_not_third_open(self):
+        first = self.manager.open_gift(self.user_a)
+        self.task_completed = True
+        second = self.manager.open_gift(self.user_a)
+        self.assertNotEqual(first["id"], second["id"])
+        wardrobe = self.manager.wardrobe(self.user_a)
+        self.assertEqual(2, wardrobe["opens_today"])
+        self.assertTrue(wardrobe["daily_task"]["completed"])
+        self.assertFalse(wardrobe["can_open"])
+        with self.assertRaisesRegex(CatDailyLimitError, "今日领取猫咪已达上限"):
+            self.manager.open_gift(self.user_a)
+        self.assertEqual(2, self.generator.calls)
 
     def test_admin_can_open_gift_repeatedly_without_daily_limit(self):
         first = self.manager.open_gift(self.admin)

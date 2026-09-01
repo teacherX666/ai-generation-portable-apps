@@ -200,7 +200,6 @@ async def test_client_caches_tenant_token_and_guards_concurrent_refresh():
     assert tokens == ["fiction-tenant-token"] * 5
     assert token_requests == 1
 
-
 @pytest.mark.parametrize("auth_failure", ["http-401", "feishu-code"])
 async def test_request_json_refreshes_token_exactly_once(auth_failure: str):
     token_requests = 0
@@ -275,6 +274,44 @@ async def test_request_json_does_not_refresh_twice_and_maps_errors():
     assert responses == []
 
 
+async def test_wiki_node_permission_error_has_actionable_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "tenant_access_token": "token", "expire": 7200},
+            )
+        return httpx.Response(
+            400,
+            json={
+                "code": 131006,
+                "msg": "permission denied: node permission denied, tenant needs read permission",
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://open.feishu.cn",
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        client = FeishuClient(
+            Settings(lark_app_id="fiction-app", lark_app_secret="fiction-secret"),
+            http_client=http_client,
+        )
+        with pytest.raises(AgentError) as raised:
+            await client.request_json(
+                "GET",
+                "/open-apis/wiki/v2/spaces/get_node",
+                params={"token": "wikcn456"},
+            )
+
+    assert raised.value.detail.category == ErrorCategory.PERMISSION
+    assert raised.value.detail.retryable is False
+    assert raised.value.detail.message == (
+        "飞书应用无权读取该 Wiki 文档。请在知识库中授予应用读取权限；"
+        "如果链接来自其他飞书企业，请先将文档复制到当前企业后重试。"
+    )
+
+
 @pytest.mark.parametrize(
     ("status", "payload", "category", "retryable"),
     [
@@ -315,7 +352,6 @@ async def test_request_json_maps_api_failures(
     assert raised.value.detail.retryable is retryable
     assert raised.value.detail.message
     assert raised.value.detail.technical_detail
-
 
 @pytest.mark.parametrize(
     ("status", "category", "retryable"),
@@ -785,7 +821,6 @@ async def test_embedded_sheet_timeout_preserves_allowlisted_user_message(
         "飞书电子表格导出超时，请稍后重试"
     )
 
-
 @pytest.mark.parametrize(
     ("text_lines", "images", "blocked"),
     [
@@ -1039,7 +1074,6 @@ async def test_ingest_table_uses_row_major_dfs_and_caches_shared_image(
     assert client.download_calls == ["fiction-shared-image-token"]
     assert document.media_assets[0].local_path == document.media_assets[1].local_path
 
-
 @pytest.mark.parametrize(
     "blocks",
     [
@@ -1114,7 +1148,6 @@ async def test_ingest_rejects_inconsistent_block_references(
 
     assert raised.value.detail.category == ErrorCategory.DOCUMENT
     assert raised.value.detail.retryable is False
-
 
 @pytest.mark.parametrize(
     ("children", "cells", "cell_ids"),

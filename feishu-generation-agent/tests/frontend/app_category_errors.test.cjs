@@ -280,7 +280,7 @@ test("task history includes reruns and allows switching between active and cance
   assert.equal(app.getNode("document-title").textContent, "已取消任务");
 
   rows = app.getNode("recent-run-list").children;
-  assert.equal(rows[0].querySelectorAll("button")[0].textContent, "打开");
+  assert.equal(rows[0].querySelectorAll("button")[0].textContent, "查看");
   switcher.value = activeRun.run_id;
   await switcher.dispatch("change");
   assert.equal(app.getNode("document-title").textContent, "重新运行后的任务");
@@ -477,6 +477,68 @@ test("failed runs show the safe provider error in the review panel", async () =>
   assert.equal(app.getNode("execution-errors").hidden, false);
 });
 
+test("failed history runs explain the missing artifacts instead of hiding the preview", async () => {
+  const runView = {
+    run_id: "run-failed-no-artifacts",
+    thread_id: "thread-failed-no-artifacts",
+    source_url: "https://acme.feishu.cn/wiki/failed",
+    status: "failed",
+    events: [],
+    privacy: {},
+    artifacts: [],
+    last_error: {
+      category: "permission_error",
+      message: "The workflow node could not be completed",
+      technical_detail: "GET /open-apis/wiki/v2/spaces/get_node: HTTP 400, code=131006",
+      retryable: false,
+    },
+    approval: {
+      document_title: "驶向大海",
+      revision: 1,
+      document_summary: "",
+      tasks: [],
+      media_assets: [],
+      excluded_assets: [],
+      coverage: {},
+      validation_issues: [],
+      ingest_issue_records: [],
+      vision_issues: [],
+    },
+  };
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [{ run_id: runView.run_id }]);
+    }
+    if (url === `/api/runs/${runView.run_id}`) {
+      return jsonResponse(200, runView);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  assert.equal(app.getNode("artifact-review").hidden, false);
+  assert.equal(app.getNode("artifact-list").children.length, 0);
+  assert.equal(
+    app.getNode("artifact-review-message").textContent,
+    "本次运行未生成成片，请在下方的失败原因中查看详情。",
+  );
+  assert.equal(app.getNode("artifact-review-feedback-box").hidden, true);
+  assert.equal(app.getNode("artifact-review-actions").hidden, true);
+  assert.equal(
+    app.getNode("validation-issues").textContent,
+    "飞书应用没有权限读取该文档或素材，请检查文档分享与应用权限。",
+  );
+  assert.equal(app.getNode("permission-guide").hidden, false);
+  assert.match(
+    app.getNode("permission-guide-intro").textContent,
+    /飞书任务agent.*知识库.*协作者/,
+  );
+});
+
 test("trash supports paging, search, status filters, and filtered empty states", async () => {
   const archivedRuns = Array.from({ length: 10 }, (_, index) => ({
     run_id: `run-archived-${index + 1}`,
@@ -631,7 +693,7 @@ test("cancelling a run restores history controls and allows switching immediatel
   const rows = app.getNode("recent-run-list").children;
   const otherRow = rows.find((row) => row.dataset.runId === "run-other");
   const openButton = otherRow.querySelectorAll("button")[0];
-  assert.equal(openButton.textContent, "打开");
+  assert.equal(openButton.textContent, "查看");
   assert.equal(openButton.disabled, false);
   assert.equal(app.getNode("current-run-switcher").disabled, false);
 
@@ -640,6 +702,7 @@ test("cancelling a run restores history controls and allows switching immediatel
 });
 
 test("completed runs keep generated artifacts visible without review controls", async () => {
+  let artifactReviewRequests = 0;
   const completed = {
     run_id: "run-completed-artifacts",
     thread_id: "thread-completed-artifacts",
@@ -682,6 +745,10 @@ test("completed runs keep generated artifacts visible without review controls", 
       rerunnable: true,
     }]);
     if (url === `/api/runs/${completed.run_id}`) return jsonResponse(200, completed);
+    if (url === `/api/runs/${completed.run_id}/artifact-review`) {
+      artifactReviewRequests += 1;
+      return jsonResponse(200, { ok: true });
+    }
     if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
     throw new Error(`unexpected request: ${url}`);
   });
@@ -695,5 +762,14 @@ test("completed runs keep generated artifacts visible without review controls", 
   assert.equal(app.getNode("artifact-list").children.length, 1);
   assert.equal(app.getNode("artifact-review-feedback-box").hidden, true);
   assert.equal(app.getNode("artifact-review-actions").hidden, true);
+  assert.equal(app.getNode("confirm-artifacts-button").disabled, true);
+  assert.equal(app.getNode("adjust-artifacts-button").disabled, true);
+  assert.equal(app.getNode("artifact-review-feedback").disabled, true);
   assert.equal(app.getNode("delivery-target").hidden, false);
+
+  // 即使旧页面或竞态残留了可点击控件，终态任务也不能再次导出或调整。
+  await app.getNode("confirm-artifacts-button").dispatch("click");
+  app.getNode("artifact-review-feedback").value = "再调整一次";
+  await app.getNode("adjust-artifacts-button").dispatch("click");
+  assert.equal(artifactReviewRequests, 0);
 });

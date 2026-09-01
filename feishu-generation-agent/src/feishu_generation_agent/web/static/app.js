@@ -45,6 +45,8 @@
   const artifactReviewFeedback = byId("artifact-review-feedback");
   const conflictBox = byId("review-conflict");
   const conflictText = byId("review-conflict-text");
+  const permissionGuide = byId("permission-guide");
+  const permissionGuideIntro = byId("permission-guide-intro");
   const discardButton = byId("discard-review-draft");
   const scanBitableButton = byId("scan-bitable-button");
   const directRunUrl = byId("direct-run-url");
@@ -385,7 +387,7 @@
       const view = element(
         "button",
         selected ? "quiet-button is-current" : "quiet-button",
-        selected ? "当前查看" : "打开",
+        selected ? "当前查看" : "查看",
       );
       view.type = "button";
       view.disabled = state.busy || selected;
@@ -1560,13 +1562,27 @@
     const showsArtifacts = [
       "waiting_review", "delivering", "delivery_failed", "succeeded", "completed_with_errors",
     ].includes(view.status) && artifacts.length > 0;
-    if (!showsArtifacts) {
+    // 终态但没有任何成片（执行失败/已取消）：不隐藏整块，而是给出明确占位，
+    // 避免历史任务点进去后主区域一片空白，让用户误以为「成片预览坏了」。
+    const terminalWithoutArtifacts = (
+      ["failed", "cancelled"].includes(view.status)
+    );
+    if (!showsArtifacts && !terminalWithoutArtifacts) {
       artifactReview.hidden = true;
       artifactList.replaceChildren();
       return;
     }
-    const canReviewArtifacts = view.status === "waiting_review";
     artifactReview.hidden = false;
+    artifactList.replaceChildren();
+    if (terminalWithoutArtifacts) {
+      artifactReviewFeedbackBox.hidden = true;
+      artifactReviewActions.hidden = true;
+      artifactReviewMessage.textContent = view.status === "cancelled"
+        ? "本次运行已取消，未生成成片。"
+        : "本次运行未生成成片，请在下方的失败原因中查看详情。";
+      return;
+    }
+    const canReviewArtifacts = view.status === "waiting_review";
     artifactReviewMessage.textContent = canReviewArtifacts
       ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
       : view.status === "delivery_failed"
@@ -1663,8 +1679,25 @@
       .filter((issue) => !blockingIngestIssues.includes(issue));
     const lastError = view.last_error;
     if (lastError && lastError.message) {
+      // 早期持久化的失败记录可能只有通用占位文案，这里按错误类别补齐可读原因，
+      // 让历史任务点进去能直接看懂为什么没有成片。
+      const genericMessage = lastError.message === "The workflow node could not be completed";
+      const categoryFallback = {
+        permission_error: "飞书应用没有权限读取该文档或素材，请检查文档分享与应用权限。",
+        document_error: "文档读取失败，请检查文档内容或格式。",
+        configuration_error: "服务配置缺失，请联系管理员检查飞书应用配置。",
+        transient_error: "服务暂时不可用，请稍后重试。",
+        provider_terminal_error: "生成服务返回错误，无法继续生成。",
+        delivery_error: "结果写入飞书失败。",
+        validation_error: "任务参数校验失败。",
+      };
+      const message = genericMessage
+        ? (categoryFallback[lastError.category]
+          || lastError.technical_detail
+          || lastError.message)
+        : lastError.message;
       issues = [
-        lastError.message,
+        message,
         ...issues.filter(
           (issue) => issue !== "审批校验状态无效，请重新读取后再审批",
         ),
@@ -1673,6 +1706,17 @@
     const issueBox = byId("validation-issues");
     issueBox.textContent = issues.join("；");
     issueBox.hidden = issues.length === 0;
+    // 文档读取权限不足时，给出可执行的授权步骤，而不是只丢一句“权限不足”。
+    const permissionError = lastError && lastError.category === "permission_error";
+    if (permissionError) {
+      const isWiki = /\/wiki\//.test(view.source_url || "");
+      permissionGuide.hidden = false;
+      permissionGuideIntro.textContent = isWiki
+        ? "请把飞书机器人「飞书任务agent」添加为该知识库的协作者（分享 → 管理协作者 → 添加协作者），权限设为「可阅读」，然后重新运行。"
+        : "请把飞书机器人「飞书任务agent」添加为该文档的协作者（分享 → 管理协作者 → 添加协作者），权限设为「可阅读」，然后重新运行。";
+    } else {
+      permissionGuide.hidden = true;
+    }
     const blockingIngestBox = byId("blocking-ingest-issues");
     blockingIngestBox.textContent = blockingIngestIssues.length
       ? `文档读取阻塞：${blockingIngestIssues.join("；")}`
@@ -1839,7 +1883,7 @@
   }
 
   async function submitArtifactReview(action) {
-    if (!state.runId || state.busy) return;
+    if (!state.runId || state.busy || state.view?.status !== "waiting_review") return;
     const body = { action };
     if (action === "adjust") {
       body.feedback = artifactReviewFeedback.value;

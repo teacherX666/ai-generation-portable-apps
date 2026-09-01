@@ -102,7 +102,7 @@
             <option value="">全部用户</option>
             <option v-for="u in userList" :key="u" :value="u">{{ u }}</option>
           </select>
-          <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': kind==='all'}" @click="kind='all';reload()">全部</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='image'}" @click="kind='image';reload()">图片</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='video'}" @click="kind='video';reload()">视频</button></div>
+          <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': kind==='all'}" @click="kind='all';reload()">全部</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='image'}" @click="kind='image';reload()">图片</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='video'}" @click="kind='video';reload()">视频</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='agent'}" @click="kind='agent';reload()">Agent</button></div>
           <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': status==='all'}" @click="status='all';reload()">全部状态</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='done'}" @click="status='done';reload()">成功</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='failed'}" @click="status='failed';reload()">失败</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='running'}" @click="status='running';reload()">生成中</button></div>
           <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': days===7}" @click="days=7;reload()">近7天</button><button class="ui-segment__button" type="button" :class="{'is-active': days===30}" @click="days=30;reload()">近30天</button><button class="ui-segment__button" type="button" :class="{'is-active': days===90}" @click="days=90;reload()">近90天</button></div>
           </div>
@@ -121,8 +121,8 @@
                 <video :src="'/' + it.app + it.thumb_url" preload="metadata" muted playsinline></video>
                 <img class="hist-thumb-frame" :src="thumbFor(it)" loading="lazy" @error="$event.target.style.display='none'">
               </template>
-              <div v-else class="hist-media-empty">{{ it.status==='failed' ? '无产出' : (it.status==='done' ? '无预览' : '生成中') }}</div>
-              <span class="hist-kind" :class="it.kind">{{ it.kind==='video' ? '视频' : '图片' }}</span>
+              <div v-else class="hist-media-empty">{{ it.kind==='agent' ? '飞书任务 Agent' : (it.status==='failed' ? '无产出' : (it.status==='done' ? '无预览' : '生成中')) }}</div>
+              <span class="hist-kind" :class="it.kind">{{ it.kind==='video' ? '视频' : (it.kind==='agent' ? 'Agent' : '图片') }}</span>
               <span class="hist-dur" v-if="it.kind==='video' && it.duration">0:{{ Math.max(1, Math.round(it.duration)) }}</span>
             </div>
             <div class="hist-card-body">

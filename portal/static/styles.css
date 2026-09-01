@@ -1142,6 +1142,8 @@ body.director-collapsed .director-body { display: none !important; }
 .hist-kind { position: absolute; left: 6px; top: 6px; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 5px; border: 1px solid; }
 .hist-kind.image { color: #0e9f96; border-color: rgba(14,159,150,.4); background: rgba(14,159,150,.1); }
 .hist-kind.video { color: #7aa7ff; border-color: rgba(122,167,255,.4); background: rgba(122,167,255,.08); }
+.hist-kind.agent { color: #6941c6; border-color: rgba(105,65,198,.35); background: rgba(105,65,198,.1); }
+.hist-media.agent { background: linear-gradient(135deg, #f4f0ff, #eef4ff); }
 .hist-dur { position: absolute; right: 6px; bottom: 6px; font-size: 10px; color: #fff; background: rgba(0,0,0,.55); border-radius: 4px; padding: 0 5px; }
 .hist-card-body { padding: 10px 12px 12px; }
 .hist-card-t1 { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

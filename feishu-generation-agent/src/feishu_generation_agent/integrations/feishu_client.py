@@ -855,7 +855,13 @@ class FeishuClient:
 
         if response.status_code in {401, 403} or code in _PERMISSION_CODES:
             category = ErrorCategory.PERMISSION
-            message = "没有权限读取该飞书文档或素材"
+            if code == 131006 and path == "/open-apis/wiki/v2/spaces/get_node":
+                message = (
+                    "飞书应用无权读取该 Wiki 文档。请在知识库中授予应用读取权限；"
+                    "如果链接来自其他飞书企业，请先将文档复制到当前企业后重试。"
+                )
+            else:
+                message = "飞书应用没有权限读取该文档或素材，请检查分享与应用权限。"
             retryable = False
         elif response.status_code == 429 or response.status_code >= 500:
             category = ErrorCategory.TRANSIENT

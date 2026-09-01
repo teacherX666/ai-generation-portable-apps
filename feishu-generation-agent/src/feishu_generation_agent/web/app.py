@@ -2,10 +2,14 @@ import asyncio
 from contextlib import asynccontextmanager, nullcontext
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+import hashlib
+import hmac
 from inspect import Parameter, signature
 import logging
 import os
 from pathlib import Path
+import time
 from typing import Annotated, Any, AsyncIterator, Literal
 from urllib.parse import unquote_to_bytes
 
@@ -127,6 +131,35 @@ def require_portal_identity(request: Request) -> RequestIdentity:
     return identity
 
 
+_PORTAL_SIG_WINDOW = int(os.environ.get("PORTAL_SIG_WINDOW", "60"))
+
+
+def _is_portal_admin(request: Request) -> bool:
+    """True iff the request carries a Portal-issued, HMAC-verified admin flag.
+
+    Portal 代理时才会设置 X-Is-Admin 并用共享的 PORTAL_INTERNAL_TOKEN 对
+    (ts, is_admin, username) 签名；子应用直接收到的伪造 X-Is-Admin 会因签名
+    校验失败被忽略，普通用户仍然受 owner 隔离保护。
+    """
+    if request.headers.get("X-Is-Admin") != "1":
+        return False
+    secret = os.environ.get("PORTAL_INTERNAL_TOKEN", "")
+    sig = request.headers.get("X-Portal-Sig") or ""
+    ts_raw = request.headers.get("X-Portal-Ts") or ""
+    if not secret or not sig or not ts_raw:
+        return False
+    try:
+        ts = int(ts_raw)
+    except (TypeError, ValueError):
+        return False
+    if abs(int(time.time()) - ts) > _PORTAL_SIG_WINDOW:
+        return False
+    username = request.headers.get("X-Username", "") or ""
+    msg = f"{ts}:1:{username}".encode("utf-8")
+    expected = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
 def _validate_portal_user_id(value: str) -> None:
     if (
         not value
@@ -156,6 +189,18 @@ def _decode_username(value: str) -> str:
     ):
         raise HTTPException(status_code=400, detail="Portal 用户名无效")
     return decoded
+
+
+def _iso_timestamp(value: str) -> float:
+    if not value:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.timestamp()
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def create_app(
@@ -901,6 +946,73 @@ def create_app(
             run_id = await active.start_run(domain_request)
         return {"run_id": run_id}
 
+    @app.get("/api/portal/history")
+    async def portal_history(request: Request, limit: int = 60) -> dict[str, Any]:
+        identity = current_identity(request)
+        if not identity.is_portal:
+            raise HTTPException(status_code=403, detail="仅供 Portal 历史记录使用")
+        active = get_runtime(request)
+        rows = await active.repository.list_runs(owner_user_id=identity.owner_user_id)
+        rows.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        items: list[dict[str, Any]] = []
+        for row in rows[: max(1, min(limit, 200))]:
+            run_id = str(row.get("run_id") or "")
+            created_at = str(row.get("created_at") or "")
+            updated_at = str(row.get("updated_at") or "")
+            status_value = str(row.get("status") or "")
+            portal_status = (
+                "done" if status_value in {"succeeded", "completed_with_errors"}
+                else "failed" if status_value in {"failed", "cancelled", "delivery_failed"}
+                else "running"
+            )
+            # 读取成片，供 Portal 历史记录展示产出预览（缩略图 + 下载清单）。
+            artifacts: list[Any] = []
+            if portal_status == "done":
+                try:
+                    artifacts = await active.repository.list_artifacts(run_id)
+                except Exception:
+                    artifacts = []
+            ready_artifacts = [
+                artifact
+                for artifact in artifacts
+                if getattr(artifact, "status", None) == "ready"
+                and getattr(artifact, "kind", None) in {"image", "video"}
+            ]
+            results = [
+                {
+                    "url": f"/api/runs/{run_id}/artifacts/{artifact.artifact_id}/content",
+                    "kind": artifact.kind,
+                }
+                for artifact in ready_artifacts
+            ]
+            artifact_kinds = {artifact.kind for artifact in ready_artifacts}
+            if "video" in artifact_kinds:
+                item_kind = "video"
+            elif "image" in artifact_kinds:
+                item_kind = "image"
+            else:
+                item_kind = "agent"
+            items.append({
+                "app": "feishu-generation-agent",
+                "job_id": run_id,
+                "username": identity.username,
+                "kind": item_kind,
+                "prompt": "飞书任务 Agent 生成任务",
+                "model": "",
+                "params": {"source_url": str(row.get("source_url") or "")},
+                "status": portal_status,
+                "submitted_at": _iso_timestamp(created_at),
+                "completed_at": (
+                    _iso_timestamp(updated_at)
+                    if status_value in GraphRuntime._TERMINAL_STATUSES else None
+                ),
+                "duration": 0,
+                "thumb_url": results[0]["url"] if results else "",
+                "results": results,
+                "error": "",
+            })
+        return {"ok": True, "items": items}
+
     @app.get("/api/runs/{run_id}")
     async def get_run(run_id: str, request: Request):
         active = get_runtime(request)
@@ -1179,9 +1291,16 @@ def create_app(
     ) -> FileResponse:
         active = get_runtime(request)
         identity = current_identity(request)
+        is_admin = _is_portal_admin(request)
+        owner_scope = (
+            nullcontext()
+            if is_admin
+            else runtime_owner_scope(active, identity.owner_user_id)
+        )
         try:
-            await ensure_owned_run(active, run_id, identity.owner_user_id)
-            with runtime_owner_scope(active, identity.owner_user_id):
+            if not is_admin:
+                await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with owner_scope:
                 path, mime_type = await active.get_reference_file(
                     run_id, asset_id
                 )
@@ -1197,9 +1316,16 @@ def create_app(
     ) -> FileResponse:
         active = get_runtime(request)
         identity = current_identity(request)
+        is_admin = _is_portal_admin(request)
+        owner_scope = (
+            nullcontext()
+            if is_admin
+            else runtime_owner_scope(active, identity.owner_user_id)
+        )
         try:
-            await ensure_owned_run(active, run_id, identity.owner_user_id)
-            with runtime_owner_scope(active, identity.owner_user_id):
+            if not is_admin:
+                await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with owner_scope:
                 path, mime_type = await active.get_artifact_file(
                     run_id, artifact_id
                 )

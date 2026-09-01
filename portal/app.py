@@ -38,8 +38,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import daily_report as _daily_report_module
 from cat_skins.experiment import CatExperimentService
+from cat_skins.concepts import CatConceptStore
 from cat_skins.service import (
     CatDailyLimitError,
+    CatDailyTaskRequiredError,
     CatGenerationBusyError,
     CatGenerationError,
     CatSkinGenerator,
@@ -64,6 +66,8 @@ CAT_SKINS_PATH = STATE_DIR / "cat_skins.json"
 CAT_ANATOMY_PATH = CAT_SKINS_DIR / "cat-anatomy-v1.json"
 CAT_PROMPT_PATH = CAT_SKINS_DIR / "generation-prompt-v1.md"
 CAT_CLASSIC_PATH = CAT_SKINS_DIR / "classic-black-v1.json"
+CAT_CONCEPT_SEEDS_PATH = CAT_SKINS_DIR / "concept-seeds-v1.json"
+CAT_TRENDS_PATH = STATE_DIR / "cat_trends.json"
 
 SESSION_MAX_AGE = 86400 * 30  # 30 days
 
@@ -1622,16 +1626,132 @@ class UsageTracker:
 
 # ─── Singletons ────────────────────────────────────────────────────────────────
 
+def _filter_entertaining_topics(topics: list[dict]) -> list[dict]:
+    """Keep only meme-worthy, entertaining hot topics via DeepSeek.
+
+    ``concepts.py`` already ran a coarse programmatic filter, so this pass only
+    decides entertainment value. Missing key or model failure falls back to the
+    already-filtered input instead of silently wiping today's trend pool.
+    """
+    if not topics:
+        return topics
+    key = _daily_report_module._load_deepseek_key(STATE_DIR)
+    if not key:
+        print("  [cat-trends] no DeepSeek key, skip AI entertainment filter", flush=True)
+        return topics
+    numbered = {index: str(topic.get("title") or "") for index, topic in enumerate(topics)}
+    user_content = "以下是抖音热搜标题（带编号）：\n" + "\n".join(
+        f"{index}. {title}" for index, title in numbered.items()
+    )
+    system_prompt = (
+        "你是公司内部猫咪皮肤系统的幽默内容编辑，负责从抖音热搜里挑出适合做成搞笑/娱乐猫咪皮肤的话题。"
+        "判断标准：\n"
+        "- 保留：娱乐、体育、明星、网红、搞笑事件、网络梗、萌宠、情感共鸣、有调侃空间、大众能会心一笑的话题；\n"
+        "- 排除：严肃时政、灾难、司法、军事、政策、宏观经济等不适合娱乐化的新闻，以及没有梗、没有记忆点的无聊日常。\n"
+        "- 允许保留对名人或网络人物的娱乐化调侃，只要足够有梗、足够娱乐化，不要因为涉及逝者就一律排除。\n"
+        "同时为每个保留的话题起一个简洁自然的中文猫名，要求 2 到 6 个汉字、以“猫”结尾、贴合话题。\n"
+        "只输出 JSON：{\"keep\": [{\"index\": 编号, \"cat_name\": \"猫名\"}, ...]}，不要任何解释文字。"
+    )
+    try:
+        resp = _daily_report_module._deepseek_chat(
+            key,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=2600,
+        )
+        content = (resp.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        parsed = json.loads(content)
+        keep = parsed.get("keep") or []
+        name_by_index: dict[int, str] = {}
+        for item in keep:
+            if isinstance(item, dict):
+                try:
+                    name_by_index[int(item.get("index"))] = str(item.get("cat_name") or "")
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(item, (int, str)) and str(item).isdigit():
+                name_by_index[int(item)] = ""
+        kept = []
+        for index, topic in enumerate(topics):
+            if index in name_by_index:
+                topic = dict(topic)
+                topic["cat_name"] = name_by_index[index]
+                kept.append(topic)
+        if not kept:
+            print("  [cat-trends] AI filter kept 0 topics; keeping programmatic result", flush=True)
+            return topics
+        print(f"  [cat-trends] AI entertainment filter kept {len(kept)}/{len(topics)}", flush=True)
+        return kept
+    except Exception as exc:
+        print(f"  [cat-trends] AI entertainment filter failed: {exc}", flush=True)
+        return topics
+
+
 auth = AuthManager()
 key_manager = KeyManager()
 manager = AppManager()
 tracker = UsageTracker()
+cat_concept_store = CatConceptStore(CAT_CONCEPT_SEEDS_PATH, CAT_TRENDS_PATH, topic_filter=_filter_entertaining_topics)
 cat_skin_generator = CatSkinGenerator(
     CAT_SKINS_DIR,
     key_loader=lambda: _daily_report_module._load_deepseek_key(STATE_DIR),
+    concept_store=cat_concept_store,
 )
-cat_skin_manager = CatSkinManager(CAT_SKINS_PATH, CAT_CLASSIC_PATH, cat_skin_generator)
-cat_experiment_service = CatExperimentService(CAT_SKINS_DIR)
+def _fetch_feishu_history(user_id: str, username: str, limit: int = 200) -> list[dict]:
+    """Read one Portal user's independently persisted Feishu Agent runs."""
+    spec = SPEC_BY_NAME.get("feishu-generation-agent")
+    if spec is None:
+        return []
+    conn = None
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", spec.port, timeout=5)
+        headers = {
+            "X-Portal-User-Id": str(user_id),
+            "X-Username": urllib.parse.quote(username, safe=""),
+        }
+        conn.request(
+            "GET", f"/api/portal/history?limit={max(1, min(int(limit), 200))}",
+            headers=headers,
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read()) if resp.status == 200 else {}
+        return [item for item in payload.get("items", []) if isinstance(item, dict)]
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _feishu_daily_task_completed(user: dict, today: str) -> bool:
+    # Feishu Agent owns its run history in a separate SQLite database, so it
+    # cannot be inferred from the other generators' /api/jobs records.
+    for record in _fetch_feishu_history(
+        str(user["user_id"]), user.get("username", ""), limit=200,
+    ):
+        if record.get("status") != "done":
+            continue
+        try:
+            completed = datetime.fromtimestamp(
+                float(record.get("completed_at") or 0)
+            ).astimezone()
+        except (TypeError, ValueError, OSError, OverflowError):
+            continue
+        if completed.date().isoformat() == today:
+            return True
+    return False
+
+
+cat_skin_manager = CatSkinManager(
+    CAT_SKINS_PATH, CAT_CLASSIC_PATH, cat_skin_generator,
+    task_completed_fn=_feishu_daily_task_completed,
+)
+cat_experiment_service = CatExperimentService(CAT_SKINS_DIR, cat_skin_generator)
 
 
 # ─── HTTP Handler ──────────────────────────────────────────────────────────────
@@ -1776,6 +1896,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(200, cat_skin_manager.wardrobe(user))
         elif path == "/api/cat/experiment/config":
             self._cat_experiment_config(user)
+        elif path == "/api/cat/concepts/status":
+            self._cat_concepts_status(user)
         elif path == "/api/users":
             if not auth.has_permission(user, "manage_users"):
                 self._json(403, {"ok": False, "error": "forbidden"})
@@ -1834,6 +1956,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/cat/experiment/generate":
             self._cat_experiment_generate(user)
+            return
+        if path == "/api/cat/concepts/refresh":
+            self._cat_concepts_refresh(user)
             return
         if path == "/api/cat/equip":
             self._cat_equip(user)
@@ -1943,6 +2068,9 @@ class Handler(SimpleHTTPRequestHandler):
     def _cat_open(self, user: dict):
         try:
             skin = cat_skin_manager.open_gift(user)
+        except CatDailyTaskRequiredError as exc:
+            self._json(409, {"ok": False, "code": "daily_task_required", "error": str(exc)})
+            return
         except CatDailyLimitError as exc:
             self._json(409, {"ok": False, "code": "daily_limit", "error": str(exc)})
             return
@@ -1958,7 +2086,26 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(500, {"ok": False, "code": "generation_failed", "error": "猫咪生成失败，本次机会未消耗"})
             return
         wardrobe = cat_skin_manager.wardrobe(user)
-        self._json(200, {"ok": True, "skin": skin, "can_open": wardrobe["can_open"], "equipped_skin_id": skin["id"]})
+        self._json(200, {
+            "ok": True, "skin": skin, "can_open": wardrobe["can_open"],
+            "equipped_skin_id": skin["id"],
+            "opens_today": wardrobe.get("opens_today", 0),
+            "daily_limit": wardrobe.get("daily_limit"),
+            "daily_task": wardrobe.get("daily_task", {}),
+        })
+
+    def _cat_concepts_status(self, user: dict):
+        if user.get("role") != "admin":
+            self._json(403, {"ok": False, "error": "管理员才能查看猫咪热点状态"})
+            return
+        self._json(200, {"ok": True, **cat_concept_store.status()})
+
+    def _cat_concepts_refresh(self, user: dict):
+        if user.get("role") != "admin":
+            self._json(403, {"ok": False, "error": "管理员才能刷新猫咪热点"})
+            return
+        result = cat_concept_store.refresh()
+        self._json(200 if result.get("ok") else 502, result)
 
     def _cat_experiment_config(self, user: dict):
         if user.get("role") != "admin":
@@ -1973,16 +2120,20 @@ class Handler(SimpleHTTPRequestHandler):
         body = self._read_json()
         if body is None:
             return
-        experiment_id = str(body.get("experiment_id") or "orange_tabby").strip()
+        rarity = str(body.get("rarity") or "common").strip()
+        name = str(body.get("name") or "").strip()
         raw_seed = body.get("seed")
         try:
             seed = int(raw_seed) if raw_seed not in (None, "") else None
-            result = cat_experiment_service.generate(experiment_id, seed)
+            result = cat_experiment_service.generate(rarity, name, seed)
         except KeyError as exc:
             self._json(400, {"ok": False, "error": str(exc).strip("'")})
             return
-        except (TypeError, ValueError):
-            self._json(400, {"ok": False, "error": "seed 必须是整数"})
+        except (TypeError, ValueError) as exc:
+            self._json(400, {"ok": False, "error": str(exc)})
+            return
+        except RuntimeError as exc:
+            self._json(503, {"ok": False, "error": str(exc)})
             return
         if not result["validation"]["passed"]:
             self._json(422, result)
@@ -2519,17 +2670,48 @@ class Handler(SimpleHTTPRequestHandler):
             days = int(_first("days", "30"))
         except ValueError:
             days = 30
-        items, total = tracker.query_history(
+        kind = _first("kind", "all")
+        status_filter = _first("status", "all")
+        query = _first("q", "")
+        user_filter = _first("user", "")
+        # Fetch the local set before pagination, then merge the independently
+        # persisted Feishu Agent runs and paginate the combined timeline.
+        local_items, _ = tracker.query_history(
             username=user.get("username", ""),
             is_admin=is_admin,
-            days=days,
-            kind=_first("kind", "all"),
-            status=_first("status", "all"),
-            q=_first("q", ""),
-            user_filter=_first("user", ""),
-            limit=limit,
-            offset=offset,
+            days=days, kind=kind, status=status_filter, q=query,
+            user_filter=user_filter, limit=HISTORY_CAP, offset=0,
         )
+        merged = list(local_items)
+        if is_admin:
+            portal_users = [u for u in auth.list_users() if u.get("enabled", True)]
+            if user_filter:
+                portal_users = [u for u in portal_users if u.get("username") == user_filter]
+        else:
+            portal_users = [{"id": user["user_id"], "username": user.get("username", "")}]
+        cutoff = time.time() - max(1, min(days, 365)) * 86400
+        for portal_user in portal_users:
+            for rec in _fetch_feishu_history(
+                str(portal_user.get("id", "")), portal_user.get("username", ""), limit=200,
+            ):
+                try:
+                    submitted_at = float(rec.get("submitted_at") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if submitted_at < cutoff:
+                    continue
+                if kind != "all" and rec.get("kind") != kind:
+                    continue
+                if status_filter != "all" and rec.get("status") != status_filter:
+                    continue
+                if query and query.lower() not in f"{rec.get('prompt', '')} {rec.get('job_id', '')}".lower():
+                    continue
+                if user_filter and rec.get("username") != user_filter:
+                    continue
+                merged.append(rec)
+        merged.sort(key=lambda rec: float(rec.get("submitted_at") or 0), reverse=True)
+        total = len(merged)
+        items = merged[offset:offset + limit]
         out = []
         for rec in items:
             spec = SPEC_BY_NAME.get(rec.get("app", ""))
@@ -2541,9 +2723,11 @@ class Handler(SimpleHTTPRequestHandler):
         if not (auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"):
             self._json(403, {"ok": False, "error": "forbidden"})
             return
-        users = sorted({r.get("username", "") for r in tracker.history_records().values()
-                        if isinstance(r, dict) and r.get("username")})
-        self._json(200, {"ok": True, "users": users})
+        users = {r.get("username", "") for r in tracker.history_records().values()
+                 if isinstance(r, dict) and r.get("username")}
+        users.update(u.get("username", "") for u in auth.list_users()
+                     if u.get("enabled", True) and u.get("username"))
+        self._json(200, {"ok": True, "users": sorted(users)})
 
     # ── Proxy ─────────────────────────────────────────────────────────────────
 
@@ -2887,6 +3071,13 @@ def main():
         name="daily_report_scheduler",
     ).start()
     print("  [daily_report] scheduler thread started", flush=True)
+
+    threading.Thread(
+        target=cat_concept_store.scheduler_loop,
+        daemon=True,
+        name="cat_trend_scheduler",
+    ).start()
+    print("  [cat-trends] scheduler thread started", flush=True)
 
     if certs:
         threading.Thread(

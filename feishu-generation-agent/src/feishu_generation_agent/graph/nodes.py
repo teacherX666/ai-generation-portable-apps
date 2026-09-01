@@ -154,6 +154,18 @@ def _safe_error(exc: BaseException) -> AgentError:
                 )
                 else "The request is invalid"
             )
+        elif (
+            category is ErrorCategory.PERMISSION
+            and "GET /open-apis/wiki/v2/spaces/get_node"
+            in exc.detail.technical_detail
+            and "code=131006" in exc.detail.technical_detail
+        ):
+            # 131006 是飞书明确返回的 Wiki 节点读取权限错误。这里使用固定文案，
+            # 既给用户可执行的处理建议，也不会把接口响应或凭证暴露到页面。
+            message = (
+                "飞书应用无权读取该 Wiki 文档。请在知识库中授予应用读取权限；"
+                "如果链接来自其他飞书企业，请先将文档复制到当前企业后重试。"
+            )
         else:
             message = "The workflow node could not be completed"
     elif isinstance(exc, ValidationError):
