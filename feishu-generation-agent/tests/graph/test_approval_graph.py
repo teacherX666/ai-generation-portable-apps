@@ -488,7 +488,6 @@ async def test_local_prime_fails_closed_for_legacy_planner_without_exact_replay(
     assert raised.value.detail.category == ErrorCategory.VALIDATION
     assert legacy_planner.plan_calls == 0
 
-
 @pytest.mark.parametrize(
     ("source", "version", "prompt_text"),
     [
@@ -1141,7 +1140,6 @@ async def test_approve_replans_if_source_revision_changed(
         (event["node"], event["status"]) for event in events
     ]
 
-
 @pytest.mark.parametrize(
     "resume_payload",
     [
@@ -1234,6 +1232,41 @@ async def test_node_failure_records_only_safe_error_summary(
         ("ingest_source", "failed"),
     ]
     assert secret not in events[-1]["summary"]
+
+
+async def test_wiki_permission_failure_keeps_actionable_safe_message(
+    fake_services: GraphServices,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fail_ingest(request: Any):
+        del request
+        raise AgentError(
+            ErrorDetail(
+                category=ErrorCategory.PERMISSION,
+                message="底层文案不会被直接信任",
+                technical_detail=(
+                    "GET /open-apis/wiki/v2/spaces/get_node: HTTP 400, "
+                    "code=131006, msg=permission denied"
+                ),
+                retryable=False,
+            )
+        )
+
+    monkeypatch.setattr(fake_services.document_source, "ingest", fail_ingest)
+    graph = build_graph(fake_services, InMemorySaver())
+
+    with pytest.raises(AgentError) as raised:
+        await graph.ainvoke(
+            _input("run-wiki-permission", "thread-wiki-permission"),
+            config=_config("thread-wiki-permission"),
+        )
+
+    assert raised.value.detail.category == ErrorCategory.PERMISSION
+    assert raised.value.detail.message == (
+        "飞书应用无权读取该 Wiki 文档。请在知识库中授予应用读取权限；"
+        "如果链接来自其他飞书企业，请先将文档复制到当前企业后重试。"
+    )
+    assert raised.value.detail.retryable is False
 
 
 async def test_sqlite_checkpointer_is_strict_and_contains_no_secrets(

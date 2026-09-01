@@ -1,10 +1,13 @@
 import asyncio
 import copy
 from contextlib import asynccontextmanager
+import hashlib
+import hmac
 from io import BytesIO
 from pathlib import Path
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,6 +25,7 @@ from feishu_generation_agent.domain.document import (
     RequirementRequest,
     build_planning_prompt_snapshot,
 )
+from feishu_generation_agent.domain.artifact import Artifact
 from feishu_generation_agent.domain.errors import (
     AgentError,
     ErrorCategory,
@@ -303,6 +307,147 @@ async def _prompt_environment(tmp_path: Path, *, expose_store: bool = False):
 
 _USER_A_HEADERS = {"X-Portal-User-Id": "user-a", "X-Username": "%E7%94%B2"}
 _USER_B_HEADERS = {"X-Portal-User-Id": "user-b", "X-Username": "%E4%B9%99"}
+
+
+async def test_portal_history_is_independent_and_owner_scoped(tmp_path: Path) -> None:
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph
+        await repository.create_run(
+            "run-a", "thread-a", "https://acme.feishu.cn/docx/a",
+            owner_user_id="user-a",
+        )
+        await repository.update_run_status(
+            "run-a", "succeeded", owner_user_id="user-a",
+        )
+        await repository.create_run(
+            "run-b", "thread-b", "https://acme.feishu.cn/docx/b",
+            owner_user_id="user-b",
+        )
+        await repository.update_run_status(
+            "run-b", "failed", owner_user_id="user-b",
+        )
+
+        user_a = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+        user_b = await client.get("/api/portal/history", headers=_USER_B_HEADERS)
+        direct = await client.get("/api/portal/history")
+
+    assert user_a.status_code == 200
+    assert [item["job_id"] for item in user_a.json()["items"]] == ["run-a"]
+    assert user_a.json()["items"][0]["username"] == "甲"
+    assert user_a.json()["items"][0]["kind"] == "agent"
+    assert user_a.json()["items"][0]["status"] == "done"
+    assert user_a.json()["items"][0]["completed_at"] is not None
+
+    assert user_b.status_code == 200
+    assert [item["job_id"] for item in user_b.json()["items"]] == ["run-b"]
+    assert user_b.json()["items"][0]["username"] == "乙"
+    assert user_b.json()["items"][0]["status"] == "failed"
+    assert direct.status_code == 403
+
+
+async def test_portal_history_exposes_artifact_preview(tmp_path: Path) -> None:
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph
+        await repository.create_run(
+            "run-video", "thread-video", "https://acme.feishu.cn/docx/video",
+            owner_user_id="user-a",
+        )
+        await repository.update_run_status(
+            "run-video", "succeeded", owner_user_id="user-a",
+        )
+        await repository.save_artifact(
+            "run-video",
+            Artifact(
+                artifact_id="artifact-video-1",
+                task_id="task-1",
+                kind="video",
+                local_path=tmp_path / "outputs" / "runs" / "run-video" / "a.mp4",
+                mime_type="video/mp4",
+                size=123,
+                sha256="sha-video",
+                status="ready",
+            ),
+        )
+
+        response = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["kind"] == "video"
+    assert item["thumb_url"] == "/api/runs/run-video/artifacts/artifact-video-1/content"
+    assert item["results"] == [
+        {
+            "url": "/api/runs/run-video/artifacts/artifact-video-1/content",
+            "kind": "video",
+        },
+    ]
+
+
+def _portal_admin_headers(username_encoded: str, secret: str) -> dict[str, str]:
+    ts = int(time.time())
+    msg = f"{ts}:1:{username_encoded}".encode("utf-8")
+    sig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+    return {
+        "X-Portal-User-Id": "admin-owner",
+        "X-Username": username_encoded,
+        "X-Is-Admin": "1",
+        "X-Portal-Ts": str(ts),
+        "X-Portal-Sig": sig,
+    }
+
+
+async def test_admin_can_read_other_users_artifact_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PORTAL_INTERNAL_TOKEN", "test-secret")
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph
+        await repository.create_run(
+            "run-artifact", "thread-artifact",
+            "https://acme.feishu.cn/docx/artifact", owner_user_id="user-a",
+        )
+        await repository.update_run_status(
+            "run-artifact", "succeeded", owner_user_id="user-a",
+        )
+        artifact_path = (
+            tmp_path / "outputs" / "runs" / "run-artifact"
+            / "tasks" / "task-1" / "video.mp4"
+        )
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_bytes(b"fake-video-content")
+        await repository.save_artifact(
+            "run-artifact",
+            Artifact(
+                artifact_id="artifact-video-1",
+                task_id="task-1",
+                kind="video",
+                local_path=artifact_path,
+                mime_type="video/mp4",
+                size=18,
+                sha256="sha-video",
+                status="ready",
+            ),
+        )
+
+        url = "/api/runs/run-artifact/artifacts/artifact-video-1/content"
+
+        owner = await client.get(url, headers=_USER_A_HEADERS)
+        assert owner.status_code == 200
+
+        other = await client.get(url, headers=_USER_B_HEADERS)
+        assert other.status_code == 404
+
+        admin = await client.get(
+            url,
+            headers=_portal_admin_headers("%E7%AE%A1%E7%90%86%E5%91%98", "test-secret"),
+        )
+        assert admin.status_code == 200
+
+        forged = await client.get(
+            url,
+            headers={"X-Portal-User-Id": "user-b", "X-Username": "%E4%B9%99", "X-Is-Admin": "1"},
+        )
+        assert forged.status_code == 404
 
 
 async def test_portal_reserved_prime_identity_is_rejected(tmp_path: Path) -> None:

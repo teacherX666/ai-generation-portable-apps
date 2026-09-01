@@ -4,7 +4,7 @@ from feishu_generation_agent.config import Settings
 from feishu_generation_agent.graph.runtime import GraphRuntime
 
 
-def test_rebuild_validation_issues_logs_underlying_error_and_fails_closed(
+def test_rebuild_validation_issues_fails_closed_silently_when_document_missing(
     caplog,
 ):
     runtime = GraphRuntime.__new__(GraphRuntime)
@@ -21,7 +21,7 @@ def test_rebuild_validation_issues_logs_underlying_error_and_fails_closed(
         )
 
     assert result == ["审批校验状态无效，请重新读取后再审批"]
-    assert any(
+    assert not any(
         "重建审批校验问题失败" in record.message
         for record in caplog.records
     )

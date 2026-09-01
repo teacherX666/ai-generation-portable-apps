@@ -729,10 +729,22 @@ class GraphRuntime:
         plan: TaskPlan | None,
         records: list[IngestIssueRecord],
     ) -> list[str]:
+        document: NormalizedDocument | None = None
+        for key in ("normalized_document", "source_document"):
+            raw = state.get(key)
+            if raw is None:
+                continue
+            try:
+                document = NormalizedDocument.model_validate(raw)
+                break
+            except Exception:
+                _LOGGER.exception("审批文档解析失败")
+                break
+        if document is None or plan is None:
+            # 失败任务没有文档（或计划无效），属于预期情况，静默返回兜底，
+            # 避免每次读取历史失败任务都打印一条完整 traceback 刷屏。
+            return ["审批校验状态无效，请重新读取后再审批"]
         try:
-            if plan is None:
-                raise ValueError("approval plan is invalid")
-            document = self._typed_document_for_view(state)
             issues = validate_plan(
                 plan,
                 document,
@@ -750,16 +762,6 @@ class GraphRuntime:
             _LOGGER.exception("重建审批校验问题失败，无法生成校验列表")
             return ["审批校验状态无效，请重新读取后再审批"]
         return list(dict.fromkeys(issues))
-
-    @staticmethod
-    def _typed_document_for_view(
-        state: dict[str, Any],
-    ) -> NormalizedDocument:
-        for key in ("normalized_document", "source_document"):
-            document = state.get(key)
-            if document is not None:
-                return NormalizedDocument.model_validate(document)
-        raise ValueError("approval document is missing")
 
     async def resume_run(
         self,
