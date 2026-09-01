@@ -68,11 +68,44 @@ def _submit(mod, monkeypatch, body, openapi_side_effect=None):
 
 def test_duration_out_of_range_blocked(tmp_path, monkeypatch):
     mod = _load_portrait_app()
+    # 默认模型是 2.0（上限 15 秒）
     for bad in (3, 18, 20, 0, 16, 100):
         handler = _submit(mod, monkeypatch,
                           {"asset_id": "asset-1", "prompt": "p", "duration": bad})
         assert handler.status_code == 400, f"duration={bad} 应被拦截"
         assert "4~15" in handler.response_body["error"]
+
+
+def test_duration_range_follows_model(tmp_path, monkeypatch):
+    mod = _load_portrait_app()
+    monkeypatch.setattr(mod, "JOBS", {})
+
+    def fake_openapi(action, body, **kw):
+        return {"Result": {"Id": body["Id"], "Status": "Active"}}
+
+    # 2.0 模型：16~30 秒全部拦截
+    for bad in (16, 20, 30):
+        handler = _submit(mod, monkeypatch,
+                          {"asset_id": "asset-1", "prompt": "p", "duration": bad,
+                           "model": "doubao-seedance-2-0-260128"},
+                          openapi_side_effect=fake_openapi)
+        assert handler.status_code == 400, f"2.0 duration={bad} 应被拦截"
+        assert "4~15" in handler.response_body["error"]
+    # 2.5 模型：16~30 秒合法放行
+    for ok in (16, 20, 30):
+        handler = _submit(mod, monkeypatch,
+                          {"asset_id": "asset-1", "prompt": "p", "duration": ok,
+                           "model": "doubao-seedance-2-5-260628"},
+                          openapi_side_effect=fake_openapi)
+        assert handler.status_code == 201, f"2.5 duration={ok} 应放行"
+    # 2.5 模型：31+ 与 <4 仍拦截
+    for bad in (3, 31, 60):
+        handler = _submit(mod, monkeypatch,
+                          {"asset_id": "asset-1", "prompt": "p", "duration": bad,
+                           "model": "doubao-seedance-2-5-260628"},
+                          openapi_side_effect=fake_openapi)
+        assert handler.status_code == 400, f"2.5 duration={bad} 应被拦截"
+        assert "4~30" in handler.response_body["error"]
 
 
 def test_duration_valid_passes_guard_and_checks_asset(tmp_path, monkeypatch):
