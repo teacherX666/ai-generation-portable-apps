@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import colorsys
+import hashlib
 import json
 import os
 import random
@@ -18,6 +20,31 @@ from .validate_skin import validate_data
 
 RARITY_TABLE = (("common", 60), ("rare", 28), ("epic", 10), ("legendary", 2))
 RARITY_LABELS = {"common": "普通", "rare": "稀有", "epic": "史诗", "legendary": "传说"}
+# 头部装饰形状由程序统一控制，AI 只负责选择类型和配色，避免把皇冠、
+# 光环、角、帽子画成糊成一团的实心像素。
+HEADWEAR_TEMPLATES = {
+    "crown": [
+        (6, 0, "A"), (10, 0, "A"), (14, 0, "A"),
+        (5, 1, "A"), (6, 1, "A"), (8, 1, "A"), (9, 1, "A"), (10, 1, "A"),
+        (12, 1, "A"), (13, 1, "A"), (14, 1, "A"),
+        (5, 2, "A"), (6, 2, "A"), (7, 2, "A"), (8, 2, "A"), (9, 2, "A"),
+        (10, 2, "A"), (11, 2, "A"), (12, 2, "A"), (13, 2, "A"), (14, 2, "A"), (15, 2, "A"),
+        (10, 3, "N"),
+    ],
+    "halo": [
+        (7, 0, "A"), (8, 0, "A"), (9, 0, "A"), (10, 0, "A"), (11, 0, "A"),
+        (12, 0, "A"), (13, 0, "A"), (14, 0, "A"), (15, 0, "A"),
+    ],
+    "horns": [
+        (5, 0, "A"), (6, 0, "A"), (5, 1, "A"),
+        (14, 0, "A"), (15, 0, "A"), (15, 1, "A"),
+    ],
+    "cap": [
+        (7, 0, "A"), (8, 0, "A"), (9, 0, "A"), (10, 0, "A"), (11, 0, "A"),
+        (12, 0, "A"), (13, 0, "A"), (14, 0, "A"), (15, 0, "A"),
+        (8, 1, "A"), (9, 1, "A"), (10, 1, "A"), (11, 1, "A"), (12, 1, "A"), (13, 1, "A"),
+    ],
+}
 RARITY_THEMES = {
     "common": [
         ("orange_tabby", "橘猫", "tabby", "暖橘、奶油色"),
@@ -161,19 +188,23 @@ class CatDailyLimitError(RuntimeError):
     pass
 
 
+class CatDailyTaskRequiredError(CatDailyLimitError):
+    pass
+
+
 class CatGenerationBusyError(RuntimeError):
     pass
 
 
 class CatSkinGenerator:
-    """Generate a genuinely new 16×16 silhouette, then enforce cat anatomy.
+    """Generate theme variations on the frozen Classic Black Master V1 body.
 
-    The model owns every pixel in frame A, including transparent pixels.  The
-    server does not copy a catalog silhouette: it only repairs the small set of
-    facial/body anchors, derives the running frame and computes parts metadata.
+    The renderer always owns the 16×16 anatomy and both gait frames.  The model
+    may only propose palette roles plus coordinate operations inside explicitly
+    allowed pattern/accessory cells; it can never redraw the cat silhouette.
     """
 
-    def __init__(self, root: Path, key_loader: Callable[[], str] | None = None):
+    def __init__(self, root: Path, key_loader: Callable[[], str] | None = None, concept_store=None):
         self.root = root
         self.anatomy = _read_json(root / "cat-anatomy-v1.json")
         self.classic = _read_json(root / "classic-black-v1.json")
@@ -181,7 +212,9 @@ class CatSkinGenerator:
         self.master = _read_json(root / "master-template-v1.json")
         self.master_cells = {(cell["x"], cell["y"]): cell for cell in self.master["cells"]}
         self.key_loader = key_loader or (lambda: "")
+        self.concept_store = concept_store
         self._recent_silhouettes: list[tuple[str, ...]] = []
+        self._recent_visuals: list[tuple[str, ...]] = []
         self._recent_signatures: list[str] = []
         self._recent_themes: list[str] = []
         self._recent_names: list[str] = []
@@ -209,28 +242,36 @@ class CatSkinGenerator:
             "response_format": {"type": "json_object"},
         }
         if provider == "openai":
-            body["max_completion_tokens"] = 400
+            body["max_completion_tokens"] = int(os.environ.get("CAT_SKIN_MAX_TOKENS", "2200"))
         else:
-            body["max_tokens"] = 400
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            method="POST",
-        )
+            body["max_tokens"] = int(os.environ.get("CAT_SKIN_MAX_TOKENS", "2200"))
+        payload_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        timeout = float(os.environ.get("CAT_SKIN_TIMEOUT_SECONDS", "15"))
+        max_attempts = max(1, int(os.environ.get("CAT_SKIN_HTTP_ATTEMPTS", "2")))
         started = time.monotonic()
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            print(f"  [cat-skin] {provider}/{model} responded in {time.monotonic() - started:.1f}s", flush=True)
-            return payload["choices"][0]["message"]["content"]
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:300]
-            raise CatGenerationError(f"{provider} API 返回 {exc.code}: {detail}") from exc
-        except CatGenerationError:
-            raise
-        except Exception as exc:
-            raise CatGenerationError(f"调用猫咪生成模型失败: {exc}") from exc
+        last_network_error: Exception | None = None
+        for attempt in range(max_attempts):
+            req = urllib.request.Request(
+                url,
+                data=payload_bytes,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                print(f"  [cat-skin] {provider}/{model} responded in {time.monotonic() - started:.1f}s", flush=True)
+                return payload["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:300]
+                raise CatGenerationError(f"{provider} API 返回 {exc.code}: {detail}") from exc
+            except Exception as exc:
+                last_network_error = exc
+                if attempt < max_attempts - 1:
+                    print(f"  [cat-skin] {provider} attempt {attempt + 1} failed ({exc}), retrying", flush=True)
+                    time.sleep(0.4)
+                    continue
+        raise CatGenerationError(f"调用猫咪生成模型失败: {last_network_error}")
 
     @staticmethod
     def _draw_rarity(rng: random.Random) -> str:
@@ -284,6 +325,217 @@ class CatSkinGenerator:
             "O": "#20232A", "F": "#596273", "I": "#79DDA3",
             "P": "#111318", "N": "#D65B70", "S": "#D5C4B7",
         }.get(key, "#FFFFFF")
+
+    @staticmethod
+    def _hex_to_hls(value: object) -> tuple[float, float, float] | None:
+        if not isinstance(value, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+            return None
+        red, green, blue = (int(value[index:index + 2], 16) / 255 for index in (1, 3, 5))
+        hue, lightness, saturation = colorsys.rgb_to_hls(red, green, blue)
+        return hue, lightness, saturation
+
+    @staticmethod
+    def _hls_hex(hue: float, lightness: float, saturation: float) -> str:
+        red, green, blue = colorsys.hls_to_rgb(hue % 1.0, max(0.0, min(1.0, lightness)), max(0.0, min(1.0, saturation)))
+        return "#{:02X}{:02X}{:02X}".format(round(red * 255), round(green * 255), round(blue * 255))
+
+    @staticmethod
+    def _hue_distance(left: float, right: float) -> float:
+        distance = abs(left - right) % 1.0
+        return min(distance, 1.0 - distance)
+
+    @staticmethod
+    def _semantic_color_hint(text: str, role: str) -> dict | None:
+        """Extract a coarse color intention from Chinese visual anchors.
+
+        This deliberately recognizes color *roles* rather than every word in a
+        concept.  For example, ``绿色眼睛`` may steer I but must never turn the
+        whole Egyptian Mau green.
+        """
+        lower = text.lower()
+        color_words = (
+            ("紫貂", 0.075, 0.40, 0.45), ("貂色", 0.075, 0.40, 0.45),
+            ("铜金", 0.105, 0.72, 0.58), ("玫瑰金", 0.035, 0.58, 0.67),
+            ("深夜蓝", 0.625, 0.48, 0.24), ("星蓝", 0.615, 0.62, 0.48),
+            ("天蓝", 0.555, 0.62, 0.68), ("青蓝", 0.535, 0.66, 0.50),
+            ("青绿", 0.455, 0.62, 0.48), ("奶油", 0.115, 0.34, 0.82),
+            ("奶白", 0.105, 0.18, 0.88), ("银白", 0.610, 0.12, 0.80),
+            ("蓝灰", 0.610, 0.22, 0.52), ("银灰", 0.610, 0.13, 0.58),
+            ("棕灰", 0.080, 0.20, 0.46), ("黑灰", 0.610, 0.10, 0.27),
+            ("深灰", 0.610, 0.10, 0.30), ("浅灰", 0.610, 0.10, 0.70),
+            ("明黄", 0.145, 0.76, 0.60), ("金色", 0.125, 0.72, 0.58),
+            ("金", 0.125, 0.70, 0.56), ("黄色", 0.145, 0.70, 0.60),
+            ("黄", 0.145, 0.68, 0.58), ("橘", 0.075, 0.66, 0.58),
+            ("橙", 0.065, 0.70, 0.56), ("赤", 0.010, 0.68, 0.52),
+            ("红棕", 0.035, 0.52, 0.44), ("棕红", 0.030, 0.52, 0.44),
+            ("红", 0.985, 0.66, 0.54), ("粉", 0.955, 0.55, 0.68),
+            ("紫", 0.775, 0.58, 0.54), ("蓝", 0.605, 0.62, 0.56),
+            ("青", 0.505, 0.62, 0.52), ("绿", 0.355, 0.58, 0.54),
+            ("棕", 0.075, 0.42, 0.42), ("灰", 0.610, 0.08, 0.52),
+            ("白", 0.105, 0.10, 0.88), ("黑", 0.620, 0.08, 0.22),
+        )
+        role_markers = {
+            "eye": ("眼睛", "眼", "瞳"),
+            "body": ("主体", "身体", "毛", "皮毛", "短毛"),
+            "secondary": ("斑点", "条纹", "虎斑", "色块", "面罩", "袜", "花纹"),
+            "accent": ("光效", "流光", "光带", "霓虹", "粒子", "装饰"),
+        }
+        markers = role_markers.get(role, ())
+        clauses = re.split(r"[，、；;。|/\s]+", lower)
+        relevant = [clause for clause in clauses if any(marker in clause for marker in markers)]
+        # Explicit role phrases win. If none exists, only accents may consume a
+        # free-standing color list such as “青绿紫流光色带”.
+        haystacks = relevant or ([lower] if role == "accent" else [])
+        for clause in haystacks:
+            for word, hue, saturation, lightness in color_words:
+                if word in clause:
+                    return {"word": word, "h": hue, "s": saturation, "l": lightness}
+        return None
+
+    def _harmonize_concept_palette(self, value: object, fallback: dict, max_colors: int, concept: dict) -> dict:
+        """Turn an AI suggestion into a semantic, readable and coordinated palette.
+
+        AI remains useful for choosing a theme direction, but code owns color
+        roles and contrast. Visual anchors such as “绿色眼睛” and “白色主体”
+        override arbitrary model colors, while category styles prevent natural
+        breeds and food cats from receiving unrelated neon combinations.
+        """
+        source = value if isinstance(value, dict) else {}
+        parsed = {key: self._hex_to_hls(source.get(key)) for key in ("O", "F", "S", "I", "A", "W")}
+        fallback_parsed = {key: self._hex_to_hls(fallback.get(key)) for key in ("O", "F", "S", "I", "A", "W")}
+        identity = "|".join(str(concept.get(key) or "") for key in ("id", "name", "category", "source_title"))
+        digest = hashlib.sha256(identity.encode("utf-8")).digest()
+        fallback_hue = (digest[0] / 255.0 + 0.03) % 1.0
+        category = str(concept.get("category") or "abstract")
+        concept_id = str(concept.get("id") or "")
+        text = " ".join(str(concept.get(key) or "") for key in ("id", "name", "source_title")) + " " + " ".join(map(str, concept.get("visual_anchors") or []))
+        lower = text.lower()
+
+        body_hint = self._semantic_color_hint(text, "body")
+        eye_hint = self._semantic_color_hint(text, "eye")
+        secondary_hint = self._semantic_color_hint(text, "secondary")
+        accent_hint = self._semantic_color_hint(text, "accent")
+
+        # Prefer an explicit body anchor, then the AI fur hue, then any usable
+        # proposal. Identical/grayscale model output gets a concept-stable hue.
+        candidates = [parsed.get("F"), parsed.get("S"), parsed.get("A"), fallback_parsed.get("F")]
+        seed = next((item for item in candidates if item and item[2] >= 0.12), None)
+        hue = body_hint["h"] if body_hint else (seed[0] if seed else fallback_hue)
+        raw_f = parsed.get("F")
+        natural_categories = {"breed", "historical_breed"}
+        if category in natural_categories and not body_hint and not seed:
+            # Grayscale/empty AI output for a real breed should become a
+            # plausible coat, not a saturated random rainbow color.
+            natural_furs = (
+                (0.075, 0.38, 0.48),  # warm brown
+                (0.105, 0.34, 0.68),  # sand / cream
+                (0.600, 0.16, 0.56),  # blue gray
+                (0.080, 0.18, 0.44),  # brown gray
+                (0.120, 0.16, 0.78),  # pale cream
+            )
+            hue, natural_saturation, natural_lightness = natural_furs[digest[0] % len(natural_furs)]
+        else:
+            natural_saturation = natural_lightness = None
+
+        category_style = {
+            "breed": (0.34, 0.56), "historical_breed": (0.32, 0.54),
+            "food": (0.48, 0.64), "object": (0.38, 0.50),
+            "profession": (0.44, 0.53), "abstract": (0.58, 0.52), "hot": (0.56, 0.55),
+        }
+        saturation, lightness = category_style.get(category, (0.48, 0.54))
+        if natural_saturation is not None:
+            saturation, lightness = natural_saturation, natural_lightness
+        if raw_f and raw_f[2] >= 0.12:
+            saturation = max(0.20, min(0.50 if category in natural_categories else 0.72, raw_f[2]))
+            lightness = max(0.34, min(0.72, raw_f[1]))
+        if body_hint:
+            saturation, lightness = body_hint["s"], body_hint["l"]
+
+        dark_theme = any(token in lower for token in ("黑猫", "黑豹", "bombay", "暗影", "黑暗", "夜猫", "him", "煤炭"))
+        light_theme = any(token in lower for token in ("白猫", "雪猫", "snow", "白色主体", "奶白", "云朵"))
+        if dark_theme and not body_hint:
+            hue, saturation, lightness = 0.62, 0.12, 0.24
+        elif light_theme and not body_hint:
+            saturation, lightness = min(saturation, 0.20), 0.86
+
+        # A few multi-colour concepts describe a relationship rather than just
+        # one color word. These are general visual rules, not fixed skin themes.
+        is_rgb_object = category == "object" and any(token in lower for token in ("rgb", "电路", "霓虹"))
+        is_aurora = "极光" in lower or ("深夜蓝主体" in lower and "流光" in lower)
+        is_banana = "香蕉" in lower or "明黄色香蕉" in lower
+        if is_rgb_object:
+            hue, saturation, lightness = 0.61, 0.11, 0.29
+        if is_aurora:
+            hue, saturation, lightness = 0.625, 0.48, 0.26
+        if is_banana:
+            hue, saturation, lightness = 0.145, 0.68, 0.60
+
+        direction = -1 if digest[1] % 2 else 1
+        outline_lightness = max(0.055, min(0.27, lightness - 0.32))
+        outline_saturation = min(0.38, max(0.08, saturation * 0.55))
+
+        # Natural breeds and foods stay analogous. Objects use a neutral body
+        # plus one vivid signal color; abstract concepts may use wider harmony.
+        if secondary_hint:
+            secondary_hue, secondary_saturation, secondary_lightness = secondary_hint["h"], secondary_hint["s"], secondary_hint["l"]
+        elif is_rgb_object:
+            secondary_hue, secondary_saturation, secondary_lightness = 0.50, 0.72, 0.54
+        elif is_aurora:
+            secondary_hue, secondary_saturation, secondary_lightness = 0.46, 0.68, 0.57
+        elif is_banana:
+            secondary_hue, secondary_saturation, secondary_lightness = 0.105, 0.34, 0.82
+        elif category in {"breed", "historical_breed", "food"}:
+            secondary_hue = (hue + direction * (0.035 + digest[2] / 5100.0)) % 1.0
+            secondary_saturation = max(0.16, min(0.52, saturation * 0.72))
+            secondary_lightness = 0.78 if lightness < 0.60 else max(0.35, lightness - 0.25)
+        else:
+            secondary_raw = parsed.get("S")
+            if secondary_raw and secondary_raw[2] >= 0.18 and self._hue_distance(hue, secondary_raw[0]) >= 0.06:
+                secondary_hue = secondary_raw[0]
+                secondary_saturation = max(0.28, min(0.68, secondary_raw[2]))
+            else:
+                spread = 0.10 if category in {"object", "profession"} else 0.18
+                secondary_hue = (hue + direction * spread) % 1.0
+                secondary_saturation = max(0.26, min(0.68, saturation * 0.92))
+            secondary_lightness = max(0.30, min(0.82, lightness + (0.25 if lightness < 0.58 else -0.22)))
+
+        if eye_hint:
+            eye_hue, eye_saturation, eye_lightness = eye_hint["h"], max(0.48, eye_hint["s"]), max(0.58, min(0.72, eye_hint["l"] + 0.08))
+        elif category in natural_categories:
+            # Real cats mostly read better with amber, green or blue eyes than
+            # with a mathematically complementary neon color.
+            natural_eyes = ((0.105, 0.58, 0.62), (0.345, 0.48, 0.61), (0.585, 0.52, 0.65))
+            eye_hue, eye_saturation, eye_lightness = natural_eyes[digest[3] % len(natural_eyes)]
+        else:
+            eye_hue = (hue + (0.38 if digest[3] % 2 else 0.48)) % 1.0
+            eye_saturation, eye_lightness = 0.68, 0.68
+            if parsed.get("I") and parsed["I"][2] >= 0.30 and self._hue_distance(hue, parsed["I"][0]) >= 0.16:
+                eye_hue = parsed["I"][0]
+
+        accessory_hue = accent_hint["h"] if accent_hint else (hue + direction * 0.14) % 1.0
+        if not accent_hint and parsed.get("A") and parsed["A"][2] >= 0.25:
+            accessory_hue = parsed["A"][0]
+        if is_rgb_object:
+            accessory_hue = 0.50
+        elif is_aurora:
+            accessory_hue = 0.78
+        elif is_banana:
+            accessory_hue = 0.105
+
+        palette = {
+            "O": self._hls_hex(hue, outline_lightness, outline_saturation),
+            "F": self._hls_hex(hue, lightness, saturation),
+            "I": self._hls_hex(eye_hue, eye_lightness, eye_saturation),
+            "P": self._hls_hex(eye_hue, 0.13, 0.52),
+            "N": self._hls_hex(0.975 + (digest[4] / 2550.0), 0.62, 0.54),
+            "S": self._hls_hex(secondary_hue, secondary_lightness, secondary_saturation),
+        }
+        if max_colors >= 7 and ("A" in source or "A" in fallback):
+            palette["A"] = self._hls_hex(accessory_hue, 0.60, 0.72)
+        if max_colors >= 8 and ("W" in source or "W" in fallback):
+            wing_hue = 0.78 if is_aurora else ((accessory_hue + 0.065) % 1.0)
+            palette["W"] = self._hls_hex(wing_hue, 0.82, 0.40)
+        return palette
 
     @staticmethod
     def _parse_frame(rows: object, palette: dict) -> list[list[str]]:
@@ -769,29 +1021,326 @@ class CatSkinGenerator:
             return ""
         return CatSkinGenerator._design_signature(str(skin.get("theme") or ""), recipe)
 
-    def generate_with_history(self, recent_skins: list[dict] | None = None, rng: random.Random | None = None) -> dict:
-        """Generate with a five-theme cooldown and twenty-recipe cooldown.
+    @staticmethod
+    def _concept_source(concept: dict) -> dict:
+        return {
+            key: concept.get(key)
+            for key in ("source_name", "source_title", "source_id", "source_url", "collected_at", "rank")
+            if concept.get(key) not in (None, "")
+        }
 
-        Recent wardrobe recipes are accepted so restart does not immediately
-        bring back the same cat. In-memory history also protects rapid admin
-        testing before the next wardrobe read.
-        """
-        rng = rng or random.SystemRandom()
-        recent_skins = recent_skins or []
+    @staticmethod
+    def _clean_generated_name(raw_name: object, concept: dict, blocked_names: set[str]) -> str:
+        if concept.get("name_locked"):
+            return str(concept.get("name") or "像素猫")
+        name = re.sub(r"[\s《》【】（）()，,。.!！?？:：]+", "", str(raw_name or ""))
+        if not name.endswith("猫") or not (2 <= len(name) <= 4) or name in blocked_names:
+            base = str(concept.get("name") or "像素猫")
+            if base not in blocked_names:
+                return base
+            stem = base[:-1] if base.endswith("猫") else base
+            for suffix in ("影猫", "灵猫", "像素猫", "小猫"):
+                candidate = (stem[:5] + suffix)[:10]
+                if candidate not in blocked_names:
+                    return candidate
+            return base
+        return name
+
+    @staticmethod
+    def _visual_signature(skin: dict) -> tuple[str, ...]:
+        frames = skin.get("frames") if isinstance(skin, dict) else {}
+        rows = frames.get("a") if isinstance(frames, dict) else None
+        palette = skin.get("palette") if isinstance(skin, dict) else {}
+        if not isinstance(rows, list) or len(rows) != 16 or not isinstance(palette, dict):
+            return tuple()
+        # Compare rendered colors, not semantic letters. This keeps fixed-body
+        # cats distinguishable when their palette changes but their anatomy does not.
+        return tuple(palette.get(code, ".") for row in rows[:12] for code in str(row)[:16])
+
+    @staticmethod
+    def _visual_distance(left: tuple[str, ...], right: tuple[str, ...]) -> int:
+        if not left or not right:
+            return 999
+        return sum(a != b for a, b in zip(left, right))
+
+    def _is_distinct_visual(self, skin: dict, recent_skins: list[dict]) -> bool:
+        signature = self._visual_signature(skin)
+        known = [self._visual_signature(item) for item in recent_skins[-20:]]
+        with self._recent_lock:
+            known.extend(self._recent_visuals)
+        threshold = int(os.environ.get("CAT_SKIN_MIN_PIXEL_DIFFERENCE", "14"))
+        return all(self._visual_distance(signature, other) >= threshold for other in known if other)
+
+    def _remember_open_skin(self, skin: dict) -> None:
+        signature = self._visual_signature(skin)
+        with self._recent_lock:
+            self._recent_visuals.append(signature)
+            self._recent_names.append(str(skin.get("name") or ""))
+            del self._recent_visuals[:-24]
+            del self._recent_names[:-20]
+
+    def _pattern_coordinate_pool(self) -> list[tuple[int, int]]:
+        """Only fur-fill cells; outline, face foreground, tail geometry and gait stay frozen."""
+        return [
+            (cell["x"], cell["y"])
+            for cell in self.master["cells"]
+            if cell.get("pattern_allowed")
+            and not cell.get("final_face_foreground")
+            and cell.get("base_code") in {"F", "S"}
+            and cell.get("base_part") not in {"tail", "tail_root", "leg", "paw"}
+        ]
+
+    def _procedural_concept_paint(self, concept: dict, rarity: str, rng: random.Random) -> list[list[object]]:
+        """Template-safe emergency markings when AI is absent or returns no usable operations."""
+        pool = self._pattern_coordinate_pool()
+        rng.shuffle(pool)
+        amount = {"common": 5, "rare": 8, "epic": 12, "legendary": 16}[rarity]
+        return [[x, y, "S"] for x, y in pool[:amount]]
+
+    @staticmethod
+    def _normalize_operations(value: object) -> list[tuple[int, int, str]]:
+        result = []
+        if not isinstance(value, list):
+            return result
+        for item in value:
+            if not isinstance(item, (list, tuple)) or len(item) != 3:
+                continue
+            try:
+                x, y = int(item[0]), int(item[1])
+            except (TypeError, ValueError):
+                continue
+            code = str(item[2])[:1]
+            if 0 <= x < 16 and 0 <= y < 16 and code:
+                result.append((x, y, code))
+        return result
+
+    @staticmethod
+    def _largest_component(points: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+        by_xy = {(x, y): code for x, y, code in points}
+        remaining = set(by_xy)
+        components = []
+        while remaining:
+            stack = [remaining.pop()]
+            component = set(stack)
+            while stack:
+                x, y = stack.pop()
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        neighbor = (x + dx, y + dy)
+                        if neighbor in remaining:
+                            remaining.remove(neighbor)
+                            component.add(neighbor)
+                            stack.append(neighbor)
+            components.append(component)
+        if not components:
+            return []
+        largest = max(components, key=len)
+        return [(x, y, by_xy[(x, y)]) for x, y in sorted(largest, key=lambda p: (p[1], p[0]))]
+
+    @staticmethod
+    def _resolve_headwear_style(accessory: dict, concept: dict) -> str | None:
+        """Pick a headwear template. Explicit AI style wins, then concept hints."""
+        style = str(accessory.get("style") or "").strip().lower()
+        if style in HEADWEAR_TEMPLATES:
+            return style
+        text = " ".join(str(concept.get(key) or "") for key in ("id", "name", "source_title")) + " " + " ".join(map(str, concept.get("visual_anchors") or []))
+        lower = text.lower()
+        if any(token in lower for token in ("国王", "王冠", "皇冠", "金冠", "小王", "king", "crown")):
+            return "crown"
+        if any(token in lower for token in ("光环", "天使", "halo", "angel")):
+            return "halo"
+        if any(token in lower for token in ("恶魔", "角", "horns", "demon", "devil")):
+            return "horns"
+        if any(token in lower for token in ("帽子", "法师帽", "cap", "hat")):
+            return "cap"
+        return None
+
+    @staticmethod
+    def _deblob_ops(ops: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+        """Keep the outline of an over-dense decoration so it never renders as a blob."""
+        coords = {(x, y) for x, y, _ in ops}
+        if len(coords) < 4:
+            return ops
+        min_x = min(x for x, _ in coords)
+        max_x = max(x for x, _ in coords)
+        min_y = min(y for _, y in coords)
+        max_y = max(y for _, y in coords)
+        area = (max_x - min_x + 1) * (max_y - min_y + 1)
+        if area <= 0 or len(coords) / area < 0.62:
+            return ops
+        outlined = []
+        for x, y, code in ops:
+            filled_neighbors = sum(
+                1 for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                if (dx or dy) and (x + dx, y + dy) in coords
+            )
+            if filled_neighbors < 8:
+                outlined.append((x, y, code))
+        return outlined if len(outlined) >= 2 else ops
+
+    def _sanitize_template_plan(self, raw: object, rarity: str, palette: dict, concept: dict, rng: random.Random) -> tuple[list[tuple[int, int, str]], str, list[tuple[int, int, str]], bool]:
+        raw = raw if isinstance(raw, dict) else {}
+        pattern_allowed = set(self._pattern_coordinate_pool())
+        paint_limit = {"common": 8, "rare": 14, "epic": 20, "legendary": 26}[rarity]
+        paint = []
+        seen = set()
+        for x, y, code in self._normalize_operations(raw.get("paint")):
+            if (x, y) in pattern_allowed and code in palette and code not in {".", "O", "I", "P", "N"} and (x, y) not in seen:
+                seen.add((x, y))
+                paint.append((x, y, code))
+            if len(paint) >= paint_limit:
+                break
+        if not paint:
+            paint = [tuple(item) for item in self._procedural_concept_paint(concept, rarity, rng)]
+
+        accessory = raw.get("accessory") if isinstance(raw.get("accessory"), dict) else {}
+        zone = str(accessory.get("zone") or "none")
+        if zone == "none" and rarity in {"epic", "legendary"} and self._resolve_headwear_style(accessory, concept):
+            # 概念明确要求皇冠/光环/角/帽子时，即使 AI 未选装饰也补上
+            zone = "headwear"
+        floating = bool(accessory.get("floating")) and zone == "headwear"
+        if rarity not in {"epic", "legendary"} or zone not in self.master.get("overlay_zones", {}):
+            return paint, "none", [], False
+        contract = self.master["overlay_zones"][zone]
+        if rarity not in contract.get("rarities", []):
+            return paint, "none", [], False
+        allowed = {tuple(point) for point in contract.get("allowed", [])}
+        if zone == "headwear":
+            style = self._resolve_headwear_style(accessory, concept)
+            if style:
+                template_ops = [op for op in HEADWEAR_TEMPLATES[style] if op[:2] in allowed and op[2] in palette]
+                if len(template_ops) >= 3:
+                    return paint, "headwear", template_ops, False
+        # These are the user's frozen identity/anatomy pixels. Overlay contracts
+        # may be expanded later, but no accessory may ever obscure them.
+        globally_protected = {
+            "eye", "pupil", "nose", "mouth_corner", "mouth_center", "chin",
+            "tail", "tail_root", "rump_boundary", "leg", "paw",
+        }
+        forbidden = set(contract.get("forbidden_parts", [])) | globally_protected
+        max_pixels = 18 if rarity == "epic" else 26
+        ops = []
+        seen = set()
+        for x, y, code in self._normalize_operations(accessory.get("pixels")):
+            cell = self.master_cells.get((x, y), {})
+            if (x, y) not in allowed or cell.get("base_part") in forbidden or code not in palette or code == "." or (x, y) in seen:
+                continue
+            seen.add((x, y))
+            ops.append((x, y, code))
+            if len(ops) >= max_pixels:
+                break
+        ops = self._largest_component(ops)
+        if len(ops) < 2:
+            return paint, "none", [], False
+        ops = self._deblob_ops(ops)
+        coords = {(x, y) for x, y, _ in ops}
+        if zone == "wing":
+            attachment = {tuple(point) for point in contract.get("attachment_zone", [])}
+            if not coords & attachment:
+                return paint, "none", [], False
+        elif not floating:
+            base = {(x, y) for y, row in enumerate(self.classic["frames"]["a"]) for x, code in enumerate(row) if code != "."}
+            if not coords & base and not any((x + dx, y + dy) in base for x, y in coords for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+                return paint, "none", [], False
+        return paint, zone, ops, floating
+
+    def _render_template_concept(self, rarity: str, concept: dict, raw: object, rng: random.Random, blocked_names: set[str], fallback_palette: dict | None = None) -> dict:
+        limits = self.anatomy["rarity_limits"][rarity]
+        raw = raw if isinstance(raw, dict) else {}
+        fallback_palette = fallback_palette or self.classic["palette"]
+        palette = self._harmonize_concept_palette(raw.get("palette"), fallback_palette, limits["max_palette_colors"], concept)
+        paint, accessory_zone, accessory_ops, floating = self._sanitize_template_plan(raw, rarity, palette, concept, rng)
+        matrix_a = [list(row) for row in self.classic["frames"]["a"]]
+        matrix_b = [list(row) for row in self.classic["frames"]["b"]]
+        for x, y, code in [*paint, *accessory_ops]:
+            matrix_a[y][x] = code
+            matrix_b[y][x] = code
+        name = self._clean_generated_name(raw.get("name"), concept, blocked_names)
+        effect = str(raw.get("effect") or "none")
+        valid_effects = {"spark", "star", "halo", "web", "royal", "shadow", "coin", "flame"}
+        if rarity == "common" or effect not in valid_effects:
+            effect = "none" if rarity == "common" else ("star" if rarity in {"epic", "legendary"} else "spark")
+        skin = json.loads(json.dumps(self.classic))
+        skin.update({
+            "name": name,
+            "rarity": rarity,
+            "theme": "open:" + str(concept.get("id") or "unknown"),
+            "pattern_type": str(concept.get("pattern") or "complex"),
+            "palette": palette,
+            "frames": {"a": ["".join(row) for row in matrix_a], "b": ["".join(row) for row in matrix_b]},
+            "floating_regions": ([{"type": "halo", "pixels": [[x, y] for x, y, _ in accessory_ops]}] if floating else []),
+            "effect": effect,
+            "concept_id": str(concept.get("id") or ""),
+            "concept_name": str(concept.get("name") or ""),
+            "concept_category": str(concept.get("category") or "abstract"),
+            "concept_anchors": [str(item) for item in concept.get("visual_anchors", []) if str(item).strip()],
+            "concept_source": self._concept_source(concept),
+            "design_recipe": {
+                "template": "classic-black-master-v1", "generator": "ai-coordinate-plan",
+                "concept_id": str(concept.get("id") or ""), "pattern_operations": [list(op) for op in paint],
+                "accessory_zone": accessory_zone, "accessory_operations": [list(op) for op in accessory_ops],
+            },
+            "design_notes": {"recognizable_features": list(concept.get("visual_anchors") or []), "animation_change": "固定经典黑猫猫体与步态；AI仅提交获准坐标的配色、花纹和装饰。"},
+        })
+        if accessory_zone == "wing":
+            skin["parts"]["wing"] = [[x, y] for x, y, _ in accessory_ops]
+        elif accessory_zone == "headwear":
+            skin["parts"]["head_accessory"] = [[x, y] for x, y, _ in accessory_ops]
+        errors = validate_data(skin, self.anatomy)
+        if errors:
+            raise CatGenerationError("固定模板概念稿未通过结构校验：" + "；".join(errors[:5]))
+        return skin
+
+    def _generate_from_concept(self, rarity: str, concept: dict, rng: random.Random, blocked_names: set[str], variation_hint: str = "") -> dict:
+        limits = self.anatomy["rarity_limits"][rarity]
+        fallback = self._base_for(rarity, str(concept.get("id") or ""), rng)
+        anchors = [str(item) for item in concept.get("visual_anchors", []) if str(item).strip()]
+        pattern_coords = [list(point) for point in self._pattern_coordinate_pool()]
+        zones = {
+            name: contract.get("allowed", [])
+            for name, contract in self.master.get("overlay_zones", {}).items()
+            if rarity in contract.get("rarities", [])
+        }
+        prompt = f"""把开放概念设计成固定经典黑猫模板的一套像素操作计划。绝对不要输出完整图片或frame。
+概念：{concept.get('name')}；类别：{concept.get('category', 'abstract')}；稀有度：{rarity}。
+视觉锚点：{'；'.join(anchors) or '提炼最有辨识度的颜色、花纹或物件'}；来源：{concept.get('source_title') or '本地概念库'}。
+{variation_hint}
+猫的头、圆颚、平下巴、双眼双竖瞳、小鼻子、两点猫嘴、身体、封闭臀部、腿部动画和尾巴已经由程序永久锁定，禁止重画、删除、移动或返回frame_a。
+你只能在这些毛色坐标中选择像素：{json.dumps(pattern_coords, ensure_ascii=False, separators=(',', ':'))}
+可用装饰区及精确坐标：{json.dumps(zones, ensure_ascii=False, separators=(',', ':')) if zones else '本稀有度不允许装饰'}
+只输出JSON：{{"name":"自然简洁且以猫结尾的中文名","palette":{{"O":"#RRGGBB","F":"#RRGGBB","I":"#RRGGBB","P":"#RRGGBB","N":"#RRGGBB","S":"#RRGGBB","A":"#RRGGBB","W":"#RRGGBB"}},"paint":[[x,y,"S或A或W"]],"accessory":{{"zone":"none|headwear|wing|cape|face_costume","style":"crown|halo|horns|cap|none","pixels":[[x,y,"A或W"]],"floating":false}},"effect":"none|spark|star|halo|web|royal|shadow|coin|flame"}}。
+颜色只用于表达主题方向，程序会自动校正明度、轮廓对比、眼睛可读性和整体和谐度；不得把多个语义色设成相同颜色。最多{limits['max_palette_colors']}种颜色。普通/稀有不得画装饰；史诗/传说装饰必须全部落在同一个允许区并连成整体，翅膀必须触碰连接区。头部装饰只填写 style，其形状由程序模板控制，无需在 pixels 里画。花纹不能是孤立噪点。命名要求：{'必须原样使用“'+str(concept.get('name'))+'”' if concept.get('name_locked') else '2到4个汉字且以“猫”结尾，贴合造型、简洁自然，并避开近期名字：'+('、'.join(sorted(blocked_names)) or '无')}。"""
+        raw = _extract_json(self._chat([
+            {"role": "system", "content": "你只为固定16×16猫模板提交受限坐标操作，不画轮廓，不输出frame。只返回JSON。"},
+            {"role": "user", "content": prompt},
+        ]))
+        return self._render_template_concept(rarity, concept, raw, rng, blocked_names, fallback.get("palette", self.classic["palette"]))
+
+    def _fallback_for_concept(self, rarity: str, concept: dict, rng: random.Random, blocked_names: set[str]) -> dict:
+        """No-key/model-error fallback still uses the exact frozen body template."""
+        fallback = self._base_for(rarity, str(concept.get("id") or ""), rng)
+        raw = {
+            "name": str(concept.get("name") or "像素猫"),
+            "palette": fallback.get("palette", self.classic["palette"]),
+            "paint": self._procedural_concept_paint(concept, rarity, rng),
+            "accessory": {"zone": "none", "pixels": [], "floating": False},
+            "effect": "star" if rarity in {"epic", "legendary"} else "spark" if rarity == "rare" else "none",
+        }
+        skin = self._render_template_concept(rarity, concept, raw, rng, blocked_names, fallback.get("palette", self.classic["palette"]))
+        skin["generation_fallback"] = True
+        return skin
+
+    def _generate_legacy(self, recent_skins: list[dict], rarity: str, rng: random.Random) -> dict:
         stored_themes = [str(skin.get("theme") or "") for skin in recent_skins[-5:]]
         stored_signatures = {self._stored_signature(skin) for skin in recent_skins[-20:]}
         stored_signatures.discard("")
         stored_names = {str(skin.get("name") or "") for skin in recent_skins[-20:]}
         stored_names.discard("")
-        rarity = self._draw_rarity(rng)
         with self._recent_lock:
             blocked_themes = set(stored_themes + self._recent_themes[-5:])
             blocked_signatures = stored_signatures | set(self._recent_signatures[-20:])
             blocked_names = stored_names | set(self._recent_names[-20:])
-        candidates = [item for item in RARITY_THEMES[rarity] if item[0] not in blocked_themes]
-        if not candidates:
-            candidates = list(RARITY_THEMES[rarity])
-
+        candidates = [item for item in RARITY_THEMES[rarity] if item[0] not in blocked_themes] or list(RARITY_THEMES[rarity])
         chosen = None
         for _attempt in range(32):
             theme, _theme_zh, declared_pattern, _colors = rng.choice(candidates)
@@ -814,18 +1363,194 @@ class CatSkinGenerator:
             del self._recent_names[:-20]
         return skin
 
+    @staticmethod
+    def _clean_concept_name(value: object) -> str:
+        name = re.sub(r"[\s《》【】\[\]（）()：:，,。.!！?？‘’“”\-—_]+", "", str(value or ""))
+        if name.endswith("猫") and 2 <= len(name) <= 4:
+            return name
+        return ""
+
+    @staticmethod
+    def _ai_concept_id(name: str, anchors: list[str]) -> str:
+        key = name + "|" + "|".join(sorted(str(item) for item in anchors))
+        return "ai_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+    def _validated_ai_concept(self, raw: object, blocked_names: set[str]) -> dict | None:
+        raw = raw if isinstance(raw, dict) else {}
+        name = self._clean_concept_name(raw.get("name"))
+        if not name or name in blocked_names:
+            return None
+        category = str(raw.get("category") or "")
+        if category not in {"breed", "food", "object", "profession", "abstract", "hot"}:
+            return None
+        anchors = [str(item).strip() for item in raw.get("visual_anchors") or [] if str(item).strip()]
+        if not anchors:
+            return None
+        pattern = str(raw.get("pattern") or "complex")
+        return {
+            "id": self._ai_concept_id(name, anchors[:3]),
+            "name": name,
+            "category": category,
+            "pattern": pattern,
+            "visual_anchors": anchors[:3],
+            "source_name": "AI概念合成",
+            "source_title": "由现有概念组合/扩写而来",
+        }
+
+    def _ai_free_concept(self, seeds: list[dict], blocked_names: set[str]) -> dict | None:
+        seed_lines = "\n".join(
+            f"- {c.get('name')}（{c.get('category')}）：{'；'.join(str(a) for a in c.get('visual_anchors') or [])}"
+            for c in seeds
+        )
+        blocked = '、'.join(sorted(blocked_names)) or '无'
+        prompt = f"""基于下面的灵感概念，发散创造一个全新的、有辨识度的猫咪概念。不要复制灵感概念本身。
+灵感概念：
+{seed_lines}
+要求：
+- 名称 2-6 个汉字，以“猫”结尾，简洁自然，避开近期名字：{blocked}
+- 分类从 breed/food/object/profession/abstract/hot 中选一个
+- pattern 从 solid/tabby/tuxedo/point/calico/spotted/dorsal/patchwork/panel/spider/glitch/scale/complex 中选一个
+- 给出 2-3 个视觉锚点，分别描述颜色、花纹、标志物件或气质
+只输出JSON：{{"name":"...","category":"...","pattern":"...","visual_anchors":["...","..."]}}"""
+        raw = _extract_json(self._chat([
+            {"role": "system", "content": "你是猫咪皮肤系统的概念设计师。只返回JSON，不要解释。"},
+            {"role": "user", "content": prompt},
+        ]))
+        return self._validated_ai_concept(raw, blocked_names)
+
+    def _ai_combine_concept(self, left: dict, right: dict, blocked_names: set[str]) -> dict | None:
+        def describe(concept: dict) -> str:
+            anchors = '；'.join(str(a) for a in concept.get('visual_anchors') or [])
+            return f"{concept.get('name')}（{concept.get('category')}）：{anchors}"
+        blocked = '、'.join(sorted(blocked_names)) or '无'
+        prompt = f"""基于两个概念组合或变异出一个全新的猫咪概念。可以融合两者特征，或保留一个的核心意象再加另一个的元素，但不能只是简单拼接名字。
+概念A：{describe(left)}
+概念B：{describe(right)}
+要求：
+- 名称 2-6 个汉字，以“猫”结尾，简洁自然，避开近期名字：{blocked}
+- 分类从 breed/food/object/profession/abstract/hot 中选一个
+- pattern 从 solid/tabby/tuxedo/point/calico/spotted/dorsal/patchwork/panel/spider/glitch/scale/complex 中选一个
+- 给出 2-3 个视觉锚点，分别描述颜色、花纹、标志物件或气质
+只输出JSON：{{"name":"...","category":"...","pattern":"...","visual_anchors":["...","..."]}}"""
+        raw = _extract_json(self._chat([
+            {"role": "system", "content": "你是猫咪皮肤系统的概念设计师。只返回JSON，不要解释。"},
+            {"role": "user", "content": prompt},
+        ]))
+        return self._validated_ai_concept(raw, blocked_names)
+
+    def _ai_synthesize_concept(self, rarity: str, rng: random.Random, recent_ids: set[str], blocked_names: set[str]) -> dict | None:
+        concepts = self.concept_store.all_concepts()
+        available = [c for c in concepts if str(c.get("id") or "") not in recent_ids]
+        if not available:
+            available = concepts
+        if not available:
+            return None
+        try:
+            if len(available) >= 2 and rng.random() < 0.6:
+                left, right = rng.sample(available, 2)
+                concept = self._ai_combine_concept(left, right, blocked_names)
+            else:
+                seeds = rng.sample(available, min(2, len(available)))
+                concept = self._ai_free_concept(seeds, blocked_names)
+            if concept is not None:
+                concept["rarity"] = rarity
+                return concept
+        except (CatGenerationError, ValueError, json.JSONDecodeError) as exc:
+            print(f"  [cat-skin] AI concept synthesis failed: {exc}", flush=True)
+        return None
+
+    def _ai_category_concept(self, category: str, hint: str, blocked_names: set[str]) -> dict | None:
+        """Invent one concrete concept inside a free category such as food/object."""
+        blocked = '、'.join(sorted(blocked_names)) or '无'
+        prompt = f"""在大类“{hint or category}”里，自由想一个具体的猫咪概念。
+要求：
+- 名称 2-4 个汉字，以“猫”结尾，简洁自然，避开近期名字：{blocked}
+- 给出 1-2 个视觉锚点，分别描述颜色、花纹、标志物件或气质
+- 不要与近期名字重复，要有记忆点
+只输出JSON：{{"name":"...","visual_anchors":["...","..."]}}"""
+        raw = _extract_json(self._chat([
+            {"role": "system", "content": "你是猫咪皮肤系统的概念设计师。只返回JSON，不要解释。"},
+            {"role": "user", "content": prompt},
+        ]))
+        name = self._clean_concept_name(raw.get("name") if isinstance(raw, dict) else "")
+        if not name or name in blocked_names:
+            return None
+        anchors = [str(item).strip() for item in (raw.get("visual_anchors") if isinstance(raw, dict) else []) or [] if str(item).strip()]
+        if not anchors:
+            return None
+        return {
+            "id": category + "_ai_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:12],
+            "name": name,
+            "category": category,
+            "pattern": "complex",
+            "visual_anchors": anchors[:2],
+            "source_name": "AI大类生成",
+            "source_title": hint,
+        }
+
+    def generate_with_history(self, recent_skins: list[dict] | None = None, rng: random.Random | None = None) -> dict:
+        """Generate from an open concept; the old theme assembler is fallback only."""
+        rng = rng or random.SystemRandom()
+        recent_skins = recent_skins or []
+        rarity = self._draw_rarity(rng)
+        if self.concept_store is None:
+            return self._generate_legacy(recent_skins, rarity, rng)
+
+        recent_ids = {str(item.get("concept_id") or "") for item in recent_skins[-30:]}
+        recent_ids.discard("")
+        blocked_names = {str(item.get("name") or "") for item in recent_skins[-20:]}
+        with self._recent_lock:
+            blocked_names.update(self._recent_names[-20:])
+        concept = self.concept_store.choose(rarity, recent_ids, rng)
+        if not concept:
+            return self._generate_legacy(recent_skins, rarity, rng)
+        # free 大类（食物/物品/职业/抽象）：抽中后交给 AI 现场生成一个具体概念
+        if concept.get("_ai_category"):
+            category = str(concept.get("category") or "")
+            hint = str(concept.get("hint") or "")
+            ai_concept = None
+            if self.provider_info()["configured"]:
+                ai_concept = self._ai_category_concept(category, hint, blocked_names)
+            if ai_concept is None:
+                fallback = self.concept_store.category_concept("breed", recent_ids, rng)
+                if fallback is None:
+                    return self._generate_legacy(recent_skins, rarity, rng)
+                concept = fallback
+            else:
+                concept = ai_concept
+
+        if not self.provider_info()["configured"]:
+            return self._fallback_for_concept(rarity, concept, rng, blocked_names)
+
+        attempts = max(1, min(3, int(os.environ.get("CAT_SKIN_AI_ATTEMPTS", "2"))))
+        last_error = None
+        for attempt in range(attempts):
+            try:
+                hint = "" if attempt == 0 else "上一稿与近期猫过于相似；请改变主副色、毛色坐标布局或获准装饰区内的主题符号，但绝不能改变固定猫体。"
+                skin = self._generate_from_concept(rarity, concept, rng, blocked_names, hint)
+                if self._is_distinct_visual(skin, recent_skins):
+                    self._remember_open_skin(skin)
+                    return skin
+                last_error = CatGenerationError("像素布局与最近猫咪过于相似")
+            except (CatGenerationError, ValueError, json.JSONDecodeError) as exc:
+                last_error = exc
+                print(f"  [cat-skin] open concept attempt {attempt + 1} failed: {exc}", flush=True)
+        print(f"  [cat-skin] open concept fallback for {concept.get('id')}: {last_error or 'too similar'}", flush=True)
+        return self._fallback_for_concept(rarity, concept, rng, blocked_names)
+
     def generate(self, rng: random.Random | None = None) -> dict:
         return self.generate_with_history([], rng)
 
 
 class CatSkinManager:
-    def __init__(self, state_path: Path, classic_path: Path, generator: CatSkinGenerator, today_fn: Callable[[], date] | None = None):
+    def __init__(self, state_path: Path, classic_path: Path, generator: CatSkinGenerator, today_fn: Callable[[], date] | None = None, task_completed_fn: Callable[[dict, str], bool] | None = None):
         self.state_path = state_path
         self.classic = _read_json(classic_path)
         self.catalog = _read_json(classic_path.parent / "catalog-v1.json")
         self.catalog_by_id = {skin["id"]: skin for skin in self.catalog}
         self.generator = generator
         self.today_fn = today_fn or date.today
+        self.task_completed_fn = task_completed_fn or (lambda user, today: False)
         self._lock = threading.RLock()
         self._generating: set[str] = set()
 
@@ -851,11 +1576,37 @@ class CatSkinManager:
     def _user_state(data: dict, user_id: str) -> dict:
         return data["users"].setdefault(user_id, {"equipped_skin_id": "classic-black", "last_open_date": "", "skins": []})
 
+    @staticmethod
+    def _opens_today(state: dict, today: str) -> int:
+        # Backward compatible with the old one-open-per-day schema.
+        if state.get("open_date") == today:
+            try:
+                return max(0, min(2, int(state.get("open_count") or 0)))
+            except (TypeError, ValueError):
+                return 0
+        return 1 if state.get("last_open_date") == today else 0
+
+    def _task_completed(self, user: dict, today: str) -> bool:
+        try:
+            return bool(self.task_completed_fn(user, today))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _limit_error(opens_today: int, task_completed: bool) -> None:
+        if opens_today >= 2:
+            raise CatDailyLimitError("今日领取猫咪已达上限")
+        if opens_today == 1 and not task_completed:
+            raise CatDailyTaskRequiredError("完成每日任务后可再次领取猫咪")
+
     def wardrobe(self, user: dict) -> dict:
         with self._lock:
             state = self._user_state(self._load(), user["user_id"])
             today = self.today_fn().isoformat()
             is_admin = user.get("role") == "admin"
+            opens_today = self._opens_today(state, today)
+            task_completed = is_admin or self._task_completed(user, today)
+            can_open = is_admin or opens_today == 0 or (opens_today == 1 and task_completed)
             builtins = json.loads(json.dumps(self.catalog))
             generated = json.loads(json.dumps(state.get("skins", [])))
             for skin in builtins:
@@ -865,8 +1616,14 @@ class CatSkinManager:
             return {
                 "ok": True,
                 "is_admin": is_admin,
-                "can_open": is_admin or state.get("last_open_date") != today,
-                "next_open_date": "不限次数" if is_admin else (today if state.get("last_open_date") != today else "明天"),
+                "can_open": can_open,
+                "next_open_date": "不限次数" if is_admin else (today if can_open else "明天"),
+                "opens_today": opens_today,
+                "daily_limit": None if is_admin else 2,
+                "daily_task": {
+                    "label": "完成一次飞书任务 Agent 生成任务",
+                    "completed": task_completed,
+                },
                 "equipped_skin_id": state.get("equipped_skin_id", "classic-black"),
                 "skins": [*builtins, *generated],
                 "generator": self.generator.provider_info(),
@@ -879,8 +1636,10 @@ class CatSkinManager:
         with self._lock:
             data = self._load()
             state = self._user_state(data, user_id)
-            if not is_admin and state.get("last_open_date") == today:
-                raise CatDailyLimitError("今天已经领取过猫咪了，明天再来吧")
+            opens_today = self._opens_today(state, today)
+            task_completed = is_admin or self._task_completed(user, today)
+            if not is_admin:
+                self._limit_error(opens_today, task_completed)
             if user_id in self._generating:
                 raise CatGenerationBusyError("一只猫咪正在生成中，请稍候")
             self._generating.add(user_id)
@@ -894,9 +1653,13 @@ class CatSkinManager:
             skin.update({
                 "id": "cat_" + secrets.token_hex(8),
                 "rarity_label": RARITY_LABELS[skin["rarity"]],
-                "description": THEME_DESCRIPTIONS.get(
-                    str(skin.get("theme") or ""),
-                    "AI 选定主题、由像素部件库组装的 " + RARITY_LABELS[skin["rarity"]] + " 猫咪。",
+                "description": (
+                    "从“" + str(skin.get("concept_name") or skin.get("name") or "开放概念") + "”提炼意象，由 AI 逐像素设计的 " + RARITY_LABELS[skin["rarity"]] + " 猫咪。"
+                    if skin.get("concept_id") and not skin.get("generation_fallback")
+                    else THEME_DESCRIPTIONS.get(
+                        str(skin.get("theme") or ""),
+                        "由开放概念生成的 " + RARITY_LABELS[skin["rarity"]] + " 猫咪。",
+                    )
                 ),
                 "effect": skin.get("effect") or ("star" if skin["rarity"] in {"epic", "legendary"} else "spark" if skin["rarity"] == "rare" else "none"),
                 "created_at": now,
@@ -905,12 +1668,16 @@ class CatSkinManager:
                 data = self._load()
                 state = self._user_state(data, user_id)
                 # Re-check after the slow model call to close the concurrent-request gap.
-                if not is_admin and state.get("last_open_date") == today:
-                    raise CatDailyLimitError("今天已经领取过猫咪了，明天再来吧")
+                opens_today = self._opens_today(state, today)
+                task_completed = is_admin or self._task_completed(user, today)
+                if not is_admin:
+                    self._limit_error(opens_today, task_completed)
                 state.setdefault("skins", []).append(skin)
                 state["equipped_skin_id"] = skin["id"]
                 if not is_admin:
                     state["last_open_date"] = today
+                    state["open_date"] = today
+                    state["open_count"] = opens_today + 1
                 self._save(data)
             return skin
         finally:

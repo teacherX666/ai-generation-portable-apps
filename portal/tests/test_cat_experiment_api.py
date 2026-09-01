@@ -52,7 +52,7 @@ class CatExperimentApiTests(unittest.TestCase):
         self.assertEqual(403, handler.responses[-1][0])
 
     def test_regular_user_cannot_generate_experiment_cat(self):
-        handler = self.make_handler({"experiment_id": "orange_tabby", "seed": 7})
+        handler = self.make_handler({"rarity": "epic", "name": "张雪峰猫"})
         handler._cat_experiment_generate({"user_id": "u1", "username": "user", "role": "user"})
         self.assertEqual(403, handler.responses[-1][0])
 
@@ -62,7 +62,7 @@ class CatExperimentApiTests(unittest.TestCase):
         state_path = self.mod.cat_skin_manager.state_path
         before_bytes = state_path.read_bytes() if state_path.exists() else None
 
-        handler = self.make_handler({"experiment_id": "epic_angel", "seed": 20260831})
+        handler = self.make_handler({"rarity": "epic", "name": "张雪峰猫", "seed": 20260831})
         handler._cat_experiment_generate(user)
 
         status, payload = handler.responses[-1]
@@ -82,6 +82,7 @@ class CatExperimentApiTests(unittest.TestCase):
         status, payload = handler.responses[-1]
         self.assertEqual(200, status)
         self.assertEqual("classic-black-master-v1", payload["template_id"])
+        self.assertEqual({"common", "rare", "epic", "legendary"}, {item["value"] for item in payload["rarities"]})
 
 
 if __name__ == "__main__":

@@ -147,14 +147,14 @@ def _fallback_insight() -> dict:
     }
 
 
-def _deepseek_chat(api_key: str, messages: list[dict], timeout: int = 60) -> dict:
+def _deepseek_chat(api_key: str, messages: list[dict], timeout: int = 60, max_tokens: int = 500) -> dict:
     """Call DeepSeek Chat API with JSON response_format. Returns raw response dict.
     Raises RuntimeError on non-2xx or network errors."""
     body = json.dumps({
         "model": "deepseek-chat",
         "messages": messages,
         "temperature": 0.4,
-        "max_tokens": 500,
+        "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
