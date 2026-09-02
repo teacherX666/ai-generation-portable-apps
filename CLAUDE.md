@@ -302,6 +302,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **修复模式（seedance/nano-banana/dreamina 三处已修）**：结果区拆成「状态卡」「结果卡」两个容器（`display: contents` 包装，不影响 `.results` 网格与 `grid-column:1/-1`）；状态卡按签名去重重建，结果卡只 `insertAdjacentHTML` 增量追加；容器缺失或 `_renderedJobId` 变化时全量重建（覆盖 submit 清空/切主题）
 - **`innerHTML +=` 会销毁全部旧子元素**（重解析），追加必须用 `insertAdjacentHTML('beforeend', ...)`，否则正在播放的 `<video>` 还是被重拉
 - **事件委托不能挂在 `v-if` 区域内的容器上**：`#sd-results` 在 `v-if="statusText !== '空闲'"` 里，init 时是 null → `if (dlContainer)` 静默跳过 → 运行卡的视频点击/下载按钮一直是死的。委托挂页面常驻元素（`#sd-app`）
+- **自动预览只播第一个结果**（prev.count===0 时 click 索引 0）：每个新结果都自动预览会让 repeat 任务挂 N 条并发视频流——客户端解码 + Portal 整文件缓冲双重压力（实测 5 条流吃服务机 27% CPU）。「页面卡死、刷新恢复」的机制：任务跑得越久流的视频越多 → 页面越卡；刷新时任务已结束 → 切到历史视图（惰性占位）→ 恢复。2026-09-02 修
 - 验证手段：`/tmp/verify-render-dedupe.mjs` 式 playwright 断言（事件刷屏 10 次结果卡 DOM 元素引用不变、新结果只追加、切任务无残留）；页面加载后 `statusText` 是「空闲」时 `#sd-results` 不存在，测试要先设 statusText 再等 v-if 渲染
 
 ### 主线程 TLS 握手楔子（2026-09-02 断服根因）
