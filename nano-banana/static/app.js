@@ -977,6 +977,24 @@ function NanoBananaApp() {
           '</article>';
       }
 
+      // Keep tab-state rehydration usable with lightweight embedded/test DOM
+      // shims that lack insertAdjacentHTML. Real browsers continue to use the
+      // incremental path below, preserving already-loaded images.
+      if (typeof resultBox.insertAdjacentHTML !== 'function') {
+        let html = statusBox.innerHTML || '';
+        for (var li = 0; li < flat.length; li++) {
+          var lx = flat[li];
+          var limg = lx.im;
+          var lurl = APP_PATH + limg.download_url;
+          html += '<article class="result ui-result-card"><img class="ui-result-card__media" src="' + lurl + '" alt="生成结果" onclick="openPreview(\'image\',\'' + lurl + '\')"><a href="' + lurl + '" class="dl-btn ui-result-card__download" data-url="' + lurl + '" data-filename="' + escHtml(limg.filename) + '">下载</a><div class="ui-result-card__meta">Run ' + lx.runIndex + '</div></article>';
+        }
+        for (var le = 0; le < (job.errors || []).length; le++) {
+          html += '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(job.errors[le]) + '</article>';
+        }
+        resultsEl.innerHTML = html;
+        return;
+      }
+
       // 结果卡：任务结果只会越来越多，增量追加新图即可；旧结果原样保留，
       // 轮询不再反复重建 <img>。
       if (resultsSig !== prev.resultsSig) {
