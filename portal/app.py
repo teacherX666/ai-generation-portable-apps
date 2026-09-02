@@ -1812,6 +1812,43 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def setup(self):
+        super().setup()
+        # TLS 握手必须在每个连接自己的线程里完成并限时：监听 socket 以
+        # do_handshake_on_connect=False 包装后，握手推迟到这里。此前握手
+        # 在主线程 accept() 里同步进行且无超时——一个半开连接（连上后
+        # 不发字节的扫描器/休眠的浏览器）就能把整个 Portal 卡死、所有
+        # 客户端挂起（2026-09-02 断服实锤，main thread 100% 卡在
+        # _ssl__SSLSocket_do_handshake_impl 的 sock_read）。
+        conn = getattr(self, "connection", None)
+        if conn is None or not hasattr(conn, "do_handshake"):
+            return
+        conn.settimeout(10)
+        try:
+            conn.do_handshake()
+        except socket.timeout:
+            # 半开连接：连上后 10s 不发握手字节（2026-09-02 断服元凶姿势）。
+            # 记下来源 IP——下次再出现可以直接锁定是哪台机器/哪个扫描器。
+            print(f"  [tls-timeout] handshake timeout from {self.client_address[0]}", flush=True)
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            conn.close()
+        except (ssl.SSLError, OSError, ValueError):
+            # 扫描器/坏客户端：安静关掉，随后的 readline 读到空行，
+            # handle_one_request 自行收尾，不产生 traceback 噪音。
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            conn.close()
+        finally:
+            try:
+                conn.settimeout(None)
+            except OSError:
+                pass
+
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
         super().end_headers()
@@ -3091,7 +3128,10 @@ def main():
         cert_file, key_file = certs
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(str(cert_file), str(key_file))
-        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        # do_handshake_on_connect=False：推迟握手到每个连接的 Handler.setup()
+        # （连接自己的线程里，10s 超时）。默认 True 时握手在 SSLSocket.accept()
+        # 里主线程同步完成且无超时，一个半开连接即可卡死整个 Portal。
+        server.socket = ctx.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
 
         class RedirectHandler(SimpleHTTPRequestHandler):
             def log_message(self, format, *args): pass

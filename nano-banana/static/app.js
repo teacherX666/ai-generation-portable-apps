@@ -505,12 +505,11 @@ function NanoBananaApp() {
       try { data = await response.json(); } catch (e) { return; }
       if (!data || !data.providers) return;
       this.providers = data.providers;
+      // 默认供应商以 default_provider 为准。曾有「保留当前选择」的启发式：
+      // 新页面的下拉框默认是第一个选项，会把浏览器默认误当作用户选择，
+      // 导致默认值（火山引擎）被 comfyui 顶掉。用户显式选择由草稿/存档
+      // 的 applyPreset 路径保留，不需要这里的启发式。
       var defaultP = data.default_provider || Object.keys(data.providers)[0];
-      var sel = document.querySelector('#nb-form select[name="provider"]');
-      if (sel && sel.value !== defaultP && data.providers[sel.value]) {
-        // Keep current provider if valid, else use default
-        defaultP = sel.value;
-      }
       this.applyProvider(defaultP);
       // Ensure select syncs
       var self = this;
@@ -900,59 +899,100 @@ function NanoBananaApp() {
       // in the template); setEvents() routes that value correctly whether the
       // owning tab is active or cached. Writing #nb-events directly was scope
       // creep in the Task 5 extraction.
-      var eventsList = (job.events || []).slice(-8).map(function (e) {
-        return '<div><span class="ui-job-status-card__event-time">' + escHtml(e.time) + '</span> ' + escHtml(e.message) + '</div>';
-      }).join('');
 
-      // 友好错误提示：识别错误类型，显示用户友好的消息
-      var errorHint = '';
-      if (job.errors && job.errors.length > 0) {
-        var firstError = job.errors[0];
-        if (/\[auth_failed\]/i.test(firstError) || /\bHTTP\s+401\b/i.test(firstError) || /\b401\s+Unauthorized\b/i.test(firstError)) {
-          errorHint = '❌ API Key 无效或已过期，请检查配置';
-        } else if (/\[rate_limited\]/i.test(firstError) || /\bHTTP\s+429\b/i.test(firstError) || /\b429\s+Too Many Requests\b/i.test(firstError)) {
-          errorHint = '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
-        } else if (/\[permission_denied\]/i.test(firstError) || /\bHTTP\s+403\b/i.test(firstError) || /\b403\s+Forbidden\b/i.test(firstError)) {
-          errorHint = '🚫 权限不足或配额已用完，请联系管理员';
-        } else if (firstError.indexOf('[server_error]') >= 0) {
-          errorHint = '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
-        } else if (firstError.indexOf('[network_error]') >= 0) {
-          errorHint = '🌐 网络连接失败，请检查网络或 API 地址';
-        } else if (/requires at least one reference image|requires a reference image|需要参考图|至少.*参考图/i.test(firstError)) {
-          errorHint = '请上传至少一张参考图，或切换到文生图模型';
-        } else if (/requires a prompt|需要提示词|请输入提示词|prompt is required/i.test(firstError)) {
-          errorHint = '请输入生成提示词';
-        } else if (/ComfyUI.*未启动|未启动.*ComfyUI|timed out|WinError 10061|connection refused/i.test(firstError)) {
-          errorHint = '本地模型服务未就绪，正在自动拉起，请稍后重试';
-        } else if (/model_kind.*已停用|已停用.*model_kind|not yet supported|unsupported model/i.test(firstError)) {
-          errorHint = '当前模型不可用，请切换到其它可用模型';
-        } else if (/no output files|no images|produced no output|missing.*reference/i.test(firstError)) {
-          errorHint = '模型没有返回结果，请检查参考图或更换模型';
-        } else {
-          errorHint = escHtml(firstError);
-        }
+      // 渲染去重（性能修复，与 seedance 同源）：运行期每 2.5s 轮询一次，
+      // 旧实现每次轮询整卡重建，N 张结果图每 2.5 秒被重新请求/排版一次，
+      // 弱机上就是「点提交之后页面一直很卡」的主因。现在状态卡按签名
+      // 去重、结果卡只增量追加新图，旧结果原样保留。
+      var state = (this._renderState = this._renderState || {});
+      var statusBox = resultsEl.querySelector('.ui-job-status-card-wrap');
+      var resultBox = resultsEl.querySelector('.ui-result-cards');
+      if (!statusBox || !resultBox || this._renderedJobId !== jobId) {
+        // 容器缺失（submit 清空/切主题）或渲染的是另一个任务 → 全量重建
+        resultsEl.innerHTML = '';
+        statusBox = document.createElement('div');
+        statusBox.className = 'ui-job-status-card-wrap';
+        resultBox = document.createElement('div');
+        resultBox.className = 'ui-result-cards';
+        resultsEl.appendChild(statusBox);
+        resultsEl.appendChild(resultBox);
+        this._renderedJobId = jobId;
+        delete state[jobId];
       }
 
-      resultsEl.innerHTML = '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">' +
-        '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--' + jobStatusBadgeTone(job.status) + '">' + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0)
-        + (jobId && !TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
-           ? '<button type="button" class="cancel-job-btn" onclick="window._app_nb.cancelJob(\'' + escHtml(jobId) + '\',\'' + escHtml(job.status || 'queued') + '\')">取消任务</button>'
-           : '')
-        + '</div>' +
-        (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '') +
-        (eventsList ? '<div class="ui-job-status-card__events">' + eventsList + '</div>' : '<div class="ui-job-status-card__events">等待服务器响应...</div>') +
-        '</article>';
-      for (var ri = 0; ri < (job.results || []).length; ri++) {
-        var r = job.results[ri];
-        for (var ii = 0; ii < (r.images || []).length; ii++) {
-          var img = r.images[ii];
+      var events = job.events || [];
+      var lastEvent = events.length ? events[events.length - 1].time + events[events.length - 1].message : '';
+      var statusSig = [job.status, job.done, job.total, events.length + ':' + lastEvent, (job.errors || []).join('|')].join('\u0001');
+      var flat = [];
+      (job.results || []).forEach(function (r) {
+        (r.images || []).forEach(function (im) { flat.push({ im: im, runIndex: r.index }); });
+      });
+      var resultsSig = flat.map(function (x) { return (x.im.download_url || '') + '|' + (x.im.filename || ''); }).join('\u0001');
+      var prev = state[jobId] || { statusSig: '', resultsSig: '', count: 0, errorsCount: 0 };
+      state[jobId] = { statusSig: statusSig, resultsSig: resultsSig, count: flat.length, errorsCount: (job.errors || []).length };
+
+      // 状态卡（进度/事件/错误提示/取消按钮）：内容变化才重建
+      if (statusSig !== prev.statusSig) {
+        var eventsList = events.slice(-8).map(function (e) {
+          return '<div><span class="ui-job-status-card__event-time">' + escHtml(e.time) + '</span> ' + escHtml(e.message) + '</div>';
+        }).join('');
+
+        // 友好错误提示：识别错误类型，显示用户友好的消息
+        var errorHint = '';
+        if (job.errors && job.errors.length > 0) {
+          var firstError = job.errors[0];
+          if (/\[auth_failed\]/i.test(firstError) || /\bHTTP\s+401\b/i.test(firstError) || /\b401\s+Unauthorized\b/i.test(firstError)) {
+            errorHint = '❌ API Key 无效或已过期，请检查配置';
+          } else if (/\[rate_limited\]/i.test(firstError) || /\bHTTP\s+429\b/i.test(firstError) || /\b429\s+Too Many Requests\b/i.test(firstError)) {
+            errorHint = '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
+          } else if (/\[permission_denied\]/i.test(firstError) || /\bHTTP\s+403\b/i.test(firstError) || /\b403\s+Forbidden\b/i.test(firstError)) {
+            errorHint = '🚫 权限不足或配额已用完，请联系管理员';
+          } else if (firstError.indexOf('[server_error]') >= 0) {
+            errorHint = '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
+          } else if (firstError.indexOf('[network_error]') >= 0) {
+            errorHint = '🌐 网络连接失败，请检查网络或 API 地址';
+          } else if (/requires at least one reference image|requires a reference image|需要参考图|至少.*参考图/i.test(firstError)) {
+            errorHint = '请上传至少一张参考图，或切换到文生图模型';
+          } else if (/requires a prompt|需要提示词|请输入提示词|prompt is required/i.test(firstError)) {
+            errorHint = '请输入生成提示词';
+          } else if (/ComfyUI.*未启动|未启动.*ComfyUI|timed out|WinError 10061|connection refused/i.test(firstError)) {
+            errorHint = '本地模型服务未就绪，正在自动拉起，请稍后重试';
+          } else if (/model_kind.*已停用|已停用.*model_kind|not yet supported|unsupported model/i.test(firstError)) {
+            errorHint = '当前模型不可用，请切换到其它可用模型';
+          } else if (/no output files|no images|produced no output|missing.*reference/i.test(firstError)) {
+            errorHint = '模型没有返回结果，请检查参考图或更换模型';
+          } else {
+            errorHint = escHtml(firstError);
+          }
+        }
+
+        statusBox.innerHTML = '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">' +
+          '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--' + jobStatusBadgeTone(job.status) + '">' + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0)
+          + (jobId && !TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
+             ? '<button type="button" class="cancel-job-btn" onclick="window._app_nb.cancelJob(\'' + escHtml(jobId) + '\',\'' + escHtml(job.status || 'queued') + '\')">取消任务</button>'
+             : '')
+          + '</div>' +
+          (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '') +
+          (eventsList ? '<div class="ui-job-status-card__events">' + eventsList + '</div>' : '<div class="ui-job-status-card__events">等待服务器响应...</div>') +
+          '</article>';
+      }
+
+      // 结果卡：任务结果只会越来越多，增量追加新图即可；旧结果原样保留，
+      // 轮询不再反复重建 <img>。
+      if (resultsSig !== prev.resultsSig) {
+        for (var gi = prev.count; gi < flat.length; gi++) {
+          var x = flat[gi];
+          var img = x.im;
           var url = APP_PATH + img.download_url;
           var safeFn = escHtml(img.filename);
-          resultsEl.innerHTML += '<article class="result ui-result-card"><img class="ui-result-card__media" src="' + url + '" alt="生成结果" onclick="openPreview(\'image\',\'' + url + '\')"><a href="' + url + '" class="dl-btn ui-result-card__download" data-url="' + url + '" data-filename="' + safeFn + '">下载</a><div class="ui-result-card__meta">Run ' + r.index + '</div></article>';
+          // insertAdjacentHTML（而非 innerHTML +=）：+= 会把容器内全部
+          // 子元素重新解析，已加载的 <img> 会再次被销毁重拉。
+          resultBox.insertAdjacentHTML('beforeend', '<article class="result ui-result-card"><img class="ui-result-card__media" src="' + url + '" alt="生成结果" onclick="openPreview(\'image\',\'' + url + '\')"><a href="' + url + '" class="dl-btn ui-result-card__download" data-url="' + url + '" data-filename="' + safeFn + '">下载</a><div class="ui-result-card__meta">Run ' + x.runIndex + '</div></article>');
         }
-      }
-      for (var ei = 0; ei < (job.errors || []).length; ei++) {
-        resultsEl.innerHTML += '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(job.errors[ei]) + '</article>';
+        var errs = job.errors || [];
+        for (var ei = prev.errorsCount; ei < errs.length; ei++) {
+          resultBox.insertAdjacentHTML('beforeend', '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(errs[ei]) + '</article>');
+        }
       }
     },
 
