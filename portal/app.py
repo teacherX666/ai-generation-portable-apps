@@ -874,6 +874,29 @@ class AppManager:
             try: s.close()
             except Exception: pass
 
+    def _http_probe(self, port: int, path: str = "/health", timeout: float = 3.0) -> bool:
+        """HTTP 级健康探针：拿到任何 HTTP 响应（含 404）即算存活。
+
+        纯 TCP 探针抓不到「TCP 能连、HTTP 永不响应」的应用层楔死
+        （事件循环阻塞/死锁，2026-09-02 人像事故：楔子存活 10+ 分钟
+        直到 backlog 打满 TCP 才失败）。路径 404 说明服务器在正常处理
+        请求，同样算 healthy。"""
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+            try:
+                conn.request("GET", path)
+                resp = conn.getresponse()
+                try:
+                    resp.read(2048)
+                except Exception:
+                    pass
+                return True
+            finally:
+                try: conn.close()
+                except Exception: pass
+        except Exception:
+            return False
+
     def _health_loop(self):
         while not self._stop_event.is_set():
             time.sleep(15)
@@ -891,11 +914,13 @@ class AppManager:
                     print(f"  [watchdog] {name} exited (code {proc.returncode}), restarting")
                     self.start_app(name, config)
                     continue
-                alive = self._tcp_probe(config["port"])
+                alive = self._http_probe(config["port"])
                 if alive:
                     self.status[name] = {"status": "ready", "port": config["port"], "pid": proc.pid if proc else None}
                     self._unhealthy_strikes[name] = 0
                 else:
+                    if self._tcp_probe(config["port"]):
+                        print(f"  [watchdog] {name} HTTP 探针无响应但端口在听——疑似应用层楔死", flush=True)
                     self._unhealthy_strikes[name] = self._unhealthy_strikes.get(name, 0) + 1
                     self.status[name] = {"status": "unhealthy", "port": config["port"],
                                          "strikes": self._unhealthy_strikes[name]}

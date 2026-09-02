@@ -17,9 +17,11 @@ Run:
 """
 from __future__ import annotations
 
+import faulthandler
 import io
 import mimetypes
 import os
+import signal
 import sys
 import time
 import urllib.parse
@@ -31,6 +33,14 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 import app as legacy  # volcengine-portrait/app.py
 
+# 诊断钩子：进程楔死时 `kill -USR1 <pid>` 把全线程 Python 栈写进 logs/fault.log
+# （faulthandler 输出含函数名，不需要 root，替代 py-spy 用于定位死锁）
+try:
+    _FAULT_LOG = _HERE / "logs" / "fault.log"
+    faulthandler.register(signal.SIGUSR1, file=open(_FAULT_LOG, "a"), all_threads=True)
+except Exception:
+    pass
+
 # uvicorn 路径不会执行 app.py 的 main()（那里才恢复 FILES），
 # 导致进程重启后旧下载 token 全部 404。这里在模块加载时恢复。
 _restored_files = legacy.load_files_map()
@@ -41,6 +51,7 @@ if _restored_files:
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response as FastResponse
+from starlette.concurrency import run_in_threadpool
 
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
@@ -158,11 +169,15 @@ class _LegacyBridge:
 
 async def _bridge_call(request: Request, fn: Callable, *args, **kwargs) -> Response:
     """Read the request body, spin up a _LegacyBridge, call fn(bridge, ...),
-    and return the captured response."""
+    and return the captured response.
+
+    fn 是同步阻塞处理器（Ark 分页拉取、TOS 上传、重试退避都在里面）——
+    必须经 run_in_threadpool 移出事件循环线程。此前直接同步调用：一次慢
+    调用/锁等待就冻结整个 uvicorn（2026-09-02 楔死事故的结构性原因）。"""
     body = await request.body()
     bridge = _LegacyBridge(request, body)
     try:
-        fn(bridge, *args, **kwargs)
+        await run_in_threadpool(fn, bridge, *args, **kwargs)
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
     return bridge.to_response()
@@ -372,17 +387,20 @@ async def api_job(request: Request, job_id: str):
 @app.get("/api/activity")
 async def api_activity(request: Request):
     bridge_shim = _LegacyBridge(request)
-    sees_all, username = legacy._view_scope(bridge_shim)
-    return legacy.activity_list(sees_all=sees_all, username=username)
+    sees_all, username = await run_in_threadpool(legacy._view_scope, bridge_shim)
+    return await run_in_threadpool(legacy.activity_list, sees_all=sees_all, username=username)
 
 
 @app.get("/api/activity/{activity_id}")
 async def api_activity_detail(activity_id: str, request: Request):
-    record = next(
-        (item for item in legacy.read_activity_log() if item.get("id") == activity_id),
-        None,
+    record = await run_in_threadpool(
+        lambda: next(
+            (item for item in legacy.read_activity_log() if item.get("id") == activity_id),
+            None,
+        )
     )
-    body = legacy.activity_record_for_client(record) or {"error": "activity not found"}
+    body = await run_in_threadpool(legacy.activity_record_for_client, record)
+    body = body or {"error": "activity not found"}
     return JSONResponse(status_code=200 if record else 404, content=body)
 
 

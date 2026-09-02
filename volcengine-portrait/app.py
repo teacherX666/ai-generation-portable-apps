@@ -2075,6 +2075,7 @@ def _run_virtual_job_impl(job_id, job):
     # JOBS_LOCK is a non-reentrant lock.  We already hold it here, so read the
     # flag directly instead of calling _job_cancel_requested() (which would
     # try to acquire JOBS_LOCK a second time and leave every worker stuck).
+    # （2026-09-02 全站楔死根因：两处会话独立定位到同一行；seedance 同段即直接读字段）
     with JOBS_LOCK:
         if job.get("cancel_requested"):
             # 已完成的条目保留（已真实生成且计费）；未完成条目不计
