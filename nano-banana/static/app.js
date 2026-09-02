@@ -501,12 +501,11 @@ function NanoBananaApp() {
       try { data = await response.json(); } catch (e) { return; }
       if (!data || !data.providers) return;
       this.providers = data.providers;
+      // 默认供应商以 default_provider 为准。曾有「保留当前选择」的启发式：
+      // 新页面的下拉框默认是第一个选项，会把浏览器默认误当作用户选择，
+      // 导致默认值（火山引擎）被 comfyui 顶掉。用户显式选择由草稿/存档
+      // 的 applyPreset 路径保留，不需要这里的启发式。
       var defaultP = data.default_provider || Object.keys(data.providers)[0];
-      var sel = document.querySelector('#nb-form select[name="provider"]');
-      if (sel && sel.value !== defaultP && data.providers[sel.value]) {
-        // Keep current provider if valid, else use default
-        defaultP = sel.value;
-      }
       this.applyProvider(defaultP);
       // Ensure select syncs
       var self = this;

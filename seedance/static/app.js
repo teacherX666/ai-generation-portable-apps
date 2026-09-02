@@ -614,6 +614,15 @@ function SeedanceApp() {
       this.baseUrl = cfg.base_url || '';
       this.providerHint = cfg.hint || '';
       this.models = cfg.models || [];
+      // 显式同步供应商下拉框 DOM：v-model 的 SELECT effect 在选项异步渲染时
+      // 不会重新执行，曾出现「显示火山引擎、实际按 comfyui 提交」的分裂
+      // （submit 用 this.provider 覆盖 FormData，显示与调用必须一致）。
+      const providerSel = field('provider');
+      if (providerSel) {
+        setTimeout(() => {
+          if ([...providerSel.options].some((o) => o.value === providerKey)) providerSel.value = providerKey;
+        }, 0);
+      }
 
       // When restoring a saved draft/preset the form already carries this tab's
       // own resolution / ratio / duration. Re-applying provider defaults here

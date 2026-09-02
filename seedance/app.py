@@ -637,7 +637,7 @@ VALUE_FIELDS = {
 FALLBACK_PROVIDERS = {
     "schema_version": 1,
     "app": "seedance",
-    "default_provider": "comfyui_local",
+    "default_provider": "volcengine",
     "providers": {
         "comfyui_local": {
             "label": "Local ComfyUI (free)",
