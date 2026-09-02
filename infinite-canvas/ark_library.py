@@ -368,6 +368,11 @@ def delete_asset(cfg: dict, asset_id: str) -> None:
 # 语义对齐上游 96878f1/dc5cb6a/b59accb/7c25820/d13711d/9645ab1/5ad0d58/141a68c。
 # 不做上游的 mj 前缀/按人授权/清理扫描（Portal 形态无这些需求）。
 
+def _is_mj_named(name: object) -> bool:
+    """素材库列表不展示 MJ/mj 开头的条目（大小写不敏感，strip 后前缀匹配）。"""
+    return isinstance(name, str) and name.strip().lower().startswith("mj")
+
+
 def list_groups(cfg: dict) -> list[dict]:
     """列出全部 AIGC 分组（方舟返回顺序即展示顺序，一般新在前）。
 
@@ -393,6 +398,8 @@ def list_groups(cfg: dict) -> list[dict]:
                 raise LibraryInvalid("素材库分组列表响应无效。")
             if not isinstance(name, str) or not name:
                 raise LibraryInvalid("素材库分组列表响应无效。")
+            if _is_mj_named(name):
+                continue
             groups.append({"group_id": identifier, "name": name,
                            "created_at": _group_id_date(identifier) or ""})
         if len(items) < _GROUP_LIST_PAGE or len(groups) >= _GROUP_LIST_MAX:
@@ -460,6 +467,8 @@ def list_group_assets(cfg: dict, group_id: str) -> list[dict]:
             if status is None:
                 raise LibraryInvalid("素材库列表响应无效。")
             name = item.get("Name")
+            if _is_mj_named(name):
+                continue
             error_message = None
             if status == "failed":
                 error = item.get("Error")
