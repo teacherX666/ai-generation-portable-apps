@@ -295,6 +295,14 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **渲染必须按需，禁用常驻 rAF 循环**：空闲 60fps 持续 WebGL 会压满 GPU、把 macOS WindowServer 图形合成进程饿死（主线程 80s 无响应 → 看门狗强杀 = 整机崩溃/注销，2026-08-31 实锤两次）。模式：模块级 `requestRender()`（rAF 合并去重，帧内 controls.update + updateLabels + render），从 setDirty/select/onViewportMove/controls change/loadShotIntoScene/resize 等所有交互路径触发；冒烟测试用 `renderer.info.render.frame` 断言「空闲 2.5s 帧计数静止、拖拽后增长」
 - 前端模块单文件 app.js（ES module，`<script type="module">`）；core.js 是 node 可测纯逻辑（姿势表/景别/画幅常量都在这里）；node 语法检查要复制成 `.mjs` 再 `node --check`（否则按 CommonJS 解析误报）
 
+### 轮询渲染去重（2026-09-02 卡顿修复）
+
+- **「点提交后页面很卡」根因不是提交本身**（实测 POST 145ms、点击→已提交 169ms、零长任务），而是运行期轮询渲染：2.5s 轮询每次整卡 `innerHTML` 重建 + 自动重新加载第一个视频/全部结果图，任务跑多久就反复销毁重建多久
+- **修复模式（seedance/nano-banana/dreamina 三处已修）**：结果区拆成「状态卡」「结果卡」两个容器（`display: contents` 包装，不影响 `.results` 网格与 `grid-column:1/-1`）；状态卡按签名去重重建，结果卡只 `insertAdjacentHTML` 增量追加；容器缺失或 `_renderedJobId` 变化时全量重建（覆盖 submit 清空/切主题）
+- **`innerHTML +=` 会销毁全部旧子元素**（重解析），追加必须用 `insertAdjacentHTML('beforeend', ...)`，否则正在播放的 `<video>` 还是被重拉
+- **事件委托不能挂在 `v-if` 区域内的容器上**：`#sd-results` 在 `v-if="statusText !== '空闲'"` 里，init 时是 null → `if (dlContainer)` 静默跳过 → 运行卡的视频点击/下载按钮一直是死的。委托挂页面常驻元素（`#sd-app`）
+- 验证手段：`/tmp/verify-render-dedupe.mjs` 式 playwright 断言（事件刷屏 10 次结果卡 DOM 元素引用不变、新结果只追加、切任务无残留）；页面加载后 `statusText` 是「空闲」时 `#sd-results` 不存在，测试要先设 statusText 再等 v-if 渲染
+
 ### 通用调试直觉
 
 - 「重启后仍报旧 bug」→ 先查旧进程是否被杀、端口是否释放、进程启动时间是否晚于代码修改时间

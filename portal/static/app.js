@@ -584,18 +584,39 @@ function DreaminaApp() {
         const events = (job.events || []).slice(-6).map(e => `<div><span class="ui-job-status-card__event-time">${escHtml(e.time)}</span> ${escHtml(e.message)}</div>`).join('');
         const status = String(job.status || '').toLowerCase();
         card.className = `ui-job-status-card ${jobStatusClass(status)}`;
-        let html = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--${jobStatusBadgeTone(status)}">${jobStatusLabel(status)}</span> · ${job.task_type || ''} · ${job.done || 0}/${job.total || 0}</div>`;
-        if (events) html += `<div class="ui-job-status-card__events">${events}</div>`;
-        else html += '<div class="ui-job-status-card__events">等待服务器响应...</div>';
-        if (job.status === 'failed' || job.status === 'cancelled') html += `<div class="ui-job-status-card__error">${escHtml(job.error || '生成失败')}</div>`;
-        if (!['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
-          html += `<button type="button" class="cancel-job-btn" onclick="window._dmApp.cancelJob('${escHtml(jobId)}','${escHtml(job.status || 'queued')}')">取消任务</button>`;
+        // 渲染去重（与 seedance/nano-banana 同源）：轮询每 2.5s 一次，
+        // 旧实现每次整卡 innerHTML 重建，卡片里的 <video> 每 2.5s 被
+        // 销毁重拉一次。现在状态/事件区和文件区分开按签名更新，
+        // 文件区只有在结果集真正变化时才重建。
+        let titleEl = card.querySelector('.dm-card-status');
+        let filesEl = card.querySelector('.dm-card-files');
+        if (!titleEl || !filesEl) {
+          card.innerHTML = '<div class="dm-card-status"></div><div class="dm-card-files"></div>';
+          titleEl = card.querySelector('.dm-card-status');
+          filesEl = card.querySelector('.dm-card-files');
+          card.dataset.sig = '';
+          card.dataset.fsig = '';
+        }
+        const statusSig = [status, events].join('\u0001');
+        if (card.dataset.sig !== statusSig) {
+          card.dataset.sig = statusSig;
+          let html = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--${jobStatusBadgeTone(status)}">${jobStatusLabel(status)}</span> · ${job.task_type || ''} · ${job.done || 0}/${job.total || 0}</div>`;
+          if (events) html += `<div class="ui-job-status-card__events">${events}</div>`;
+          else html += '<div class="ui-job-status-card__events">等待服务器响应...</div>';
+          if (job.status === 'failed' || job.status === 'cancelled') html += `<div class="ui-job-status-card__error">${escHtml(job.error || '生成失败')}</div>`;
+          if (!['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
+            html += `<button type="button" class="cancel-job-btn" onclick="window._dmApp.cancelJob('${escHtml(jobId)}','${escHtml(job.status || 'queued')}')">取消任务</button>`;
+          }
+          titleEl.innerHTML = html;
         }
         const allFiles = [];
         for (const r of job.results || []) { if (r.files) allFiles.push(...r.files); }
         if (job.result?.files) allFiles.push(...job.result.files);
-        html += this.renderFiles(allFiles);
-        card.innerHTML = html;
+        const filesSig = allFiles.join('\u0001');
+        if (card.dataset.fsig !== filesSig) {
+          card.dataset.fsig = filesSig;
+          filesEl.innerHTML = this.renderFiles(allFiles);
+        }
         if (['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
           stop();
           if (job.status === 'completed' && this.dirHandle && allFiles.length) {

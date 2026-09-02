@@ -541,7 +541,10 @@ function SeedanceApp() {
       // Download links: use blob download to avoid iframe navigation timeout.
       // Native <a download> triggers browser navigation which can time out
       // waiting for the proxy to buffer the entire video file.
-      const dlContainer = document.getElementById('sd-results');
+      // 委托挂在 #sd-app（页面常驻）而不是 #sd-results：#sd-results 位于
+      // v-if="statusText !== '空闲'" 内，init 时还不存在，旧代码拿到的
+      // 容器是 null、静默跳过 → 运行卡的视频点击和下载按钮一直是死的。
+      const dlContainer = document.getElementById('sd-app') || document;
       if (dlContainer) {
         dlContainer.addEventListener('click', (e) => {
           const btn = e.target.closest('.dl-btn');
@@ -1233,8 +1236,37 @@ function SeedanceApp() {
       // for the same node, which causes the dark log panel to flicker when
       // multiple topic tabs have running jobs.
 
-      if (resultsEl) {
-        const recentEvents = (job.events || []).slice(-8);
+      // 渲染去重（性能修复）：运行期每 2.5s 轮询一次，旧实现每次轮询都
+      // 整卡重建 + 自动重新加载第一个视频——任务跑多久，第一个视频就被
+      // 反复销毁重建多久，弱机上就是「点提交之后页面一直很卡」的主因。
+      // 现在拆成两个容器：状态卡按签名去重重建，结果卡只增量追加新增
+      // 结果，用户正在播放的 <video> 不再被打断。
+      const state = (this._renderState = this._renderState || {});
+      let statusBox = resultsEl.querySelector('.ui-job-status-card-wrap');
+      let resultBox = resultsEl.querySelector('.ui-result-cards');
+      if (!statusBox || !resultBox || this._renderedJobId !== jobId) {
+        // 容器缺失（submit 清空/切主题）或渲染的是另一个任务 → 全量重建
+        resultsEl.innerHTML = '';
+        statusBox = document.createElement('div');
+        statusBox.className = 'ui-job-status-card-wrap';
+        resultBox = document.createElement('div');
+        resultBox.className = 'ui-result-cards';
+        resultsEl.appendChild(statusBox);
+        resultsEl.appendChild(resultBox);
+        this._renderedJobId = jobId;
+        delete state[jobId];
+      }
+
+      const events = job.events || [];
+      const lastEvent = events.length ? events[events.length - 1].time + events[events.length - 1].message : '';
+      const statusSig = [job.status, job.done, job.total, events.length + ':' + lastEvent, (job.errors || []).join('|')].join('\u0001');
+      const resultsSig = (job.results || []).map(r => (r.task_id || '') + '|' + (r.download_url || '') + '|' + (r.filename || '')).join('\u0001');
+      const prev = state[jobId] || { statusSig: '', resultsSig: '', count: 0, errorsCount: 0 };
+      state[jobId] = { statusSig, resultsSig, count: (job.results || []).length, errorsCount: (job.errors || []).length };
+
+      // 状态卡（进度/事件/错误提示/取消按钮）：内容变化才重建
+      if (statusSig !== prev.statusSig) {
+        const recentEvents = events.slice(-8);
         const eventsHtml = recentEvents.length
           ? '<div class="ui-job-status-card__events">' + recentEvents.map(e =>
               '<div><span class="ui-job-status-card__event-time">' + escHtml(e.time) + '</span>'
@@ -1262,7 +1294,7 @@ function SeedanceApp() {
           }
         }
 
-        resultsEl.innerHTML =
+        statusBox.innerHTML =
           '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">'
           + '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--' + jobStatusBadgeTone(job.status) + '">'
           + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0)
@@ -1273,29 +1305,38 @@ function SeedanceApp() {
           + (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '')
           + eventsHtml
           + '</article>';
+      }
 
-        for (const r of job.results || []) {
+      // 结果卡：任务结果只会越来越多，增量追加新增结果即可；旧结果
+      // （含正在播放的 <video>）原样保留，轮询不再反复重建。
+      if (resultsSig !== prev.resultsSig) {
+        const results = job.results || [];
+        for (let i = prev.count; i < results.length; i++) {
+          const r = results[i];
           const url = APP_PATH + (r.download_url || '');
           // Lazy: render a click-to-play placeholder instead of <video preload="metadata">.
           // 20+ videos in one job otherwise fire 20+ concurrent SSL fetches
           // through the portal proxy → Chrome's per-host cap and portal's
           // buffer-then-forward path combine into ERR_TOO_MANY_RETRIES.
-          resultsEl.innerHTML +=
-            '<article class="result ui-result-card">'
+          // insertAdjacentHTML（而非 innerHTML +=）：+= 会把容器内全部
+          // 子元素重新解析，正在播放的 <video> 会再次被销毁重拉。
+          resultBox.insertAdjacentHTML('beforeend',
+            '<article class="result ui-result-card" data-result-index="' + i + '">'
             + '<div class="video-lazy ui-media-placeholder" data-src="' + url + '" tabindex="0" role="button" aria-label="播放视频">'
             + '<div><div class="ui-media-placeholder__icon">▶</div><div class="ui-caption">点击加载视频</div></div></div>'
             + '<a href="' + url + '" class="dl-btn ui-result-card__download" data-url="' + url + '" data-filename="' + escHtml(r.filename || 'video') + '">下载</a>'
             + '<div class="ui-result-card__meta">Run ' + (r.index || '') + ' · ' + (r.task_id || '') + '</div>'
-            + '</article>';
+            + '</article>');
+        }
+        for (let ei = prev.errorsCount; ei < (job.errors || []).length; ei++) {
+          resultBox.insertAdjacentHTML('beforeend', '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(job.errors[ei]) + '</article>');
         }
 
-        // Auto-preview the first finished video so the user sees it immediately.
-        const firstLazy = resultsEl.querySelector('.video-lazy[data-src]');
-        if (firstLazy) firstLazy.click();
-
-        for (const err of job.errors || []) {
-          resultsEl.innerHTML += '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(err) + '</article>';
-        }
+        // Auto-preview only the *newly arrived* first result; progress-event
+        // refresh no longer re-pulls the video every 2.5s.
+        const nextCard = resultBox.querySelector('[data-result-index="' + prev.count + '"]');
+        const nextLazy = nextCard && nextCard.querySelector('.video-lazy[data-src]');
+        if (nextLazy) nextLazy.click();
       }
     },
 

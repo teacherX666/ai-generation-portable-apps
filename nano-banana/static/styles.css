@@ -374,6 +374,12 @@ textarea { min-height: 220px; resize: vertical; line-height: 1.55; }
   max-height: 620px;
 }
 .results { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; margin-bottom: 14px; }
+
+/* 结果区拆成状态卡/结果卡两个容器（轮询渲染去重用）。
+   display:contents 让子元素直接参与 .results 网格布局，
+   .ui-job-status-card 的 grid-column:1/-1 跨列仍然生效。 */
+.ui-job-status-card-wrap,
+.ui-result-cards { display: contents; }
 .result { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: #fbfcfe; }
 .result img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; background: #eef2f7; border-radius: 6px; cursor: zoom-in; }
 .result a { display: inline-block; margin-top: 8px; color: #155eef; font-size: 13px; font-weight: 700; text-decoration: none; }
