@@ -255,6 +255,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 ### Volcengine Portrait 子应用要点
 
 - **ProjectName 硬编码 `Seedance2.0`**（所有 Action 无例外），`handle_virtual_groups_post` 移除了从请求体覆盖能力
+- **MJ 前缀过滤有两处独立实现**：`infinite-canvas/ark_library.py` 和 `volcengine-portrait/app.py` 的 `_is_mj_named`（列表不展示 MJ/mj 开头的组和资产）。改过滤规则要两处同步改；2026-09-02 只改了画布侧，人像资产库照样显示 56 个 MJ 组
 - **真人认证是控制台流程，没有 API**：真人和虚拟素材最终都是 `asset://` 引用，Real handler 全部委托给 Virtual handler
 - **Ark Files API `purpose` 只接受 `user_data` 或 `agent`**（`private-avatar` 会 400；旧文档写错了）
 - CreateAsset 需要**公开可访问的 HTTP/HTTPS URL**，Ark v3 上传后返回的 URL 需 Bearer Token → TOS 后端拉不到 → 走 `_upload_to_public_host()` 传 uguu.se
