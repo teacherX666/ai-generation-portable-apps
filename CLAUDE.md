@@ -174,7 +174,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **ComfyUI 工作流库**：管理员侧边栏「工作流库」→ 导入/预览/导出/启停工作流；`execution_available` 恒 False（执行切片上游也没交付）。服务配置 `state/comfyui-services.json`（可选）；启用但未配置服务时 409。放行策略：**启用即全员可见**（上游按人授权在 Portal 形态不可用）。模块 `comfy_lib.py`（解析/校验）+ `comfy_api.py`（API）。
 - **TOS 预签名 GET 的坑**：canonical_headers 必须以 `\n` 结尾、模板再补 `\n`（即空行），否则 SignatureDoesNotMatch —— 与 AWS SigV4 不同，与 volcengine-portrait/app.py:246-254 一致。
 - **跳过**：注册/密码管理/凭证池/后台日志等上游服务端功能（Portal 负责身份与统计，见 docs/infinite-canvas/01-前端改造.md 的裁剪原则）。
-- 上游同步点：`c3d5aed` → `6d1d2c6`（前端源码 58 文件、后端语义对齐）；前端单测 428 全过。
+- 上游同步点：`c3d5aed` → `b7abf47` 选择性移植（8/28 窗口 6d1d2c6→8c355b3 全量 12+4 项见 docs/infinite-canvas/05-上游同步；9/2 窗口 8c355b3→b7abf47 移植：取消任务（后端委派子应用 POST /api/jobs/{id}/cancel + 前端 CancelJobDialog/节点/托盘按钮）、画布 undo/redo （useCanvasUndo 100 条快照 + 右键菜单快捷键提示）、提交前守卫（translate.py 参数/端口校验中文原因）、可折叠节点侧栏。跳过：三级角色权限、admin 帮助页（Portal 自管身份）、飞书分镜提示词模板（待确认）。前端单测 471 全过；四个生成子应用 + Portal tracker 的取消后端需重启生产才生效。
 
 ## 稳定教训（跨版本长期有效）
 

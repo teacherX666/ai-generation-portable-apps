@@ -19,7 +19,7 @@ it("shows the regenerated result image after modifying the prompt, without remou
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "job-2", status: "succeeded", result_url: "/api/v1/results/r-2" }), { headers: { "content-type": "application/json" } })));
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
 
-    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "提示词" }));
     const promptInput = screen.getByLabelText("提示词内容");
     fireEvent.change(promptInput, { target: { value: "a cat" } });
     fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));

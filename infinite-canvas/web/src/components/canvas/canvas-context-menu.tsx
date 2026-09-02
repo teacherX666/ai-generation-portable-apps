@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Copy, Pencil, Scissors, Trash2 } from "lucide-react";
+import { Copy, Pencil, Redo2, Scissors, Trash2, Undo2 } from "lucide-react";
+
+import { redoShortcutLabel, undoShortcutLabel } from "@/features/graph/shortcut-labels";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ContextMenuState } from "@/types/canvas";
 
-export function CanvasNodeContextMenu({ menu, onClose, onCopy, onCut, onRename, onDuplicate, onDelete }: { menu: ContextMenuState; onClose: (restoreFocus?: boolean) => void; onCopy?: () => void; onCut?: () => void; onRename?: () => void; onDuplicate?: () => void; onDelete: () => void }) {
+export function CanvasNodeContextMenu({ menu, onClose, onCopy, onCut, onRename, onDuplicate, onDelete, canUndo = false, canRedo = false, onUndo, onRedo }: { menu: ContextMenuState; onClose: (restoreFocus?: boolean) => void; onCopy?: () => void; onCut?: () => void; onRename?: () => void; onDuplicate?: () => void; onDelete: () => void; canUndo?: boolean; canRedo?: boolean; onUndo?: () => void; onRedo?: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const menuRef = useRef<HTMLDivElement>(null);
     const [position, setPosition] = useState({ left: menu.x, top: menu.y });
@@ -59,7 +61,7 @@ export function CanvasNodeContextMenu({ menu, onClose, onCopy, onCut, onRename, 
     }, [onClose]);
 
     useEffect(() => {
-        menuRef.current?.querySelector<HTMLElement>("[role='menuitem']")?.focus();
+        menuRef.current?.querySelector<HTMLElement>("[role='menuitem']:not(:disabled)")?.focus();
     }, [menu]);
 
     const moveFocus = (direction: 1 | -1) => {
@@ -95,6 +97,9 @@ export function CanvasNodeContextMenu({ menu, onClose, onCopy, onCut, onRename, 
                 }
             }}
         >
+            {onUndo ? <MenuButton icon={<Undo2 className="size-4" />} label="撤销" hint={undoShortcutLabel()} disabled={!canUndo} onClick={onUndo} /> : null}
+            {onRedo ? <MenuButton icon={<Redo2 className="size-4" />} label="重做" hint={redoShortcutLabel()} disabled={!canRedo} onClick={onRedo} /> : null}
+            {onUndo || onRedo ? <div className="my-1 border-t" style={{ borderColor: theme.toolbar.border }} /> : null}
             {menu.type === "node" && copyAction ? <MenuButton icon={<Copy className="size-4" />} label="复制" onClick={copyAction} /> : null}
             {menu.type === "node" && onCut ? <MenuButton icon={<Scissors className="size-4" />} label="剪切" onClick={onCut} /> : null}
             {menu.type === "node" && onRename ? <MenuButton icon={<Pencil className="size-4" />} label="重命名" onClick={onRename} /> : null}
@@ -103,13 +108,14 @@ export function CanvasNodeContextMenu({ menu, onClose, onCopy, onCut, onRename, 
     );
 }
 
-function MenuButton({ icon, label, onClick, danger = false }: { icon: ReactNode; label: string; onClick?: () => void; danger?: boolean }) {
+function MenuButton({ icon, label, hint, onClick, danger = false, disabled = false }: { icon: ReactNode; label: string; hint?: string; onClick?: () => void; danger?: boolean; disabled?: boolean }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
     return (
-        <button role="menuitem" type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:opacity-80" style={{ color: danger ? "#f87171" : theme.node.text }} onClick={onClick}>
+        <button role="menuitem" type="button" disabled={disabled} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:opacity-80 disabled:pointer-events-none disabled:opacity-40" style={{ color: danger ? "#f87171" : theme.node.text }} onClick={onClick}>
             {icon}
-            <span>{label}</span>
+            <span className="flex-1">{label}</span>
+            {hint ? <span className="text-[10px] opacity-60">{hint}</span> : null}
         </button>
     );
 }

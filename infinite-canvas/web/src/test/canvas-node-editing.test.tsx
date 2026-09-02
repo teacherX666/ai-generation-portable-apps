@@ -610,7 +610,7 @@ describe("blank canvas creation menu", () => {
 describe("prompt node editing", () => {
     it("creates multiple independent prompt nodes from the palette", async () => {
         const projectId = await renderProject();
-        const create = screen.getByRole("button", { name: "提示词节点" });
+        const create = screen.getByRole("button", { name: "提示词" });
         fireEvent.click(create);
         expect(create).toBeEnabled();
         fireEvent.click(create);
@@ -621,7 +621,7 @@ describe("prompt node editing", () => {
 
     it("creates one blank editable prompt without starting a job or showing a spinner", async () => {
         const projectId = await renderProject();
-        fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+        fireEvent.click(screen.getByRole("button", { name: "提示词" }));
 
         const editor = screen.getByRole("textbox", { name: "提示词内容" });
         expect(editor).toHaveValue("");
@@ -637,7 +637,7 @@ describe("prompt node editing", () => {
 
     it("imports a local UTF-8 txt file into the same persisted prompt field", async () => {
         const projectId = await renderProject();
-        fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+        fireEvent.click(screen.getByRole("button", { name: "提示词" }));
         const file = new File(["第一幕：绿色雨夜"], "prompt.txt", { type: "text/plain" });
 
         fireEvent.change(screen.getByLabelText("导入 TXT"), { target: { files: [file] } });
@@ -653,7 +653,7 @@ describe("prompt node editing", () => {
         ["invalid UTF-8", new File([new Uint8Array([0xc3, 0x28])], "broken.txt", { type: "text/plain" }), /UTF-8/],
     ])("shows a visible error for %s imports without replacing text", async (_name, file, message) => {
         await renderProject();
-        fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+        fireEvent.click(screen.getByRole("button", { name: "提示词" }));
         const editor = screen.getByRole("textbox", { name: "提示词内容" });
         fireEvent.change(editor, { target: { value: "keep me" } });
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
-import { ArrowLeft, Film, ImagePlus, MessageSquareText, Music2 } from "lucide-react";
+import { ArrowLeft, Film, ImagePlus, MessageSquareText, Music2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { nanoid } from "nanoid";
 
 import type { JobState, ModelOperation, ModelSpec } from "@/api/contracts";
@@ -35,6 +35,8 @@ import { appendJobResults } from "@/features/generation/result-node";
 import { generationErrorMessage } from "@/features/generation/error-message";
 import { useGenerationJob, type PendingRef } from "@/features/generation/use-generation-job";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { undoShortcutLabel, redoShortcutLabel } from "@/features/graph/shortcut-labels";
+import { useCanvasUndo } from "@/features/graph/use-canvas-undo";
 import { CanvasNodeType } from "@/types/canvas";
 import type { CanvasNodeData, ContextMenuState, Position, ViewportTransform } from "@/types/canvas";
 
@@ -92,6 +94,24 @@ export default function CanvasProjectPage() {
     const [pendingPort, setPendingPortState] = useState<GraphPortRef | null>(null);
     const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
     const [canvasCommandMessage, setCanvasCommandMessage] = useState<string | null>(null);
+    const [paletteOpen, setPaletteOpen] = useState(() => {
+        try {
+            return localStorage.getItem("canvas:palette-open") !== "0";
+        } catch {
+            return true;
+        }
+    });
+    const togglePalette = useCallback(() => {
+        setPaletteOpen((open) => {
+            const next = !open;
+            try {
+                localStorage.setItem("canvas:palette-open", next ? "1" : "0");
+            } catch {
+                // 忽略存储失败
+            }
+            return next;
+        });
+    }, []);
     const [renamingNodeId, setRenamingNodeId] = useState<string | null>(null);
     const [libraryPanelOpen, setLibraryPanelOpen] = useState(false);
     const [connectionPointerWorld, setConnectionPointerWorld] = useState<Position>({ x: 0, y: 0 });
@@ -166,8 +186,45 @@ export default function CanvasProjectPage() {
         },
         [id, updateProject],
     );
+    const history = useCanvasUndo(id);
+    // 连续手势（拖动/缩放）只在第一次变更前取一次基线，避免每一步都进历史
+    const gestureBaselineRef = useRef<boolean>(false);
+    const gestureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const beginContinuousGesture = useCallback(() => {
+        if (gestureBaselineRef.current) return;
+        gestureBaselineRef.current = true;
+        history.capture();
+    }, [history]);
+    const touchContinuousGesture = useCallback(() => {
+        if (gestureTimerRef.current) clearTimeout(gestureTimerRef.current);
+        gestureTimerRef.current = setTimeout(() => {
+            gestureBaselineRef.current = false;
+        }, 600);
+    }, []);
+    const performUndo = useCallback(() => {
+        if (!history.undo()) return false;
+        const current = useCanvasStore.getState().openProject(id);
+        const alive = current ? new Set(current.nodes.map((node) => node.id)) : new Set<string>();
+        setSelectedNodeIds((selected) => new Set([...selected].filter((nodeId) => alive.has(nodeId))));
+        setSelectedConnectionKey(null);
+        setContextMenu(null);
+        setCanvasCommandMessage("已撤销。");
+        return true;
+    }, [history, id]);
+    const performRedo = useCallback(() => {
+        if (!history.redo()) return false;
+        const current = useCanvasStore.getState().openProject(id);
+        const alive = current ? new Set(current.nodes.map((node) => node.id)) : new Set<string>();
+        setSelectedNodeIds((selected) => new Set([...selected].filter((nodeId) => alive.has(nodeId))));
+        setSelectedConnectionKey(null);
+        setContextMenu(null);
+        setCanvasCommandMessage("已重做。");
+        return true;
+    }, [history, id]);
     const moveNode = useCallback(
         (nodeId: string, position: Position) => {
+            beginContinuousGesture();
+            touchContinuousGesture();
             if (readOnly) return;
             const current = useCanvasStore.getState().openProject(id);
             if (!current) return;
@@ -179,6 +236,8 @@ export default function CanvasProjectPage() {
     const changeNodeSize = useCallback(
         (nodeId: string, size: { width: number; height: number }) => {
             if (readOnly) return;
+            beginContinuousGesture();
+            touchContinuousGesture();
             const current = useCanvasStore.getState().openProject(id);
             if (!current) return;
             updateProject(id, { nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, width: size.width, height: size.height, resized: true } : node)) });
@@ -388,6 +447,7 @@ export default function CanvasProjectPage() {
             if (readOnly || nodeIds.size === 0) return;
             const current = useCanvasStore.getState().openProject(id);
             if (!current) return;
+            history.capture();
             updateProject(id, deleteGraphNodes(current.nodes, current.connections, nodeIds));
             setSelectedNodeIds((selected) => new Set([...selected].filter((nodeId) => !nodeIds.has(nodeId))));
             setContextMenu(null);
@@ -401,6 +461,7 @@ export default function CanvasProjectPage() {
             if (!current) return;
             const connectionIndex = current.connections.findIndex((connection, index) => graphConnectionTransientKey(connection, index) === connectionKey);
             if (connectionIndex < 0) return;
+            history.capture();
             updateProject(id, { connections: current.connections.filter((_connection, index) => index !== connectionIndex) });
             setSelectedConnectionKey((selected) => (selected === connectionKey ? null : selected));
             setContextMenu(null);
@@ -441,6 +502,7 @@ export default function CanvasProjectPage() {
             setCanvasCommandMessage(messages[result.reason]);
             return true;
         }
+        history.capture();
         updateProject(id, { nodes: [...current.nodes, ...result.nodes], connections: [...current.connections, ...result.connections] });
         setSelectedConnectionKey(null);
         setSelectedNodeIds(new Set(result.pastedNodeIds));
@@ -480,6 +542,8 @@ export default function CanvasProjectPage() {
             if (readOnly || isEditableEventTarget(event.target)) return;
             const key = event.key.toLocaleLowerCase();
             const primaryModifier = event.ctrlKey || event.metaKey;
+            if (primaryModifier && key === "z" && !event.shiftKey && performUndo()) { event.preventDefault(); return; }
+            if (primaryModifier && (key === "y" || (key === "z" && event.shiftKey)) && performRedo()) { event.preventDefault(); return; }
             if (primaryModifier && key === "a") {
                 const current = useCanvasStore.getState().openProject(id);
                 if (!current?.nodes.length) return;
@@ -517,6 +581,7 @@ export default function CanvasProjectPage() {
                 setConnectionMessage(graphConnectionRejectionMessage(result.reason));
                 return false;
             }
+            history.capture();
             updateProject(id, { connections: [...current.connections, result.connection] });
             setSelectedNodeIds(new Set());
             setSelectedConnectionKey(graphConnectionTransientKey(result.connection, current.connections.length));
@@ -648,10 +713,11 @@ export default function CanvasProjectPage() {
                     graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: model.model_id, operation, inputPorts: graphPortsForModel(model), outputPortId: "result", parameters },
                 },
             };
+            history.capture();
             updateProject(id, { nodes: [...current.nodes, node] });
             setSelectedNodeIds(new Set([node.id]));
         },
-        [id, models, readOnly, updateProject],
+        [id, models, readOnly, updateProject, history],
     );
     const addPromptNode = useCallback((position?: Position) => {
         if (readOnly) return;
@@ -670,9 +736,10 @@ export default function CanvasProjectPage() {
                 graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "", outputPortId: "prompt" },
             },
         };
+        history.capture();
         updateProject(id, { nodes: [...current.nodes, node] });
         setSelectedNodeIds(new Set([node.id]));
-    }, [id, readOnly, updateProject]);
+    }, [id, readOnly, updateProject, history]);
 
     const updatePromptNode = useCallback(
         (nodeId: string, text: string) => {
@@ -719,11 +786,12 @@ export default function CanvasProjectPage() {
                     graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "media-collection", mediaType, outputPortId: "media", items: [] },
                 },
             };
+            history.capture();
             updateProject(id, { nodes: [...current.nodes, node] });
             setSelectedNodeIds(new Set([node.id]));
             return node.id;
         },
-        [id, readOnly, updateProject],
+        [id, readOnly, updateProject, history],
     );
 
     const updateMediaCollection = useCallback(
@@ -790,6 +858,7 @@ export default function CanvasProjectPage() {
         const current = useCanvasStore.getState().openProject(id);
         if (!current) return;
         const node = createUnassignedComfyWorkflowNode(position ?? { x: 96 + current.nodes.length * 24, y: 112 + current.nodes.length * 24 });
+        history.capture();
         updateProject(id, { nodes: [...current.nodes, node] });
         setSelectedNodeIds(new Set([node.id]));
     }, [id, readOnly, updateProject]);
@@ -881,13 +950,18 @@ export default function CanvasProjectPage() {
                     {syncNotice}
                 </p>
             ) : null}
-            <main className="flex min-h-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[152px_minmax(0,1fr)]">
-                <aside data-testid="studio-palette" className="shrink-0 border-b border-[#20293d] bg-[#ffffff] p-2 lg:border-b-0 lg:border-r lg:p-3">
+            <main className={`flex min-h-0 flex-1 flex-col overflow-hidden lg:grid ${paletteOpen ? "lg:grid-cols-[152px_minmax(0,1fr)]" : "lg:grid-cols-[minmax(0,1fr)]"} relative`}>
+                {paletteOpen ? <aside data-testid="studio-palette" className="shrink-0 border-b border-[#20293d] bg-[#ffffff] p-2 lg:border-b-0 lg:border-r lg:p-3">
                     <div className="flex items-center justify-between gap-2 lg:block">
                         <div>
-                            <Link to="/canvas" aria-label="返回项目列表" className="mb-1 inline-flex items-center gap-1 px-2 text-[11px] text-[#687386] hover:text-[#172033] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#235fd6]">
-                                <ArrowLeft className="size-3.5" />返回项目列表
-                            </Link>
+                            <div className="flex items-start justify-between">
+                                <Link to="/canvas" aria-label="返回项目列表" className="mb-1 inline-flex items-center gap-1 px-2 text-[11px] text-[#687386] hover:text-[#172033] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#235fd6]">
+                                    <ArrowLeft className="size-3.5" />返回项目列表
+                                </Link>
+                                <button type="button" onClick={togglePalette} aria-label="隐藏节点栏" title="隐藏节点栏" className="rounded-md p-1.5 text-[#687386] hover:bg-[#eef2f7] hover:text-[#172033]">
+                                    <PanelLeftClose className="size-4" />
+                                </button>
+                            </div>
                             <p className="px-2 text-xs tracking-[0.16em] text-[#235fd6] lg:pt-2">NODE PALETTE</p>
                             <h1 className="px-2 py-1 text-sm font-semibold lg:pb-4 lg:pt-2">{project.title}</h1>
                         </div>
@@ -899,7 +973,7 @@ export default function CanvasProjectPage() {
                                 className="flex items-center gap-2 rounded-lg border border-[#c3ccd9] bg-[#eef2f7] px-3 py-2 text-left text-xs hover:border-[#2f6bdd] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"
                             >
                                 <MessageSquareText className="size-4 text-[#235fd6]" />
-                                提示词节点
+                                提示词
                             </button>
                             <button
                                 disabled={readOnly}
@@ -908,7 +982,7 @@ export default function CanvasProjectPage() {
                                 className="flex items-center gap-2 rounded-lg border border-[#c3ccd9] bg-[#eef2f7] px-3 py-2 text-left text-xs hover:border-[#2f6bdd] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"
                             >
                                 <ImagePlus className="size-4 text-[#235fd6]" />
-                                参考图节点
+                                参考图
                             </button>
                             <button
                                 disabled={readOnly}
@@ -917,7 +991,7 @@ export default function CanvasProjectPage() {
                                 className="flex items-center gap-2 rounded-lg border border-[#c3ccd9] bg-[#eef2f7] px-3 py-2 text-left text-xs hover:border-[#2f6bdd] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"
                             >
                                 <Film className="size-4 text-[#235fd6]" />
-                                参考视频节点
+                                参考视频
                             </button>
                             <button
                                 disabled={readOnly}
@@ -926,7 +1000,7 @@ export default function CanvasProjectPage() {
                                 className="flex items-center gap-2 rounded-lg border border-[#c3ccd9] bg-[#eef2f7] px-3 py-2 text-left text-xs hover:border-[#2f6bdd] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"
                             >
                                 <Music2 className="size-4 text-[#235fd6]" />
-                                参考音频节点
+                                参考音频
                             </button>
                             <button
                                 disabled={readOnly || imageCreateOperation === null}
@@ -947,7 +1021,12 @@ export default function CanvasProjectPage() {
                         </div>
                     </div>
                     <p className="mt-5 hidden px-2 text-[11px] leading-5 text-[#8b95a7] lg:block">集合内顺序决定 @图片N、@视频N、@音频N 的引用编号。</p>
-                </aside>
+                </aside> : null}
+                {paletteOpen ? null : (
+                    <button type="button" onClick={togglePalette} aria-label="显示节点栏" title="显示节点栏" className="absolute left-3 top-3 z-20 rounded-md border border-[#d9e0ea] bg-[#ffffff]/95 p-2 text-[#687386] shadow hover:text-[#172033]">
+                        <PanelLeftOpen className="size-4" />
+                    </button>
+                )}
                 <section data-testid="studio-canvas" className="embed-surface relative min-h-0 min-w-0 flex-1">
                     <InfiniteCanvas
                         containerRef={containerRef}
@@ -1075,7 +1154,9 @@ export default function CanvasProjectPage() {
                             targets={libraryTargets}
                             onClose={() => setLibraryPanelOpen(false)}
                             addToCollection={(nodeId, items) => {
-                                if (!readOnly) updateMediaCollection(nodeId, (current) => [...current, ...items]);
+                                if (readOnly) return;
+                                history.capture();
+                                updateMediaCollection(nodeId, (current) => [...current, ...items]);
                             }}
                         />
                     ) : null}
@@ -1111,6 +1192,10 @@ export default function CanvasProjectPage() {
                             videoModelDisabled={videoCreateOperation === null}
                             onClose={closeContextMenu}
                             onCreate={createNodeFromContextMenu}
+                            canUndo={history.canUndo}
+                            canRedo={history.canRedo}
+                            onUndo={() => { performUndo(); }}
+                            onRedo={() => { performRedo(); }}
                         />
                     ) : contextMenu?.type === "node" ? (
                         <CanvasNodeContextMenu
@@ -1118,6 +1203,10 @@ export default function CanvasProjectPage() {
                             onClose={closeContextMenu}
                             onCopy={copySelection}
                             onCut={cutSelection}
+                            canUndo={history.canUndo}
+                            canRedo={history.canRedo}
+                            onUndo={() => { performUndo(); }}
+                            onRedo={() => { performRedo(); }}
                             onRename={() => beginRename(contextMenu.nodeId, contextTriggerRef.current instanceof HTMLElement ? contextTriggerRef.current : null)}
                             onDelete={() => deleteNodes(selectedNodeIds.has(contextMenu.nodeId) ? selectedNodeIds : new Set([contextMenu.nodeId]))}
                         />

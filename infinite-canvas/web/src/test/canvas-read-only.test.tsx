@@ -61,11 +61,11 @@ it("shows a read-only banner and blocks project-page generation and node edits",
     </Routes></MemoryRouter>);
 
     expect(screen.getByRole("alert")).toHaveTextContent("升级应用");
-    expect(screen.getByRole("button", { name: "提示词节点" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "提示词" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "图片生成" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "视频生成" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "运行模型" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "提示词" }));
     expect(useCanvasStore.getState().openProject(id)?.nodes).toEqual([]);
 });
 

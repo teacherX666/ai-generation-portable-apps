@@ -42,7 +42,7 @@ it("assembles the released image and video generation studio around the infinite
     expect(screen.getByTestId("studio-canvas")).toHaveClass("flex-1", "min-h-0");
     expect(screen.getByRole("link", { name: "返回项目列表" })).toHaveAttribute("href", "/canvas");
     expect(screen.queryByTestId("generation-inspector")).not.toBeInTheDocument();
-    expect(screen.getByText("提示词节点")).toBeVisible();
+    expect(screen.getByRole("button", { name: "提示词" })).toBeVisible();
     expect(screen.getByRole("button", { name: "图片生成" })).toBeVisible();
     expect(screen.getByRole("button", { name: "视频生成" })).toBeVisible();
     expect(screen.queryByText(/Dreamina|ComfyUI|Skill/)).not.toBeInTheDocument();
@@ -82,6 +82,38 @@ it("keeps the compact navigation-control class contract", () => {
     expect(navigationControls).toHaveClass("left-4", "max-w-[calc(100%-2rem)]", "px-3", "py-2");
     expect(resetControl).toHaveClass("px-2", "py-1", "text-xs");
     expect(scaleControl).toHaveClass("w-20");
+});
+
+it("collapses and restores the node palette without taking canvas space", async () => {
+    window.localStorage.removeItem("canvas:palette-open");
+    const id = useCanvasStore.getState().createProject("Palette toggle");
+
+    renderProject(id);
+
+    expect(screen.getByTestId("studio-palette")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "显示节点栏" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "隐藏节点栏" }));
+
+    expect(screen.queryByTestId("studio-palette")).not.toBeInTheDocument();
+    expect(screen.getByTestId("studio-canvas")).toBeVisible();
+    expect(window.localStorage.getItem("canvas:palette-open")).toBe("0");
+
+    fireEvent.click(screen.getByRole("button", { name: "显示节点栏" }));
+
+    expect(screen.getByTestId("studio-palette")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "显示节点栏" })).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("canvas:palette-open")).toBe("1");
+});
+
+it("restores the collapsed palette state from storage", () => {
+    window.localStorage.setItem("canvas:palette-open", "0");
+    const id = useCanvasStore.getState().createProject("Palette remembered");
+
+    renderProject(id);
+
+    expect(screen.queryByTestId("studio-palette")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "显示节点栏" })).toBeVisible();
 });
 
 it("shows sync failure, conflict, and recovery notices without overlaying the canvas", () => {

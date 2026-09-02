@@ -80,7 +80,7 @@ it("submits canvas image generation through jobs and writes its result node", as
     const projectId = useCanvasStore.getState().createProject("Canvas");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ model_id: "real-video-looking-image", service_id: "s", display_name: "Video Model", operations: ["image.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: { steps: "steps" }, parameter_schema: { steps: { type: "integer", default: 4 } } }] }), { headers: { "content-type": "application/json" } })).mockResolvedValueOnce(new Response(JSON.stringify({ id: "job-1", status: "queued" }), { status: 201, headers: { "content-type": "application/json" } })).mockResolvedValueOnce(new Response(JSON.stringify({ id: "job-1", status: "succeeded", result_url: "/api/v1/results/r-1" }), { headers: { "content-type": "application/json" } })));
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
-    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "提示词" }));
     fireEvent.change(screen.getByLabelText("提示词内容"), { target: { value: "a cat" } });
     fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));
     act(() => {
@@ -140,7 +140,7 @@ it("submits canvas video generation through jobs and writes a video result node"
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "video-job-1", status: "queued" }), { status: 201, headers: { "content-type": "application/json" } }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "video-job-1", operation: "video.generate", status: "succeeded", result_url: "/api/v1/results/video-job-1" }), { headers: { "content-type": "application/json" } })));
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
-    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "提示词" }));
     fireEvent.change(screen.getByLabelText("提示词内容"), { target: { value: "a cloud moving slowly" } });
     fireEvent.click(await screen.findByRole("button", { name: "视频生成" }));
     act(() => {
@@ -182,8 +182,8 @@ it("runs two connected model nodes independently on the same canvas", async () =
     vi.stubGlobal("fetch", fetchMock);
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
 
-    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
-    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "提示词" }));
+    fireEvent.click(screen.getByRole("button", { name: "提示词" }));
     const prompts = screen.getAllByLabelText("提示词内容");
     fireEvent.change(prompts[0], { target: { value: "still image" } });
     fireEvent.change(prompts[1], { target: { value: "moving image" } });
@@ -210,7 +210,7 @@ it("writes a safe failure node for a rate-limited generation", async () => {
     const projectId = useCanvasStore.getState().createProject("Canvas");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ model_id: "image", service_id: "s", display_name: "Image", operations: ["image.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: {}, parameter_schema: {} }] }), { headers: { "content-type": "application/json" } })).mockResolvedValue(new Response(JSON.stringify({ code: "rate_limited", message: "raw", retryable: true, request_id: "req-1", phase: "submit" }), { status: 429, headers: { "content-type": "application/json" } })));
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
-    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "提示词" }));
     fireEvent.change(screen.getByLabelText("提示词内容"), { target: { value: "private prompt" } });
     fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));
     act(() => {
@@ -233,7 +233,7 @@ it("clears the queued state when an accepted job later fails", async () => {
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "failed-job", status: "queued" }), { status: 201, headers: { "content-type": "application/json" } }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "failed-job", status: "failed", error: { code: "UPSTREAM_FAILED", message: "private upstream detail", retryable: true, request_id: "request-failed", phase: "generation" } }), { headers: { "content-type": "application/json" } })));
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
-    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "提示词" }));
     fireEvent.change(screen.getByLabelText("提示词内容"), { target: { value: "safe prompt" } });
     fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));
     act(() => {

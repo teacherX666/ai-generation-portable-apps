@@ -66,7 +66,7 @@ describe("ModelCallNode", () => {
         expect(onRetry).toHaveBeenCalledWith("same-key");
     });
 
-    it("only offers provider cancellation while the task is queued", () => {
+    it("cancels queued tasks directly and running tasks after a billing warning", () => {
         const onCancel = vi.fn();
         const queued: CanvasNodeData = { ...node, metadata: { ...node.metadata, status: "loading", jobId: "job-queued", jobStatus: "queued" } };
         const { rerender } = render(<ModelCallNode node={queued} models={models} onChange={vi.fn()} onRun={vi.fn()} onCancel={onCancel} />);
@@ -76,7 +76,13 @@ describe("ModelCallNode", () => {
         const running: CanvasNodeData = { ...node, metadata: { ...node.metadata, status: "loading", jobId: "job-running", jobStatus: "running" } };
         rerender(<ModelCallNode node={running} models={models} onChange={vi.fn()} onRun={vi.fn()} onCancel={onCancel} />);
         expect(screen.queryByRole("button", { name: "取消排队任务" })).not.toBeInTheDocument();
-        expect(screen.getByRole("status")).toHaveTextContent("平台不支持取消运行中任务");
+        expect(screen.getByRole("status")).toHaveTextContent("运行中，可取消");
+        fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
+        const dialog = screen.getByRole("alertdialog", { name: "确认取消任务" });
+        expect(dialog).toHaveTextContent("任务已开始计费");
+        expect(onCancel).not.toHaveBeenCalledWith("job-running");
+        fireEvent.click(screen.getByRole("button", { name: "确定取消" }));
+        expect(onCancel).toHaveBeenCalledWith("job-running");
     });
 
     it("locks model parameters and run action while a snapshot is active", () => {

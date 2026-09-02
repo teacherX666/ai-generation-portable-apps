@@ -20,6 +20,12 @@ export const useGenerationTasks = create<GenerationTaskStore>()((set) => ({
 }));
 export function clearGenerationTasks() { useGenerationTasks.getState().clear(); }
 export function dismissGenerationTask(jobId: string) { useGenerationTasks.getState().remove(jobId); }
+export async function cancelGenerationTask(jobId: string): Promise<JobState> {
+    const current = useGenerationTasks.getState().tasks.find((item) => item.jobId === jobId);
+    const job = await cancelJob(jobId);
+    useGenerationTasks.getState().upsert({ jobId, title: current?.title ?? jobId, status: stateFor(job), sourceNodeId: current?.sourceNodeId });
+    return job;
+}
 type GenerationApi = { create: (job: JobRequest, signal?: AbortSignal) => Promise<JobState>; fetch: (id: string, signal?: AbortSignal) => Promise<JobState>; cancel?: (id: string) => Promise<JobState> };
 type SubmitInput = Omit<JobRequest, "idempotency_key"> & { projectId: string; sourceNodeId?: string };
 type Options = { api?: GenerationApi; pollDelayMs?: number; idempotencyKey?: () => string; onStateChanged?: (job: JobState, ref?: PendingRef) => void; onSucceeded?: (job: JobState, ref?: PendingRef) => void; onCancelled?: (details: { jobId: string; projectId?: string; sourceNodeId?: string }) => void; onFailed?: (details: { request: JobRequest; projectId?: string; sourceNodeId?: string; message: string; requestId?: string; phase?: string; retryToken?: string }) => void };
@@ -113,6 +119,13 @@ export function useGenerationJob(options: Options = {}) {
                     const ref = refs.current.get(jobId);
                     const request = ref?.request;
                     refs.current.delete(jobId); await persist();
+                    if (job.error?.code === "TASK_CANCELLED") {
+                        // 托盘/任务中心发起的取消：画布节点同步还原为可编辑
+                        publish({ status, jobId, message: "任务已取消。", retryable: false }, captured);
+                        useGenerationTasks.getState().upsert({ jobId, title: request?.prompt.slice(0, 32) || jobId, status, sourceNodeId: ref?.sourceNodeId });
+                        optionsRef.current.onCancelled?.({ jobId, projectId: ref?.projectId, sourceNodeId: ref?.sourceNodeId });
+                        return;
+                    }
                     const message = generationErrorMessage(job.error ? new ApiRequestError(job.error) : new Error("failed"));
                     publish({ status, jobId, message, retryable: job.error?.retryable }, captured);
                     const safe = job.error ? { request_id: job.error.request_id, phase: job.error.phase } : undefined;

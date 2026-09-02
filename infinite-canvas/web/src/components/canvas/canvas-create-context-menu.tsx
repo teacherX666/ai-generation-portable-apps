@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Boxes, Film, ImagePlus, MessageSquareText, Music2, Sparkles } from "lucide-react";
+import { Boxes, Film, ImagePlus, MessageSquareText, Music2, Redo2, Sparkles, Undo2 } from "lucide-react";
+
+import { redoShortcutLabel, undoShortcutLabel } from "@/features/graph/shortcut-labels";
 import type { ReactNode } from "react";
 
 import type { ContextMenuState } from "@/types/canvas";
@@ -8,12 +10,16 @@ export type CanvasCreationKind = "prompt" | "image" | "video" | "audio" | "comfy
 
 type Item = { kind: CanvasCreationKind; label: string; icon: ReactNode; disabled?: boolean; reason?: string };
 
-export function CanvasCreateContextMenu({ menu, imageModelDisabled, videoModelDisabled, onClose, onCreate }: {
+export function CanvasCreateContextMenu({ menu, imageModelDisabled, videoModelDisabled, onClose, onCreate, canUndo = false, canRedo = false, onUndo, onRedo }: {
     menu: Extract<ContextMenuState, { type: "canvas" }>;
     imageModelDisabled: boolean;
     videoModelDisabled: boolean;
     onClose: (restoreFocus?: boolean) => void;
     onCreate: (kind: CanvasCreationKind) => void;
+    canUndo?: boolean;
+    canRedo?: boolean;
+    onUndo?: () => void;
+    onRedo?: () => void;
 }) {
     const menuRef = useRef<HTMLDivElement>(null);
     const [position, setPosition] = useState({ left: menu.x, top: menu.y });
@@ -88,6 +94,21 @@ export function CanvasCreateContextMenu({ menu, imageModelDisabled, videoModelDi
                     <span>{item.label}</span>
                 </button>
             ))}
+            {onUndo ? (
+                <>
+                    <button role="menuitem" type="button" disabled={!canUndo} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-[#eef2f7] disabled:cursor-not-allowed disabled:opacity-40" onClick={onUndo}>
+                        <span className="text-[#235fd6]"><Undo2 className="size-4" /></span>
+                        <span className="flex-1">撤销</span>
+                        <span className="text-[10px] opacity-60">{undoShortcutLabel()}</span>
+                    </button>
+                    <button role="menuitem" type="button" disabled={!canRedo} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-[#eef2f7] disabled:cursor-not-allowed disabled:opacity-40" onClick={onRedo}>
+                        <span className="text-[#235fd6]"><Redo2 className="size-4" /></span>
+                        <span className="flex-1">重做</span>
+                        <span className="text-[10px] opacity-60">{redoShortcutLabel()}</span>
+                    </button>
+                    <div className="my-1 border-t border-[#d9e0ea]" />
+                </>
+            ) : null}
         </div>
     );
 }

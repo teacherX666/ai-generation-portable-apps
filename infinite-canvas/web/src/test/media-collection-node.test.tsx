@@ -607,7 +607,7 @@ it("creates all three collection nodes and persists uploaded asset order in the 
     const projectId = useCanvasStore.getState().createProject("Media Canvas");
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
 
-    fireEvent.click(screen.getByRole("button", { name: "参考图节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "参考图" }));
     fireEvent.change(screen.getByLabelText("添加图片"), { target: { files: [
         new File(["a"], "first.png", { type: "image/png" }),
         new File(["bb"], "second.png", { type: "image/png" }),
@@ -622,8 +622,8 @@ it("creates all three collection nodes and persists uploaded asset order in the 
         expect(imageCollection?.metadata?.graph?.role === "media-collection" ? imageCollection.metadata.graph.items.map((item) => item.assetId) : []).toEqual(["asset-2", "asset-1"]);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "参考视频节点" }));
-    fireEvent.click(screen.getByRole("button", { name: "参考音频节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "参考视频" }));
+    fireEvent.click(screen.getByRole("button", { name: "参考音频" }));
     const mediaTypes = useCanvasStore.getState().openProject(projectId)?.nodes.flatMap((node) => node.metadata?.graph?.role === "media-collection" ? [node.metadata.graph.mediaType] : []);
     expect(mediaTypes).toEqual(["image", "video", "audio"]);
 });

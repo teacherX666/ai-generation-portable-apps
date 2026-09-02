@@ -230,18 +230,18 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
     useCanvasStore.getState().updateProject(projectId, { viewport: { x: 0, y: 0, k: 1 } });
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-    await page.getByRole("button", { name: "提示词节点" }).click();
+    await page.getByRole("button", { name: "提示词" }).click();
     expect(
         useCanvasStore
             .getState()
             .openProject(projectId)!
             .nodes.filter((node) => node.metadata?.graph?.role === "prompt"),
     ).toHaveLength(1);
-    await expect.element(page.getByRole("button", { name: "提示词节点" })).not.toBeDisabled();
+    await expect.element(page.getByRole("button", { name: "提示词" })).not.toBeDisabled();
     await page.getByLabelText("提示词内容").fill("手动提示词");
     chooseFile(document.querySelector('input[aria-label="导入 TXT"]')!, [new File(["来自 TXT 的提示词"], "prompt.txt", { type: "text/plain" })]);
     await expect.element(page.getByLabelText("提示词内容")).toHaveValue("来自 TXT 的提示词");
-    await page.getByRole("button", { name: "提示词节点" }).click();
+    await page.getByRole("button", { name: "提示词" }).click();
     expect(
         useCanvasStore
             .getState()
@@ -284,8 +284,8 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
     window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Delete" }));
     expect(useCanvasStore.getState().openProject(projectId)!.nodes.some((node) => node.id === imageCollectionsAfterPaste[1].id)).toBe(false);
 
-    await page.getByRole("button", { name: "参考视频节点" }).click();
-    await page.getByRole("button", { name: "参考音频节点" }).click();
+    await page.getByRole("button", { name: "参考视频" }).click();
+    await page.getByRole("button", { name: "参考音频" }).click();
     chooseFile(document.querySelector('input[aria-label="添加图片"]')!, [new File(["one"], "one.png", { type: "image/png" }), new File(["two"], "two.png", { type: "image/png" })]);
     chooseFile(document.querySelector('input[aria-label="添加视频"]')!, [new File(["video"], "clip.mp4", { type: "video/mp4" })]);
     chooseFile(document.querySelector('input[aria-label="添加音频"]')!, [new File(["audio"], "voice.wav", { type: "audio/wav" })]);

@@ -1,3 +1,4 @@
+import { CancelJobDialog } from "@/components/cancel-job-dialog";
 import { Play, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -23,6 +24,7 @@ function defaults(model: ModelSpec) {
 }
 
 export function ModelCallNode({ node, models, disabled = false, message, onChange, onRun, onRetry, onCancel }: Props) {
+    const [confirmCancel, setConfirmCancel] = useState(false);
     const graph = node.metadata?.graph;
     if (graph?.role !== "model") return null;
     const [customOpen, setCustomOpen] = useState<Record<string, boolean>>({});
@@ -46,7 +48,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
             </header>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-canvas-no-zoom>
                 <p role="status" className="text-[11px] text-[#687386]">
-                    任务状态：{node.metadata?.jobStatus === "queued" ? "排队中，可取消" : node.metadata?.jobStatus === "running" ? "运行中（平台不支持取消运行中任务）" : node.metadata?.status === "loading" ? "提交中" : node.metadata?.status === "success" ? "已完成" : node.metadata?.status === "error" ? "失败，可修改后重试" : "待运行"}
+                    任务状态：{node.metadata?.jobStatus === "queued" ? "排队中，可取消" : node.metadata?.jobStatus === "running" ? "运行中，可取消（已开始计费）" : node.metadata?.status === "loading" ? "提交中" : node.metadata?.status === "success" ? "已完成" : node.metadata?.status === "error" ? "失败，可修改后重试" : "待运行"}
                 </p>
                 <label className="block text-[11px] text-[#687386]">
                     模型
@@ -174,6 +176,12 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                         取消排队任务
                     </button>
                 ) : null}
+                {node.metadata?.jobStatus === "running" && node.metadata.jobId && onCancel ? (
+                    <button type="button" disabled={disabled} onClick={() => setConfirmCancel(true)} className="w-full rounded-lg border border-[#f59e0b] px-3 py-2 text-[#b45309] disabled:opacity-40">
+                        取消任务
+                    </button>
+                ) : null}
+                <CancelJobDialog open={confirmCancel} onClose={() => setConfirmCancel(false)} onConfirm={() => { setConfirmCancel(false); if (node.metadata?.jobId && onCancel) onCancel(node.metadata.jobId); }} />
                 {message ? (
                     <p role="status" className="text-[#92400e]">
                         {message}
