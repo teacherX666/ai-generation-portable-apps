@@ -1826,7 +1826,16 @@ class Handler(SimpleHTTPRequestHandler):
         conn.settimeout(10)
         try:
             conn.do_handshake()
-        except (ssl.SSLError, socket.timeout, OSError, ValueError):
+        except socket.timeout:
+            # 半开连接：连上后 10s 不发握手字节（2026-09-02 断服元凶姿势）。
+            # 记下来源 IP——下次再出现可以直接锁定是哪台机器/哪个扫描器。
+            print(f"  [tls-timeout] handshake timeout from {self.client_address[0]}", flush=True)
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            conn.close()
+        except (ssl.SSLError, OSError, ValueError):
             # 扫描器/坏客户端：安静关掉，随后的 readline 读到空行，
             # handle_one_request 自行收尾，不产生 traceback 噪音。
             try:
