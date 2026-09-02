@@ -1322,7 +1322,9 @@ class UsageTracker:
                         # (handle_job_status flattens them) but fall back for safety.
                         nested = data.get("job") if isinstance(data.get("job"), dict) else {}
                         status = data.get("status") or nested.get("status") or ""
-                        if status in ("succeeded", "failed", "completed"):
+                        # cancelled 也是终态（子应用取消任务）：照常按 done 计费
+                        # 已完成条目、然后从 pending 移除，否则会空转轮询到 2h 超时
+                        if status in ("succeeded", "failed", "completed", "cancelled", "canceled"):
                             # `done` is the count of items the sub-app actually
                             # produced (each successful item does JOBS[id]["done"] += 1),
                             # independent of the final status: a partial success

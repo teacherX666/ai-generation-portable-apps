@@ -409,8 +409,13 @@ FILES_LOCK = threading.Lock()
 # GET /api/jobs/<id> every 15s, credits by_user.images only on a terminal
 # status) — 600s >> the poll cycle guarantees a job is counted before eviction.
 MAX_JOBS = 500
+
+
+def _job_cancel_requested(job_id: str) -> bool:
+    with JOBS_LOCK:
+        return bool(JOBS.get(job_id, {}).get("cancel_requested"))
 JOB_PRUNE_GRACE_SECONDS = 600
-_TERMINAL_JOB_STATUSES = ("succeeded", "failed", "completed")
+_TERMINAL_JOB_STATUSES = ("succeeded", "failed", "completed", "cancelled", "canceled")
 
 
 def _prune_jobs_locked() -> None:
@@ -1802,6 +1807,13 @@ def _asset_content_item(asset_id, cache=None):
 
 
 def _run_virtual_job_impl(job_id, job):
+    if _job_cancel_requested(job_id):
+        with JOBS_LOCK:
+            job["status"] = "cancelled"
+            job["errors"] = ["任务已取消。"]
+            job["finished_at"] = time.time()
+            job["events"].append({"time": time.strftime("%H:%M:%S"), "message": "任务已取消。"})
+        return
     api_key = job.get("api_key")
     asset_id = job.get("asset_id", "")
     extra_asset_ids = job.get("extra_asset_ids", []) or []
@@ -1826,6 +1838,8 @@ def _run_virtual_job_impl(job_id, job):
     asset_type_cache: dict[str, str] = {}
 
     for idx in range(repeat_count):
+        if _job_cancel_requested(job_id):
+            break
         # Build content array: text prompt + reference assets
         images = []
         # 图1: asset_id (required) — routed by its real AssetType
@@ -1869,11 +1883,20 @@ def _run_virtual_job_impl(job_id, job):
         run_finished = False
         for _ in range(240):
             time.sleep(5)
+            if _job_cancel_requested(job_id):
+                # 取消兜底：无法中止 Ark 侧在途请求（无 cancel API），
+                # 停止轮询；远端任务完成后其结果会被 Ark 丢弃（无人认领）
+                run_finished = True
+                break
             task_result = ark_v3_call("GET", f"/contents/generations/tasks/{task_id}", api_key=api_key)
             t_status = (task_result.get("status") or "").lower()
             if t_status in ("completed", "succeeded"):
                 video_url = extract_video_url(task_result) or ""
                 if video_url:
+                    if _job_cancel_requested(job_id):
+                        # 竞态兜底：下载完成前用户点了取消——不登记产物
+                        run_finished = True
+                        break
                     out_dir = Path(job.get("output_dir")) if job.get("output_dir") else OUTPUT_DIR
                     local_path = download_video(video_url, job_id, idx, out_dir=out_dir)
                     file_token = uuid.uuid4().hex
@@ -1956,7 +1979,13 @@ def _run_virtual_job_impl(job_id, job):
                 })
 
     with JOBS_LOCK:
-        job["status"] = "failed" if job.get("errors") else "succeeded"
+        if _job_cancel_requested(job_id):
+            # 已完成的条目保留（已真实生成且计费）；未完成条目不计
+            job["status"] = "cancelled"
+            if not job.get("errors"):
+                job["errors"] = ["任务已取消。"]
+        else:
+            job["status"] = "failed" if job.get("errors") else "succeeded"
         job["finished_at"] = time.time()
         job["events"].append({"time": time.strftime("%H:%M:%S"), "message": f"任务结束: {job['status']}"})
         final_snapshot = {
@@ -2198,6 +2227,33 @@ class Handler(SimpleHTTPRequestHandler):
             return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        # POST /api/{virtual,real}/jobs/{id}/cancel — 取消排队/运行中的任务。
+        # 刻意不返回 X-Job-Id：portal 统计按 X-Job-Id 登记，取消不触发计数。
+        if (path.startswith("/api/virtual/jobs/") or path.startswith("/api/real/jobs/")) and path.endswith("/cancel"):
+            job_id = path.rsplit("/", 2)[-2]
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+                if job is None:
+                    json_response(self, 404, {"ok": False, "error": "任务不存在（服务可能已重启）"})
+                    return
+                if job.get("cancel_requested"):
+                    json_response(self, 200, {"ok": True, "status": "cancelled"})
+                    return
+                if job.get("status") in _TERMINAL_JOB_STATUSES:
+                    json_response(self, 409, {"ok": False, "error": "任务已结束，无法取消"})
+                    return
+                job["cancel_requested"] = True
+                # 立即置终态：前端轮询马上看到「已取消」；worker 在
+                # 下个检查点读到 cancel_requested 后自行退出
+                job["status"] = "cancelled"
+                if not job.get("errors"):
+                    job["errors"] = ["任务已取消。"]
+                job["finished_at"] = time.time()
+                job["events"].append({"time": time.strftime("%H:%M:%S"), "message": "任务已取消。"})
+            report_final_to_portal(job_id, "cancelled")
+            json_response(self, 200, {"ok": True, "status": "cancelled"})
+            return
 
         if path == "/api/config":
             handle_config_post(self)

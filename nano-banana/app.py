@@ -78,6 +78,16 @@ class NetworkError(Exception):
     pass
 
 
+class TaskCancelled(Exception):
+    """任务被用户取消：run_one 在取消后抛出，run_job 识别后不记错误、不计 done。"""
+    pass
+
+
+def _job_cancel_requested(job_id: str) -> bool:
+    with LOCK:
+        return bool(JOBS.get(job_id, {}).get("cancel_requested"))
+
+
 def _safe_join_or_root(base: Path, rel: str) -> str:
     """Join base/rel and reject any result outside base (path-traversal guard).
 
@@ -305,7 +315,7 @@ def save_files_map() -> None:
 # be a stats under-count, so 600s >> the 15s poll cycle keeps us safe.
 MAX_JOBS = 500
 JOB_PRUNE_GRACE_SECONDS = 600
-_TERMINAL_JOB_STATUSES = ("succeeded", "failed", "completed")
+_TERMINAL_JOB_STATUSES = ("succeeded", "failed", "completed", "cancelled", "canceled")
 ACTIVITY_LIMIT = 100
 
 
@@ -1719,6 +1729,8 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         common["seed"] = str(seed)
 
     seed_label = f", seed:{seed}" if seed > 0 else ""
+    if _job_cancel_requested(job_id):
+        raise TaskCancelled("任务已取消。")
     add_event(job_id, f"Run {index}: submitting {provider}/{common['model']}/{mode}{seed_label}")
     config, _ = load_provider_config()
     provider_cfg = (config.get("providers") or {}).get(provider) or {}
@@ -2061,6 +2073,10 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             if time.time() - start > timeout:
                 raise RuntimeError(f"Task {task_id} timed out after {timeout}s")
             time.sleep(interval)
+            if _job_cancel_requested(job_id):
+                # 取消兜底：无法中止 provider 在途请求（无 cancel API），
+                # 本线程停止轮询；远端任务完成后其结果会被 provider 丢弃（无人认领）。
+                raise TaskCancelled("任务已取消。")
             status = request_json("GET", status_url, api_key, timeout=60)
             data = status.get("data") if isinstance(status.get("data"), dict) else status
             state = str(data.get("status", "")).lower() if isinstance(data, dict) else ""
@@ -2083,6 +2099,9 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         prefix = f"{custom_name}-{index}" if total > 1 else custom_name
     else:
         prefix = f"{time.strftime('%Y%m%d_%H%M%S')}_run{index}_{task_id}"
+    if _job_cancel_requested(job_id):
+        # 竞态兜底：下载完成前用户点了取消——直接退出，不登记任何产物
+        raise TaskCancelled("任务已取消。")
     for i, item in enumerate(items, 1):
         image_url, local_path = save_image_item(item, out_dir, prefix, i)
         token = uuid.uuid4().hex
@@ -2189,6 +2208,13 @@ def run_one_with_fallback(job_id: str, index: int, values: dict[str, Any], files
 
 def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, bytes]], activity_id: str | None = None, ws_id: str = "localhost") -> None:
     try:
+        # 排队期间被取消：直接置终态，不再启动任何 worker
+        if _job_cancel_requested(job_id):
+            set_job(job_id, status="cancelled", errors=["任务已取消。"], finished_at=time.time())
+            add_event(job_id, "任务已取消。")
+            update_activity(activity_id, status="cancelled", error="任务已取消。", finished_at=time.time())
+            report_final_to_portal(job_id, "cancelled")
+            return
         requested_count = max(1, min(50, int(values.get("repeat_count") or 1)))
         requested_concurrency = max(1, min(20, int(values.get("concurrency") or 1)))
         count = max(requested_count, requested_concurrency)
@@ -2204,8 +2230,14 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
                 try:
                     result = future.result()
                     with LOCK:
+                        # 取消后（cancel_requested）完成的条目：丢弃结果不覆盖状态
+                        if JOBS[job_id].get("cancel_requested"):
+                            continue
                         JOBS[job_id]["results"].append(result)
                         JOBS[job_id]["done"] += 1
+                except TaskCancelled:
+                    # 取消不是错误：不记 errors、不计 done
+                    add_event(job_id, "Run cancelled")
                 except APIError as exc:
                     # 结构化 API 错误，记录错误类型方便前端展示
                     error_msg = f"[{exc.error_category}] {exc.message}"
@@ -2225,15 +2257,23 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
                         JOBS[job_id]["done"] += 1
                     add_event(job_id, f"Error: {exc}")
         with LOCK:
+            cancelled = bool(JOBS[job_id].get("cancel_requested"))
             errors = JOBS[job_id]["errors"]
             final_job = json.loads(json.dumps(JOBS[job_id]))
-        final_status = "failed" if errors else "succeeded"
-        set_job(job_id, status=final_status, finished_at=time.time())
+        if cancelled:
+            # 已完成的条目保留（已真实生成且计费）；未完成条目不计
+            final_status = "cancelled"
+            if not errors:
+                errors = ["任务已取消。"]
+        else:
+            final_status = "failed" if errors else "succeeded"
+        set_job(job_id, status=final_status, errors=errors, finished_at=time.time())
         final_job["status"] = final_status
+        final_job["errors"] = errors
         error_summary = "; ".join(errors[:3])[:500] if errors else None
         update_activity(activity_id, status=final_status, result=final_job, finished_at=time.time(),
                         **({"error": error_summary} if error_summary else {}))
-        add_event(job_id, "Finished")
+        add_event(job_id, "任务已取消。" if cancelled else "Finished")
         report_final_to_portal(job_id, final_status)
     except Exception as exc:
         set_job(job_id, status="failed", errors=[str(exc)], finished_at=time.time())
@@ -2459,6 +2499,31 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._raw_path = self.path
         self.path = urllib.parse.urlparse(self.path).path
+        # POST /api/jobs/{id}/cancel — 取消排队/运行中的任务。
+        # 刻意不返回 X-Job-Id：portal 统计按 X-Job-Id 登记，取消不触发计数。
+        if self.path.startswith("/api/jobs/") and self.path.endswith("/cancel"):
+            job_id = self.path.rsplit("/", 2)[-2]
+            with LOCK:
+                job = JOBS.get(job_id)
+                if job is None:
+                    json_response(self, 404, {"ok": False, "error": "任务不存在（服务可能已重启）"})
+                    return
+                if job.get("cancel_requested"):
+                    json_response(self, 200, {"ok": True, "status": "cancelled"})
+                    return
+                if job.get("status") in _TERMINAL_JOB_STATUSES:
+                    json_response(self, 409, {"ok": False, "error": "任务已结束，无法取消"})
+                    return
+                job["cancel_requested"] = True
+                # 立即置终态：前端轮询马上看到「已取消」；worker 线程在
+                # 下个检查点读到 cancel_requested 后自行退出
+                job["status"] = "cancelled"
+                job["errors"] = ["任务已取消。"]
+                job["finished_at"] = time.time()
+            add_event(job_id, "任务已取消。")
+            report_final_to_portal(job_id, "cancelled")
+            json_response(self, 200, {"ok": True, "status": "cancelled"})
+            return
         if self.path == "/api/choose-output-dir":
             client_ip = self.headers.get("X-Forwarded-For") or self.client_address[0]
             if client_ip not in ("127.0.0.1", "::1", "localhost"):

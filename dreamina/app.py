@@ -257,8 +257,13 @@ ACCOUNTS_LOCK = threading.Lock()  # protects accounts.json read/write
 # a finished job is counted before we evict it. dreamina's terminal statuses are
 # "completed"/"failed" and it stamps finished_epoch (float) at completion.
 MAX_JOBS = 500
+
+
+def _job_cancel_requested(job_id: str) -> bool:
+    with LOCK:
+        return bool(JOBS.get(job_id, {}).get("cancel_requested"))
 JOB_PRUNE_GRACE_SECONDS = 600
-_TERMINAL_JOB_STATUSES = ("completed", "failed", "succeeded")
+_TERMINAL_JOB_STATUSES = ("completed", "failed", "succeeded", "cancelled", "canceled")
 
 
 def _prune_jobs_locked() -> None:
@@ -1174,6 +1179,20 @@ def execute_task(job_id: str, task_type: str, args: list[str], params: dict[str,
 def _execute_task_impl(job_id: str, task_type: str, args: list[str], params: dict[str, Any]):
     with LOCK:
         job = JOBS[job_id]
+    if _job_cancel_requested(job_id):
+        # 排队期间被取消：直接置终态，不启动 CLI
+        with LOCK:
+            job["status"] = "cancelled"
+            job["error"] = "任务已取消。"
+            if not job.get("errors"):
+                job["errors"] = ["任务已取消。"]
+            job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            job["finished_epoch"] = time.time()
+        report_final_to_portal(job_id, "cancelled")
+        update_activity(job.get("activity_id"), status="cancelled", error="任务已取消。",
+                        finished_at=job.get("finished_at"), done=0, total=job.get("total", 1))
+        return
+    with LOCK:
         job["status"] = "running"
         job["started_epoch"] = time.time()
 
@@ -1202,12 +1221,18 @@ def _execute_task_impl(job_id: str, task_type: str, args: list[str], params: dic
         max_retries = 10
         retry_interval = 30
         for attempt in range(max_retries):
+            if _job_cancel_requested(job_id):
+                add_event(f"子任务 {index}/{total} 取消")
+                return
             result = run_cmd(args, timeout=params.get("timeout", 600), env_override=env_override)
             add_cli_log(args, result)
             stdout_text = result.get("stdout", "") + result.get("stderr", "")
             if "ExceedConcurrencyLimit" in stdout_text or "ret=1310" in stdout_text:
                 add_event(f"子任务 {index}/{total} 并发限制，{retry_interval}秒后重试 ({attempt+1}/{max_retries})")
                 time.sleep(retry_interval)
+                if _job_cancel_requested(job_id):
+                    add_event(f"子任务 {index}/{total} 取消")
+                    return
                 continue
             break
         with LOCK:
@@ -1229,6 +1254,10 @@ def _execute_task_impl(job_id: str, task_type: str, args: list[str], params: dic
                                         env_override=env_override,
                                         on_cli_log=add_cli_log)
                 if dl:
+                    if _job_cancel_requested(job_id):
+                        # 竞态兜底：取消后 CLI 完成的结果不登记
+                        add_event(f"子任务 {index}/{total} 取消")
+                        return
                     # download_if_needed 在 poll 超时 / CDN 下载失败 / gen_status=fail 时
                     # 会返回 {files: [], error: ...}。这类结果不能算 completed，
                     # 否则活动列表里会出现「completed 但无缩略」的假成功。
@@ -1269,7 +1298,14 @@ def _execute_task_impl(job_id: str, task_type: str, args: list[str], params: dic
                 if isinstance(r, dict):
                     all_files.extend(r.get("files", []))
             job["result"] = {"files": all_files, "count": len(job["results"])}
-        if job["errors"]:
+        if _job_cancel_requested(job_id):
+            # 已完成的子任务保留（已真实生成且计费）；未完成的不计
+            job["status"] = "cancelled"
+            if not job.get("error"):
+                job["error"] = "任务已取消。"
+            if not job.get("errors"):
+                job["errors"] = ["任务已取消。"]
+        elif job["errors"]:
             job["status"] = "failed"
             job["error"] = "; ".join(job["errors"][:3])
             job["retryable"] = True
@@ -1798,6 +1834,34 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         if self._reject_oversized_upload():
+            return
+
+        # POST /api/jobs/{id}/cancel — 取消排队/运行中的任务。
+        # 刻意不返回 X-Job-Id：portal 统计按 X-Job-Id 登记，取消不触发计数。
+        if path.startswith("/api/jobs/") and path.endswith("/cancel"):
+            job_id = path.rsplit("/", 2)[-2]
+            with LOCK:
+                job = JOBS.get(job_id)
+                if job is None:
+                    json_response(self, 404, {"ok": False, "error": "任务不存在（服务可能已重启）"})
+                    return
+                if job.get("cancel_requested"):
+                    json_response(self, 200, {"ok": True, "status": "cancelled"})
+                    return
+                if job.get("status") in _TERMINAL_JOB_STATUSES:
+                    json_response(self, 409, {"ok": False, "error": "任务已结束，无法取消"})
+                    return
+                job["cancel_requested"] = True
+                # 立即置终态：前端轮询马上看到「已取消」；CLI 进程无法强杀，
+                # 其完成结果会在登记时被丢弃（竞态兜底）
+                job["status"] = "cancelled"
+                job["error"] = "任务已取消。"
+                if not job.get("errors"):
+                    job["errors"] = ["任务已取消。"]
+                job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                job["finished_epoch"] = time.time()
+            report_final_to_portal(job_id, "cancelled")
+            json_response(self, 200, {"ok": True, "status": "cancelled"})
             return
 
         if path == "/api/env/install-cli":

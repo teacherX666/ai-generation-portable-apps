@@ -1970,3 +1970,16 @@ body.director-collapsed .director-body { display: none !important; }
   flex: 0 0 auto;
 }
 .portal-toast__action:hover { background: var(--accent-soft); }
+/* 取消任务按钮（运行中面板内，琥珀警示色对齐画布上游） */
+.cancel-job-btn {
+  padding: 8px 14px;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  background: #fffbeb;
+  color: #b45309;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cancel-job-btn:hover { background: #fef3c7; }

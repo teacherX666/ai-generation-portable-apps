@@ -587,13 +587,16 @@ function DreaminaApp() {
         let html = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--${jobStatusBadgeTone(status)}">${jobStatusLabel(status)}</span> · ${job.task_type || ''} · ${job.done || 0}/${job.total || 0}</div>`;
         if (events) html += `<div class="ui-job-status-card__events">${events}</div>`;
         else html += '<div class="ui-job-status-card__events">等待服务器响应...</div>';
-        if (job.status === 'failed') html += `<div class="ui-job-status-card__error">${escHtml(job.error || '生成失败')}</div>`;
+        if (job.status === 'failed' || job.status === 'cancelled') html += `<div class="ui-job-status-card__error">${escHtml(job.error || '生成失败')}</div>`;
+        if (!['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
+          html += `<button type="button" class="cancel-job-btn" onclick="window._dmApp.cancelJob('${escHtml(jobId)}','${escHtml(job.status || 'queued')}')">取消任务</button>`;
+        }
         const allFiles = [];
         for (const r of job.results || []) { if (r.files) allFiles.push(...r.files); }
         if (job.result?.files) allFiles.push(...job.result.files);
         html += this.renderFiles(allFiles);
         card.innerHTML = html;
-        if (['completed', 'failed'].includes(job.status)) {
+        if (['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
           stop();
           if (job.status === 'completed' && this.dirHandle && allFiles.length) {
             await this.saveDreaminaToClient(allFiles);
@@ -605,6 +608,28 @@ function DreaminaApp() {
         await new Promise(r => setTimeout(r, 3000));
       }
       this.loadHistory();
+    },
+
+    // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）：
+    // 排队中直接取消；运行中弹确认（已计费提示）。CLI 无法强杀，
+    // 后端走「取消标志 + 结果丢弃」兜底；409 = 任务已结束。
+    async cancelJob(jobId, status) {
+      if (status === 'running') {
+        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
+      }
+      const res = await api(`/dreamina/api/jobs/${encodeURIComponent(jobId)}/cancel`, 'POST');
+      const card = document.getElementById('card-' + String(jobId).slice(0, 8));
+      if (!res || res.error) {
+        if (card) {
+          card.className = 'ui-job-status-card is-failed';
+          card.innerHTML = `<div class="ui-job-status-card__error">${escHtml((res && res.error) || '取消失败：网络异常，请重试')}</div>`;
+        }
+        return;
+      }
+      if (card) {
+        card.className = 'ui-job-status-card is-failed';
+        card.innerHTML = '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--warning">已取消</span></div><div class="ui-job-status-card__error">任务已取消，输入和参数已保留。</div>';
+      }
     },
 
     async saveDreaminaToClient(files) {
@@ -1882,6 +1907,8 @@ function VolcenginePortraitApp() {
       },
     ],
     submitting: false, events: '', results: [], jobs: [], activityRecords: [],
+    _activeVpJobId: null,
+    _activeVpStatus: '',
     runtimeTick: 0,
     outputDir: '', outputDirInput: '', showOutputDirInput: false,
     savingOutputDir: false, outputDirMsg: '', outputDirOk: true,
@@ -2324,6 +2351,8 @@ function VolcenginePortraitApp() {
       }
       if (res?.ok) {
         this.statusText = '已提交，任务在后台运行';
+        this._activeVpJobId = res.job_id;
+        this._activeVpStatus = '';
         this.loadJobs();
         this.pollJob(res.job_id);
       } else {
@@ -2349,7 +2378,9 @@ function VolcenginePortraitApp() {
           continue;
         }
         fails = 0;
-        this.statusText = `${job.status} ${job.done || 0}/${job.total || 0}`;
+        this._activeVpStatus = job.status || '';
+        const vpLabel = { queued: '排队中', running: '处理中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }[job.status] || job.status;
+        this.statusText = `${vpLabel} ${job.done || 0}/${job.total || 0}`;
         this.events = (job.events || []).map(e => '<div>' + e.time + ' ' + e.message + '</div>').join('');
         for (const r of job.results || []) {
           if (r.download_url) {
@@ -2357,10 +2388,29 @@ function VolcenginePortraitApp() {
             if (!this.results.find(x => x.url === url)) this.results.push({ url, filename: r.filename });
           }
         }
-        if (['succeeded', 'failed'].includes(job.status)) break;
+        if (['succeeded', 'failed', 'cancelled', 'canceled'].includes(job.status)) break;
         await new Promise(r => setTimeout(r, 3000));
       }
+      this._activeVpJobId = null;
+      this._activeVpStatus = '';
       this.statusText = '空闲'; this.loadJobs();
+    },
+
+    // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）
+    async cancelJob() {
+      const jobId = this._activeVpJobId;
+      if (!jobId) return;
+      if (this._activeVpStatus === 'running') {
+        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
+      }
+      const res = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}/cancel`, 'POST');
+      if (res?.ok) {
+        this.statusText = '任务已取消，输入和参数已保留。';
+      } else if (res && res.error) {
+        this.statusText = res.error;
+      } else {
+        this.statusText = '取消失败：网络异常，请重试';
+      }
     },
 
     async loadJobs() {

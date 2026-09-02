@@ -263,6 +263,46 @@ def _collect_asset_ids(payload: dict) -> tuple[list[str], dict[str, list[str]]]:
     return asset_ids, clean
 
 
+async def _submission_guard(app: str, composite: str, params: dict, inputs: dict) -> str | None:
+    """提交前守卫（对齐画布上游 a6ca651）：最常见的参数/素材违规在排队前
+    拦下并给出中文原因，而不是让用户等到子应用异步失败。"""
+    spec = None
+    for entry in await _fetch_catalog(app):
+        if entry.get("model_id") == composite:
+            spec = entry
+            break
+    if spec is None:
+        return None
+    schema = spec.get("parameter_schema") or {}
+    properties = schema.get("properties") if isinstance(schema, dict) else {}
+    if isinstance(properties, dict):
+        for key, value in params.items():
+            rule = properties.get(key)
+            if not isinstance(rule, dict):
+                continue
+            allowed = rule.get("enum")
+            if isinstance(allowed, (list, tuple)) and value not in allowed:
+                return f"参数不合法：{key} 不支持取值 {value!r}，可选值：{'、'.join(map(str, allowed))}。"
+            maximum = rule.get("maximum")
+            if isinstance(maximum, (int, float)) and maximum >= 0 and isinstance(value, (int, float)) and value > maximum:
+                return f"参数不合法：{key} 不能超过 {maximum:g}（当前 {value:g}）。"
+            minimum = rule.get("minimum")
+            if isinstance(minimum, (int, float)) and minimum >= 0 and isinstance(value, (int, float)) and value < minimum:
+                return f"参数不合法：{key} 不能小于 {minimum:g}（当前 {value:g}）。"
+    ports = {p.get("port_id"): p for p in (spec.get("input_ports") or []) if isinstance(p, dict)}
+    for port_id, ids in inputs.items():
+        rule = ports.get(port_id)
+        if not isinstance(rule, dict):
+            continue
+        count = len(ids)
+        lo, hi = rule.get("min_items"), rule.get("max_items")
+        if lo is not None and count < int(lo):
+            return f"参考素材数量不合法：{port_id} 需要 {lo} 个以上（当前 {count} 个）。"
+        if hi is not None and count > int(hi):
+            return f"参考素材数量不合法：{port_id} 最多 {hi} 个（当前 {count} 个）。"
+    return None
+
+
 def _build_nano_payload(model: str, provider: str, operation: str, prompt: str,
                         params: dict, media: dict) -> dict:
     body = {
@@ -334,6 +374,11 @@ async def api_create_job(request: Request):
         return _job_response(existing)
 
     asset_ids, inputs = _collect_asset_ids(payload)
+
+    # 提交前守卫：参数越界/枚举不符/端口素材超限，排队前给出中文原因
+    guard = await _submission_guard(app, composite, params, inputs)
+    if guard is not None:
+        return _err(400, "invalid_request", guard, phase="submission")
 
     # seedance 的两条硬规则前置校验（seedance/app.py:1701-1705）：
     # 违反了在上游是“任务失败”，前置返回 400 体验好得多。
@@ -423,10 +468,14 @@ def _job_state(job: dict) -> dict:
     （portal/app.py:993-1037）。两边各读各的，互不干扰。
     """
     results = job.get("results") or []
+    stored_status = job["status"]
+    # 前端契约（contracts.ts JobState）没有 cancelled 状态：按画布上游语义
+    # （poll 把 cancelled 映射为 FAILED + task_cancelled）对外暴露 failed，
+    # 错误码区分「取消」与「生成失败」。Portal 轮询读到的也是 failed（终态内）。
     state = {
         "id": job["job_id"],
         "operation": job["operation"],
-        "status": job["status"],
+        "status": "failed" if stored_status == "cancelled" else stored_status,
         "results": results,
         # ---- Portal 统计 ----
         "done": int(job.get("done") or 0),
@@ -437,7 +486,9 @@ def _job_state(job: dict) -> dict:
     if results:
         state["result_url"] = results[0]["url"]
     if job.get("error_message"):
-        state["error"] = {"code": "generation_failed", "message": job["error_message"][:160],
+        # 前端按大写 TASK_CANCELLED 识别取消（use-generation-job.ts cancelQueued）
+        code = "TASK_CANCELLED" if stored_status == "cancelled" else "generation_failed"
+        state["error"] = {"code": code, "message": job["error_message"][:160],
                           "retryable": False, "request_id": job["job_id"], "phase": "generation"}
     return state
 
@@ -526,6 +577,15 @@ async def _refresh(job: dict) -> dict:
 
     upstream = resp.json()
     status = str(upstream.get("status") or "")
+    if status in ("cancelled", "canceled"):
+        # 子应用侧已取消（用户在子应用/画布侧点了取消）：
+        # done 保留真实完成数（已生成且计费），整体报取消终态
+        errors = upstream.get("errors") or []
+        message = str(errors[0])[:160] if errors else "任务已取消。"
+        store.update_job(job["job_id"], status="cancelled", error_message=message)
+        updated = store.get_job(job["job_id"])
+        _report_final_to_portal(updated["job_id"], "cancelled")
+        return updated
     if status not in ("succeeded", "failed", "completed"):
         return job
 
@@ -596,4 +656,27 @@ async def api_cancel_job(request: Request, job_id: str):
     # 重要：这个路径是 POST 且命中 Portal 的 /api/v1/jobs 前缀白名单，
     # 响应绝不能带 X-Job-Id，否则每点一次取消统计就多记一个任务
     # （portal/app.py:2093-2097 的前两个条件它都满足）。
-    return _job_state(job)
+    if job["status"] == "cancelled":
+        return _job_state(job)  # 幂等：已取消再取消返回成功
+    if job["status"] in ("succeeded", "failed"):
+        return _err(409, "job_not_cancellable", "任务已结束，无法取消。", phase="cancel")
+    # 委派给子应用取消（seedance/nano-banana 的 POST /api/jobs/{id}/cancel）。
+    # 子应用对 provider 无取消 API 时走「取消标志 + 轮询点退出 + 结果丢弃」兜底。
+    upstream_id = job.get("upstream_id")
+    if upstream_id and job["app"] in APPS:
+        try:
+            async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+                resp = await client.post(
+                    f"http://127.0.0.1:{APPS[job['app']]}/api/jobs/{upstream_id}/cancel")
+            if resp.status_code == 404:
+                # 上游任务已被清理且未记到终态 —— 如实报失败
+                store.update_job(job_id, status="failed", error_message="上游任务状态已丢失。")
+                return _job_state(store.get_job(job_id))
+            # 200 = 取消成功/幂等；409 = 上游刚好结束，本地同样收敛为取消态
+        except Exception:
+            # 子应用不可达不阻塞：本地照样置取消态，_refresh 会同步
+            pass
+    store.update_job(job_id, status="cancelled", error_message="任务已取消。")
+    updated = store.get_job(job_id)
+    _report_final_to_portal(job_id, "cancelled")
+    return _job_state(updated)
