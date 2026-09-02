@@ -159,7 +159,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 | Previz（分镜布局） | 8896 | 8897 |
 | Feishu Generation Agent | 8765 | — |
 
-- **证书文件**：`portal/state/portal.pem` + `portal.key`；LAN IP 变化时 `ensure_certs()` 自动重生（`portal/app.py:101-131`）
+- **证书文件**：`portal/certs/{cert.pem,key.pem,lan_ip.txt}`（`_DATA_BASE=certs 目录`，不是 portal/state/）；LAN IP 变化时 `ensure_certs()` 自动重生（`portal/app.py:363`）+ cert-watch 每 5 分钟确认两次后重生并 `os._exit(0)` 让 launchd 拉起
 - **下载映射持久化**：`state/download_files.json`（token→文件路径）
 - **数据布局（2026-07-22 起）**：各子应用的 `outputs/`、`state/`、`archives/`、`uploads/`、`accounts/` 以及 `portal/state/` 已从软链改为**主仓库内的真实目录**，不再依赖 `ai-generation-portable-apps-backup-2026-07-14-1653/`（该 backup 目录已删除，主干数据打包留档在 `~/backup-trunk-2026-07-22.zip`）。迁移时**弃掉了草稿缓存** `state/workspaces/` 和 `state/media/`（历史参考图需用户重传）以及 `portal/state/logs/`。`activity_log.json` / `usage.json` / `users.json` / `accounts.json` 等主干与统计数据完整保留。
 - **飞书产出搬运**：独立服务 `com.feishu-output-sync`（launchd，**独立于 com.ai-portal**）常驻轮询 `feishu-output-sync/sync.py`，把各子应用 outputs 增量搬进「每人一张多维表格」（组织内可编辑）。日志 `~/Library/Logs/feishu-output-sync.log`；配置 `feishu-output-sync/config.json`（gitignored）。
@@ -303,12 +303,20 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **事件委托不能挂在 `v-if` 区域内的容器上**：`#sd-results` 在 `v-if="statusText !== '空闲'"` 里，init 时是 null → `if (dlContainer)` 静默跳过 → 运行卡的视频点击/下载按钮一直是死的。委托挂页面常驻元素（`#sd-app`）
 - 验证手段：`/tmp/verify-render-dedupe.mjs` 式 playwright 断言（事件刷屏 10 次结果卡 DOM 元素引用不变、新结果只追加、切任务无残留）；页面加载后 `statusText` 是「空闲」时 `#sd-results` 不存在，测试要先设 statusText 再等 v-if 渲染
 
+### 主线程 TLS 握手楔子（2026-09-02 断服根因）
+
+- **症状**：端口在听、子应用全正常，但所有 HTTPS 客户端挂起（TCP 能连、TLS 握手永不完成）；`sample <pid>` 显示 main thread 100% 卡在 `_ssl__SSLSocket_do_handshake_impl` → `sock_read`
+- **根因**：`ctx.wrap_socket(server.socket, server_side=True)` 默认 `do_handshake_on_connect=True`，CPython 的 `SSLSocket.accept()` 会在**主线程**里同步完成每个新连接的握手且**无超时**——一个连上后不发字节的半开连接（扫描器/休眠的浏览器/断网的同事）就把 accept 循环永久楔死
+- **修复**（`portal/app.py`）：wrap 时 `do_handshake_on_connect=False`（握手推迟）+ `Handler.setup()` 里 `conn.settimeout(10)` 后显式 `do_handshake()`，失败静默关闭（readline 读空 → handle_one_request 自行收尾，无 traceback 噪音），成功后 `settimeout(None)` 恢复阻塞语义
+- **验证**：`/tmp/test-tls-wedge.py` 式最小复刻——raw socket 只 connect 不发字节，同时 curl 真 HTTPS 必须照常 200，坏连接 ~10s 被服务器关闭
+- 排查用的 `sample <pid> N` 要抓全量线程栈（`-file`），只 grep 前 12 行会漏掉深层的 ssl 帧
+
 ### 通用调试直觉
 
 - 「重启后仍报旧 bug」→ 先查旧进程是否被杀、端口是否释放、进程启动时间是否晚于代码修改时间
 - 错误日志中的代码**行号和当前代码对不上**，说明在跑旧代码
 - Portal 代理返回但端口 PID 早于 Portal 启动时间 → 孤儿子进程，必须 `kill -9` 清端口
-- 换 IP / 换 LAN 后 HTTPS 拒连 → 删 `portal/state/portal.pem`+`.key` 让 `ensure_certs()` 重生
+- 换 IP / 换 LAN 后 HTTPS 拒连 → 删 `portal/certs/cert.pem`+`key.pem`（保留 lan_ip.txt）让 `ensure_certs()` 重生
 - 前端所有 fetch/api 调用检查 `res.ok`，别乐观更新
 
 ## 外部 API 参考
