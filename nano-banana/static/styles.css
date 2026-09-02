@@ -798,3 +798,18 @@ html, body { height: 100%; overflow: hidden; }
 .optimizeResult { margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
 .optimizeResult pre { min-height: 60px; max-height: 180px; margin: 0 0 8px; white-space: pre-wrap; }
 .optimizeResult button { width: auto; height: 30px; padding: 0 12px; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; font-size: 12px; cursor: pointer; }
+
+/* 取消任务按钮（运行中状态卡内，琥珀警示色对齐画布上游） */
+.cancel-job-btn {
+  margin-left: auto;
+  padding: 4px 12px;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  background: #fffbeb;
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cancel-job-btn:hover { background: #fef3c7; }

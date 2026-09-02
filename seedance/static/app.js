@@ -1157,7 +1157,7 @@ function SeedanceApp() {
         setLatestJob(job);
 
         if (isActive()) {
-          this._renderJobToDom(job);
+          this._renderJobToDom(job, jobId);
         }
 
         if (TERMINAL_STATUSES.has((job.status || '').toLowerCase())) {
@@ -1189,12 +1189,33 @@ function SeedanceApp() {
       this.loadJobs();
     },
 
+    // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）：
+    // 排队中直接取消；运行中弹确认（已计费提示）。后端无取消 API 时
+    // 走「取消标志 + 轮询点退出 + 结果丢弃」兜底；409 = 任务已结束。
+    async cancelJob(jobId, status) {
+      const ownerWsId = this.activeTabId;
+      if (status === 'running') {
+        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
+      }
+      const res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/cancel', 'POST', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (!res) {
+        this.statusText = '取消失败：网络异常，请重试';
+        return;
+      }
+      if (!res.ok) {
+        this.statusText = res.error || '取消失败';
+        return;
+      }
+      this.statusText = '任务已取消，输入和参数已保留。';
+    },
+
     // Extracted from pollJob so that both live polling (from pollJob) and
     // tab-switch rehydration (from loadTargetTabState) can rebuild the DOM
     // from a job snapshot. Structure must match the original pollJob output
     // verbatim so downstream click handlers (._blobDownload via .dl-btn) still
     // work.
-    _renderJobToDom(job) {
+    _renderJobToDom(job, jobId) {
       const resultsEl = document.getElementById('sd-results');
       if (!resultsEl) return;
 
@@ -1235,7 +1256,11 @@ function SeedanceApp() {
         resultsEl.innerHTML =
           '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">'
           + '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--' + jobStatusBadgeTone(job.status) + '">'
-          + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0) + '</div>'
+          + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0)
+          + (jobId && !TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
+             ? '<button type="button" class="cancel-job-btn" onclick="window._app_sd.cancelJob(\'' + escHtml(jobId) + '\',\'' + escHtml(job.status || 'queued') + '\')">取消任务</button>'
+             : '')
+          + '</div>'
           + (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '')
           + eventsHtml
           + '</article>';
@@ -1648,7 +1673,7 @@ function SeedanceApp() {
       // The cache key already proves ownership, so a snapshot predating backend
       // workspace_id persistence is still this tab's own result.
       if (cache._latestJob && (!cache._latestJob.workspace_id || cache._latestJob.workspace_id === wsId)) {
-        this._renderJobToDom(cache._latestJob);
+        this._renderJobToDom(cache._latestJob, cache._activeJobId);
       } else {
         delete cache._latestJob;
         this._clearTopicResultDom();
