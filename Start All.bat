@@ -43,8 +43,16 @@ echo Starting sub-apps and portal on port 9090...
 echo Keep this window open. Closing it will stop all services.
 echo.
 
+:: 子应用引擎开关：infinite-canvas / rag-assistant 只有 FastAPI 实现（app.py 是占位 stub），
+:: 必须设 *_ENGINE=fastapi，否则 portal 会退回 stdlib app.py 并崩溃重启。
+:: 与 macOS 的 Start All.command（71-76 行）和 launchd plist 保持一致。
+set "SEEDANCE_ENGINE=fastapi"
+set "NANO_BANANA_ENGINE=fastapi"
+set "DREAMINA_ENGINE=fastapi"
+set "VOLCENGINE_PORTRAIT_ENGINE=fastapi"
 set "INFINITE_CANVAS_ENGINE=fastapi"
 set "RAG_ASSISTANT_ENGINE=fastapi"
+
 start "AI Portal Server" /B "%PYTHON%" "app.py"
 
 :: Wait for portal to be ready (HTTPS on 9090, HTTP redirect on 9089)

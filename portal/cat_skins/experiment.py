@@ -2,7 +2,7 @@
 
 The experiment is deliberately side-effect free: it never writes wardrobe state
 and therefore never consumes a user's daily gift opportunity.  Administrators
-pick a rarity and type a concept name such as 张雪峰猫; the AI designs the cat
+pick a rarity and type a concept name such as 胖猫; the AI designs the cat
 on the frozen classic-black-master-v1 body.
 """
 from __future__ import annotations
@@ -64,6 +64,8 @@ class CatExperimentService:
             "source_name": "管理员自定义实验",
             "source_title": cleaned,
         }
+        # 自定义名称先经过语义层解析，避免 AI 只凭名字自由发挥。
+        concept = self.generator.enrich_concept(concept)
 
         fallback_used = False
         if self.generator.provider_info()["configured"]:

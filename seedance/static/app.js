@@ -429,7 +429,7 @@ function SeedanceApp() {
     appPath: APP_PATH,
     appStatus: 'unknown',
     providers: {},
-    provider: 'comfyui_local',
+    provider: 'volcengine',
     models: [],
     baseUrl: '',
     providerHint: '',
@@ -589,7 +589,7 @@ function SeedanceApp() {
       if (!res) {
         // Use fallback providers
         this.providers = FALLBACK_PROVIDERS;
-        this.applyProvider('comfyui_local');
+        this.applyProvider('volcengine');
         return;
       }
 
@@ -603,10 +603,10 @@ function SeedanceApp() {
         this.providers = normalized;
         // Provider locked to volcengine — ignore default_provider from config
         // and any localStorage residue. Frontend has no provider switch anyway.
-        this.applyProvider(res.default_provider || 'comfyui_local');
+        this.applyProvider(res.default_provider || 'volcengine');
       } else {
         this.providers = FALLBACK_PROVIDERS;
-        this.applyProvider('comfyui_local');
+        this.applyProvider('volcengine');
       }
     },
 

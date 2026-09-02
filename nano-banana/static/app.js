@@ -343,7 +343,7 @@ function NanoBananaApp() {
 
     // Provider / API
     providers: {},
-    provider: 'comfyui_local',
+    provider: 't8star',
     models: [],
     baseUrl: 'https://ai.t8star.org',
     baseUrlReadonly: false,
@@ -353,7 +353,7 @@ function NanoBananaApp() {
     supportsSeed: true,
     maxReferenceImages: 14,
     _providerKeys: {},
-    _activeProvider: 'comfyui_local',
+    _activeProvider: 't8star',
     _personalKeyHint: '',
     outputDir: '',
     dirHandle: null,
@@ -492,7 +492,11 @@ function NanoBananaApp() {
 
     async loadConfig() {
       var res = await api(APP_PATH + '/api/config');
-      if (!res || !res.providers) return;
+      if (!res || !res.providers) {
+        this.providers = FALLBACK_PROVIDERS;
+        this.applyProvider('t8star');
+        return;
+      }
       await this.loadConfigFromResponse({ ok: true, json: function () { return Promise.resolve(res); } });
     },
 

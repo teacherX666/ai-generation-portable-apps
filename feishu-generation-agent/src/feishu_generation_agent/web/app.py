@@ -507,9 +507,11 @@ def create_app(
             providers["video"].append(
                 {"name": "seedance", "label": "Seedance", "mode": "cloud", "configured": True}
             )
+        # 默认只走已上线的付费云端供应商；本地 AI Port 仍可手动启用，
+        # 但不再因为可达就抢占默认值。
         defaults = {
-            "video_provider": getattr(active_settings, "video_provider", "aiport"),
-            "image_provider": "aiport" if (local_image and local_reachable) else "banana",
+            "video_provider": "seedance",
+            "image_provider": "banana",
         }
         return {
             "ready": (
