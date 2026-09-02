@@ -19,6 +19,8 @@
     runMode: null,
     pollTimer: null,
     modes: { bitable: false, legacy_delivery: false },
+    providers: null,
+    providerDefaults: null,
     bitable: BitableState.createState(),
     review: ReviewState.createReviewState(),
     referenceUploads: ReferenceUploadState.createState(),
@@ -697,6 +699,9 @@
     try {
       const health = await api("/api/health");
       state.modes = health.modes || state.modes;
+      state.providers = health.providers || null;
+      state.providerDefaults = health.defaults || null;
+      renderProviderStatus();
     } catch (error) {
       showError(error);
     }
@@ -830,9 +835,15 @@
   }
 
   const IMAGE_PROVIDERS = [
-    ["banana", "banana（卡通 / 厚涂 / 插画）"],
-    ["seedream", "seedream（中式 / 国风）"],
-    ["gpt-image2", "gpt-image2（写实 / 真人质感）"],
+    ["aiport", "本地 Qwen（免费）"],
+    ["aiport_klein", "本地 Klein 多模态（免费）"],
+    ["aiport_klein_v3", "本地 Klein 写真换脸（免费）"],
+    ["aiport_anime2real", "本地 动漫转真人（免费）"],
+    ["aiport_zimage", "本地 Z-image 多功能（免费）"],
+    ["aiport_style", "本地 Krea 风格迁移（免费）"],
+    ["banana", "banana（卡通 / 厚涂 / 插画，付费）"],
+    ["seedream", "seedream（中式 / 国风，付费）"],
+    ["gpt-image2", "gpt-image2（写实 / 真人质感，付费）"],
   ];
 
   // 画风随剧本变，做成按钮直接追加到提示词末尾，人工审核时一键切换。
@@ -844,16 +855,39 @@
 
   function providerPicker(task) {
     const control = document.createElement("select");
+    const preferred = state.providerDefaults?.image_provider || "banana";
     IMAGE_PROVIDERS.forEach(([value, label]) => {
       const option = element("option", "", label);
       option.value = value;
-      option.selected = (task.image_provider || "banana") === value;
+      option.selected = (task.image_provider || preferred) === value;
       control.append(option);
     });
     control.addEventListener("change", () => {
       updateTask(task.task_id, { image_provider: control.value });
     });
     return control;
+  }
+  function renderProviderStatus() {
+    const bar = byId("provider-status-bar");
+    if (!bar) return;
+    const providers = state.providers;
+    const defaults = state.providerDefaults;
+    if (!providers || !defaults) {
+      bar.hidden = true;
+      return;
+    }
+    const video = (providers.video || []).find((p) => p.name === defaults.video_provider);
+    const videoText = video && video.mode === "local"
+      ? (video.reachable === false ? "视频：本地 MiniMax H3（离线）" : "视频：本地 MiniMax H3（免费）")
+      : "视频：Seedance（付费）";
+    const imageText = defaults.image_provider === "aiport"
+      ? "图片：本地 Qwen（免费）"
+      : "图片：云模型（付费）";
+    const realPersonText = defaults.video_provider === "aiport"
+      ? "真人类视频：本地 MiniMax H3"
+      : "真人类视频：火山方舟真人模型";
+    bar.textContent = `生成来源 · ${videoText} · ${imageText} · ${realPersonText}`;
+    bar.hidden = false;
   }
 
   // 与后端 domain/plan.py 的 IMAGE_ASPECT_RATIOS 保持一致：
@@ -1657,6 +1691,7 @@
       seedance: "Seedance",
       chiyun: "Chiyun",
       volcengine_portrait: "真人视频",
+      aiport: "本地模型",
     };
     const executionErrors = (view.execution_records || [])
       .filter((record) => record?.error?.message)

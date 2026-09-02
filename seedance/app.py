@@ -627,8 +627,16 @@ VALUE_FIELDS = {
 FALLBACK_PROVIDERS = {
     "schema_version": 1,
     "app": "seedance",
-    "default_provider": "volcengine",
+    "default_provider": "comfyui_local",
     "providers": {
+        "comfyui_local": {
+            "label": "Local ComfyUI (free)",
+            "base_url": "http://127.0.0.1:8801",
+            "api_style": "comfyui_workflow",
+            "hint": "Local MiniMax H3 via AI Port (free).",
+            "defaults": {"model": "minimax_h3_all_reference", "duration": 8, "resolution": "720p", "ratio": "16:9", "repeat_count": 1, "concurrency": 1, "poll_interval": 5, "timeout": 7200, "vary_seed": True},
+            "models": [{"id": "minimax_h3_all_reference", "label": "MiniMax H3 (free)", "duration_range": [4, 12], "resolutions": ["480p", "720p"], "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"]}],
+        },
         "volcengine": {
             "label": "豆包官方 / 火山方舟",
             "base_url": OFFICIAL_ARK_BASE_URL,
@@ -1623,6 +1631,28 @@ def replace_refs(prompt: str) -> str:
     return re.sub(r"@ref_image(\d+)", r"Image \1", prompt)
 
 
+_H3_ASPECT_RATIOS = {
+    "16:9": "16:9 (Widescreen)",
+    "9:16": "9:16 (Portrait Widescreen)",
+    "1:1": "1:1 (Square)",
+    "4:3": "4:3 (Standard)",
+    "3:4": "3:4 (Portrait Standard)",
+    "21:9": "21:9 (Ultrawide)",
+    "3:2": "3:2 (Photo)",
+    "2:3": "2:3 (Portrait Photo)",
+}
+
+
+def _seedance_h3_aspect(ratio: str) -> str:
+    return _H3_ASPECT_RATIOS.get(str(ratio or "16:9").strip(), "16:9 (Widescreen)")
+
+
+def _seedance_h3_megapixels(resolution: str) -> float:
+    return {"480p": 0.4, "720p": 0.9, "1080p": 2.0, "4k": 2.0}.get(
+        str(resolution or "720p").strip().lower(), 0.9
+    )
+
+
 def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index: int, ws_id: str = "localhost", request_host: str | None = None) -> dict[str, Any]:
     provider = get_field(form, "provider", "volcengine")
     prompt = replace_refs(get_field(form, "prompt").strip())
@@ -1848,7 +1878,7 @@ def api_schema() -> dict[str, Any]:
 
 def request_template() -> dict[str, Any]:
     config, config_error = load_provider_config()
-    provider = str(config.get("default_provider") or "volcengine")
+    provider = str(config.get("default_provider") or "comfyui_local")
     defaults = provider_defaults(config, provider)
     minimal = {
         "api_key": "YOUR_API_KEY",
@@ -1913,7 +1943,7 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     if config_error:
         raise ValueError(f"{config_error['message']}: {config_error['detail']}")
     incoming = {key: payload[key] for key in VALUE_FIELDS if key in payload and payload[key] is not None}
-    provider = str(incoming.get("provider") or config.get("default_provider") or "volcengine")
+    provider = str(incoming.get("provider") or config.get("default_provider") or "comfyui_local")
     values = provider_defaults(config, provider, str(incoming.get("model") or ""))
     values.update(incoming)
     values["provider"] = provider
@@ -1978,6 +2008,171 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
     return job_id
 
 
+def _run_local_video(job_id: str, index: int, form: cgi.FieldStorage, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], ws_id: str, base_url: str) -> dict[str, Any]:
+    del form_files
+    model_kind = get_field(form, "custom_model").strip() or get_field(form, "model", "minimax_h3_all_reference")
+    prompt = replace_refs(get_field(form, "prompt").strip())
+
+    first = get_file_or_saved(form, "first_frame", ws_id)
+    last = get_file_or_saved(form, "last_frame", ws_id)
+    ref_images: list[tuple[str, bytes]] = []
+    for i in range(1, 10):
+        item = get_file_or_saved(form, f"ref_image_{i}", ws_id)
+        if item:
+            ref_images.append(item)
+    ref_videos: list[tuple[str, bytes]] = []
+    for i in range(1, 4):
+        item = get_file_or_saved(form, f"ref_video_{i}", ws_id)
+        if item:
+            ref_videos.append(item)
+    ref_audios: list[tuple[str, bytes]] = []
+    for i in range(1, 4):
+        item = get_file_or_saved(form, f"ref_audio_{i}", ws_id)
+        if item:
+            ref_audios.append(item)
+
+    has_other = bool(ref_images or ref_videos or ref_audios)
+    if not first and not last and not has_other:
+        mode = "t2v"
+        image_items: list[tuple[str, bytes]] = []
+    elif first and not last and not has_other:
+        mode = "i2v"
+        image_items = [first]
+    elif first and last and not has_other:
+        mode = "flf2v"
+        image_items = [first, last]
+    else:
+        mode = "ref2v"
+        image_items = []
+        if first:
+            image_items.append(first)
+        if last:
+            image_items.append(last)
+        image_items.extend(ref_images)
+
+    files_payload: dict[str, Any] = {}
+
+    def add_media(field: str, item: tuple[str, bytes]) -> None:
+        filename, blob = item
+        mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        files_payload[field] = {
+            "data_url": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}",
+            "filename": filename,
+        }
+
+    if mode == "i2v":
+        add_media("h3_image_0", image_items[0])
+    elif mode == "flf2v":
+        add_media("h3_image_0", image_items[0])
+        add_media("h3_image_1", image_items[1])
+    elif mode == "ref2v":
+        if len(image_items) > 9:
+            raise RuntimeError("MiniMax H3 reference mode supports at most 9 reference images")
+        for idx, item in enumerate(image_items):
+            add_media(f"h3_image_{idx}", item)
+        for idx, item in enumerate(ref_videos):
+            add_media(f"h3_video_{idx}", item)
+        for idx, item in enumerate(ref_audios):
+            add_media(f"h3_audio_{idx}", item)
+
+    try:
+        seconds = int(get_field(form, "duration", "12"))
+    except (TypeError, ValueError):
+        seconds = 12
+    if seconds <= 0:
+        seconds = 12
+    seconds = min(seconds, 30)
+    fps = 24
+    num_frames = max(17, seconds * fps)
+
+    values_payload: dict[str, Any] = {
+        "model_kind": model_kind,
+        "prompt": prompt,
+        "h3_task_mode": mode,
+        "h3_aspect_ratio": _seedance_h3_aspect(get_field(form, "ratio", "16:9")),
+        "h3_megapixels": _seedance_h3_megapixels(get_field(form, "resolution", "720p")),
+        "num_frames": num_frames,
+        "fps": fps,
+        "repeat_count": 1,
+    }
+    seed_raw = get_field(form, "seed", "").strip()
+    if seed_raw:
+        try:
+            values_payload["seed"] = int(seed_raw)
+        except ValueError:
+            pass
+
+    submit = request_json(
+        "POST",
+        f"{base_url}/api/video_local/jobs/json",
+        "",
+        {"values": values_payload, "files": files_payload},
+        timeout=int(form_values.get("timeout") or 3600),
+    )
+    local_job_id = submit.get("job_id")
+    if not local_job_id:
+        raise RuntimeError("Local ComfyUI did not return a video job id")
+
+    poll_interval = max(2, int(form_values.get("poll_interval") or 5))
+    timeout = int(form_values.get("timeout") or 7200)
+    start = time.time()
+    results: list[dict[str, Any]] = []
+    while True:
+        if time.time() - start > timeout:
+            raise RuntimeError(f"Local ComfyUI video job {local_job_id} timed out")
+        time.sleep(poll_interval)
+        status = request_json("GET", f"{base_url}/api/video_local/jobs/{local_job_id}", "", timeout=60)
+        state = str(status.get("status") or "").strip().lower()
+        add_event(job_id, f"Run {index}: local video {state or 'unknown'}")
+        if state in {"succeeded", "success", "partial"}:
+            results = status.get("results") or []
+            break
+        if state in {"failed", "failure", "error", "cancelled", "canceled"}:
+            raise RuntimeError(f"Local ComfyUI video job ended as {state}: {status.get('error') or status}")
+    if not results:
+        raise RuntimeError("Local ComfyUI returned no video")
+    item = results[0]
+    if not isinstance(item, dict) or not item.get("ok"):
+        raise RuntimeError("Local ComfyUI returned a failed video result")
+    rel_url = item.get("download_url")
+    if not isinstance(rel_url, str) or not rel_url.strip():
+        raise RuntimeError("Local ComfyUI video result missing download_url")
+
+    with JOBS_LOCK:
+        username = JOBS.get(job_id, {}).get("username", "")
+    if os.environ.get("CORS") == "1":
+        out_dir = _user_day_subdir(OUTPUT_DIR, username)
+    else:
+        raw_output_dir = form_values.get("output_dir")
+        if not raw_output_dir:
+            form_values["output_dir"] = str(_user_day_subdir(OUTPUT_DIR, username))
+        out_dir = resolve_output_dir(form_values.get("output_dir"))
+
+    custom_name = form_values.get("output_name", "").strip()
+    if custom_name:
+        total = max(1, int(form_values.get("repeat_count") or 1), int(form_values.get("concurrency") or 1))
+        out_name = f"{custom_name}-{index}.mp4" if total > 1 else f"{custom_name}.mp4"
+    else:
+        out_name = f"{time.strftime('%Y%m%d_%H%M%S')}_run{index}_{local_job_id}.mp4"
+    out_path = out_dir / out_name
+    download_video(f"{base_url}{rel_url}", out_path)
+    file_token = uuid.uuid4().hex
+    with JOBS_LOCK:
+        FILES[file_token] = out_path
+    save_files_map()
+    add_event(job_id, f"Run {index}: downloaded local {out_name}")
+    return {
+        "index": index,
+        "task_id": str(local_job_id),
+        "status": "succeeded",
+        "video_url": "",
+        "duration": seconds,
+        "download_url": f"/api/download/{file_token}",
+        "filename": out_name,
+        "local_path": str(out_path),
+    }
+
+
 def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], ws_id: str = "localhost") -> dict[str, Any]:
     class MemoryForm(dict):
         pass
@@ -1989,9 +2184,14 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
         form[key] = type("Field", (), {"filename": filename, "file": type("Reader", (), {"read": lambda self, b=blob: b})()})()
 
     api_key = str(form_values["api_key"]).strip()
-    provider = str(form_values.get("provider") or "volcengine")
+    provider = str(form_values.get("provider") or "comfyui_local")
     # Provider is hardcoded to volcengine — t8star path removed.
     base_url = str(form_values.get("base_url") or OFFICIAL_ARK_BASE_URL).rstrip("/")
+    config, _ = load_provider_config()
+    provider_cfg = (config.get("providers") or {}).get(provider) or {}
+    if provider_cfg.get("api_style") == "comfyui_workflow":
+        local_base = str(provider_cfg.get("base_url") or "http://127.0.0.1:8801").rstrip("/")
+        return _run_local_video(job_id, index, form, form_values, form_files, ws_id, local_base)
     create_url = f"{base_url}/contents/generations/tasks"
     add_event(job_id, f"Run {index}: preparing payload")
     request_host = form_values.get("_request_host") or None
@@ -2593,15 +2793,20 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 payload = read_json_body(self)
                 values, files = values_files_from_json(payload)
-                # Provider is locked to volcengine — ignore any provider/api_key
-                # the client passes and always use the company SECRETS key.
-                values["provider"] = "volcengine"
-                api_key = SECRETS["volcengine_api_key"]
-                if not api_key and not payload.get("dry_run"):
-                    json_response(self, 400, api_error("invalid_request", "API key is required"))
-                    return
-                if api_key:
-                    values["api_key"] = api_key
+                # Local-first: provider comes from the body or providers.json default.
+                # Only inject the company-managed Ark key when volcengine is explicit.
+                provider = str(values.get("provider") or "comfyui_local")
+                _cfg, _ = load_provider_config()
+                provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}
+                if provider_cfg.get("api_style") == "comfyui_workflow":
+                    values["api_key"] = ""
+                else:
+                    api_key = SECRETS["volcengine_api_key"]
+                    if not api_key and not payload.get("dry_run"):
+                        json_response(self, 400, api_error("invalid_request", "API key is required"))
+                        return
+                    if api_key:
+                        values["api_key"] = api_key
                 if payload.get("dry_run"):
                     response = {
                         "ok": True,
@@ -2632,16 +2837,20 @@ class Handler(SimpleHTTPRequestHandler):
             json_response(self, 404, {"error": "not found"})
             return
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
-        # Provider is locked to volcengine — ignore any client-supplied api_key
-        # / provider and always use the company SECRETS key.
-        api_key = SECRETS["volcengine_api_key"]
-        if not api_key:
-            json_response(self, 400, api_error("invalid_request", "API key is required"))
-            return
-
         form_values = {key: get_field(form, key) for key in form.keys() if not getattr(form[key], "filename", None)}
-        form_values["api_key"] = api_key
-        form_values["provider"] = "volcengine"
+        # Local-first: honor an explicit provider from the form, otherwise default local.
+        provider = str(form_values.get("provider") or "comfyui_local")
+        form_values["provider"] = provider
+        _cfg, _ = load_provider_config()
+        provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}
+        if provider_cfg.get("api_style") == "comfyui_workflow":
+            form_values["api_key"] = ""
+        else:
+            api_key = SECRETS["volcengine_api_key"]
+            if not api_key:
+                json_response(self, 400, api_error("invalid_request", "API key is required"))
+                return
+            form_values["api_key"] = api_key
         form_files: dict[str, tuple[str, bytes]] = {}
         for key in form.keys():
             item = form[key]

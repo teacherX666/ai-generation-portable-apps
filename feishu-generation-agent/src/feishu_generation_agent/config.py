@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     ark_api_key: SecretStr | None = None
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     seedance_model: str = "doubao-seedance-2-0-260128"
+    # 本地 AI Port 网关（127.0.0.1:8801）桥接 ComfyUI 本地模型。
+    # video_provider=aiport 时视频走本地 minimax H3，不再强制 ark_api_key。
+    video_provider: Literal["seedance", "aiport"] = "seedance"
+    aiport_base_url: str = "http://127.0.0.1:8801"
+    aiport_image_model: str = "qwen2511"
+    aiport_image_enabled: bool = False
+    aiport_video_model: str = "minimax_h3_all_reference"
     volcengine_access_key: SecretStr | None = None
     volcengine_secret_key: SecretStr | None = None
     volcengine_project_name: str = "Seedance2.0"

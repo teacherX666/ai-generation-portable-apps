@@ -17,7 +17,13 @@ class TaskType(StrEnum):
 
 
 ReferenceMode = Literal["multi_reference", "first_last_frame"]
-ImageProvider = Literal["seedream", "banana", "gpt-image2"]
+ImageProvider = Literal[
+    "seedream", "banana", "gpt-image2",
+    "aiport",
+    "aiport_klein", "aiport_klein_v3", "aiport_anime2real",
+    "aiport_zimage", "aiport_style",
+]
+VideoProvider = Literal["seedance", "aiport"]
 DEFAULT_IMAGE_PROVIDER: ImageProvider = "banana"
 # provider 只接受这三个基准分辨率档位；像素尺寸属于 size_variants。
 IMAGE_SIZE_TOKENS = ("1K", "1.5K", "2K")
@@ -121,6 +127,7 @@ class GenerationTask(BaseModel):
     aspect_ratio: str
     image_size: str | None = None
     image_provider: ImageProvider | None = None
+    video_provider: VideoProvider | None = None
     size_variants: list[str] = Field(default_factory=list)
     safe_area: str | None = None
     # 是否把成图居中裁切成交付比例（如 17:25）：人工在审批页选择，默认不裁。
@@ -161,6 +168,13 @@ class GenerationTask(BaseModel):
         if self.task_type is not TaskType.IMAGE_TO_IMAGE:
             return None
         return self.image_provider or DEFAULT_IMAGE_PROVIDER
+
+    @property
+    def resolved_video_provider(self) -> VideoProvider | None:
+        """视频任务显式指定的 provider；未指定时返回 None，由运行层回退系统默认。"""
+        if self.task_type is not TaskType.IMAGE_TO_VIDEO:
+            return None
+        return self.video_provider
 
     @property
     def resolved_size_variants(self) -> list[str]:
@@ -338,6 +352,7 @@ class GenerationTask(BaseModel):
 
         if self.duration is None:
             raise ValueError("duration is required for image_to_video")
+        self.duration = max(4, min(15, self.duration))
         if self.resolution is None:
             raise ValueError("resolution is required for image_to_video")
         if self.image_size is not None:

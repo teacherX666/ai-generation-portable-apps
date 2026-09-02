@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import time
 from typing import Annotated, Any, AsyncIterator, Literal
-from urllib.parse import unquote_to_bytes
+from urllib.parse import unquote_to_bytes, urlsplit
 
 from fastapi import (
     Depends,
@@ -201,6 +201,26 @@ def _iso_timestamp(value: str) -> float:
         return parsed.timestamp()
     except (TypeError, ValueError):
         return 0.0
+
+
+async def _probe_aiport(base_url: str) -> bool:
+    """探活本地 AI Port 网关（127.0.0.1:8801）。TCP 连上即视为在线。"""
+    try:
+        parts = urlsplit(base_url)
+        host = parts.hostname or "127.0.0.1"
+        port = parts.port or 80
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=1.5
+        )
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
 
 
 def create_app(
@@ -439,6 +459,58 @@ def create_app(
             }
             for name, value in checks.items()
         }
+        local_image = bool(getattr(active_settings, "aiport_image_enabled", False))
+        local_reachable = await _probe_aiport(
+            getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
+        )
+        providers: dict[str, list[dict[str, Any]]] = {"image": [], "video": []}
+        if local_image:
+            local_labels = {
+                "aiport": "本地 Qwen 图生图",
+                "aiport_klein": "本地 Klein 多模态",
+                "aiport_klein_v3": "本地 Klein 写真换脸",
+                "aiport_anime2real": "本地 动漫转真人",
+                "aiport_zimage": "本地 Z-image 多功能",
+                "aiport_style": "本地 Krea 风格迁移",
+            }
+            for name, label in local_labels.items():
+                providers["image"].append(
+                    {
+                        "name": name,
+                        "label": label,
+                        "mode": "local",
+                        "configured": True,
+                        "reachable": local_reachable,
+                    }
+                )
+        if configured("chiyun_api_key", "chiyun_model"):
+            providers["image"].append(
+                {"name": "banana", "label": "Banana 卡通", "mode": "cloud", "configured": True}
+            )
+            providers["image"].append(
+                {"name": "gpt-image2", "label": "GPT-Image 写实", "mode": "cloud", "configured": True}
+            )
+        if configured("ark_api_key", "seedream_model"):
+            providers["image"].append(
+                {"name": "seedream", "label": "Seedream 国风", "mode": "cloud", "configured": True}
+            )
+        providers["video"].append(
+            {
+                "name": "aiport",
+                "label": "本地 MiniMax H3",
+                "mode": "local",
+                "configured": True,
+                "reachable": local_reachable,
+            }
+        )
+        if configured("ark_api_key", "seedance_model"):
+            providers["video"].append(
+                {"name": "seedance", "label": "Seedance", "mode": "cloud", "configured": True}
+            )
+        defaults = {
+            "video_provider": getattr(active_settings, "video_provider", "aiport"),
+            "image_provider": "aiport" if (local_image and local_reachable) else "banana",
+        }
         return {
             "ready": (
                 checks["local_storage"]
@@ -453,6 +525,8 @@ def create_app(
                 "legacy_delivery": checks["feishu_write"],
             },
             "capabilities": capabilities,
+            "providers": providers,
+            "defaults": defaults,
         }
 
     @app.exception_handler(RequestValidationError)

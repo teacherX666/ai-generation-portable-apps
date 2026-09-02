@@ -1,8 +1,73 @@
 {
   "schema_version": 1,
   "app": "nano-banana",
-  "default_provider": "t8star",
+  "default_provider": "comfyui_local",
   "providers": {
+    "comfyui_local": {
+      "label": "本地 ComfyUI（免费）",
+      "base_url": "http://127.0.0.1:8801",
+      "api_style": "comfyui_workflow",
+      "hint": "Local AI Port gateway (free). Start local ComfyUI first if unavailable.",
+      "defaults": {
+        "mode": "img2img",
+        "model": "auto",
+        "aspect_ratio": "auto",
+        "image_size": "2K",
+        "response_format": "url",
+        "control_after_generate": "randomize",
+        "repeat_count": 1,
+        "concurrency": 1,
+        "poll_interval": 3,
+        "timeout": 900,
+        "vary_seed": true,
+        "resize_enabled": false,
+        "resize_width": 1700,
+        "resize_height": 2500,
+        "resize_interpolation": "high",
+        "resize_method": "stretch",
+        "resize_condition": "always",
+        "resize_multiple_of": 0
+      },
+      "models": [
+        {
+          "id": "auto",
+          "label": "自动（推荐）"
+        },
+        {
+          "id": "qwen2511",
+          "label": "图片编辑 Qwen 2511（免费）"
+        },
+        {
+          "id": "flux2_klein_allinone",
+          "label": "Klein 多模态（免费）"
+        },
+        {
+          "id": "krea2_three_stage",
+          "label": "Krea 文生图（免费）"
+        },
+        {
+          "id": "anime2real_auto",
+          "label": "动漫转真人（免费）"
+        },
+        {
+          "id": "zimage_multifunction",
+          "label": "Z-Image 多功能（免费）"
+        },
+        {
+          "id": "klein_true_v3_assets",
+          "label": "Klein 三视图（免费）"
+        },
+        {
+          "id": "krea2_style_transfer",
+          "label": "Krea 风格迁移（免费）"
+        }
+      ],
+      "image_size_options": [
+        "1K",
+        "1.5K",
+        "2K"
+      ]
+    },
     "t8star": {
       "label": "T8Star Images API",
       "base_url": "https://ai.t8star.org",
@@ -28,10 +93,22 @@
         "resize_multiple_of": 0
       },
       "models": [
-        {"id": "gemini-3-pro-image", "label": "gemini-3-pro-image"},
-        {"id": "gemini-3.1-flash-image-preview", "label": "gemini-3.1-flash-image-preview"},
-        {"id": "gemini-3-pro-image-2k", "label": "gemini-3-pro-image-2k"},
-        {"id": "gemini-3-pro-image-4k", "label": "gemini-3-pro-image-4k"}
+        {
+          "id": "gemini-3-pro-image",
+          "label": "gemini-3-pro-image"
+        },
+        {
+          "id": "gemini-3.1-flash-image-preview",
+          "label": "gemini-3.1-flash-image-preview"
+        },
+        {
+          "id": "gemini-3-pro-image-2k",
+          "label": "gemini-3-pro-image-2k"
+        },
+        {
+          "id": "gemini-3-pro-image-4k",
+          "label": "gemini-3-pro-image-4k"
+        }
       ]
     },
     "gemini": {
@@ -59,9 +136,18 @@
         "resize_multiple_of": 0
       },
       "models": [
-        {"id": "banana2-ssvip", "label": "banana2-ssvip"},
-        {"id": "nano-banana2[2K]-base", "label": "nano-banana2[2K]-base"},
-        {"id": "gpt-image-2", "label": "gpt-image-2"}
+        {
+          "id": "banana2-ssvip",
+          "label": "banana2-ssvip"
+        },
+        {
+          "id": "nano-banana2[2K]-base",
+          "label": "nano-banana2[2K]-base"
+        },
+        {
+          "id": "gpt-image-2",
+          "label": "gpt-image-2"
+        }
       ]
     },
     "volcengine": {
@@ -70,7 +156,11 @@
       "api_style": "ark_seedream",
       "company_key": true,
       "hint": "Seedream 5.0 Pro；使用 Seedance 相同的火山方舟密钥（服务器托管）。",
-      "image_size_options": ["1K", "1.5K", "2K"],
+      "image_size_options": [
+        "1K",
+        "1.5K",
+        "2K"
+      ],
       "max_reference_images": 10,
       "supports_seed": false,
       "defaults": {
@@ -94,7 +184,10 @@
         "resize_multiple_of": 0
       },
       "models": [
-        {"id": "doubao-seedream-5-0-pro-260628", "label": "Seedream 5.0 Pro"}
+        {
+          "id": "doubao-seedream-5-0-pro-260628",
+          "label": "Seedream 5.0 Pro"
+        }
       ]
     }
   }

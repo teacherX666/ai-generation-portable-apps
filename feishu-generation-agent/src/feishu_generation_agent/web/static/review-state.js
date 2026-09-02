@@ -91,6 +91,59 @@
     return Boolean(state.selectionDirty || Object.keys(state.editsByTaskId).length);
   }
 
+  function taskById(view, taskId) {
+    return (view?.approval?.tasks || []).find((task) => task?.task_id === taskId);
+  }
+
+  function localEditSyncState(field, localValue, serverValue) {
+    if (field === "prompt") {
+      if (typeof localValue !== "string" || typeof serverValue !== "string") {
+        return localValue === serverValue ? "synced" : "different";
+      }
+      const local = localValue.trim();
+      const server = serverValue.trim();
+      if (!local && !server) return "synced";
+      if (local === server || (local && server.includes(local))) return "synced";
+      if (server && local.startsWith(server)) return "pending";
+      return "different";
+    }
+    return JSON.stringify(stableValue(localValue)) === JSON.stringify(stableValue(serverValue))
+      ? "synced"
+      : "different";
+  }
+
+  function reconcileEditsByTaskId(state, incoming) {
+    const incomingTaskIds = new Set(taskIds(incoming));
+    const reconciled = {};
+    let changed = false;
+
+    for (const [taskId, patch] of Object.entries(state.editsByTaskId || {})) {
+      const serverTask = incomingTaskIds.has(taskId) ? taskById(incoming, taskId) : null;
+      const remaining = {};
+      for (const [field, localValue] of Object.entries(patch || {})) {
+        const syncState = (
+          serverTask
+          && Object.prototype.hasOwnProperty.call(serverTask, field)
+        ) ? localEditSyncState(field, localValue, serverTask[field]) : "different";
+        if (syncState === "synced") {
+          changed = true;
+        } else if (syncState === "pending") {
+          changed = true;
+          remaining[field] = localValue;
+        } else {
+          remaining[field] = localValue;
+        }
+      }
+      if (Object.keys(remaining).length) {
+        reconciled[taskId] = remaining;
+      } else {
+        changed = true;
+      }
+    }
+
+    return { editsByTaskId: reconciled, changed };
+  }
+
   function mergeServerView(state, view) {
     if (!state.serverView) return adoptServerView(view);
     const incoming = clone(view);
@@ -113,6 +166,20 @@
         ...(shouldAutoSelect
           ? { selectedTaskIds: taskIds(incoming) }
           : {}),
+      };
+    }
+    const reconciled = reconcileEditsByTaskId(state, incoming);
+    if (Object.keys(state.editsByTaskId || {}).length && reconciled.changed) {
+      return {
+        ...state,
+        serverView: incoming,
+        serverIdentity: incomingIdentity,
+        editsByTaskId: reconciled.editsByTaskId,
+        selectedTaskIds: state.selectionDirty
+          ? [...state.selectedTaskIds]
+          : initialSelection(incoming),
+        conflict: "",
+        pendingServerView: null,
       };
     }
     if (hasDirty(state) || state.submitting) {
@@ -377,13 +444,23 @@
     return canSaveReferences(state, taskId) ? "save_then_proceed" : "blocked";
   }
 
+  function taskEditorIdentity(view) {
+    if (!view) return "";
+    const approval = view.approval || {};
+    return JSON.stringify(stableValue({
+      tasks: approval.tasks || [],
+      selected_task_ids: approval.selected_task_ids || [],
+    }));
+  }
+
   function shouldRefreshTaskEditor(
     previousState,
     nextState,
     hasRenderedTasks,
   ) {
     if (!hasRenderedTasks) return true;
-    return previousState?.serverIdentity !== nextState?.serverIdentity;
+    return taskEditorIdentity(draftView(previousState))
+      !== taskEditorIdentity(draftView(nextState));
   }
 
   return {

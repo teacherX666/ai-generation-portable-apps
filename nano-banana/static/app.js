@@ -316,6 +316,7 @@ function resolveMediaUrl(url) {
 // Module 7: Provider Models (fallback)
 // ============================================================
 var FALLBACK_PROVIDERS = {
+  comfyui_local: { label: 'Local ComfyUI (free)', base_url: 'http://127.0.0.1:8801', api_style: 'comfyui_workflow', image_size_options: ['1K', '1.5K', '2K'], models: [{ id: 'qwen2511', label: 'Qwen 2511' }, { id: 'flux2_klein_allinone', label: 'Klein' }, { id: 'krea2_three_stage', label: 'Krea T2I' }, { id: 'anime2real_auto', label: 'Anime2Real' }, { id: 'zimage_multifunction', label: 'Z-Image' }, { id: 'klein_true_v3_assets', label: 'Klein Assets' }, { id: 'krea2_style_transfer', label: 'Krea Style' }] },
   t8star: { label: 'T8Star Images API', base_url: 'https://ai.t8star.org', models: [{ id: 'nano-banana-2', label: 'nano-banana-2' }, { id: 'gemini-3.1-flash-image-preview', label: 'gemini-3.1-flash-image-preview' }, { id: 'gemini-3-pro-image-2k', label: 'gemini-3-pro-image-2k' }, { id: 'gemini-3-pro-image-4k', label: 'gemini-3-pro-image-4k' }] },
   gemini: { label: 'Chiyun', base_url: 'https://chiyun.work', models: [{ id: 'banana2-ssvip', label: 'banana2-ssvip' }, { id: 'nano-banana2[2K]-base', label: 'nano-banana2[2K]-base' }, { id: 'gpt-image-2', label: 'gpt-image-2' }] },
   volcengine: {
@@ -342,7 +343,7 @@ function NanoBananaApp() {
 
     // Provider / API
     providers: {},
-    provider: 't8star',
+    provider: 'comfyui_local',
     models: [],
     baseUrl: 'https://ai.t8star.org',
     baseUrlReadonly: false,
@@ -352,7 +353,7 @@ function NanoBananaApp() {
     supportsSeed: true,
     maxReferenceImages: 14,
     _providerKeys: {},
-    _activeProvider: 't8star',
+    _activeProvider: 'comfyui_local',
     _personalKeyHint: '',
     outputDir: '',
     dirHandle: null,
@@ -360,6 +361,9 @@ function NanoBananaApp() {
 
     // Submission
     submitting: false,
+    optimizing: false,
+    optimizedPrompt: '',
+    optimizeError: '',
     statusText: '空闲',
     eventsText: '',
     runtimeTick: 0,
@@ -644,6 +648,44 @@ function NanoBananaApp() {
       }, 0);
     },
 
+    async optimizePrompt() {
+      var self = this;
+      var ta = document.querySelector('textarea[name="prompt"]');
+      var prompt = ta ? ta.value.trim() : '';
+      if (!prompt) {
+        self.optimizeError = '请先输入提示词';
+        return;
+      }
+      self.optimizing = true;
+      self.optimizeError = '';
+      self.optimizedPrompt = '';
+      var res = null;
+      try {
+        var resp = await fetch('/director/api/optimize-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: prompt, mode: 'refine' }),
+        });
+        res = await resp.json();
+      } catch (e) {
+        res = null;
+      }
+      self.optimizing = false;
+      if (res && res.ok && res.prompt) {
+        self.optimizedPrompt = res.prompt;
+      } else {
+        self.optimizeError = (res && res.error) || '优化失败';
+      }
+    },
+
+    applyOptimizedPrompt() {
+      var ta = document.querySelector('textarea[name="prompt"]');
+      if (ta && this.optimizedPrompt) {
+        ta.value = this.optimizedPrompt;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      this.optimizedPrompt = '';
+    },
     // ---- 8e. submit / pollJob / result display ----
 
     async submit() {
@@ -661,6 +703,18 @@ function NanoBananaApp() {
         if (self.activeTabId === ownerWorkspaceId) self[name] = value;
       };
       if (self.submitting) return;
+      var selectedProvider = nbField('provider') ? nbField('provider').value : self.provider;
+      var selectedModel = nbField('model') ? nbField('model').value : '';
+      var hasReference = false;
+      for (var ri = 1; ri <= 14; ri++) {
+        var refInput = nbField('image_' + ri);
+        if (refInput && refInput.files && refInput.files.length > 0) { hasReference = true; break; }
+        if (self.savedMedia && self.savedMedia['image_' + ri]) { hasReference = true; break; }
+      }
+      if (selectedProvider === 'comfyui_local' && selectedModel === 'qwen2511' && !hasReference) {
+        setOwnerState('statusText', 'Qwen 2511 \u662F\u56FE\u7247\u7F16\u8F91\u6A21\u578B\uFF0C\u8BF7\u5148\u4E0A\u4F20\u81F3\u5C11\u4E00\u5F20\u53C2\u8003\u56FE\uFF1B\u5982\u9700\u6587\u751F\u56FE\u8BF7\u5207\u6362 Krea T2I\u3002');
+        return;
+      }
       var submissionToken = (self._topicSubmissionSeq[ownerWorkspaceId] || 0) + 1;
       self._topicSubmissionSeq[ownerWorkspaceId] = submissionToken;
       var delivery = {
@@ -829,16 +883,26 @@ function NanoBananaApp() {
       var errorHint = '';
       if (job.errors && job.errors.length > 0) {
         var firstError = job.errors[0];
-        if (firstError.indexOf('[auth_failed]') >= 0 || firstError.indexOf('401') >= 0) {
+        if (/\[auth_failed\]/i.test(firstError) || /\bHTTP\s+401\b/i.test(firstError) || /\b401\s+Unauthorized\b/i.test(firstError)) {
           errorHint = '❌ API Key 无效或已过期，请检查配置';
-        } else if (firstError.indexOf('[rate_limited]') >= 0 || firstError.indexOf('429') >= 0) {
+        } else if (/\[rate_limited\]/i.test(firstError) || /\bHTTP\s+429\b/i.test(firstError) || /\b429\s+Too Many Requests\b/i.test(firstError)) {
           errorHint = '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
-        } else if (firstError.indexOf('[permission_denied]') >= 0 || firstError.indexOf('403') >= 0) {
+        } else if (/\[permission_denied\]/i.test(firstError) || /\bHTTP\s+403\b/i.test(firstError) || /\b403\s+Forbidden\b/i.test(firstError)) {
           errorHint = '🚫 权限不足或配额已用完，请联系管理员';
         } else if (firstError.indexOf('[server_error]') >= 0) {
           errorHint = '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
         } else if (firstError.indexOf('[network_error]') >= 0) {
           errorHint = '🌐 网络连接失败，请检查网络或 API 地址';
+        } else if (/requires at least one reference image|requires a reference image|需要参考图|至少.*参考图/i.test(firstError)) {
+          errorHint = '请上传至少一张参考图，或切换到文生图模型';
+        } else if (/requires a prompt|需要提示词|请输入提示词|prompt is required/i.test(firstError)) {
+          errorHint = '请输入生成提示词';
+        } else if (/ComfyUI.*未启动|未启动.*ComfyUI|timed out|WinError 10061|connection refused/i.test(firstError)) {
+          errorHint = '本地模型服务未就绪，正在自动拉起，请稍后重试';
+        } else if (/model_kind.*已停用|已停用.*model_kind|not yet supported|unsupported model/i.test(firstError)) {
+          errorHint = '当前模型不可用，请切换到其它可用模型';
+        } else if (/no output files|no images|produced no output|missing.*reference/i.test(firstError)) {
+          errorHint = '模型没有返回结果，请检查参考图或更换模型';
         } else {
           errorHint = escHtml(firstError);
         }

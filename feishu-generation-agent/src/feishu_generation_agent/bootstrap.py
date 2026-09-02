@@ -51,6 +51,8 @@ from feishu_generation_agent.integrations.character_semantic_matcher import (
 )
 from feishu_generation_agent.integrations.seedance import SeedanceVideoGenerator
 from feishu_generation_agent.integrations.seedream import SeedreamImageGenerator
+from feishu_generation_agent.integrations.aiport import AiPortImageGenerator
+from feishu_generation_agent.integrations.aiport_video import AiPortVideoGenerator
 from feishu_generation_agent.integrations.public_media import (
     TosPublicMediaHost,
     UguuPublicMediaHost,
@@ -180,6 +182,23 @@ def build_image_providers(
             result_downloader=result_downloader,
             max_result_bytes=max_result_bytes,
         )
+    if settings.aiport_image_enabled:
+        local_models = {
+            "aiport": (settings.aiport_image_model, {}),
+            "aiport_klein": ("flux2_klein_allinone", {"flux2_mode": "auto"}),
+            "aiport_klein_v3": ("klein_true_v3_assets", {"klein_true_v3_mode": "portrait"}),
+            "aiport_anime2real": ("anime2real_auto", {}),
+            "aiport_zimage": ("zimage_multifunction", {"zimage_mode": "img2img"}),
+            "aiport_style": ("krea2_style_transfer", {}),
+        }
+        for name, (model_kind, extra_values) in local_models.items():
+            providers[name] = AiPortImageGenerator(
+                http_client,
+                base_url=settings.aiport_base_url,
+                model_kind=model_kind,
+                provider_name=name,
+                extra_values=extra_values,
+            )
     return providers
 
 
@@ -274,7 +293,8 @@ async def _open_application_services(
     enable_bitable: bool,
 ) -> AsyncIterator[ApplicationServices]:
     settings.require(*CAPABILITY_FIELDS["core"])
-    settings.require(*CAPABILITY_FIELDS["generation"])
+    if settings.video_provider != "aiport":
+        settings.require(*CAPABILITY_FIELDS["generation"])
     bitable_configured = enable_bitable and capability_is_configured(
         settings, "bitable"
     )
@@ -451,7 +471,7 @@ async def _open_application_services(
                 include_completed_for_test=settings.lark_include_completed_for_test,
                 enabled_task_types=(
                     frozenset({"动画类", "真人类", "图片类"})
-                    if portrait_generator is not None
+                    if portrait_generator is not None or settings.video_provider == "aiport"
                     else frozenset({"动画类", "图片类"})
                 ),
             )
@@ -486,6 +506,23 @@ async def _open_application_services(
             # The production table is the operator-facing source when enabled.
             bitable_factory = production_factory
         assert delivery_writer is not None
+        aiport_video_generator = AiPortVideoGenerator(
+            provider_http,
+            base_url=settings.aiport_base_url,
+            model_kind=settings.aiport_video_model,
+            provider_name="aiport",
+            max_result_bytes=settings.max_download_bytes,
+        )
+        if settings.video_provider == "aiport":
+            video_generator = aiport_video_generator
+        else:
+            video_generator = SeedanceVideoGenerator(
+                provider_http,
+                base_url=settings.ark_base_url,
+                api_key=settings.ark_api_key,
+                model=settings.seedance_model,
+                public_media_host=animation_media_host,
+            )
         services = GraphServices(
             document_source=FeishuDocumentSource(
                 feishu,
@@ -526,13 +563,8 @@ async def _open_application_services(
                 max_result_bytes=settings.max_download_bytes,
             )
             or None,
-            video_generator=SeedanceVideoGenerator(
-                provider_http,
-                base_url=settings.ark_base_url,
-                api_key=settings.ark_api_key,
-                model=settings.seedance_model,
-                public_media_host=animation_media_host,
-            ),
+            video_generator=video_generator,
+            aiport_video_generator=aiport_video_generator,
             portrait_video_generator=portrait_generator,
             production_task_store=production_store if production_bitable_configured else None,
             delivery_writer=delivery_writer,

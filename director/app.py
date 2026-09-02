@@ -11,6 +11,7 @@ import mimetypes
 import os
 import shutil
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -91,13 +92,16 @@ def _load_deepseek_key() -> str:
 def config_payload() -> dict[str, Any]:
     ark = PROVIDERS.get("ark", {})
     deepseek = PROVIDERS.get("deepseek", {})
+    local = PROVIDERS.get("local", {})
     return {
-        "model": ark.get("model", "doubao-seedream-5-0-pro-260628"),
+        "model": local.get("model_kind") or ark.get("model", "doubao-seedream-5-0-pro-260628"),
         "aspect_ratios": list(ASPECT_RATIOS),
         "resolutions": ["1K", "1.5K", "2K"],
         "default_resolution": ark.get("default_resolution", "2K"),
         "default_aspect_ratio": ark.get("default_aspect_ratio", "1:1"),
         "default_count": int(ark.get("default_count", 1)),
+        "local_ready": True,
+        "local_model": local.get("model_kind", "qwen2511"),
         "ark_ready": bool(_ark_key()),
         "deepseek_ready": bool(_load_deepseek_key() or SKILL_PATH.exists()),
         "deepseek_model": deepseek.get("model", "deepseek-chat"),
@@ -205,37 +209,62 @@ def _download_image(url: str, dest: Path) -> None:
 
 def _run_text2image(job_id: str, prompt: str, aspect_ratio: str,
                     count: int, resolution: str) -> None:
-    """在线程中执行：逐张调方舟 Seedream（同步接口）并落盘。"""
+    """Generate images through the local AI Port gateway (free)."""
     job = JOBS[job_id]
-    ark = PROVIDERS.get("ark", {})
-    base_url = ark.get("base_url", "https://ark.cn-beijing.volces.com/api/v3")
-    model = ark.get("model", "doubao-seedream-5-0-pro-260628")
-    api_key = _ark_key()
+    local = PROVIDERS.get("local", {})
+    base_url = str(local.get("base_url") or "http://127.0.0.1:8801").rstrip("/")
+    model_kind = str(local.get("model_kind") or "qwen2511")
     try:
         size = seedream_size(resolution, aspect_ratio)
     except ValueError as exc:
         job["status"] = "failed"
         job["error"] = str(exc)
         return
+    if "x" in size:
+        w, h = size.lower().split("x", 1)
+        width, height = int(w), int(h)
+    else:
+        side = {"1k": 1024, "1.5k": 1536, "2k": 2048}.get(str(resolution).strip().lower(), 2048)
+        width = height = side
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     for index in range(count):
         body = {
-            "model": model,
-            "prompt": prompt,
-            "size": size,
-            "response_format": "url",
-            "output_format": "png",
-            "watermark": False,
+            "values": {
+                "model_kind": model_kind,
+                "prompt": prompt,
+                "width": width,
+                "height": height,
+                "repeat_count": 1,
+            },
+            "files": {},
         }
         try:
-            result = request_json(
-                "POST", f"{base_url}/images/generations", api_key, body, timeout=180,
-            )
-            items = result.get("data") or []
-            if not items:
-                raise APIError(502, "方舟未返回图片结果", json.dumps(result, ensure_ascii=False)[:300])
+            submit = request_json("POST", f"{base_url}/api/image_local/jobs/json", "", body, timeout=180)
+            local_job_id = submit.get("job_id")
+            if not local_job_id:
+                raise APIError(502, "Local ComfyUI did not return a job id")
+            start = time.time()
+            while True:
+                if time.time() - start > 600:
+                    raise APIError(502, f"Local ComfyUI job {local_job_id} timed out")
+                time.sleep(3)
+                status = request_json("GET", f"{base_url}/api/image_local/jobs/{local_job_id}", "", timeout=60)
+                state = str(status.get("status") or "").strip().lower()
+                if state in {"succeeded", "success", "partial"}:
+                    results = status.get("results") or []
+                    break
+                if state in {"failed", "failure", "error", "cancelled", "canceled"}:
+                    raise APIError(502, f"Local ComfyUI job ended as {state}: {status.get('error') or status}")
+            if not results:
+                raise APIError(502, "Local ComfyUI returned no images")
+            item = results[0]
+            if not isinstance(item, dict) or not item.get("ok"):
+                raise APIError(502, "Local ComfyUI returned a failed result")
+            rel_url = item.get("download_url")
+            if not isinstance(rel_url, str) or not rel_url.strip():
+                raise APIError(502, "Local ComfyUI result missing download_url")
             dest = OUTPUT_DIR / f"{job_id}-{index}.png"
-            _download_image(items[0].get("url") or "", dest)
+            _download_image(f"{base_url}{rel_url}", dest)
             job["results"].append({"index": index, "url": f"/outputs/{dest.name}"})
         except APIError as exc:
             job["status"] = "failed"
@@ -347,9 +376,6 @@ class Handler(SimpleHTTPRequestHandler):
             except (TypeError, ValueError):
                 count = 1
             resolution = str(data.get("resolution", "2K")).strip()
-            if not _ark_key():
-                json_response(self, 503, {"ok": False, "error": "方舟 Ark key 未配置，请联系管理员"})
-                return
             job_id = uuid.uuid4().hex
             job = {"id": job_id, "status": "pending", "prompt": prompt,
                    "aspect_ratio": aspect_ratio, "count": count,

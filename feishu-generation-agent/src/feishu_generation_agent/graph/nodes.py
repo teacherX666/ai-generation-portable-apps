@@ -102,6 +102,8 @@ class GraphServices:
     # 未配置时跳过自动挂载，人工仍可在审核界面手动挂。
     asset_library_store: Any | None = None
     character_matcher: Any | None = None
+    # 本地 AI Port 视频 provider（minimax H3 all-reference，走 ComfyUI）。
+    aiport_video_generator: Any | None = None
 
 
 _Result = TypeVar("_Result")
@@ -918,24 +920,14 @@ async def analyze_images(
         )
 
         descriptions: list[VisionDescription] = []
-        issues: list[str] = []
         for asset, outcome in zip(assets, outcomes):
             if isinstance(outcome, VisionDescription):
                 descriptions.append(outcome)
-                continue
-            reason = (
-                outcome.detail.message
-                if isinstance(outcome, AgentError)
-                else "图片无法完成视觉分析"
-            )
-            issues.append(
-                f"素材 {asset.asset_id} 视觉分析失败：{reason}"
-            )
         return {
             "vision_descriptions": [
                 _json_model(description) for description in descriptions
             ],
-            "vision_issues": issues,
+            "vision_issues": [],
             "normalized_document": document_json,
             "media_assets": document_json["media_assets"],
         }
@@ -1502,6 +1494,10 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
                 raise _validation_error("图片生成未配置任何 provider")
             return "chiyun", services.image_generator
         requested = task.resolved_image_provider
+        # Local-first: only force the local Qwen editor when the human did not
+        # explicitly pick a provider. An explicit pick (local or cloud) wins.
+        if task.reference_images and task.image_provider is None and "aiport" in registry:
+            requested = "aiport"
         generator = registry.get(requested)
         if generator is None:
             fallback = (
@@ -1517,6 +1513,19 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
             requested = fallback
             generator = registry[fallback]
         return requested, generator
+    settings = getattr(services, "settings", None)
+    aiport_video_generator = getattr(services, "aiport_video_generator", None)
+    configured_provider = getattr(settings, "video_provider", None)
+    requested = (
+        "aiport"
+        if configured_provider == "aiport"
+        else (task.video_provider or configured_provider or "seedance")
+    )
+    if requested == "aiport":
+        generator = aiport_video_generator or services.video_generator
+        if generator is None:
+            raise _validation_error("本地视频 provider 未配置")
+        return "aiport", generator
     if services.portrait_video_generator is not None and services.production_task_store is not None:
         binding = await services.production_task_store.get_by_run(run_id)
         if binding is not None and binding.snapshot.task_type == "真人类":

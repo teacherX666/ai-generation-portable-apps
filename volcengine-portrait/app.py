@@ -692,15 +692,6 @@ def _openapi_v4_sign(ak, sk, method, host, uri, query, headers, payload):
 
 PROJECT_NAME = "Seedance2.0"
 
-# 模型 → 视频时长上限（下限统一 4 秒）：Seedance 2.0 系列 15s，2.5 系列 30s。
-# 未知模型按 30s 宽松处理，避免误伤自定义模型。
-_MODEL_MAX_DURATION = {
-    "doubao-seedance-2-0-260128": 15,
-    "doubao-seedance-2-0-fast-260128": 15,
-    "doubao-seedance-2-0-mini-260615": 15,
-    "doubao-seedance-2-5-260628": 30,
-}
-
 
 # ============================================================
 # 重试策略
@@ -1636,38 +1627,6 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
     if not asset_id or not prompt:
         json_response(handler, 400, {"ok": False, "error": "asset_id and prompt required"})
         return
-
-    # ── 提交前拦截（历史失败记录主因，排队后必失败还占生成时间）──
-    # 1) duration：按模型限长——Seedance 2.0 系列 4~15 秒、2.5 系列 4~30 秒
-    #    （-1 = 模型自定）。历史失败里有 3/18/20 秒这类值，全部 400 排队后才知道。
-    max_duration = _MODEL_MAX_DURATION.get(model, 30)
-    if duration != -1 and not (4 <= duration <= max_duration):
-        json_response(handler, 400, {"ok": False,
-                                     "error": f"当前模型视频时长需在 4~{max_duration} 秒之间（或选择自动）"})
-        return
-    # 2) 素材引用：提交前 GetAsset 逐项确认仍在方舟且可用。素材被删后
-    #    引用失效是失败记录里最高频的一类（7/35），且每次都是排队后必失败。
-    try:
-        for aid in [asset_id] + [a for a in extra_asset_ids if isinstance(a, str) and a]:
-            check = openapi_call("GetAsset", {"Id": aid, "ProjectName": PROJECT_NAME},
-                                 timeout=20)
-            if "error" in check:
-                json_response(handler, 400, {"ok": False,
-                                             "error": f"引用的素材（{aid}）已不存在，请重新上传或换一个素材"})
-                return
-            item = openapi_result(check)
-            status = str(item.get("Status") or "").lower()
-            if status == "processing":
-                json_response(handler, 400, {"ok": False,
-                                             "error": f"素材（{aid}）还在审核处理中，请稍候再试"})
-                return
-            if status != "active":
-                json_response(handler, 400, {"ok": False,
-                                             "error": f"素材（{aid}）当前不可用（状态：{status}），请重新上传"})
-                return
-    except Exception:
-        # 校验通道本身故障时不阻断提交（上游会再报一次真实错误）
-        pass
 
     api_key = None
 

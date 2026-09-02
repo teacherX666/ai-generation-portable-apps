@@ -226,12 +226,12 @@ if ('ResizeObserver' in window && typeof document.querySelector === 'function') 
 portalTabButtons.forEach(btn => {
   btn.addEventListener('click', () => activatePortalTab(btn));
   btn.addEventListener('keydown', e => {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return;
     e.preventDefault();
     const index = portalTabButtons.indexOf(btn);
     const nextIndex = e.key === 'Home' ? 0
       : e.key === 'End' ? portalTabButtons.length - 1
-      : (index + (e.key === 'ArrowRight' ? 1 : -1) + portalTabButtons.length) % portalTabButtons.length;
+      : (index + ((e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : -1) + portalTabButtons.length) % portalTabButtons.length;
     activatePortalTab(portalTabButtons[nextIndex], { focus: true });
   });
 });
@@ -428,6 +428,12 @@ function DreaminaApp() {
       }
     },
 
+    async promptAddAccount() {
+      const name = await window.portalPrompt('输入账号名称（可留空）', { title: '添加账号', placeholder: '账号名称（可留空）' });
+      if (name === null) return;
+      await this.addAccount(name);
+    },
+
     async addAccount(name) {
       const res = await api('/dreamina/api/accounts', 'POST', JSON.stringify({ name: name || '' }));
       if (res?.ok) {
@@ -479,27 +485,27 @@ function DreaminaApp() {
 
     async renameAccount(accId) {
       const acc = this.accounts.find(a => a.id === accId);
-      const name = prompt('输入新名称', acc?.name || '');
+      const name = await window.portalPrompt('请输入账号新名称', { title: '重命名账号', value: acc?.name || '', placeholder: '账号名称' });
       if (!name || !name.trim()) return;
       const res = await api(`/dreamina/api/accounts/${accId}/rename`, 'POST', JSON.stringify({ name: name.trim() }));
       if (res?.ok) await this.loadAccounts();
     },
 
     async deleteAccount(accId) {
-      if (!confirm('确认删除该账号？')) return;
+      if (!await window.portalConfirm('确认删除该账号？', { danger: true })) return;
       await api(`/dreamina/api/accounts/${accId}/delete`, 'POST');
       await this.loadAccounts();
     },
 
     async setActiveAccount(accId) {
       const res = await api('/dreamina/api/accounts/active', 'POST', JSON.stringify({ account_id: accId }));
-      if (!res?.ok) { alert(res?.error || '切换账号失败'); this.loadAccounts(); return; }
+      if (!res?.ok) { window.portalToast(res?.error || '切换账号失败', 'danger'); this.loadAccounts(); return; }
       this.activeAccount = accId;
     },
 
     async setDispatchMode(mode) {
       const res = await api('/dreamina/api/dispatch-mode', 'POST', JSON.stringify({ mode }));
-      if (!res?.ok) { alert(res?.error || '设置调度模式失败'); return; }
+      if (!res?.ok) { window.portalToast(res?.error || '设置调度模式失败', 'danger'); return; }
       this.dispatchMode = mode;
     },
 
@@ -519,7 +525,7 @@ function DreaminaApp() {
       const data = new FormData(document.getElementById('dm-form'));
       data.set('mode', this.mode);
       const res = await api(`/dreamina/api/${this.mode}`, 'POST', data);
-      if (!res || res.error) { this.submitting = false; alert(res?.error || '提交失败'); return; }
+      if (!res || res.error) { this.submitting = false; window.portalToast(res?.error || '提交失败', 'danger'); return; }
       this.submitting = false;
       this.pollJob(res.job_id || res.id);
     },
@@ -783,7 +789,7 @@ function DreaminaApp() {
         retryBtn.textContent = '重试';
         retryBtn.addEventListener('click', async () => {
           const jid = item.job_id || item.id;
-          if (!jid) { alert('该任务缺少 ID，无法重试，请重新提交'); return; }
+          if (!jid) { window.portalToast('该任务缺少 ID，无法重试，请重新提交', 'danger'); return; }
           retryBtn.disabled = true;
           retryBtn.textContent = '重试中...';
           const res = await api(`/dreamina/api/jobs/${jid}/retry`, 'POST');
@@ -794,7 +800,7 @@ function DreaminaApp() {
             this.pollJob(res.job_id || jid);
             this.loadHistory();
           } else {
-            alert((res && res.error) ? '重试失败：' + res.error : '重试失败（服务可能已重启，请重新提交）');
+            window.portalToast((res && res.error) ? '重试失败：' + res.error : '重试失败（服务可能已重启，请重新提交）', 'danger');
             this.loadHistory();
           }
         });
@@ -1008,7 +1014,7 @@ function DreaminaApp() {
     },
     async cleanCache() {
       const res = await api('/dreamina/api/cleanup-cache', 'POST');
-      if (res) alert(`清理完成：素材 ${res.media_deleted || 0} 个，日志 ${res.logs_deleted || 0} 个`);
+      if (res) window.portalToast(`清理完成：素材 ${res.media_deleted || 0} 个，日志 ${res.logs_deleted || 0} 个`, 'success');
     },
 
     async loadArchives() {
@@ -1082,7 +1088,7 @@ function DreaminaApp() {
     async deleteArchive() {
       if (!this.selectedArchive) { this.archiveHint = '请先选择要删除的存档'; return; }
       const name = this.selectedArchive;
-      if (!confirm('确定删除存档「' + name + '」？此操作不可恢复。')) return;
+      if (!await window.portalConfirm('确定删除存档「' + name + '」？此操作不可恢复。', { danger: true })) return;
       this.archiveHint = '删除中...';
       try {
         const data = new FormData(); data.set('archive_name', name);
@@ -1330,7 +1336,7 @@ function StatsApp() {
       const res = await api('/api/auth/signup-toggle', 'POST', JSON.stringify({ enabled: !this.signupEnabled }));
       this.signupBusy = false;
       if (res?.ok) this.signupEnabled = !!res.signup_enabled;
-      else alert(res?.error || '切换失败');
+      else window.portalToast(res?.error || '切换失败', 'danger');
     },
 
     async loadPortraitKey() {
@@ -1433,7 +1439,7 @@ function StatsApp() {
         // 自签 HTTPS 下走 fetch+Blob，避免下载管理器拒绝；anchor download 在生产路径有冲突。
         const r = await fetch(url, { credentials: 'same-origin' });
         if (!r.ok) {
-          alert('导出失败 HTTP ' + r.status);
+          window.portalToast('导出失败 HTTP ' + r.status, 'danger');
           return;
         }
         const blob = await r.blob();
@@ -1446,7 +1452,7 @@ function StatsApp() {
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
       } catch (e) {
-        alert('导出失败: ' + (e?.message || e));
+        window.portalToast('导出失败: ' + (e?.message || e), 'danger');
       } finally {
         this.exporting = false;
       }
@@ -1524,10 +1530,10 @@ function StatsApp() {
       const meta = this.appsMeta[app];
       if (meta && meta.display_name) return meta.display_name;
       return {
-        'seedance': 'Seedance',
-        'nano-banana': '图像生成模块',
-        'dreamina': 'Dreamina',
-        'volcengine-portrait': '人像生成',
+        'seedance': '视频生成',
+        'nano-banana': '图片生成',
+        'dreamina': '即梦创作',
+        'volcengine-portrait': '人像视频',
       }[app] || app;
     },
 
@@ -1606,12 +1612,12 @@ function StatsApp() {
     },
 
     async resetPassword(u) {
-      const pw = prompt(`为 ${u.username} 设置新密码（≥6位）：`);
+      const pw = await window.portalPrompt(`为 ${u.username} 设置新密码`, { title: '重置密码', placeholder: '至少 6 位' });
       if (!pw) return;
-      if (pw.length < 6) { alert('密码至少 6 位'); return; }
+      if (pw.length < 6) { window.portalToast('密码至少 6 位', 'danger'); return; }
       const res = await api('/api/users/' + u.id, 'POST', JSON.stringify({ password: pw }));
-      if (res?.ok) alert('密码已重置');
-      else alert(res?.error || '重置失败');
+      if (res?.ok) window.portalToast('密码已重置', 'success');
+      else window.portalToast(res?.error || '重置失败', 'danger');
     },
 
     async loadFeishuConfig() {
@@ -1670,7 +1676,7 @@ function StatsApp() {
     async sendFeishuNow() {
       const date = this.feishu.previewDate;
       if (!date) { this.feishu.status = '请选日期'; return; }
-      if (!confirm(`确认向飞书发送 ${date} 的日报？`)) return;
+      if (!await window.portalConfirm(`确认向飞书发送 ${date} 的日报？`)) return;
       this.feishu.status = '发送中...';
       try {
         const r = await fetch('/api/reports/send', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({date})}).then(r => r.json());
@@ -1715,7 +1721,7 @@ function KeysApp() {
     },
 
     async deleteKey(id) {
-      if (!confirm('确定删除该密钥？')) return;
+      if (!await window.portalConfirm('确定删除该密钥？', { danger: true })) return;
       const res = await api('/api/keys/' + id, 'DELETE');
       if (res?.ok) await this.loadKeys();
     },
@@ -1741,10 +1747,61 @@ function KeysApp() {
         if (ok) { this.hint = '已复制：' + name; this.hintOk = true; }
         else { this.hint = '复制失败，浏览器拒绝访问剪贴板'; this.hintOk = false; }
       }
+    },
+
+    keyScope(provider) {
+      const map = {
+        t8star: '图片生成 · T8Star',
+        chiyun: '图片生成 · Chiyun',
+        volcengine: '公司托管 · 火山方舟',
+        volcengine_ak: '公司托管 · 人像 AK/SK',
+        gemini: '暂未绑定模块',
+        openai: '暂未绑定模块',
+        other: '暂未绑定模块',
+      };
+      return map[provider] || '暂未绑定模块';
+    },
+
+    async applyKeyToImage(id, name) {
+      const res = await api('/api/keys/' + id + '/reveal');
+      if (!res?.ok || !res.key) {
+        this.hint = '获取失败：' + (res?.error || '未知错误'); this.hintOk = false;
+        window.portalToast('获取密钥失败', 'danger');
+        return;
+      }
+      const key = res.key;
+      const btn = document.querySelector('.app-tab[data-tab="nb"]');
+      if (!btn) { window.portalToast('未找到图片生成模块', 'danger'); return; }
+      activatePortalTab(btn);
+      const iframe = document.getElementById('iframe-nb');
+      loadPortalIframe(iframe);
+
+      let ok = false;
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        try {
+          const doc = iframe.contentDocument;
+          const input = doc && doc.querySelector('input[name="api_key"]');
+          if (input) {
+            input.value = key;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            ok = true;
+            break;
+          }
+        } catch (e) { /* iframe not ready or blocked */ }
+      }
+
+      if (ok) {
+        this.hint = '已应用到图片生成：' + name; this.hintOk = true;
+        window.portalToast('已填充图片生成 API Key', 'success');
+      } else {
+        this.hint = '自动填充失败，请切换到图片生成后手动粘贴'; this.hintOk = false;
+        window.portalToast('未能自动填充，请手动粘贴', 'warning');
+      }
     }
   };
 }
-
 // === Volcengine Portrait App ===
 function VolcenginePortraitApp() {
   const appPath = '/volcengine-portrait';
@@ -1890,11 +1947,16 @@ function VolcenginePortraitApp() {
     friendlyErrors(errors) {
       if (!errors || !errors.length) return '';
       const first = String(errors[0]);
-      if (first.includes('[auth_failed]') || first.includes('401')) return '❌ API Key 无效或已过期，请检查配置';
-      if (first.includes('[rate_limited]') || first.includes('429')) return '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
-      if (first.includes('[permission_denied]') || first.includes('403')) return '🚫 权限不足或配额已用完，请联系管理员';
+      if (/\[auth_failed\]/i.test(first) || /\bHTTP\s+401\b/i.test(first) || /\b401\s+Unauthorized\b/i.test(first)) return '❌ API Key 无效或已过期，请检查配置';
+      if (/\[rate_limited\]/i.test(first) || /\bHTTP\s+429\b/i.test(first) || /\b429\s+Too Many Requests\b/i.test(first)) return '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
+      if (/\[permission_denied\]/i.test(first) || /\bHTTP\s+403\b/i.test(first) || /\b403\s+Forbidden\b/i.test(first)) return '🚫 权限不足或配额已用完，请联系管理员';
       if (first.includes('[server_error]') || /HTTP 5\d\d/.test(first)) return '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
       if (first.includes('[network_error]')) return '🌐 网络连接失败，请检查网络或 API 地址';
+      if (/requires at least one reference image|requires a reference image|需要参考图|至少.*参考图/i.test(first)) return '请上传至少一张参考图，或切换到文生图模型';
+      if (/requires a prompt|需要提示词|请输入提示词|prompt is required/i.test(first)) return '请输入生成提示词';
+      if (/ComfyUI.*未启动|未启动.*ComfyUI|timed out|WinError 10061|connection refused/i.test(first)) return '本地模型服务未就绪，正在自动拉起，请稍后重试';
+      if (/model_kind.*已停用|已停用.*model_kind|not yet supported|unsupported model/i.test(first)) return '当前模型不可用，请切换到其它可用模型';
+      if (/no output files|no images|produced no output|missing.*reference/i.test(first)) return '模型没有返回结果，请检查参考图或更换模型';
       return errors.join('; ');
     },
 
@@ -1928,15 +1990,15 @@ function VolcenginePortraitApp() {
       const probeUrl = `${appPath}/api/virtual/assets?group_ids=${encodeURIComponent(id)}&page_size=1`;
       const probe = await vpApi.call(this, probeUrl);
       if (!probe?.ok) {
-        alert('无法确认组内资产数量，请刷新重试');
+        window.portalToast('无法确认组内资产数量，请刷新重试', 'danger');
         return;
       }
       const total = (probe.total_count != null) ? probe.total_count : (probe.assets?.length || 0);
       if (total > 0) {
-        alert(`该组下还有 ${total} 个资产，请先逐个删除`);
+        window.portalToast(`该组下还有 ${total} 个资产，请先逐个删除`, 'danger');
         return;
       }
-      if (!confirm('确认删除组？')) return;
+      if (!await window.portalConfirm('确认删除组？', { danger: true })) return;
       const res = await vpApi.call(this, `${appPath}/api/virtual/groups/${id}`, 'DELETE');
       if (res?.ok || (res?.error && res.error !== 'Network error')) {
         this.assetGroupId = '';
@@ -1965,7 +2027,7 @@ function VolcenginePortraitApp() {
       if (!this.purge.dryRun) return;
       const n = this.purge.dryRun.matched;
       const a = (this.purge.dryRun.candidates || []).reduce((s, c) => s + (c.asset_count || 0), 0);
-      if (!confirm(`将删除 ${n} 个组，含约 ${a} 个资产。此操作不可撤销，确认执行？`)) return;
+      if (!await window.portalConfirm(`将删除 ${n} 个组，含约 ${a} 个资产。此操作不可撤销，确认执行？`, { danger: true })) return;
       this.purge.errorMsg = '';
       this.purge.lastResult = null;
       this.purge.running = true;
@@ -2367,7 +2429,7 @@ function VolcenginePortraitApp() {
 function HistoryApp() {
   return {
     items: [], total: 0, page: 1, pageSize: 20,
-    isAdmin: false, userList: [], userFilter: "",
+    isAdmin: false, userList: [], userFilter: "", appList: [], appFilter: "", favorites: {}, favOnly: false, downloaded: {}, downloadedOnly: false,
     kind: "all", status: "all", days: 30, q: "",
     detail: null, detailTab: "req",
     get totalPages() {
@@ -2381,7 +2443,11 @@ function HistoryApp() {
           const u = await api("/api/platform/history-users", "GET");
           this.userList = (u && u.users) || [];
         }
+        const apps = await api("/api/apps", "GET");
+        if (apps && Array.isArray(apps.apps)) this.appList = apps.apps;
       } catch (e) { /* 权限信息拿不到时按普通用户渲染 */ }
+      try { this.favorites = JSON.parse(localStorage.getItem('portal_history_favorites') || '{}'); } catch (e) {}
+      try { this.downloaded = JSON.parse(localStorage.getItem('portal_history_downloads') || '{}'); } catch (e) {}
       this.reload();
     },
     async reload() {
@@ -2394,17 +2460,42 @@ function HistoryApp() {
       await this._fetch();
     },
     async _fetch() {
+      const useClientFilter = !!(this.favOnly || this.downloadedOnly);
+      const fetchLimit = useClientFilter ? 200 : this.pageSize;
+      const fetchOffset = useClientFilter ? 0 : (this.page - 1) * this.pageSize;
       const params = new URLSearchParams({
         days: this.days, kind: this.kind, status: this.status,
-        q: this.q, limit: this.pageSize, offset: (this.page - 1) * this.pageSize,
+        q: this.q, limit: fetchLimit, offset: fetchOffset,
       });
       if (this.isAdmin && this.userFilter) params.set("user", this.userFilter);
+      if (this.appFilter) params.set("app", this.appFilter);
       const res = await api("/api/platform/history?" + params.toString(), "GET");
       if (!res || !res.ok) { this.items = []; this.total = 0; return; }
-      this.items = res.items || [];
-      this.total = res.total || 0;
+      let all = res.items || [];
+      if (useClientFilter) {
+        all = all.filter(it => (!this.favOnly || this.isFav(it)) && (!this.downloadedOnly || this.isDownloaded(it)));
+        this.total = all.length;
+        this.items = all.slice((this.page - 1) * this.pageSize, this.page * this.pageSize);
+      } else {
+        this.items = all;
+        this.total = res.total || 0;
+      }
       if (this.page > this.totalPages) { this.page = this.totalPages; return this._fetch(); }
       this.detail = null;
+    },
+    favKey(it) { return (it && it.app) + ":" + (it && it.job_id); },
+    isFav(it) { return !!this.favorites[this.favKey(it)]; },
+    toggleFav(it) {
+      const key = this.favKey(it);
+      if (this.favorites[key]) delete this.favorites[key];
+      else this.favorites[key] = it.submitted_at || Date.now();
+      try { localStorage.setItem('portal_history_favorites', JSON.stringify(this.favorites)); } catch (e) {}
+    },
+    isDownloaded(it) { return !!this.downloaded[this.favKey(it)]; },
+    markDownloaded(it) {
+      if (!it) return;
+      this.downloaded[this.favKey(it)] = it.submitted_at || Date.now();
+      try { localStorage.setItem('portal_history_downloads', JSON.stringify(this.downloaded)); } catch (e) {}
     },
     openDetail(it) { this.detail = it; this.detailTab = "req"; },
     // 视频卡片走服务端抽帧缩略图端点；图片直接用原 URL
@@ -2443,11 +2534,106 @@ function HistoryApp() {
         const a = document.createElement("a");
         a.href = blobUrl; a.download = filename; a.style.display = "none";
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        this.markDownloaded(this.detail);
         setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
       } catch (e) {
         this.detailTab = "ret";
       }
     },
+    async reuseParams(it) {
+      if (!it) return;
+      const params = it.params || {};
+      const prompt = it.prompt || params.prompt || '';
+      const targetMap = {
+        'seedance': 'seedance',
+        'nano-banana': 'nb',
+        'dreamina': 'dreamina',
+        'volcengine-portrait': 'volcengine-portrait',
+      };
+      const target = targetMap[it.app];
+      if (!target) {
+        if (prompt) {
+          await this._copyText(prompt);
+          window.portalToast('已复制提示词，请在对应模块继续', 'info');
+        } else {
+          window.portalToast('该记录没有可复用的提示词', 'warning');
+        }
+        return;
+      }
+      if (target === 'dreamina' || target === 'volcengine-portrait') {
+        if (prompt) {
+          await this._copyText(prompt);
+          window.portalToast('已复制提示词，请在' + (it.display_name || target) + '中继续', 'info');
+        }
+        return;
+      }
+
+      const btn = document.querySelector('.app-tab[data-tab="' + target + '"]');
+      if (!btn) { window.portalToast('未找到对应模块', 'danger'); return; }
+      activatePortalTab(btn);
+      const iframe = target === 'seedance' ? document.getElementById('iframe-seedance') : document.getElementById('iframe-nb');
+      loadPortalIframe(iframe);
+
+      const fields = target === 'seedance'
+        ? ['base_url', 'custom_model', 'duration', 'resolution', 'ratio', 'seed', 'output_name', 'repeat_count', 'concurrency', 'poll_interval', 'timeout']
+        : ['base_url', 'mode', 'model', 'custom_model', 'aspect_ratio', 'image_size', 'response_format', 'seed', 'control_after_generate', 'output_name', 'repeat_count', 'concurrency', 'poll_interval', 'timeout'];
+      const checks = target === 'seedance'
+        ? ['generate_audio', 'watermark', 'return_last_frame', 'web_search', 'vary_seed']
+        : ['skip_error', 'resize_enabled', 'vary_seed'];
+
+      let ok = false;
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        try {
+          const doc = iframe.contentDocument;
+          if (!doc) continue;
+          const text = doc.querySelector('textarea[name="prompt"]');
+          if (text) {
+            text.value = prompt;
+            text.dispatchEvent(new Event('input', { bubbles: true }));
+            text.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          fields.forEach((name) => {
+            if (params[name] === undefined) return;
+            const el = doc.querySelector('[name="' + name + '"]');
+            if (!el) return;
+            el.value = params[name];
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+          checks.forEach((name) => {
+            if (params[name] === undefined) return;
+            const el = doc.querySelector('[name="' + name + '"]');
+            if (!el) return;
+            el.checked = !!params[name];
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+          ok = true;
+          break;
+        } catch (e) { /* iframe not ready or blocked */ }
+      }
+
+      if (ok) {
+        window.portalToast('已复用参数，检查后即可生成', 'success');
+        this.detail = null;
+      } else {
+        window.portalToast('自动回填失败，请手动填写', 'warning');
+      }
+    },
+
+    async _copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (_) {}
+        document.body.removeChild(ta);
+      }
+    }
   };
 }
 window.HistoryApp = HistoryApp;
@@ -2495,7 +2681,7 @@ function DirectorApp() {
           if (cfg.default_aspect_ratio) this.ratio = cfg.default_aspect_ratio;
           if (cfg.default_resolution) this.resolution = cfg.default_resolution;
           if (cfg.default_count) this.count = cfg.default_count;
-          if (cfg.ark_ready === false && cfg.deepseek_ready === false) {
+          if (cfg.local_ready !== true && cfg.ark_ready === false && cfg.deepseek_ready === false) {
             this.error = "导演台未配置任何密钥，请联系管理员";
           }
         } else {

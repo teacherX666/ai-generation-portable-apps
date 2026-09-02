@@ -43,6 +43,8 @@ echo Starting sub-apps and portal on port 9090...
 echo Keep this window open. Closing it will stop all services.
 echo.
 
+set "INFINITE_CANVAS_ENGINE=fastapi"
+set "RAG_ASSISTANT_ENGINE=fastapi"
 start "AI Portal Server" /B "%PYTHON%" "app.py"
 
 :: Wait for portal to be ready (HTTPS on 9090, HTTP redirect on 9089)
