@@ -47,11 +47,12 @@
       '._catDailyTask{margin-top:3px;color:var(--muted,#64748b);font-size:10.5px;font-weight:650;line-height:1.35}' +
       '._catDailyTask.is-complete{color:#16845b}' +
       '._catWardrobeActions{display:flex;align-items:center;gap:3px}' +
-      '._catWardrobeClose,._catGiftButton{width:27px;height:27px;border:0;border-radius:8px;background:transparent;color:var(--muted,#64748b);display:grid;place-items:center;padding:0;cursor:pointer}' +
+      '._catWardrobeCount{margin-left:6px;color:var(--muted,#64748b);font-size:10px;font-weight:700}' +
+      '._catWardrobeClose,._catGiftButton,._catWardrobeRefresh{width:27px;height:27px;border:0;border-radius:8px;background:transparent;color:var(--muted,#64748b);display:grid;place-items:center;padding:0;cursor:pointer}' +
       '._catWardrobeClose{font-size:18px;line-height:1}' +
-      '._catWardrobeClose:hover,._catGiftButton:hover:not(:disabled){background:#f1f5f9;color:var(--text,#172033)}' +
-      '._catGiftButton{font-size:16px;line-height:1}' +
-      '._catGiftButton.is-spinning{animation:_catGiftSpin .7s linear infinite}' +
+      '._catWardrobeClose:hover,._catGiftButton:hover:not(:disabled),._catWardrobeRefresh:hover:not(:disabled){background:#f1f5f9;color:var(--text,#172033)}' +
+      '._catGiftButton,._catWardrobeRefresh{font-size:16px;line-height:1}' +
+      '._catGiftButton.is-spinning,._catWardrobeRefresh.is-spinning{animation:_catGiftSpin .7s linear infinite}' +
       '._catGiftButton:disabled{cursor:wait;opacity:.58}' +
       '@keyframes _catGiftSpin{to{transform:rotate(360deg)}}' +
       '._catGiftStatus{position:fixed;z-index:10002;left:50%;top:78px;max-width:min(360px,calc(100vw - 28px));padding:8px 12px;border-radius:10px;background:#172033;color:#fff;font-size:12px;font-weight:700;box-shadow:0 8px 24px rgba(15,23,42,.22);transform:translate(-50%,-8px);opacity:0;pointer-events:none;transition:.18s}' +
@@ -168,7 +169,7 @@
     wardrobe.hidden = true;
     wardrobe.setAttribute('role', 'dialog');
     wardrobe.setAttribute('aria-label', '猫咪皮肤衣柜');
-    wardrobe.innerHTML = '<div class="_catWardrobeHead"><div class="_catWardrobeTitleWrap"><div class="_catWardrobeTitle">猫咪衣柜</div><div class="_catDailyTask">每日任务：完成一次飞书任务 Agent 生成任务</div></div><div class="_catWardrobeActions"><button class="_catLabButton" type="button" aria-label="管理员猫咪实验台" title="管理员猫咪实验台">🧪</button><button class="_catGiftButton" type="button" aria-label="打开礼盒" title="打开礼盒">🎁</button><button class="_catWardrobeClose" type="button" aria-label="关闭衣柜">×</button></div></div><div class="_catGiftStatus"></div><div class="_catSkinGrid"></div><div class="_catPager"><button class="_catPageButton _catPagePrev" type="button" aria-label="上一页">‹</button><span class="_catPageText"></span><button class="_catPageButton _catPageNext" type="button" aria-label="下一页">›</button></div>';
+    wardrobe.innerHTML = '<div class="_catWardrobeHead"><div class="_catWardrobeTitleWrap"><div class="_catWardrobeTitle">猫咪衣柜 <span class="_catWardrobeCount" aria-live="polite"></span></div><div class="_catDailyTask">每日任务：完成一次飞书任务 Agent 生成任务</div></div><div class="_catWardrobeActions"><button class="_catLabButton" type="button" aria-label="管理员猫咪实验室" title="管理员猫咪实验室">🧪</button><button class="_catWardrobeRefresh" type="button" aria-label="刷新猫咪衣柜" title="刷新衣柜">↻</button><button class="_catGiftButton" type="button" aria-label="打开礼盒" title="打开礼盒">🎁</button><button class="_catWardrobeClose" type="button" aria-label="关闭衣柜">×</button></div></div><div class="_catGiftStatus"></div><div class="_catSkinGrid"></div><div class="_catPager"><button class="_catPageButton _catPagePrev" type="button" aria-label="上一页">‹</button><span class="_catPageText"></span><button class="_catPageButton _catPageNext" type="button" aria-label="下一页">›</button></div>';
     wrap.appendChild(wardrobe);
 
     // 放到左侧信息和右侧状态之间。
@@ -197,8 +198,8 @@
     lab.id = '_catLab';
     lab.hidden = true;
     lab.setAttribute('role', 'dialog');
-    lab.setAttribute('aria-label', '管理员猫咪生成实验台');
-    lab.innerHTML = '<div class="_catLabPanel"><div class="_catLabHead"><div><div class="_catLabTitle">自由设计实验台</div><div class="_catLabNote">仅管理员可用 · 结果不写入衣柜 · 不消耗每日礼盒机会</div></div><button class="_catLabClose" type="button" aria-label="关闭实验台">×</button></div><div class="_catLabControls"><label class="_catLabField">稀有度<select class="_catLabType"></select></label><label class="_catLabField">猫名称<input class="_catLabNameInput" placeholder="例如：张雪峰猫" maxlength="10"></label><button class="_catLabGenerate" type="button">生成测试猫</button></div><div class="_catTrendStatus"><span class="_catTrendDot"></span><span class="_catTrendText">热点库状态读取中…</span><button class="_catTrendRefresh" type="button">立即刷新热点</button></div><div class="_catLabResult"><canvas class="_catLabCanvas" width="256" height="256"></canvas><div class="_catLabMeta"><span class="_catLabBadge">等待生成</span><div class="_catLabName">经典黑猫母版</div><div class="_catLabStats"><div class="_catLabStat _catLabSeedOut">Seed：—</div><div class="_catLabStat _catLabOps">坐标操作：—</div><div class="_catLabStat _catLabPersist">写入衣柜：否</div><div class="_catLabStat _catLabChance">消耗机会：否</div></div><pre class="_catLabJson">管理员生成后将在这里显示设计基因和坐标操作。</pre></div></div></div>';
+    lab.setAttribute('aria-label', '管理员猫咪生成实验室');
+    lab.innerHTML = '<div class="_catLabPanel"><div class="_catLabHead"><div><div class="_catLabTitle">猫咪设计实验室</div><div class="_catLabNote">管理员专用 · 只做预览，不会加入衣柜，也不会消耗每日领取次数</div></div><button class="_catLabClose" type="button" aria-label="关闭实验室">×</button></div><div class="_catLabControls"><label class="_catLabField">稀有度<select class="_catLabType"></select></label><label class="_catLabField">猫名称<input class="_catLabNameInput" placeholder="例如：胖猫" maxlength="10"></label><button class="_catLabGenerate" type="button">生成预览猫</button></div><div class="_catTrendStatus"><span class="_catTrendDot"></span><span class="_catTrendText">热点库状态读取中…</span><button class="_catTrendRefresh" type="button">立即刷新热点</button></div><div class="_catLabResult"><canvas class="_catLabCanvas" width="256" height="256"></canvas><div class="_catLabMeta"><span class="_catLabBadge">等待生成</span><div class="_catLabName">经典黑猫母版</div><div class="_catLabStats"><div class="_catLabStat _catLabSeedOut">Seed：—</div><div class="_catLabStat _catLabOps">坐标操作：—</div><div class="_catLabStat _catLabPersist">写入衣柜：否</div><div class="_catLabStat _catLabChance">消耗机会：否</div></div><pre class="_catLabJson">生成预览后，这里会显示设计基因和像素操作。</pre></div></div></div>';
     document.body.appendChild(lab);
 
     var ctx = canvas.getContext('2d');
@@ -227,6 +228,8 @@
     var releaseInProgress = false;
     var detailAnchor = null;
     var giftButton = wardrobe.querySelector('._catGiftButton');
+    var wardrobeRefresh = wardrobe.querySelector('._catWardrobeRefresh');
+    var wardrobeCount = wardrobe.querySelector('._catWardrobeCount');
     var labButton = wardrobe.querySelector('._catLabButton');
     var trendText = lab.querySelector('._catTrendText');
     var trendDot = lab.querySelector('._catTrendDot');
@@ -414,6 +417,7 @@
 
     function renderWardrobe() {
       var grid = wardrobe.querySelector('._catSkinGrid');
+      if (wardrobeCount) wardrobeCount.textContent = SKINS.length + ' 只';
       var pager = wardrobe.querySelector('._catPager');
       var pageCount = Math.max(1, Math.ceil(SKINS.length / SKINS_PER_PAGE));
       wardrobePage = Math.max(0, Math.min(wardrobePage, pageCount - 1));
@@ -496,16 +500,16 @@
         fetch('/api/cat/experiment/config', { credentials:'same-origin' })
           .then(function (r) { return r.json().then(function (data) { return {ok:r.ok,data:data}; }); })
           .then(function (result) {
-            if (!result.ok) throw new Error(result.data.error || '实验台读取失败');
+            if (!result.ok) throw new Error(result.data.error || '实验室读取失败');
             labType.textContent = '';
             result.data.rarities.forEach(function (item) {
               var option = document.createElement('option'); option.value = item.value; option.textContent = item.label; labType.appendChild(option);
             });
-          }).catch(function (err) { closeLab(); showShortMessage(err.message || '实验台读取失败', true); })
+          }).catch(function (err) { closeLab(); showShortMessage(err.message || '实验室读取失败', true); })
           .finally(function () {
             labConfigLoading = false;
             labGenerate.disabled = false;
-            labGenerate.textContent = '生成测试猫';
+            labGenerate.textContent = '生成预览猫';
           });
       }
     }
@@ -550,6 +554,16 @@
     }
 
     labButton.addEventListener('click', function (e) { e.stopPropagation(); openLab(); });
+    wardrobeRefresh.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (wardrobeState.loading) return;
+      wardrobeRefresh.disabled = true;
+      wardrobeRefresh.classList.add('is-spinning');
+      loadWardrobe().finally(function () {
+        wardrobeRefresh.disabled = false;
+        wardrobeRefresh.classList.remove('is-spinning');
+      });
+    });
     trendRefresh.addEventListener('click', function () {
       if (trendRefresh.disabled) return;
       trendRefresh.disabled = true; trendRefresh.textContent = '刷新中…';
@@ -574,7 +588,7 @@
         .then(function (r) { return r.json().then(function (data) { return {ok:r.ok,data:data}; }); })
         .then(function (result) { if (!result.ok) throw new Error(result.data.error || (result.data.validation && result.data.validation.errors || []).join('；') || '实验生成失败'); renderLabResult(result.data); })
         .catch(function (err) { lab.querySelector('._catLabBadge').textContent = '生成失败'; lab.querySelector('._catLabBadge').classList.add('is-error'); lab.querySelector('._catLabJson').textContent = err.message || '实验生成失败'; })
-        .finally(function () { labGenerate.disabled = false; labGenerate.textContent = '生成测试猫'; });
+        .finally(function () { labGenerate.disabled = false; labGenerate.textContent = '生成预览猫'; });
     });
 
     giftButton.addEventListener('click', function (e) {

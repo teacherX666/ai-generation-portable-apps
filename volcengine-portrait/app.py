@@ -46,6 +46,42 @@ for d in [OUTPUT_DIR, STATE_DIR, LOG_DIR, UPLOAD_DIR]:
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
+# Keep validation server-side as well as in the Portal UI.  Requests can come
+# from the standalone app, scripts, or stale browser code, and Ark otherwise
+# rejects them asynchronously after the user has already waited in the queue.
+_MODEL_MAX_DURATION = {
+    "doubao-seedance-2-0-260128": 15,
+    "doubao-seedance-2-0-fast-260128": 15,
+    "doubao-seedance-2-0-mini-260615": 15,
+    "doubao-seedance-2-5-260628": 30,
+}
+_ALLOWED_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
+# Keep in sync with the Portal selector; 21:9 was exposed in the UI but was
+# previously rejected by the backend, making that valid option unusable.
+_ALLOWED_RATIOS = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"}
+
+
+def _parse_int_field(value, default, field):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} 必须是整数")
+
+
+def _validate_job_params(model, duration, resolution, ratio, repeat_count):
+    max_duration = _MODEL_MAX_DURATION.get(str(model), 15)
+    # -1 is Ark's auto-duration sentinel for edit mode only.
+    if duration != -1 and not 4 <= duration <= max_duration:
+        raise ValueError(f"{model} 时长必须为 4~{max_duration} 秒，编辑模式才可填 -1")
+    if duration == -1 and ratio != "adaptive":
+        raise ValueError("时长为 -1 时比例必须为 adaptive")
+    if str(resolution) not in _ALLOWED_RESOLUTIONS:
+        raise ValueError("不支持的分辨率")
+    if str(ratio) not in _ALLOWED_RATIOS:
+        raise ValueError("不支持的画面比例")
+    if not 1 <= repeat_count <= 4:
+        raise ValueError("生成数量必须为 1~4")
+
 
 def _safe_join_or_root(base: Path, rel: str) -> str:
     """Traversal guard: join base/rel and reject anything outside base."""
@@ -1214,13 +1250,26 @@ def handle_virtual_assets_get(handler, asset_id=None):
             local = ASSETS.get(asset_id)
         # Fetch latest from API
         result = openapi_call("GetAsset", {"Id": asset_id, "ProjectName": PROJECT_NAME}, ak=ak, sk=sk)
-        if "error" not in result:
-            item = openapi_result(result)
-            with ASSET_LOCK:
-                if asset_id in ASSETS:
-                    ASSETS[asset_id]["status"] = (item.get("Status") or "").lower()
-                    ASSETS[asset_id]["url"] = item.get("URL", "")
-                    ASSETS[asset_id]["raw_latest"] = result
+        if "error" in result:
+            code = 401 if "Missing AK/SK" in result.get("error", "") else 502
+            json_response(handler, code, {"ok": False, "error": result["error"], "detail": result.get("detail")})
+            return
+        item = openapi_result(result)
+        with ASSET_LOCK:
+            cached = ASSETS.setdefault(asset_id, {
+                "asset_id": asset_id,
+                "group_id": item.get("GroupId", ""),
+                "file_name": item.get("Name") or item.get("FileName", ""),
+                "asset_type": item.get("AssetType", "Image"),
+                "created_at": item.get("CreateTime", ""),
+            })
+            cached["status"] = (item.get("Status") or "unknown").lower()
+            cached["url"] = item.get("URL", "")
+            cached["group_id"] = item.get("GroupId", cached.get("group_id", ""))
+            cached["file_name"] = item.get("Name") or item.get("FileName", cached.get("file_name", ""))
+            cached["asset_type"] = item.get("AssetType", cached.get("asset_type", "Image"))
+            cached["raw_latest"] = result
+            local = cached
         if local:
             json_response(handler, 200, {"ok": True, **_public(local)})
         else:
@@ -1246,6 +1295,10 @@ def handle_virtual_assets_get(handler, asset_id=None):
         if "sort_order" in query_params and query_params["sort_order"][0].strip():
             list_assets_body["SortOrder"] = query_params["sort_order"][0].strip()
         result = openapi_call("ListAssets", list_assets_body, ak=ak, sk=sk)
+        if "error" in result:
+            code = 401 if "Missing AK/SK" in result.get("error", "") else 502
+            json_response(handler, code, {"ok": False, "error": result["error"], "detail": result.get("detail")})
+            return
         if "error" not in result:
             for item in openapi_result(result).get("Items") or []:
                 aid = item.get("Id") or item.get("AssetId", "")
@@ -1284,8 +1337,6 @@ def handle_virtual_assets_delete(handler, asset_id):
     ak = None  # company-wide; admin-managed via /api/config (X-Is-Admin)
     sk = None
 
-    with ASSET_LOCK:
-        asset = ASSETS.pop(asset_id, None)
     if not ACCESS_KEY or not SECRET_KEY:
         json_response(handler, 401, {"ok": False, "error": "服务端未配置 AK/SK,请联系管理员在 portal 统计页配置"})
         return
@@ -1294,6 +1345,11 @@ def handle_virtual_assets_delete(handler, asset_id):
         code = 401 if "Missing AK/SK" in result.get("error", "") else 502
         json_response(handler, code, {"ok": False, "error": result["error"], "detail": result.get("detail")})
         return
+    # Only evict the local mirror after Ark confirms deletion.  Keeping the
+    # cache on failure lets the user retry and prevents the UI from appearing
+    # to delete an asset that still exists upstream.
+    with ASSET_LOCK:
+        ASSETS.pop(asset_id, None)
     json_response(handler, 200, {"ok": True})
 
 
@@ -1595,10 +1651,14 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
             extra_asset_ids = []
         prompt = form.getfirst("prompt", "")
         model = form.getfirst("model", "doubao-seedance-2-0-260128")
-        duration = int(form.getfirst("duration", "12"))
+        try:
+            duration = _parse_int_field(form.getfirst("duration", "12"), 12, "duration")
+            repeat_count = _parse_int_field(form.getfirst("repeat_count", "1"), 1, "repeat_count")
+        except ValueError as exc:
+            json_response(handler, 400, {"ok": False, "error": str(exc)})
+            return
         resolution = form.getfirst("resolution", "720p")
         ratio = form.getfirst("ratio", "16:9")
-        repeat_count = int(form.getfirst("repeat_count", "1"))
 
         extra_files = []
         for key in form.keys():
@@ -1623,14 +1683,24 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
             extra_asset_ids = []
         prompt = data.get("prompt", "")
         model = data.get("model", "doubao-seedance-2-0-260128")
-        duration = int(data.get("duration", 12))
+        try:
+            duration = _parse_int_field(data.get("duration", 12), 12, "duration")
+            repeat_count = _parse_int_field(data.get("repeat_count", 1), 1, "repeat_count")
+        except ValueError as exc:
+            json_response(handler, 400, {"ok": False, "error": str(exc)})
+            return
         resolution = data.get("resolution", "720p")
         ratio = data.get("ratio", "16:9")
-        repeat_count = int(data.get("repeat_count", 1))
         extra_files = []
 
     if not asset_id or not prompt:
         json_response(handler, 400, {"ok": False, "error": "asset_id and prompt required"})
+        return
+
+    try:
+        _validate_job_params(model, duration, resolution, ratio, repeat_count)
+    except ValueError as exc:
+        json_response(handler, 400, {"ok": False, "error": str(exc)})
         return
 
     api_key = None
@@ -1642,7 +1712,17 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
     if extra_files:
         for ef in extra_files:
             try:
-                public_url = tos_upload(ef["data"], ef["mime_type"], ef["filename"])
+                # Match asset-library uploads: TOS is preferred when fully
+                # configured, while older installs without a bucket retain the
+                # public-host fallback.  Previously every local extra image
+                # unconditionally called tos_upload(), making this feature
+                # unusable on the documented no-TOS deployment.
+                if TOS_ACCESS_KEY and TOS_SECRET_KEY and TOS_BUCKET:
+                    public_url = tos_upload(ef["data"], ef["mime_type"], ef["filename"])
+                else:
+                    public_url = _upload_to_public_host(ef["data"], ef["filename"], ef["mime_type"])
+                if not public_url:
+                    raise RuntimeError("无法获取本地素材的公网 URL")
             except RuntimeError as exc:
                 json_response(handler, 502, {"ok": False, "error": str(exc)})
                 return
@@ -1978,8 +2058,11 @@ def _run_virtual_job_impl(job_id, job):
                     "message": f"Run {idx} 失败: 生成超时（20 分钟未完成）",
                 })
 
+    # JOBS_LOCK is a non-reentrant lock.  We already hold it here, so read the
+    # flag directly instead of calling _job_cancel_requested() (which would
+    # try to acquire JOBS_LOCK a second time and leave every worker stuck).
     with JOBS_LOCK:
-        if _job_cancel_requested(job_id):
+        if job.get("cancel_requested"):
             # 已完成的条目保留（已真实生成且计费）；未完成条目不计
             job["status"] = "cancelled"
             if not job.get("errors"):

@@ -637,7 +637,7 @@ VALUE_FIELDS = {
 FALLBACK_PROVIDERS = {
     "schema_version": 1,
     "app": "seedance",
-    "default_provider": "comfyui_local",
+    "default_provider": "volcengine",
     "providers": {
         "comfyui_local": {
             "label": "Local ComfyUI (free)",
@@ -1888,7 +1888,7 @@ def api_schema() -> dict[str, Any]:
 
 def request_template() -> dict[str, Any]:
     config, config_error = load_provider_config()
-    provider = str(config.get("default_provider") or "comfyui_local")
+    provider = str(config.get("default_provider") or "volcengine")
     defaults = provider_defaults(config, provider)
     minimal = {
         "api_key": "YOUR_API_KEY",
@@ -1953,7 +1953,7 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     if config_error:
         raise ValueError(f"{config_error['message']}: {config_error['detail']}")
     incoming = {key: payload[key] for key in VALUE_FIELDS if key in payload and payload[key] is not None}
-    provider = str(incoming.get("provider") or config.get("default_provider") or "comfyui_local")
+    provider = str(incoming.get("provider") or config.get("default_provider") or "volcengine")
     values = provider_defaults(config, provider, str(incoming.get("model") or ""))
     values.update(incoming)
     values["provider"] = provider
@@ -2194,7 +2194,7 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
         form[key] = type("Field", (), {"filename": filename, "file": type("Reader", (), {"read": lambda self, b=blob: b})()})()
 
     api_key = str(form_values["api_key"]).strip()
-    provider = str(form_values.get("provider") or "comfyui_local")
+    provider = str(form_values.get("provider") or "volcengine")
     # Provider is hardcoded to volcengine — t8star path removed.
     base_url = str(form_values.get("base_url") or OFFICIAL_ARK_BASE_URL).rstrip("/")
     config, _ = load_provider_config()
@@ -2864,7 +2864,7 @@ class Handler(SimpleHTTPRequestHandler):
                 values, files = values_files_from_json(payload)
                 # Local-first: provider comes from the body or providers.json default.
                 # Only inject the company-managed Ark key when volcengine is explicit.
-                provider = str(values.get("provider") or "comfyui_local")
+                provider = str(values.get("provider") or "volcengine")
                 _cfg, _ = load_provider_config()
                 provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}
                 if provider_cfg.get("api_style") == "comfyui_workflow":
@@ -2908,7 +2908,7 @@ class Handler(SimpleHTTPRequestHandler):
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
         form_values = {key: get_field(form, key) for key in form.keys() if not getattr(form[key], "filename", None)}
         # Local-first: honor an explicit provider from the form, otherwise default local.
-        provider = str(form_values.get("provider") or "comfyui_local")
+        provider = str(form_values.get("provider") or "volcengine")
         form_values["provider"] = provider
         _cfg, _ = load_provider_config()
         provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}

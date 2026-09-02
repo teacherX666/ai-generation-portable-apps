@@ -104,6 +104,30 @@ THEME_ACCESSORIES = {
     "star_god": "star_crown",
 }
 
+# 名称只是标签，不足以可靠指导像素设计。这里维护“概念语义层”：
+# 先把名称解析成可执行的视觉 brief，再交给 AI/本地 fallback 渲染。这样“胖猫”
+# 不会因为模型自由联想而变成任意颜色，而是稳定保留网络热梗的蓝色猫头像语义。
+CONCEPT_BRIEFS = {
+    "胖猫": {
+        "category": "hot",
+        "pattern": "solid",
+        "visual_anchors": [
+            "网络热梗猫头像", "亮蓝色主体", "浅蓝色腹部和面部高光",
+            "圆润憨厚、略显委屈的表情", "不要加入职业装、皇冠或其他无关道具",
+        ],
+        "visual_direction": "蓝色是第一识别特征；主体必须是明显的亮蓝/中蓝，辅以浅蓝，不得使用橘黄、紫黑或随机霓虹作为主色。",
+    },
+    "胖猫猫": {
+        "category": "hot",
+        "pattern": "solid",
+        "visual_anchors": [
+            "网络热梗猫头像", "亮蓝色主体", "浅蓝色腹部和面部高光",
+            "圆润憨厚、略显委屈的表情", "不要加入职业装、皇冠或其他无关道具",
+        ],
+        "visual_direction": "蓝色是第一识别特征；主体必须是明显的亮蓝/中蓝，辅以浅蓝，不得使用橘黄、紫黑或随机霓虹作为主色。",
+    },
+}
+
 THEME_EFFECTS = {
     "angel": "halo", "seraph": "halo", "spider_hero": "web",
     "arcane_mage": "star", "mecha": "spark", "cyber": "spark",
@@ -535,6 +559,22 @@ class CatSkinGenerator:
         if max_colors >= 8 and ("W" in source or "W" in fallback):
             wing_hue = 0.78 if is_aurora else ((accessory_hue + 0.065) % 1.0)
             palette["W"] = self._hls_hex(wing_hue, 0.82, 0.40)
+
+        # Semantic profiles are hard constraints, not suggestions. The name
+        # “胖猫” is a recognizable blue internet-meme cat; letting either the
+        # model palette or the hash-derived fallback choose another body hue
+        # destroys the identity even when the pixel layout is valid.
+        if concept.get("semantic_profile") == "hot_meme_blue_cat":
+            palette["O"] = "#183B61"
+            palette["F"] = "#358ED0"
+            palette["S"] = "#8BD0F4"
+            palette["I"] = "#F7D85C"
+            palette["P"] = "#142A3C"
+            palette["N"] = "#E27A8E"
+            if max_colors >= 7:
+                palette["A"] = "#5DB7F0"
+            if max_colors >= 8:
+                palette["W"] = "#A9E3FF"
         return palette
 
     @staticmethod
@@ -1275,6 +1315,8 @@ class CatSkinGenerator:
             "concept_category": str(concept.get("category") or "abstract"),
             "concept_anchors": [str(item) for item in concept.get("visual_anchors", []) if str(item).strip()],
             "concept_source": self._concept_source(concept),
+            "semantic_profile": str(concept.get("semantic_profile") or ""),
+            "visual_direction": str(concept.get("visual_direction") or ""),
             "design_recipe": {
                 "template": "classic-black-master-v1", "generator": "ai-coordinate-plan",
                 "concept_id": str(concept.get("id") or ""), "pattern_operations": [list(op) for op in paint],
@@ -1291,7 +1333,25 @@ class CatSkinGenerator:
             raise CatGenerationError("固定模板概念稿未通过结构校验：" + "；".join(errors[:5]))
         return skin
 
+    @staticmethod
+    def enrich_concept(concept: dict) -> dict:
+        """Resolve a human label into a stable, renderer-facing visual brief."""
+        enriched = dict(concept or {})
+        name = str(enriched.get("name") or "").strip()
+        brief = CONCEPT_BRIEFS.get(name)
+        if not brief:
+            return enriched
+        for key, value in brief.items():
+            if key == "visual_anchors":
+                existing = [str(item).strip() for item in enriched.get(key, []) if str(item).strip()]
+                enriched[key] = list(dict.fromkeys(list(value) + existing))
+            elif not enriched.get(key):
+                enriched[key] = value
+        enriched["semantic_profile"] = "hot_meme_blue_cat" if name in {"胖猫", "胖猫猫"} else name
+        return enriched
+
     def _generate_from_concept(self, rarity: str, concept: dict, rng: random.Random, blocked_names: set[str], variation_hint: str = "") -> dict:
+        concept = self.enrich_concept(concept)
         limits = self.anatomy["rarity_limits"][rarity]
         fallback = self._base_for(rarity, str(concept.get("id") or ""), rng)
         anchors = [str(item) for item in concept.get("visual_anchors", []) if str(item).strip()]
@@ -1304,6 +1364,8 @@ class CatSkinGenerator:
         prompt = f"""把开放概念设计成固定经典黑猫模板的一套像素操作计划。绝对不要输出完整图片或frame。
 概念：{concept.get('name')}；类别：{concept.get('category', 'abstract')}；稀有度：{rarity}。
 视觉锚点：{'；'.join(anchors) or '提炼最有辨识度的颜色、花纹或物件'}；来源：{concept.get('source_title') or '本地概念库'}。
+视觉执行方向：{concept.get('visual_direction') or '先从名称和视觉锚点提炼唯一主视觉，再选择配色和花纹；不要凭空添加与概念无关的职业、人物或道具。'}
+这是一个“视觉 brief → 受限像素操作”的任务，不是根据名字自由改编；主视觉必须能从最终调色板和花纹中一眼看出。
 {variation_hint}
 猫的头、圆颚、平下巴、双眼双竖瞳、小鼻子、两点猫嘴、身体、封闭臀部、腿部动画和尾巴已经由程序永久锁定，禁止重画、删除、移动或返回frame_a。
 你只能在这些毛色坐标中选择像素：{json.dumps(pattern_coords, ensure_ascii=False, separators=(',', ':'))}
@@ -1318,6 +1380,7 @@ class CatSkinGenerator:
 
     def _fallback_for_concept(self, rarity: str, concept: dict, rng: random.Random, blocked_names: set[str]) -> dict:
         """No-key/model-error fallback still uses the exact frozen body template."""
+        concept = self.enrich_concept(concept)
         fallback = self._base_for(rarity, str(concept.get("id") or ""), rng)
         raw = {
             "name": str(concept.get("name") or "像素猫"),

@@ -214,17 +214,25 @@ class CatExperimentServiceTests(unittest.TestCase):
         self.assertEqual({"common", "rare", "epic", "legendary"}, {item["value"] for item in config["rarities"]})
         self.assertFalse(config["configured"])
 
+    def test_pangmao_semantic_profile_forces_blue_meme_palette_without_ai(self):
+        result = self.service.generate("epic", "胖猫", 123456)
+        palette = result["skin"]["palette"]
+        self.assertEqual("#358ED0", palette["F"])
+        self.assertEqual("#8BD0F4", palette["S"])
+        self.assertEqual("hot_meme_blue_cat", result["skin"].get("semantic_profile"))
+        self.assertEqual([], validate_data(result["skin"]))
+
     def test_generate_is_side_effect_free_and_locks_name(self):
-        result = self.service.generate("epic", "张雪峰猫", 123456)
+        result = self.service.generate("epic", "胖猫", 123456)
         self.assertTrue(result["validation"]["passed"], result["validation"]["errors"])
         self.assertFalse(result["persisted"])
         self.assertFalse(result["consumed_daily_chance"])
         self.assertEqual([], validate_data(result["skin"]))
-        self.assertEqual("张雪峰猫", result["skin"]["name"])
+        self.assertEqual("胖猫", result["skin"]["name"])
 
     def test_name_is_auto_suffixed_with_cat(self):
-        result = self.service.generate("rare", "张雪峰", 7)
-        self.assertEqual("张雪峰猫", result["skin"]["name"])
+        result = self.service.generate("rare", "测试", 7)
+        self.assertEqual("测试猫", result["skin"]["name"])
 
     def test_unknown_rarity_is_rejected(self):
         with self.assertRaises(KeyError):

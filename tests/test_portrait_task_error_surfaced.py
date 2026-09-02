@@ -131,6 +131,26 @@ class PortraitFailedTaskErrorTests(unittest.TestCase):
         self.assertIn("quota exhausted", event_msgs,
                       "the UI reads events; a bare errors[] entry stays hidden until the user opens details")
 
+    def test_finalization_does_not_deadlock_on_cancel_check(self):
+        """The final state transition must not reacquire JOBS_LOCK recursively."""
+        job = self._run({
+            "status": "failed",
+            "error": {"message": "quota exhausted for today"},
+        })
+        self.assertEqual(job["status"], "failed")
+        self.assertIsNotNone(job["finished_at"])
+
+    def test_server_side_job_validation_matches_portal_options(self):
+        mod = self.mod
+        # 21:9 is exposed by the Portal and must not be rejected server-side.
+        mod._validate_job_params("doubao-seedance-2-0-260128", 12, "720p", "21:9", 1)
+        with self.assertRaises(ValueError):
+            mod._validate_job_params("doubao-seedance-2-0-260128", 16, "720p", "16:9", 1)
+        with self.assertRaises(ValueError):
+            mod._validate_job_params("doubao-seedance-2-0-260128", -1, "720p", "16:9", 1)
+        with self.assertRaises(ValueError):
+            mod._validate_job_params("doubao-seedance-2-0-260128", 12, "720p", "16:9", 5)
+
 
 if __name__ == "__main__":
     unittest.main()

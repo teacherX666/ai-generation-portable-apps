@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app": "seedance",
-  "default_provider": "comfyui_local",
+  "default_provider": "volcengine",
   "providers": {
     "comfyui_local": {
       "label": "本地 ComfyUI（免费）",

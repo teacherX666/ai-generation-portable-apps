@@ -82,18 +82,45 @@ CATEGORY_SPECS = {
         "label": "常见品种",
         "free": False,
         "samples": [
-            "橘猫", "蓝猫", "奶牛猫", "白猫", "狸花猫", "黑白猫", "三花猫",
-            "暹罗猫", "布偶猫", "英短猫", "美短猫", "缅因猫", "波斯猫",
-            "金渐层猫", "银渐层猫", "大橘猫", "奶油猫",
+            ("橘猫", ["橘色主体", "浅色腹部"]),
+            ("蓝猫", ["蓝灰短毛", "圆脸"]),
+            ("奶牛猫", ["黑色主体", "白色色块"]),
+            ("白猫", ["白色主体", "粉色鼻子"]),
+            ("狸花猫", ["棕灰虎斑", "黑色条纹"]),
+            ("黑白猫", ["黑色主体", "白色面罩"]),
+            ("三花猫", ["白色主体", "橘色色块"]),
+            ("暹罗猫", ["米白主体", "深棕重点色", "蓝色眼睛"]),
+            ("布偶猫", ["奶白长毛", "深色重点色", "蓝色眼睛"]),
+            ("英短猫", ["蓝灰短毛", "圆脸厚腮"]),
+            ("美短猫", ["银灰虎斑", "宽脸"]),
+            ("缅因猫", ["深棕虎斑", "蓬松长毛"]),
+            ("波斯猫", ["白色长毛", "扁平圆脸"]),
+            ("金渐层猫", ["金色主体", "深棕尖端"]),
+            ("银渐层猫", ["银白主体", "深灰尖端"]),
+            ("大橘猫", ["深橘主体", "奶油色"]),
+            ("奶油猫", ["奶油色主体", "浅棕花纹"]),
         ],
     },
     "exotic": {
         "label": "稀有/冷门品种",
         "free": False,
         "samples": [
-            "斯芬克斯猫", "萨凡纳猫", "玩具虎猫", "彼得秃猫", "曼岛猫", "狼猫",
-            "孟买猫", "埃及猫", "挪威森林猫", "柯尼斯卷毛猫", "德文卷毛猫",
-            "拉波猫", "塞尔凯克卷毛猫", "墨西哥无毛猫", "俄勒冈卷毛猫", "垂耳猫",
+            ("斯芬克斯猫", ["无毛皮肤", "超大耳朵"]),
+            ("萨凡纳猫", ["金棕主体", "黑色斑点"]),
+            ("玩具虎猫", ["橘色主体", "黑色条纹"]),
+            ("彼得秃猫", ["无毛皮肤", "超大耳朵"]),
+            ("曼岛猫", ["无尾", "圆臀"]),
+            ("狼猫", ["狼灰稀疏毛", "小狼人气质"]),
+            ("孟买猫", ["漆黑短毛", "铜金色眼睛"]),
+            ("埃及猫", ["天然点状斑纹", "绿色眼睛"]),
+            ("挪威森林猫", ["棕灰长毛", "耳尖簇毛"]),
+            ("柯尼斯卷毛猫", ["波浪卷毛", "超大耳朵"]),
+            ("德文卷毛猫", ["短卷毛", "精灵大耳"]),
+            ("拉波猫", ["蓬松卷毛", "轻盈身体"]),
+            ("塞尔凯克卷毛猫", ["绵羊卷毛", "圆脸"]),
+            ("墨西哥无毛猫", ["深灰无毛皮肤"]),
+            ("俄勒冈卷毛猫", ["细密短卷毛"]),
+            ("垂耳猫", ["下垂耳朵", "神秘感"]),
         ],
     },
     "food": {
@@ -220,17 +247,22 @@ class CatConceptStore:
             return dict(rng.choice(pool)) if pool else None
         if spec.get("free"):
             return None
-        samples = [s for s in spec.get("samples", []) if _safe_id(s) not in recent_ids]
-        pool = samples or spec.get("samples", [])
+        samples = spec.get("samples", [])
+        available = [s for s in samples if _safe_id(s[0] if isinstance(s, tuple) else s) not in recent_ids]
+        pool = available or samples
         if not pool:
             return None
-        name = rng.choice(pool)
+        chosen = rng.choice(pool)
+        if isinstance(chosen, tuple):
+            name, anchors = chosen[0], list(chosen[1])
+        else:
+            name, anchors = chosen, []
         return {
             "id": category + "_" + _safe_id(name),
             "name": name,
             "category": category,
             "pattern": "complex",
-            "visual_anchors": [],
+            "visual_anchors": anchors,
             "source_name": spec.get("label", category),
         }
 

@@ -94,7 +94,9 @@ def config_payload() -> dict[str, Any]:
     deepseek = PROVIDERS.get("deepseek", {})
     local = PROVIDERS.get("local", {})
     return {
-        "model": local.get("model_kind") or ark.get("model", "doubao-seedream-5-0-pro-260628"),
+        # 导演台默认走付费的火山方舟 Seedream；本地 AI Port 仅保留为
+        # 兼容配置，不参与默认选择。
+        "model": ark.get("model", "doubao-seedream-5-0-pro-260628"),
         "aspect_ratios": list(ASPECT_RATIOS),
         "resolutions": ["1K", "1.5K", "2K"],
         "default_resolution": ark.get("default_resolution", "2K"),
@@ -209,62 +211,48 @@ def _download_image(url: str, dest: Path) -> None:
 
 def _run_text2image(job_id: str, prompt: str, aspect_ratio: str,
                     count: int, resolution: str) -> None:
-    """Generate images through the local AI Port gateway (free)."""
+    """Generate images through the paid Volcengine Ark Seedream provider."""
     job = JOBS[job_id]
-    local = PROVIDERS.get("local", {})
-    base_url = str(local.get("base_url") or "http://127.0.0.1:8801").rstrip("/")
-    model_kind = str(local.get("model_kind") or "qwen2511")
+    ark = PROVIDERS.get("ark", {})
+    base_url = str(ark.get("base_url") or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+    model = str(ark.get("model") or "doubao-seedream-5-0-pro-260628")
+    api_key = _ark_key()
+    if not api_key:
+        job["status"] = "failed"
+        job["error"] = "未配置火山方舟 API Key，无法使用付费 Seedream 模型"
+        return
     try:
         size = seedream_size(resolution, aspect_ratio)
     except ValueError as exc:
         job["status"] = "failed"
         job["error"] = str(exc)
         return
-    if "x" in size:
-        w, h = size.lower().split("x", 1)
-        width, height = int(w), int(h)
-    else:
-        side = {"1k": 1024, "1.5k": 1536, "2k": 2048}.get(str(resolution).strip().lower(), 2048)
-        width = height = side
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     for index in range(count):
         body = {
-            "values": {
-                "model_kind": model_kind,
-                "prompt": prompt,
-                "width": width,
-                "height": height,
-                "repeat_count": 1,
-            },
-            "files": {},
+            "model": model,
+            "prompt": prompt,
+            "size": size,
+            "response_format": "url",
+            "output_format": "png",
+            "watermark": False,
         }
         try:
-            submit = request_json("POST", f"{base_url}/api/image_local/jobs/json", "", body, timeout=180)
-            local_job_id = submit.get("job_id")
-            if not local_job_id:
-                raise APIError(502, "Local ComfyUI did not return a job id")
-            start = time.time()
-            while True:
-                if time.time() - start > 600:
-                    raise APIError(502, f"Local ComfyUI job {local_job_id} timed out")
-                time.sleep(3)
-                status = request_json("GET", f"{base_url}/api/image_local/jobs/{local_job_id}", "", timeout=60)
-                state = str(status.get("status") or "").strip().lower()
-                if state in {"succeeded", "success", "partial"}:
-                    results = status.get("results") or []
-                    break
-                if state in {"failed", "failure", "error", "cancelled", "canceled"}:
-                    raise APIError(502, f"Local ComfyUI job ended as {state}: {status.get('error') or status}")
-            if not results:
-                raise APIError(502, "Local ComfyUI returned no images")
-            item = results[0]
-            if not isinstance(item, dict) or not item.get("ok"):
-                raise APIError(502, "Local ComfyUI returned a failed result")
-            rel_url = item.get("download_url")
-            if not isinstance(rel_url, str) or not rel_url.strip():
-                raise APIError(502, "Local ComfyUI result missing download_url")
+            result = request_json(
+                "POST", f"{base_url}/images/generations", api_key, body, timeout=300,
+            )
+            items = result.get("data") if isinstance(result, dict) else None
+            if not isinstance(items, list) or not items:
+                raise APIError(502, f"Seedream 未返回图片: {result}")
+            item = items[0]
+            if not isinstance(item, dict):
+                raise APIError(502, "Seedream 返回的图片结果格式异常")
+            image_url = item.get("url")
+            if not isinstance(image_url, str) or not image_url.strip():
+                raise APIError(502, "Seedream 返回结果缺少图片 URL")
             dest = OUTPUT_DIR / f"{job_id}-{index}.png"
-            _download_image(f"{base_url}{rel_url}", dest)
+            _download_image(image_url, dest)
             job["results"].append({"index": index, "url": f"/outputs/{dest.name}"})
         except APIError as exc:
             job["status"] = "failed"

@@ -359,7 +359,7 @@ VALUE_FIELDS = {
 FALLBACK_PROVIDERS = {
     "schema_version": 1,
     "app": "nano-banana",
-    "default_provider": "comfyui_local",
+    "default_provider": "t8star",
     "providers": {
         "comfyui_local": {
             "label": "Local ComfyUI (free)",
@@ -1257,7 +1257,7 @@ def api_schema() -> dict[str, Any]:
 
 def request_template() -> dict[str, Any]:
     config, config_error = load_provider_config()
-    provider = str(config.get("default_provider") or "comfyui_local")
+    provider = str(config.get("default_provider") or "t8star")
     defaults = provider_defaults(config, provider)
     minimal = {
         "api_key": "YOUR_API_KEY",
@@ -1319,7 +1319,7 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     if config_error:
         raise ValueError(f"{config_error['message']}: {config_error['detail']}")
     incoming = {key: payload[key] for key in VALUE_FIELDS if key in payload and payload[key] is not None}
-    provider = str(incoming.get("provider") or config.get("default_provider") or "comfyui_local")
+    provider = str(incoming.get("provider") or config.get("default_provider") or "t8star")
     values = provider_defaults(config, provider, str(incoming.get("model") or ""))
     values.update(incoming)
     values["provider"] = provider
@@ -2178,7 +2178,7 @@ def _merge_local_batch_results(results: list[dict[str, Any]], index: int) -> dic
 
 def run_one_with_fallback(job_id: str, index: int, values: dict[str, Any], files: dict[str, tuple[str, bytes]], ws_id: str = "localhost") -> dict[str, Any]:
     config, _ = load_provider_config()
-    provider = str(values.get("provider") or config.get("default_provider") or "comfyui_local")
+    provider = str(values.get("provider") or config.get("default_provider") or "t8star")
     provider_cfg = (config.get("providers") or {}).get(provider) or {}
     if provider_cfg.get("api_style") != "comfyui_workflow":
         return run_one(job_id, index, values, files, ws_id)
@@ -2681,7 +2681,7 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 payload = read_json_body(self)
                 values, files = values_files_from_json(payload)
-                provider = str(values.get("provider") or "comfyui_local")
+                provider = str(values.get("provider") or "t8star")
                 _cfg, _ = load_provider_config()
                 provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}
                 if provider_cfg.get("api_style") == "comfyui_workflow":
@@ -2722,7 +2722,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
         values = {key: get_field(form, key) for key in form.keys() if not getattr(form[key], "filename", None)}
-        provider = str(values.get("provider") or "comfyui_local")
+        provider = str(values.get("provider") or "t8star")
         values["provider"] = provider
         _cfg, _ = load_provider_config()
         provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}

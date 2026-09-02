@@ -2154,13 +2154,13 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _cat_experiment_config(self, user: dict):
         if user.get("role") != "admin":
-            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验室"})
             return
         self._json(200, cat_experiment_service.config())
 
     def _cat_experiment_generate(self, user: dict):
         if user.get("role") != "admin":
-            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验室"})
             return
         body = self._read_json()
         if body is None:

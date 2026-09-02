@@ -1,4 +1,5 @@
 {
+  "default_provider": "ark",
   "ark": {
     "base_url": "https://ark.cn-beijing.volces.com/api/v3",
     "model": "doubao-seedream-5-0-pro-260628",
