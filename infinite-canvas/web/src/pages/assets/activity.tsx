@@ -188,7 +188,7 @@ export default function ActivityAssetsPage() {
     const selectedGroup = groups.find((group) => group.group_id === groupId);
 
     return (
-        <section className="mx-auto max-w-5xl px-5 py-8 text-[#172033] [color-scheme:light]">
+        <section className="mx-auto max-w-5xl px-5 py-8">
             <p className="text-xs tracking-[0.2em] text-[#235fd6]">ASSET LIBRARY</p>
             <h1 className="mt-2 text-3xl font-semibold text-[#172033]">资产库</h1>
             <p className="mt-2 text-sm text-[#687386]">素材按组分类管理；上传后经方舟审核即可在画布中引用。</p>
@@ -223,7 +223,7 @@ export default function ActivityAssetsPage() {
                             const selected = event.target.files?.[0];
                             if (selected) void submitFile(selected);
                         }}
-                        className="mt-1 block max-w-full text-xs text-[#172033] file:mr-3 file:rounded file:border file:border-[#d9e0ea] file:bg-[#f3f6fa] file:px-3 file:py-2 file:text-[#235fd6]"
+                        className="mt-1 block max-w-full text-xs file:mr-3 file:rounded file:border file:border-[#d9e0ea] file:bg-[#f3f6fa] file:px-3 file:py-2 file:text-[#235fd6]"
                     />
                 </label>
             </div>

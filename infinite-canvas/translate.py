@@ -285,8 +285,9 @@ def _build_nano_payload(model: str, provider: str, operation: str, prompt: str,
     return body
 
 
-def _build_seedance_payload(model: str, prompt: str, params: dict, media: dict) -> dict:
+def _build_seedance_payload(provider: str, model: str, prompt: str, params: dict, media: dict) -> dict:
     body = {
+        "provider": provider,
         "model": model,
         "prompt": prompt,
         "duration": int(params.get("duration") or 5),
@@ -371,7 +372,7 @@ async def api_create_job(request: Request):
 
     body = (_build_nano_payload(model, provider, operation, prompt, params, media)
             if app == "nano-banana"
-            else _build_seedance_payload(model, prompt, params, media))
+            else _build_seedance_payload(provider, model, prompt, params, media))
 
     # 子应用不要求鉴权，但要带 X-Username（决定其输出目录与任务归属）
     # 和 X-Workspace-Id（不给会落到 localhost 默认工作区，可能被历史预设注入参考图）。

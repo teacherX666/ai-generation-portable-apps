@@ -435,6 +435,73 @@ class FileStore:
         declared_content_type: str | None,
     ) -> StoredFile:
         directory = root.joinpath(*directory_segments)
+        if os.name == "nt":
+            directory.mkdir(parents=True, exist_ok=True)
+            part_path = directory / f".{uuid4().hex}.part"
+            part_fd: int | None = None
+            try:
+                size = 0
+                digest = sha256()
+                header = bytearray()
+                part_fd = os.open(
+                    str(part_path),
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                with os.fdopen(part_fd, "wb", closefd=False) as output:
+                    for chunk in self._chunks(content):
+                        size += len(chunk)
+                        if size > self._max_bytes:
+                            raise ValueError(
+                                "media exceeds configured size limit of "
+                                f"{self._max_bytes} bytes"
+                            )
+                        digest.update(chunk)
+                        if len(header) < 128:
+                            header.extend(chunk[: 128 - len(header)])
+                        output.write(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
+
+                verified = self._validate_descriptor(
+                    part_fd,
+                    size,
+                    digest.hexdigest(),
+                    bytes(header),
+                    declared_content_type,
+                )
+                os.close(part_fd)
+                part_fd = None
+                final_path = directory / f"{verified.sha256}.{verified.extension}"
+                if final_path.exists():
+                    existing_digest = sha256(final_path.read_bytes()).hexdigest()
+                    if final_path.stat().st_size == verified.size and existing_digest == verified.sha256:
+                        part_path.unlink(missing_ok=True)
+                    else:
+                        final_path.unlink(missing_ok=True)
+                        part_path.replace(final_path)
+                else:
+                    part_path.replace(final_path)
+                return StoredFile(
+                    display_name=display_name,
+                    local_path=final_path,
+                    mime_type=verified.mime_type,
+                    size=verified.size,
+                    sha256=verified.sha256,
+                    width=verified.width,
+                    height=verified.height,
+                )
+            except BaseException:
+                try:
+                    part_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
+            finally:
+                if part_fd is not None:
+                    os.close(part_fd)
+
         descriptors = self._open_or_create_directories(root_fd, directory_segments)
         directory_fd = descriptors[-1][0]
         part_name = f".{uuid4().hex}.part"
@@ -594,6 +661,8 @@ class FileStore:
     @staticmethod
     def _open_root(root: Path) -> int:
         root.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt":
+            return -1
         descriptor = os.open(
             root,
             os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),

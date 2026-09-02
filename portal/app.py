@@ -827,17 +827,25 @@ class AppManager:
         fastapi_path = app_dir / "app_fastapi.py"
         venv_uvicorn = ROOT.parent / ".venv" / "bin" / "uvicorn"
         expat_lib = "/opt/homebrew/opt/expat/lib"
-        if engine == "fastapi" and fastapi_path.exists() and venv_uvicorn.exists():
-            # DYLD lets Homebrew Python 3.12 load Homebrew expat rather than
-            # the (broken) system libexpat. See requirements.txt.
-            env["DYLD_LIBRARY_PATH"] = expat_lib + (":" + env["DYLD_LIBRARY_PATH"] if env.get("DYLD_LIBRARY_PATH") else "")
-            cmd = [
-                str(venv_uvicorn),
-                "app_fastapi:app",
-                "--host", "127.0.0.1",
-                "--port", str(config["port"]),
-                "--log-level", "warning",
-            ]
+        if engine == "fastapi" and fastapi_path.exists():
+            if sys.platform == "win32":
+                uvicorn_cmd = [sys.executable, "-m", "uvicorn"]
+            elif venv_uvicorn.exists():
+                # DYLD lets Homebrew Python 3.12 load Homebrew expat rather than
+                # the (broken) system libexpat. See requirements.txt.
+                env["DYLD_LIBRARY_PATH"] = expat_lib + (":" + env["DYLD_LIBRARY_PATH"] if env.get("DYLD_LIBRARY_PATH") else "")
+                uvicorn_cmd = [str(venv_uvicorn)]
+            else:
+                uvicorn_cmd = None
+            if uvicorn_cmd is None:
+                cmd = [sys.executable, "app.py"]
+            else:
+                cmd = uvicorn_cmd + [
+                    "app_fastapi:app",
+                    "--host", "127.0.0.1",
+                    "--port", str(config["port"]),
+                    "--log-level", "warning",
+                ]
         else:
             cmd = [sys.executable, "app.py"]
         try:
@@ -1220,7 +1228,7 @@ class UsageTracker:
 
     def query_history(self, *, username: str, is_admin: bool,
                       days: int = 30, kind: str = "all", status: str = "all",
-                      q: str = "", user_filter: str = "",
+                      q: str = "", user_filter: str = "", app: str = "",
                       limit: int = 60, offset: int = 0) -> tuple[list, int]:
         """返回 (items, total)。admin 全量，普通用户强制只看本人。"""
         data = self._load_history()
@@ -1234,6 +1242,8 @@ class UsageTracker:
             if not is_admin and rec.get("username") != username:
                 continue
             if user_filter and rec.get("username") != user_filter:
+                continue
+            if app and rec.get("app") != app:
                 continue
             if kind != "all" and rec.get("kind") != kind:
                 continue
@@ -1440,6 +1450,37 @@ class UsageTracker:
             self._save()
             return rolled
 
+    def queue_snapshot(self, username: str = "", is_admin: bool = False) -> list[dict]:
+        """Return the current user's active jobs with queue position and ETA.
+
+        Position is relative to active jobs in the same app. ETA is a coarse
+        frontend-friendly estimate (not a billing promise) and is intentionally
+        marked as an estimate so the UI can show a range.
+        """
+        with self._lock:
+            rows = [dict(j) for j in self._pending_jobs
+                    if is_admin or j.get("username") == username]
+        rows.sort(key=lambda j: float(j.get("submitted_at") or 0))
+        by_app: dict[str, list[dict]] = {}
+        for job in rows:
+            by_app.setdefault(job.get("app", ""), []).append(job)
+        out: list[dict] = []
+        for app, jobs in by_app.items():
+            for idx, job in enumerate(jobs, start=1):
+                job_type = str(job.get("job_type") or "").lower()
+                is_video = "video" in job_type or app in ("seedance", "volcengine-portrait")
+                base_minutes = 4 if is_video else 1
+                ahead_minutes = 3 if is_video else 0.5
+                eta_minutes = round(base_minutes + (idx - 1) * ahead_minutes, 1)
+                out.append({
+                    "app": app,
+                    "job_id": job.get("job_id", ""),
+                    "job_type": job.get("job_type", ""),
+                    "submitted_at": job.get("submitted_at", 0),
+                    "queue_position": idx,
+                    "eta_minutes": eta_minutes,
+                })
+        return out
     def _is_job_request(self, method: str, path: str) -> bool:
         if method != "POST":
             return False
@@ -1871,6 +1912,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._platform_stats_range(user)
         elif path == "/api/platform/stats/export":
             self._platform_stats_export(user)
+        elif path == "/api/platform/queue":
+            self._platform_queue(user)
         elif path == "/api/platform/activity":
             self._platform_activity(user)
         # 注意顺序：history-users 必须先于 startswith("/api/platform/history")
@@ -2649,6 +2692,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _platform_queue(self, user: dict):
+        is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
+        self._json(200, {
+            "ok": True,
+            "items": tracker.queue_snapshot(user.get("username", ""), is_admin=is_admin),
+        })
+
     def _platform_history(self, user: dict):
         """任务级历史记录查询：admin 全量（可按人筛），普通用户仅本人。"""
         qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -2674,13 +2724,14 @@ class Handler(SimpleHTTPRequestHandler):
         status_filter = _first("status", "all")
         query = _first("q", "")
         user_filter = _first("user", "")
+        app_filter = _first("app", "")
         # Fetch the local set before pagination, then merge the independently
         # persisted Feishu Agent runs and paginate the combined timeline.
         local_items, _ = tracker.query_history(
             username=user.get("username", ""),
             is_admin=is_admin,
             days=days, kind=kind, status=status_filter, q=query,
-            user_filter=user_filter, limit=HISTORY_CAP, offset=0,
+            user_filter=user_filter, app=app_filter, limit=HISTORY_CAP, offset=0,
         )
         merged = list(local_items)
         if is_admin:
@@ -2708,15 +2759,24 @@ class Handler(SimpleHTTPRequestHandler):
                     continue
                 if user_filter and rec.get("username") != user_filter:
                     continue
+                if app_filter and rec.get("app") != app_filter:
+                    continue
                 merged.append(rec)
         merged.sort(key=lambda rec: float(rec.get("submitted_at") or 0), reverse=True)
         total = len(merged)
         items = merged[offset:offset + limit]
+        queue_map = {
+            f"{q['app']}:{q['job_id']}": q
+            for q in tracker.queue_snapshot(user.get("username", ""), is_admin=is_admin)
+        }
         out = []
         for rec in items:
             spec = SPEC_BY_NAME.get(rec.get("app", ""))
+            q = queue_map.get(f"{rec.get('app', '')}:{rec.get('job_id', '')}")
             out.append({**rec,
-                        "display_name": spec.display_name if spec else rec.get("app", "")})
+                        "display_name": spec.display_name if spec else rec.get("app", ""),
+                        "queue_position": q.get("queue_position") if q else None,
+                        "eta_minutes": q.get("eta_minutes") if q else None})
         self._json(200, {"ok": True, "total": total, "items": out})
 
     def _platform_history_users(self, user: dict):

@@ -86,6 +86,33 @@ test("dirty conflict does not replace the current task editor", () => {
     false,
   );
 });
+test("hot-persisted prompt edits are adopted without conflict", () => {
+  let state = ReviewState.mergeServerView(ReviewState.createReviewState(), view());
+  state = ReviewState.patchTask(state, "task-1", { prompt: "local prompt" });
+
+  state = ReviewState.mergeServerView(
+    state,
+    view({ revision: 8, taskOnePrompt: "local prompt" }),
+  );
+
+  assert.equal(ReviewState.conflictMessage(state), "");
+  assert.equal(ReviewState.hasDirty(state), false);
+  assert.equal(ReviewState.draftView(state).approval.tasks[0].prompt, "local prompt");
+});
+
+test("a slower hot patch keeps newer unsent prompt text", () => {
+  let state = ReviewState.mergeServerView(ReviewState.createReviewState(), view());
+  state = ReviewState.patchTask(state, "task-1", { prompt: "ab" });
+
+  state = ReviewState.mergeServerView(
+    state,
+    view({ revision: 8, taskOnePrompt: "a" }),
+  );
+
+  assert.equal(ReviewState.conflictMessage(state), "");
+  assert.equal(ReviewState.hasDirty(state), true);
+  assert.equal(ReviewState.draftView(state).approval.tasks[0].prompt, "ab");
+});
 
 test("same-revision polls preserve local selection and every editable task field", () => {
   const original = view();

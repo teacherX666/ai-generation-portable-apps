@@ -28,6 +28,7 @@ _OPENAPI_HOST = "ark.cn-beijing.volcengineapi.com"
 _REGION = "cn-beijing"
 _SERVICE = "ark"
 _MIN_ASSET_DIMENSION = 300
+_MAX_ASSET_DIMENSION = 2048
 _RESIZABLE_IMAGE_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
 _UNSAFE_ASSET_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_ASSET_SUFFIX = re.compile(r"\.[a-z0-9]{1,10}")
@@ -50,20 +51,34 @@ def _portrait_upload_content(asset: MediaAsset) -> bytes:
     try:
         with Image.open(BytesIO(content)) as image:
             width, height = image.size
+            scale = 1.0
             if width >= _MIN_ASSET_DIMENSION and height >= _MIN_ASSET_DIMENSION:
-                return content
-            if image.format not in _RESIZABLE_IMAGE_FORMATS:
+                max_side = max(width, height)
+                if max_side > _MAX_ASSET_DIMENSION:
+                    scale = _MAX_ASSET_DIMENSION / max_side
+            elif image.format in _RESIZABLE_IMAGE_FORMATS:
+                scale = max(
+                    _MIN_ASSET_DIMENSION / width,
+                    _MIN_ASSET_DIMENSION / height,
+                )
+            else:
                 raise VolcengineAssetClient._validation_error(
                     "真人参考图格式不支持自动放大"
                 )
-            scale = max(
-                _MIN_ASSET_DIMENSION / width,
-                _MIN_ASSET_DIMENSION / height,
-            )
-            target_size = (ceil(width * scale), ceil(height * scale))
-            resized = image.resize(target_size, Image.Resampling.LANCZOS)
+
+            if scale != 1.0:
+                target_size = (ceil(width * scale), ceil(height * scale))
+                image = image.resize(target_size, Image.Resampling.LANCZOS)
+
             output = BytesIO()
-            resized.save(output, format=image.format)
+            if image.mode in ("RGBA", "LA") or (
+                image.mode == "P" and "transparency" in image.info
+            ):
+                image = image.convert("RGBA")
+                image.save(output, format="PNG", optimize=True)
+            else:
+                image = image.convert("RGB")
+                image.save(output, format="JPEG", quality=88, optimize=True)
             return output.getvalue()
     except (OSError, UnidentifiedImageError) as exc:
         raise VolcengineAssetClient._validation_error(

@@ -257,6 +257,7 @@ async def fake_services(tmp_path: Path):
         confidence=0.95,
     )
     settings = Settings(
+        _env_file=None,
         data_dir=tmp_path / "data",
         outputs_dir=tmp_path / "outputs",
         business_db_path=tmp_path / "business.sqlite3",

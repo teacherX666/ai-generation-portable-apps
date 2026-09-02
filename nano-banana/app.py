@@ -349,8 +349,15 @@ VALUE_FIELDS = {
 FALLBACK_PROVIDERS = {
     "schema_version": 1,
     "app": "nano-banana",
-    "default_provider": "t8star",
+    "default_provider": "comfyui_local",
     "providers": {
+        "comfyui_local": {
+            "label": "Local ComfyUI (free)",
+            "base_url": "http://127.0.0.1:8801",
+            "api_style": "comfyui_workflow",
+            "defaults": {"mode": "img2img", "model": "auto", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 3, "timeout": 900, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
+            "models": [{"id": "auto", "label": "Auto (recommended)"}, {"id": "qwen2511", "label": "Qwen 2511"}, {"id": "flux2_klein_allinone", "label": "Klein"}, {"id": "krea2_three_stage", "label": "Krea T2I"}, {"id": "anime2real_auto", "label": "Anime2Real"}, {"id": "zimage_multifunction", "label": "Z-Image"}, {"id": "klein_true_v3_assets", "label": "Klein Assets"}, {"id": "krea2_style_transfer", "label": "Krea Style"}],
+        },
         "t8star": {
             "label": "T8Star Images API",
             "base_url": DEFAULT_BASE_URL,
@@ -1240,7 +1247,7 @@ def api_schema() -> dict[str, Any]:
 
 def request_template() -> dict[str, Any]:
     config, config_error = load_provider_config()
-    provider = str(config.get("default_provider") or "t8star")
+    provider = str(config.get("default_provider") or "comfyui_local")
     defaults = provider_defaults(config, provider)
     minimal = {
         "api_key": "YOUR_API_KEY",
@@ -1302,7 +1309,7 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     if config_error:
         raise ValueError(f"{config_error['message']}: {config_error['detail']}")
     incoming = {key: payload[key] for key in VALUE_FIELDS if key in payload and payload[key] is not None}
-    provider = str(incoming.get("provider") or config.get("default_provider") or "t8star")
+    provider = str(incoming.get("provider") or config.get("default_provider") or "comfyui_local")
     values = provider_defaults(config, provider, str(incoming.get("model") or ""))
     values.update(incoming)
     values["provider"] = provider
@@ -1595,6 +1602,19 @@ def seedream_size(resolution: str, aspect_ratio: str) -> str:
     return mapping[aspect_ratio]
 
 
+def _local_image_size(image_size: str, aspect_ratio: str) -> tuple[int, int]:
+    """Map nano-banana resolution/ratio to concrete ComfyUI pixel dimensions."""
+    try:
+        size = seedream_size(image_size, aspect_ratio)
+    except ValueError:
+        size = ""
+    if "x" in size:
+        w, h = size.lower().split("x", 1)
+        return int(w), int(h)
+    side = {"1k": 1024, "1.5k": 1536, "2k": 2048}.get(str(image_size).strip().lower(), 2048)
+    return side, side
+
+
 def build_seedream_payload(common: dict[str, Any], images: list[str]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": common["model"],
@@ -1708,6 +1728,110 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         base_url = str(provider_cfg.get("base_url") or "").rstrip("/")
         if not base_url:
             raise RuntimeError("托管供应商缺少官方 Base URL 配置")
+    if provider_cfg.get("api_style") == "comfyui_workflow":
+        # Local ComfyUI via AI Port. Lock the endpoint to the configured local
+        # gateway so a client-supplied base_url can never redirect free work.
+        base_url = str(provider_cfg.get("base_url") or "http://127.0.0.1:8801").rstrip("/")
+        model_kind = str(common["model"]).strip() or "qwen2511"
+        files_payload: dict[str, Any] = {}
+        for i in range(1, 15):
+            file_data = get_file_or_saved(form, f"image_{i}", ws_id)
+            if not file_data:
+                continue
+            filename, blob = file_data
+            files_payload[f"image_{i}"] = {
+                "data_url": file_to_data_url(filename, blob),
+                "filename": filename,
+            }
+        width, height = _local_image_size(image_size, str(common.get("aspect_ratio") or "auto"))
+        values_payload: dict[str, Any] = {
+            "model_kind": model_kind,
+            "prompt": common["prompt"],
+            "width": width,
+            "height": height,
+            "repeat_count": 1,
+        }
+        if seed > 0:
+            values_payload["seed"] = seed
+        submit = request_json(
+            "POST",
+            f"{base_url}/api/image_local/jobs/json",
+            "",
+            {"values": values_payload, "files": files_payload},
+            timeout=int(values.get("timeout") or 600),
+        )
+        local_job_id = submit.get("job_id")
+        if not local_job_id:
+            raise RuntimeError("Local ComfyUI did not return a job id")
+        poll_interval = max(2, int(values.get("poll_interval") or 3))
+        timeout = int(values.get("timeout") or 900)
+        start = time.time()
+        results: list[dict[str, Any]] = []
+        while True:
+            if time.time() - start > timeout:
+                raise RuntimeError(f"Local ComfyUI job {local_job_id} timed out after {timeout}s")
+            time.sleep(poll_interval)
+            status = request_json(
+                "GET",
+                f"{base_url}/api/image_local/jobs/{local_job_id}",
+                "",
+                timeout=60,
+            )
+            state = str(status.get("status") or "").strip().lower()
+            add_event(job_id, f"Run {index}: local {state or 'unknown'}")
+            if state in {"succeeded", "success", "partial"}:
+                results = status.get("results") or []
+                break
+            if state in {"failed", "failure", "error", "cancelled", "canceled"}:
+                raise RuntimeError(f"Local ComfyUI job ended as {state}: {status.get('error') or status}")
+        if not results:
+            raise RuntimeError("Local ComfyUI returned no images")
+        _ensure_output_dir(values, job_id)
+        out_dir = resolve_output_dir(values.get("output_dir"))
+        file_token_results: list[dict[str, Any]] = []
+        custom_name = values.get("output_name", "").strip()
+        if custom_name:
+            total = max(1, int(values.get("repeat_count") or 1), int(values.get("concurrency") or 1))
+            prefix = f"{custom_name}-{index}" if total > 1 else custom_name
+        else:
+            prefix = f"{time.strftime('%Y%m%d_%H%M%S')}_run{index}_local"
+        flat_items: list[tuple[str, str]] = []
+        for item in results:
+            if not isinstance(item, dict) or not item.get("ok"):
+                raise RuntimeError("Local ComfyUI returned a failed result")
+            base_name = Path(str(item.get("filename") or item.get("local_path") or "")).name
+            urls = item.get("download_urls")
+            if isinstance(urls, list) and urls:
+                for u in urls:
+                    if isinstance(u, str) and u.strip():
+                        flat_items.append((u, base_name))
+            elif item.get("download_url"):
+                flat_items.append((str(item["download_url"]), base_name))
+        if not flat_items:
+            raise RuntimeError("Local ComfyUI returned no images")
+        for item_index, (rel_url, base_name) in enumerate(flat_items, 1):
+            suffix = Path(base_name).suffix or ".png"
+            out_path = out_dir / f"{prefix}_{item_index}{suffix}"
+            download_url(f"{base_url}{rel_url}", out_path)
+            token = uuid.uuid4().hex
+            with LOCK:
+                FILES[token] = Path(out_path)
+                save_files_map()
+            file_token_results.append({
+                "image_url": "",
+                "download_url": f"/api/download/{token}",
+                "filename": out_path.name,
+                "local_path": str(out_path),
+            })
+        add_event(job_id, f"Run {index}: saved {len(file_token_results)} local image(s), input_images:{len(files_payload)}")
+        return {
+            "index": index,
+            "task_id": str(local_job_id),
+            "status": "succeeded",
+            "seed": seed or None,
+            "images": file_token_results,
+        }
+
     if provider_cfg.get("api_style") == "ark_seedream":
         image_data_urls: list[str] = []
         # text2img 带参考图时一并发送（上游语义：纯文生也可挂可选参考图）
@@ -1975,6 +2099,94 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
     return {"index": index, "task_id": task_id, "status": "succeeded", "seed": seed or None, "images": file_token_results}
 
 
+_LOCAL_AUTO_MODEL_CHAIN = {
+    0: ["krea2_three_stage", "flux2_klein_allinone"],
+    1: ["qwen2511", "flux2_klein_allinone"],
+    2: ["qwen2511", "flux2_klein_allinone"],
+    3: ["qwen2511", "flux2_klein_allinone"],
+}
+
+
+def _local_auto_candidates(model: str, file_count: int) -> list[str]:
+    model = str(model or "").strip().lower()
+    if model != "auto":
+        return [model]
+    return _LOCAL_AUTO_MODEL_CHAIN.get(file_count, ["qwen2511", "flux2_klein_allinone"])
+
+
+def _prepare_model_attempt(values: dict[str, Any], model: str) -> dict[str, Any]:
+    attempt = dict(values)
+    attempt["model"] = model
+    attempt["custom_model"] = ""
+    if model == "flux2_klein_allinone":
+        attempt["flux2_mode"] = "auto"
+    elif model == "zimage_multifunction":
+        attempt["zimage_mode"] = "auto"
+    return attempt
+
+
+def _chunk_local_files(files: dict[str, tuple[str, bytes]], chunk_size: int = 3) -> list[dict[str, tuple[str, bytes]]]:
+    if not files:
+        return [{}]
+    ordered_fields = sorted(files.keys())
+    chunks: list[dict[str, tuple[str, bytes]]] = []
+    for offset in range(0, len(ordered_fields), chunk_size):
+        chunk = {}
+        for position, field in enumerate(ordered_fields[offset:offset + chunk_size], start=1):
+            chunk[f"image_{position}"] = files[field]
+        chunks.append(chunk)
+    return chunks
+
+
+def _merge_local_batch_results(results: list[dict[str, Any]], index: int) -> dict[str, Any]:
+    if not results:
+        raise RuntimeError("No local batch results")
+    first = results[0]
+    merged = dict(first)
+    merged["index"] = index
+    merged["images"] = []
+    task_ids = []
+    for result in results:
+        task_ids.extend(
+            str(result.get("task_id") or "").split(",")
+        )
+        merged["images"].extend(result.get("images") or [])
+    merged["task_id"] = ",".join([t for t in task_ids if t])
+    if not merged.get("seed"):
+        merged["seed"] = first.get("seed")
+    return merged
+
+
+def run_one_with_fallback(job_id: str, index: int, values: dict[str, Any], files: dict[str, tuple[str, bytes]], ws_id: str = "localhost") -> dict[str, Any]:
+    config, _ = load_provider_config()
+    provider = str(values.get("provider") or config.get("default_provider") or "comfyui_local")
+    provider_cfg = (config.get("providers") or {}).get(provider) or {}
+    if provider_cfg.get("api_style") != "comfyui_workflow":
+        return run_one(job_id, index, values, files, ws_id)
+
+    requested_model = str(values.get("custom_model") or values.get("model") or "").strip().lower()
+    if len(files) > 3:
+        chunks = _chunk_local_files(files, 3)
+        add_event(job_id, f"Run {index}: {len(files)} references split into {len(chunks)} batches of up to 3")
+        batch_results: list[dict[str, Any]] = []
+        for chunk_no, chunk in enumerate(chunks, start=1):
+            batch_results.append(
+                run_one_with_fallback(job_id, index, values, chunk, ws_id)
+            )
+            add_event(job_id, f"Run {index}: batch {chunk_no}/{len(chunks)} completed")
+        return _merge_local_batch_results(batch_results, index)
+
+    candidates = _local_auto_candidates(requested_model, len(files))
+    last_error = None
+    for candidate in candidates:
+        attempt_values = _prepare_model_attempt(values, candidate)
+        try:
+            return run_one(job_id, index, attempt_values, files, ws_id)
+        except Exception as exc:
+            last_error = exc
+            add_event(job_id, f"Run {index}: auto model {candidate} failed: {exc}")
+    raise RuntimeError(f"Auto model routing exhausted: {last_error}")
+
 def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, bytes]], activity_id: str | None = None, ws_id: str = "localhost") -> None:
     try:
         requested_count = max(1, min(50, int(values.get("repeat_count") or 1)))
@@ -1987,7 +2199,7 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
         set_job(job_id, status="running", total=count, done=0, results=[], errors=[], started_at=time.time())
         add_event(job_id, f"Started {count} run(s), concurrency {concurrency}, key {mask_key(values.get('api_key', ''))}")
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = [pool.submit(run_one, job_id, i, values, files, ws_id) for i in range(1, count + 1)]
+            futures = [pool.submit(run_one_with_fallback, job_id, i, values, files, ws_id) for i in range(1, count + 1)]
             for future in concurrent.futures.as_completed(futures):
                 try:
                     result = future.result()
@@ -2404,13 +2616,18 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 payload = read_json_body(self)
                 values, files = values_files_from_json(payload)
-                provider = str(values.get("provider") or "t8star")
-                api_key = resolve_provider_api_key(provider, str(values.get("api_key") or ""))
-                if not api_key and not payload.get("dry_run"):
-                    json_response(self, 400, api_error("invalid_request", "API key is required"))
-                    return
-                if api_key:
-                    values["api_key"] = api_key
+                provider = str(values.get("provider") or "comfyui_local")
+                _cfg, _ = load_provider_config()
+                provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}
+                if provider_cfg.get("api_style") == "comfyui_workflow":
+                    values["api_key"] = ""
+                else:
+                    api_key = resolve_provider_api_key(provider, str(values.get("api_key") or ""))
+                    if not api_key and not payload.get("dry_run"):
+                        json_response(self, 400, api_error("invalid_request", "API key is required"))
+                        return
+                    if api_key:
+                        values["api_key"] = api_key
                 if payload.get("dry_run"):
                     response = {
                         "ok": True,
@@ -2440,12 +2657,18 @@ class Handler(SimpleHTTPRequestHandler):
             return
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
         values = {key: get_field(form, key) for key in form.keys() if not getattr(form[key], "filename", None)}
-        provider = str(values.get("provider") or "t8star")
-        api_key = resolve_provider_api_key(provider, str(values.get("api_key") or ""))
-        if not api_key:
-            json_response(self, 400, api_error("invalid_request", "API key is required"))
-            return
-        values["api_key"] = api_key
+        provider = str(values.get("provider") or "comfyui_local")
+        values["provider"] = provider
+        _cfg, _ = load_provider_config()
+        provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}
+        if provider_cfg.get("api_style") == "comfyui_workflow":
+            values["api_key"] = ""
+        else:
+            api_key = resolve_provider_api_key(provider, str(values.get("api_key") or ""))
+            if not api_key:
+                json_response(self, 400, api_error("invalid_request", "API key is required"))
+                return
+            values["api_key"] = api_key
         files = {}
         for key in form.keys():
             item = form[key]

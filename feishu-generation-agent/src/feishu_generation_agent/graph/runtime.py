@@ -1270,6 +1270,36 @@ class GraphRuntime:
                 and asset.asset_id in failed_before
             }
             recovered = failed_before - remaining
+            plan = self._state_plan(state)
+            recovered_video_assets = [
+                asset
+                for asset in refreshed.media_assets
+                if asset.asset_id in recovered and asset.mime_type.startswith("video/")
+            ]
+            if recovered_video_assets:
+                for task in plan.tasks:
+                    if task.video_provider is None or task.reference_mode != "multi_reference":
+                        continue
+                    existing_ids = {reference.asset_id for reference in task.reference_images}
+                    next_order = max(
+                        (reference.order for reference in task.reference_images),
+                        default=0,
+                    ) + 1
+                    for asset in sorted(
+                        recovered_video_assets,
+                        key=lambda item: item.asset_id,
+                    ):
+                        if asset.asset_id in existing_ids:
+                            continue
+                        task.reference_images.append(
+                            ImageReference(
+                                asset_id=asset.asset_id,
+                                role="reference_video",
+                                order=next_order,
+                            )
+                        )
+                        existing_ids.add(asset.asset_id)
+                        next_order += 1
             descriptions = [
                 VisionDescription.model_validate(item)
                 for item in state.get("vision_descriptions", [])
@@ -1277,25 +1307,15 @@ class GraphRuntime:
             descriptions = [
                 item for item in descriptions if item.asset_id not in recovered
             ]
-            vision_issues = [
-                issue for issue in state.get("vision_issues", [])
-                if not any(f"素材 {asset_id} " in issue for asset_id in recovered)
-            ]
+            vision_issues = []
             if self.vision_analyzer is not None:
                 for asset in refreshed.media_assets:
                     if asset.asset_id not in recovered or not asset.mime_type.startswith("image/"):
                         continue
                     try:
                         descriptions.append(await self.vision_analyzer.analyze(asset))
-                    except Exception as exc:
-                        reason = (
-                            exc.detail.message
-                            if isinstance(exc, AgentError)
-                            else "图片无法完成视觉分析"
-                        )
-                        vision_issues.append(
-                            f"素材 {asset.asset_id} 视觉分析失败：{reason}"
-                        )
+                    except Exception:
+                        continue
 
             checkpoint_document = refreshed.model_copy(
                 update={
@@ -1306,7 +1326,6 @@ class GraphRuntime:
                 }
             )
             refreshed_json = checkpoint_document.model_dump(mode="json")
-            plan = self._state_plan(state)
             validation_issues = [
                 record.display_message
                 for record in resolve_ingest_issue_records(refreshed)
@@ -1328,6 +1347,7 @@ class GraphRuntime:
                 "normalized_document": refreshed_json,
                 "source_document": refreshed_json,
                 "media_assets": refreshed_json["media_assets"],
+                "draft_plan": plan.model_dump(mode="json"),
                 "vision_descriptions": [
                     item.model_dump(mode="json") for item in descriptions
                 ],

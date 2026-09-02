@@ -25,42 +25,107 @@
 
     <div class="mobile-app-switcher">
       <label for="mobileAppSelect">当前应用</label>
-      <select id="mobileAppSelect" aria-label="切换应用">
-        <option value="seedance">Seedance</option>
-        <option value="nb">图像生成模块</option>
-        <option value="feishu-generation-agent">飞书任务 Agent</option>
-        <option value="dreamina">Dreamina</option>
-        <option value="volcengine-portrait">人像生成</option>
-        <option value="infinite-canvas">无限画布</option>
-        <option value="keys">密钥库</option>
-        <option value="rag-assistant">报错问答助手</option>
-        <option value="history">历史记录</option>
-        <option value="stats">统计</option>
+            <select id="mobileAppSelect" aria-label="切换应用">
+        <optgroup label="创作区">
+          <option value="feishu-generation-agent">飞书创作助手</option>
+          <option value="seedance">视频生成</option>
+          <option value="nb">图片生成</option>
+          <option value="volcengine-portrait">人像视频</option>
+          <option value="infinite-canvas">创意画布</option>
+          <option value="previz">分镜预演</option>
+          <option value="dreamina">即梦创作</option>
+        </optgroup>
+        <optgroup label="协作与查询">
+          <option value="rag-assistant">报错助手</option>
+          <option value="history">创作记录</option>
+        </optgroup>
+        <optgroup label="个人与管理">
+          <option value="keys">我的密钥</option>
+          <option value="stats">使用统计</option>
+        </optgroup>
       </select>
     </div>
 
-    <div class="app-tabs-bar ui-tabs" role="tablist" aria-label="应用模块">
-      <button id="tab-btn-seedance" class="app-tab ui-tab active" role="tab" aria-selected="true" aria-controls="tab-seedance" tabindex="0" data-tab="seedance">Seedance</button>
-      <button id="tab-btn-nb" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-nb" tabindex="-1" data-tab="nb">图像生成模块</button>
-      <button id="tab-btn-feishu-generation-agent" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-feishu-generation-agent" tabindex="-1" data-tab="feishu-generation-agent">飞书任务 Agent</button>
-      <button id="tab-btn-dreamina" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-dreamina" tabindex="-1" data-tab="dreamina">Dreamina</button>
-      <button id="tab-btn-volcengine-portrait" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-volcengine-portrait" tabindex="-1" data-tab="volcengine-portrait">人像生成</button>
-      <button id="tab-btn-infinite-canvas" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-infinite-canvas" tabindex="-1" data-tab="infinite-canvas">无限画布</button>
-      <button id="tab-btn-previz" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-previz" tabindex="-1" data-tab="previz">分镜布局</button>
-      <button id="tab-btn-keys" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-keys" tabindex="-1" data-tab="keys">密钥库</button>
-      <button id="tab-btn-rag-assistant" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-rag-assistant" tabindex="-1" data-tab="rag-assistant">报错问答助手</button>
-      <button id="tab-btn-history" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-history" tabindex="-1" data-tab="history">历史记录</button>
-      <button id="tab-btn-stats" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-stats" tabindex="-1" data-tab="stats">统计</button>
-    </div>
+    
   </div>
 
   <!-- 全局横幅：IP 变化提示 / 磁盘预警。数据来自 /api/platform/status
        （lan_ip/portal_port 已有；disk_free_gb 由后端 Phase 2 补充后自动激活）。 -->
+    <div class="app-body">
+    <aside class="portal-nav" aria-label="应用模块">
+
+    <div class="portal-nav__group">
+      <div class="portal-nav__title">创作区</div>
+      <div class="portal-nav__items">
+        <button id="tab-btn-feishu-generation-agent" class="app-tab ui-tab portal-nav__item--featured active" role="tab" aria-selected="true" aria-controls="tab-feishu-generation-agent" tabindex="0" data-tab="feishu-generation-agent">
+          <span class="portal-nav__label">飞书创作助手</span>
+          <span class="portal-nav__desc">从飞书文档拆任务，审批后批量出图出片</span>
+        </button>
+        <button id="tab-btn-seedance" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-seedance" tabindex="-1" data-tab="seedance">
+          <span class="portal-nav__label">视频生成</span>
+          <span class="portal-nav__desc">文生视频、图生视频、首尾帧</span>
+        </button>
+        <button id="tab-btn-nb" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-nb" tabindex="-1" data-tab="nb">
+          <span class="portal-nav__label">图片生成</span>
+          <span class="portal-nav__desc">文生图、图生图、批量出图</span>
+        </button>
+        <button id="tab-btn-volcengine-portrait" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-volcengine-portrait" tabindex="-1" data-tab="volcengine-portrait">
+          <span class="portal-nav__label">人像视频</span>
+          <span class="portal-nav__desc">数字人口播、虚拟人物视频</span>
+        </button>
+        <button id="tab-btn-infinite-canvas" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-infinite-canvas" tabindex="-1" data-tab="infinite-canvas">
+          <span class="portal-nav__label">创意画布</span>
+          <span class="portal-nav__desc">节点式组织参考图、提示词和模型</span>
+        </button>
+        <button id="tab-btn-previz" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-previz" tabindex="-1" data-tab="previz">
+          <span class="portal-nav__label">分镜预演</span>
+          <span class="portal-nav__desc">3D 摆位、机位设计和镜头快照</span>
+        </button>
+        <button id="tab-btn-dreamina" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-dreamina" tabindex="-1" data-tab="dreamina">
+          <span class="portal-nav__label">即梦创作</span>
+          <span class="portal-nav__desc">即梦账号的图片和视频生成</span>
+        </button>
+
+      </div>
+    </div>
+    <div class="portal-nav__group">
+      <div class="portal-nav__title">协作与查询</div>
+      <div class="portal-nav__items">
+
+        <button id="tab-btn-rag-assistant" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-rag-assistant" tabindex="-1" data-tab="rag-assistant">
+          <span class="portal-nav__label">报错助手</span>
+          <span class="portal-nav__desc">粘贴报错，快速定位原因</span>
+        </button>
+        <button id="tab-btn-history" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-history" tabindex="-1" data-tab="history">
+          <span class="portal-nav__label">创作记录</span>
+          <span class="portal-nav__desc">跨应用查找图片、视频和任务</span>
+        </button>
+      </div>
+    </div>
+    <div class="portal-nav__group">
+      <div class="portal-nav__title">个人与管理</div>
+      <div class="portal-nav__items">
+        <button id="tab-btn-keys" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-keys" tabindex="-1" data-tab="keys">
+          <span class="portal-nav__label">我的密钥</span>
+          <span class="portal-nav__desc">保存并复制个人 API Key</span>
+        </button>
+        <button id="tab-btn-stats" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-stats" tabindex="-1" data-tab="stats">
+          <span class="portal-nav__label">使用统计</span>
+          <span class="portal-nav__desc">查看用量，管理员维护用户和密钥</span>
+        </button>
+      </div>
+    </div>
+    <div class="portal-nav__footer">
+      <button id="optimizeBtn" class="portal-help-btn portal-optimize-btn" type="button">优化提示词</button>
+      <button id="helpBtn" class="portal-help-btn" type="button">新手指南</button>
+      <button id="moduleHelpBtn" class="portal-help-btn" type="button">模块帮助</button>
+    </div>
+  </aside>
   <div class="ui-portal-content ui-shell__body">
   <div id="globalBanner" class="global-banner ui-banner" style="display:none"></div>
 
   <!-- SEEDANCE -->
-  <div class="tab-panel iframe-panel active" id="tab-seedance" role="tabpanel" aria-labelledby="tab-btn-seedance">
+  <div class="tab-panel iframe-panel" id="tab-seedance" role="tabpanel" aria-labelledby="tab-btn-seedance" hidden>
     <iframe class="portal-iframe" id="iframe-seedance" src="/seedance/index.html" title="Seedance 视频生成" allow="fullscreen"></iframe>
   </div>
 
@@ -70,7 +135,7 @@
   </div>
 
   <!-- FEISHU GENERATION AGENT -->
-  <div class="tab-panel iframe-panel" id="tab-feishu-generation-agent" role="tabpanel" aria-labelledby="tab-btn-feishu-generation-agent" hidden>
+  <div class="tab-panel iframe-panel active" id="tab-feishu-generation-agent" role="tabpanel" aria-labelledby="tab-btn-feishu-generation-agent">
     <iframe class="portal-iframe" id="iframe-feishu-generation-agent" data-app="feishu-generation-agent" data-fallback-src="/feishu-generation-agent/" title="飞书任务 Agent" allow="fullscreen"></iframe>
   </div>
 
@@ -102,6 +167,10 @@
             <option value="">全部用户</option>
             <option v-for="u in userList" :key="u" :value="u">{{ u }}</option>
           </select>
+          <select class="ctrl" v-model="appFilter" @change="reload()">
+            <option value="">全部应用</option>
+            <option v-for="a in appList" :key="a.name" :value="a.name">{{ a.display_name || a.name }}</option>
+          </select>
           <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': kind==='all'}" @click="kind='all';reload()">全部</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='image'}" @click="kind='image';reload()">图片</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='video'}" @click="kind='video';reload()">视频</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='agent'}" @click="kind='agent';reload()">Agent</button></div>
           <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': status==='all'}" @click="status='all';reload()">全部状态</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='done'}" @click="status='done';reload()">成功</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='failed'}" @click="status='failed';reload()">失败</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='running'}" @click="status='running';reload()">生成中</button></div>
           <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': days===7}" @click="days=7;reload()">近7天</button><button class="ui-segment__button" type="button" :class="{'is-active': days===30}" @click="days=30;reload()">近30天</button><button class="ui-segment__button" type="button" :class="{'is-active': days===90}" @click="days=90;reload()">近90天</button></div>
@@ -110,6 +179,8 @@
           <input class="ctrl hist-search" v-model="q" placeholder="搜索提示词 / 任务编号" @keyup.enter="reload()">
           <button class="ctrl ui-btn ui-btn--primary ui-btn--sm" type="button" @click="reload()">查询</button>
           <button class="ctrl ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="reload()">刷新</button>
+          <button class="ctrl ui-btn ui-btn--secondary ui-btn--sm" type="button" :class="{'is-active': favOnly}" @click="favOnly=!favOnly;reload()">只看收藏</button>
+          <button class="ctrl ui-btn ui-btn--secondary ui-btn--sm" type="button" :class="{'is-active': downloadedOnly}" @click="downloadedOnly=!downloadedOnly;reload()">只看下载</button>
           </div>
         </header>
         <div class="hist-grid" v-if="items.length">
@@ -127,7 +198,7 @@
             </div>
             <div class="hist-card-body">
               <div class="hist-card-t1">{{ it.prompt || '（无提示词）' }}</div>
-              <div class="hist-card-t2"><span>{{ it.username }} · {{ shortTime(it.submitted_at) }}</span><span class="pill" :class="it.status">{{ statusText(it.status) }}</span></div>
+              <div class="hist-card-t2"><span>{{ it.username }} · {{ shortTime(it.submitted_at) }}</span><span class="hist-card-meta"><span class="hist-card-fav" role="button" tabindex="0" :class="{ active: isFav(it) }" @click="toggleFav(it); $event.stopPropagation()" @keydown.enter.prevent="toggleFav(it)" @keydown.space.prevent="toggleFav(it)" :aria-label="isFav(it) ? '取消收藏' : '收藏'">{{ isFav(it) ? '★' : '☆' }}</span><span class="pill" :class="it.status">{{ statusText(it.status) }}</span></span></div>
             </div>
           </div>
         </div>
@@ -175,6 +246,8 @@
               <dt>状态</dt><dd>{{ statusText(detail.status) }}</dd>
               <dt>耗时</dt><dd>{{ detail.completed_at && detail.submitted_at ? Math.max(1, Math.round((detail.completed_at - detail.submitted_at) / 60)) + ' 分钟' : '—' }}</dd>
               <dt>产出数量</dt><dd>{{ (detail.results && detail.results.length) || 0 }} 个</dd>
+              <dt>排队位置</dt><dd>{{ detail.queue_position ? '第 ' + detail.queue_position + ' 位' : '—' }}</dd>
+              <dt>预计时间</dt><dd>{{ detail.eta_minutes ? '约 ' + detail.eta_minutes + ' 分钟' : '—' }}</dd>
               <dt>错误信息</dt><dd>{{ detail.error ? '见下方详情' : '无' }}</dd>
             </dl>
             <div class="hist-errbox" v-if="detail.error">{{ detail.error }}</div>
@@ -187,6 +260,8 @@
             </div>
             <p v-else class="hist-result-none">无结果产出</p>
           </div>
+          <button type="button" class="hist-fav" @click="toggleFav(detail)">{{ isFav(detail) ? '取消收藏' : '收藏' }}</button>
+          <button type="button" class="hist-reuse" @click="reuseParams(detail)">复用参数</button>
           <button type="button" class="hist-modal-close" @click="detail=null">关闭</button>
         </div>
       </div>
@@ -222,7 +297,7 @@
           <div class="accounts-header">
             <span class="ui-heading accounts-title">账号管理</span>
             <div class="ui-inline">
-              <button type="button" class="btn-small" @click="addAccount(prompt('输入账号名称(可留空)'))">添加账号</button>
+              <button type="button" class="btn-small" @click="promptAddAccount()">添加账号</button>
               <select class="dispatch-select" :value="dispatchMode" @change="setDispatchMode($event.target.value)">
                 <option value="manual">手动</option>
                 <option value="round_robin">轮询</option>
@@ -408,11 +483,6 @@
         </div>
       </section>
     </main>
-
-    <!-- 使用说明入口：切到本标签页才可见（hidden 面板内的 fixed 元素不渲染） -->
-    <a id="manualLink-dm" class="manual-link" target="_blank" rel="noopener"
-       title="打开 Dreamina 使用说明（飞书文档）"
-       href="https://redcqchina.feishu.cn/docx/NxwZdjsCzo4VAnxaoJccN9kKnvg" draggable="false">📖 使用说明</a>
   </div>
 
   <!-- VOLCENGINE PORTRAIT -->
@@ -708,11 +778,6 @@
         </div>
       </section>
     </div>
-
-    <!-- 使用说明入口：切到本标签页才可见（hidden 面板内的 fixed 元素不渲染） -->
-    <a id="manualLink-vp" class="manual-link" target="_blank" rel="noopener"
-       title="打开人像生成使用说明（飞书文档）"
-       href="https://redcqchina.feishu.cn/docx/ZrqUdhuxfo1KtSxH1Toca7iVnhx" draggable="false">📖 使用说明</a>
   </div>
 
   <!-- STATS -->
@@ -1033,10 +1098,12 @@
                 <div class="key-item-meta">
                   <code class="key-hint">{{ k.key_hint }}</code>
                   <span v-if="k.note" class="key-note">{{ k.note }}</span>
+                  <span class="key-scope">{{ keyScope(k.provider) }}</span>
                 </div>
               </div>
               <div class="key-item-actions">
                 <button type="button" class="btn-key btn-copy" @click="copyKey(k.id, k.name)">复制</button>
+                <button type="button" class="btn-key btn-apply" @click="applyKeyToImage(k.id, k.name)">应用到图片生成</button>
                 <button type="button" class="btn-key btn-delete" @click="deleteKey(k.id)">删除</button>
               </div>
             </div>
@@ -1051,6 +1118,7 @@
     <div id="previewDialogBody"></div>
   </dialog>
 
+  </div>
   </div>
 
   <aside id="director-sidebar" class="director-sidebar" v-scope="DirectorApp()" @vue:mounted="init()">
@@ -1129,72 +1197,8 @@
 
   <script src="/vendor/petite-vue.iife.js"></script>
   <script src="/app.js"></script>
+  <script src="/js/portal-enhancements.js"></script>
   <script src="/effects.js"></script>
   <script src="/dino.js"></script>
-
-  <script>
-  /* 使用说明按钮：可拖动 + 记住位置（按应用分 key，避免同源页面互相覆盖） */
-  (function () {
-    function initDrag(id, key) {
-      var el = document.getElementById(id);
-      if (!el) return;
-      /* 禁止 <a> 原生拖拽（会吃掉 pointer 事件，导致按钮拖不动只拖出链接） */
-      el.setAttribute('draggable', 'false');
-      el.addEventListener('dragstart', function (e) { e.preventDefault(); });
-      var MOVE = 4, startX = 0, startY = 0, oL = 0, oT = 0, moved = false, dragging = false;
-      function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
-      function save() {
-        var r = el.getBoundingClientRect();
-        try { localStorage.setItem(key, JSON.stringify({ left: r.left, top: r.top, w: r.width, h: r.height })); } catch (e) {}
-      }
-      function restore() {
-        try {
-          var p = JSON.parse(localStorage.getItem(key) || 'null');
-          if (!p || typeof p.left !== 'number') return;
-          var w = el.offsetWidth || p.w || 120, h = el.offsetHeight || p.h || 40;
-          el.style.right = 'auto'; el.style.bottom = 'auto';
-          el.style.left = clamp(p.left, 0, window.innerWidth - w - 8) + 'px';
-          el.style.top = clamp(p.top, 0, window.innerHeight - h - 8) + 'px';
-        } catch (e) {}
-      }
-      el.addEventListener('pointerdown', function (e) {
-        if (e.button !== 0) return;
-        dragging = true; moved = false;
-        startX = e.clientX; startY = e.clientY;
-        var r = el.getBoundingClientRect();
-        el.style.right = 'auto'; el.style.bottom = 'auto';
-        el.style.left = r.left + 'px'; el.style.top = r.top + 'px';
-        oL = r.left; oT = r.top;
-        el.classList.add('is-dragging');
-        try { el.setPointerCapture(e.pointerId); } catch (err) {}
-      });
-      el.addEventListener('pointermove', function (e) {
-        if (!dragging) return;
-        if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > MOVE) moved = true;
-        if (moved) {
-          el.style.left = clamp(oL + e.clientX - startX, 0, window.innerWidth - el.offsetWidth - 8) + 'px';
-          el.style.top = clamp(oT + e.clientY - startY, 0, window.innerHeight - el.offsetHeight - 8) + 'px';
-        }
-      });
-      function end() {
-        if (!dragging) return;
-        dragging = false;
-        el.classList.remove('is-dragging');
-        save();
-        if (moved) {
-          /* 拖动后抑制本次点击，避免误开文档 */
-          var cancel = function (ev) { ev.preventDefault(); ev.stopPropagation(); el.removeEventListener('click', cancel, true); };
-          el.addEventListener('click', cancel, true);
-          setTimeout(function () { el.removeEventListener('click', cancel, true); }, 400);
-        }
-      }
-      el.addEventListener('pointerup', end);
-      el.addEventListener('pointercancel', end);
-      restore();
-    }
-    initDrag('manualLink-dm', 'manualLinkPos_dm');
-    initDrag('manualLink-vp', 'manualLinkPos_vp');
-  })();
-  </script>
 </body>
 </html>

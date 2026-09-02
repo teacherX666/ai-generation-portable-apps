@@ -40,6 +40,43 @@ async def test_real_person_video_uses_portrait_generator() -> None:
 
     assert (provider, generator) == ("volcengine_portrait", "portrait:run-real")
 
+async def test_real_person_video_uses_local_aiport_when_configured() -> None:
+    class Store:
+        async def get_by_run(self, run_id):
+            return SimpleNamespace(snapshot=SimpleNamespace(task_type="真人类"))
+
+    services = SimpleNamespace(
+        image_generator="chiyun",
+        video_generator="seedance",
+        aiport_video_generator="aiport-local",
+        portrait_video_generator=SimpleNamespace(for_run=lambda _: "portrait"),
+        production_task_store=Store(),
+        settings=SimpleNamespace(video_provider="aiport"),
+    )
+
+    provider, generator = await _generator_for_task("run-real", _task("image_to_video"), services)
+
+    assert (provider, generator) == ("aiport", "aiport-local")
+
+
+async def test_real_person_video_uses_local_aiport_without_portrait_generator() -> None:
+    class Store:
+        async def get_by_run(self, run_id):
+            return SimpleNamespace(snapshot=SimpleNamespace(task_type="真人类"))
+
+    services = SimpleNamespace(
+        image_generator="chiyun",
+        video_generator="seedance",
+        aiport_video_generator="aiport-local",
+        portrait_video_generator=None,
+        production_task_store=Store(),
+        settings=SimpleNamespace(video_provider="aiport"),
+    )
+
+    provider, generator = await _generator_for_task("run-real", _task("image_to_video"), services)
+
+    assert (provider, generator) == ("aiport", "aiport-local")
+
 
 async def test_real_person_image_task_stays_on_chiyun() -> None:
     services = SimpleNamespace(
