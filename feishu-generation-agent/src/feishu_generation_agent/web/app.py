@@ -62,6 +62,10 @@ from feishu_generation_agent.storage.asset_library import (
 from feishu_generation_agent.storage.production_tasks import ProductionTaskAlreadyClaimed
 from feishu_generation_agent.storage.checkpoints import open_checkpointer
 from feishu_generation_agent.storage.planner_prompts import PlannerPromptStore
+from feishu_generation_agent.storage.provider_preferences import (
+    ProviderPreferences,
+    ProviderPreferenceStore,
+)
 from feishu_generation_agent.web.schemas import (
     AssetLibraryItem,
     AssetLibraryListResponse,
@@ -73,6 +77,8 @@ from feishu_generation_agent.web.schemas import (
     DecisionRequest,
     PlannerPromptResponse,
     PlannerPromptUpdate,
+    ProviderPreferencesResponse,
+    ProviderPreferencesUpdate,
     ReferenceListRequest,
     TaskPatchRequest,
 )
@@ -230,6 +236,7 @@ def create_app(
     settings: Settings | None = None,
     bitable_service: BitableMvpService | Any | None = None,
     planner_prompt_store: PlannerPromptStore | None = None,
+    provider_preference_store: ProviderPreferenceStore | None = None,
 ) -> FastAPI:
     if sum(value is not None for value in (runtime, services, settings)) > 1:
         raise ValueError("runtime, services and settings are mutually exclusive")
@@ -319,6 +326,10 @@ def create_app(
                     app.state.runtime = active
                     app.state.bitable_service = bitable_service
                     app.state.planner_prompt_store = planner_prompt_store
+                    app.state.provider_preference_store = provider_preference_store
+                    app.state.provider_preferences = getattr(
+                        services, "provider_preferences", None
+                    )
                     try:
                         yield
                     finally:
@@ -326,6 +337,8 @@ def create_app(
                             await bitable_service.close()
                         app.state.bitable_service = None
                         app.state.planner_prompt_store = None
+                        app.state.provider_preference_store = None
+                        app.state.provider_preferences = None
                         app.state.runtime = None
             return
 
@@ -333,6 +346,8 @@ def create_app(
             app.state.runtime = runtime
             app.state.bitable_service = bitable_service
             app.state.planner_prompt_store = planner_prompt_store
+            app.state.provider_preference_store = provider_preference_store
+            app.state.provider_preferences = None
             try:
                 yield
             finally:
@@ -340,6 +355,8 @@ def create_app(
                     await bitable_service.close()
                 app.state.bitable_service = None
                 app.state.planner_prompt_store = None
+                app.state.provider_preference_store = None
+                app.state.provider_preferences = None
                 await runtime.close()
                 app.state.runtime = None
             return
@@ -362,6 +379,13 @@ def create_app(
                             planner_prompt_store
                             or getattr(application, "planner_prompt_store", None)
                         )
+                        app.state.provider_preference_store = (
+                            provider_preference_store
+                            or getattr(application, "provider_preference_store", None)
+                        )
+                        app.state.provider_preferences = getattr(
+                            application.graph, "provider_preferences", None
+                        )
                         try:
                             if active_bitable is not None:
                                 try:
@@ -378,6 +402,8 @@ def create_app(
                                 await active_bitable.close()
                             app.state.bitable_service = None
                             app.state.planner_prompt_store = None
+                            app.state.provider_preference_store = None
+                            app.state.provider_preferences = None
                             app.state.runtime = None
             return
 
@@ -385,11 +411,15 @@ def create_app(
             app.state.runtime = None
             app.state.bitable_service = None
             app.state.planner_prompt_store = planner_prompt_store
+            app.state.provider_preference_store = provider_preference_store
+            app.state.provider_preferences = None
             try:
                 yield
             finally:
                 app.state.bitable_service = None
                 app.state.planner_prompt_store = None
+                app.state.provider_preference_store = None
+                app.state.provider_preferences = None
                 app.state.runtime = None
 
     app = FastAPI(title="本地飞书生成任务 Agent", lifespan=lifespan)
@@ -403,7 +433,7 @@ def create_app(
         return response
 
     @app.get("/api/health")
-    async def health() -> dict:
+    async def health(request: Request) -> dict:
         active_settings = (
             services.settings
             if services is not None
@@ -507,11 +537,10 @@ def create_app(
             providers["video"].append(
                 {"name": "seedance", "label": "Seedance", "mode": "cloud", "configured": True}
             )
-        # 默认只走已上线的付费云端供应商；本地 AI Port 仍可手动启用，
-        # 但不再因为可达就抢占默认值。
+        preferences = await provider_preferences_from_request(request)
         defaults = {
-            "video_provider": "seedance",
-            "image_provider": "banana",
+            "video_provider": preferences.video_provider,
+            "image_provider": preferences.image_provider,
         }
         return {
             "ready": (
@@ -646,6 +675,24 @@ def create_app(
             )
         return active
 
+    def get_provider_preference_store(request: Request) -> ProviderPreferenceStore:
+        active = getattr(request.app.state, "provider_preference_store", None)
+        if active is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="模型偏好存储尚未配置",
+            )
+        return active
+
+    async def provider_preferences_from_request(request: Request) -> ProviderPreferences:
+        active = getattr(request.app.state, "provider_preferences", None)
+        if active is not None:
+            return active
+        store = getattr(request.app.state, "provider_preference_store", None)
+        if store is not None:
+            return await store.get()
+        return ProviderPreferences()
+
     def planner_prompt_response(
         identity: RequestIdentity,
         profile: Any | None = None,
@@ -728,6 +775,35 @@ def create_app(
             raise HTTPException(status_code=403, detail="本地 Prime 提示词不可删除")
         await get_planner_prompt_store(request).delete(identity.owner_user_id)
         return planner_prompt_response(identity)
+
+    @app.get("/api/provider-preferences", response_model=ProviderPreferencesResponse)
+    async def get_provider_preferences(request: Request) -> ProviderPreferencesResponse:
+        preferences = await provider_preferences_from_request(request)
+        return ProviderPreferencesResponse(
+            video_provider=preferences.video_provider,
+            image_provider=preferences.image_provider,
+        )
+
+    @app.put("/api/provider-preferences", response_model=ProviderPreferencesResponse)
+    async def update_provider_preferences(
+        request: Request,
+        payload: ProviderPreferencesUpdate,
+    ) -> ProviderPreferencesResponse:
+        try:
+            preferences = await get_provider_preference_store(request).save(
+                video_provider=payload.video_provider,
+                image_provider=payload.image_provider,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        app_state = request.app.state
+        current = getattr(app_state, "provider_preferences", None)
+        if current is not None:
+            app_state.provider_preferences = preferences
+        return ProviderPreferencesResponse(
+            video_provider=preferences.video_provider,
+            image_provider=preferences.image_provider,
+        )
 
     def raise_bitable_error(exc: Exception) -> None:
         if (

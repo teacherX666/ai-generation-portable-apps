@@ -104,6 +104,8 @@ class GraphServices:
     character_matcher: Any | None = None
     # 本地 AI Port 视频 provider（minimax H3 all-reference，走 ComfyUI）。
     aiport_video_generator: Any | None = None
+    # 用户在飞书高级设置里选择的默认图片/视频 provider。
+    provider_preferences: Any | None = None
 
 
 _Result = TypeVar("_Result")
@@ -1037,7 +1039,12 @@ async def validate_planned_tasks(
         )
         audit = AuditReport.model_validate(state.get("audit_report", {}))
         if audit.corrections_required:
-            issues.extend(f"audit: {issue}" for issue in audit.issues)
+            issues.extend(
+                f"audit: {issue}"
+                for issue in audit.issues
+                if issue.startswith("技术阻断")
+                or "人工处理" in issue
+            )
         return {"validation_issues": issues, "status": "waiting_approval"}
 
     return await _run_node(state, "validate_plan", services, operation)
@@ -1498,6 +1505,10 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
         # explicitly pick a provider. An explicit pick (local or cloud) wins.
         if task.reference_images and task.image_provider is None and "aiport" in registry:
             requested = "aiport"
+        preferences = getattr(services, "provider_preferences", None)
+        preferred_image = getattr(preferences, "image_provider", None)
+        if task.image_provider is None and preferred_image in registry:
+            requested = preferred_image
         generator = registry.get(requested)
         if generator is None:
             fallback = (
@@ -1515,7 +1526,9 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
         return requested, generator
     settings = getattr(services, "settings", None)
     aiport_video_generator = getattr(services, "aiport_video_generator", None)
-    configured_provider = getattr(settings, "video_provider", None)
+    preferences = getattr(services, "provider_preferences", None)
+    preferred_video = getattr(preferences, "video_provider", None)
+    configured_provider = preferred_video or getattr(settings, "video_provider", None)
     requested = (
         "aiport"
         if configured_provider == "aiport"

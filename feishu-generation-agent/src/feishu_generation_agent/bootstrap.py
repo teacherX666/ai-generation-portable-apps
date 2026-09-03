@@ -69,6 +69,9 @@ from feishu_generation_agent.storage.asset_library import AssetLibraryStore
 from feishu_generation_agent.storage.portrait_assets import PortraitAssetStore
 from feishu_generation_agent.storage.provider_results import ProviderResultStore
 from feishu_generation_agent.storage.planner_prompts import PlannerPromptStore
+from feishu_generation_agent.storage.provider_preferences import (
+    ProviderPreferenceStore,
+)
 from feishu_generation_agent.storage.repository import Repository
 
 
@@ -266,6 +269,7 @@ class ApplicationServices:
     bitable_factory: BitableServiceFactory | ProductionBitableServiceFactory | None
     legacy_delivery_configured: bool
     planner_prompt_store: PlannerPromptStore
+    provider_preference_store: ProviderPreferenceStore
 
 
 @asynccontextmanager
@@ -309,6 +313,9 @@ async def _open_application_services(
     repository = await Repository.open(settings.business_db_path)
     try:
         planner_prompt_store = await PlannerPromptStore.open(settings.business_db_path)
+        provider_preference_store = await ProviderPreferenceStore.open(
+            settings.data_dir / "provider-preferences.json"
+        )
     except BaseException:
         await repository.close()
         raise
@@ -523,6 +530,7 @@ async def _open_application_services(
                 model=settings.seedance_model,
                 public_media_host=animation_media_host,
             )
+        provider_preferences = await provider_preference_store.get()
         services = GraphServices(
             document_source=FeishuDocumentSource(
                 feishu,
@@ -571,6 +579,7 @@ async def _open_application_services(
             repository=repository,
             file_store=file_store,
             settings=settings,
+            provider_preferences=provider_preferences,
             asset_library_store=asset_library_store,
             character_matcher=(
                 DeepSeekCharacterMatcher(planner_model)
@@ -583,6 +592,7 @@ async def _open_application_services(
             bitable_factory=bitable_factory,
             legacy_delivery_configured=legacy_configured,
             planner_prompt_store=planner_prompt_store,
+            provider_preference_store=provider_preference_store,
         )
     finally:
         if bitable_factory is not None:
@@ -597,4 +607,5 @@ async def _open_application_services(
         await downloader.aclose()
         await provider_http.aclose()
         await planner_prompt_store.close()
+        await provider_preference_store.close()
         await repository.close()

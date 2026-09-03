@@ -11,7 +11,9 @@ os.environ.setdefault("no_proxy", "*")
 import base64
 import json
 import logging
+import math
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -33,6 +35,7 @@ from rag_agent.query.retriever import KbRetriever
 from rag_agent.query.semantic_gate import SemanticGate
 from rag_agent.self_learn.analyzer import format_scan_answer, scan_and_analyze
 from rag_agent.self_learn.candidate_writer import write_candidate_if_new
+from rag_agent.sync.indexer import split_markdown
 from rag_agent.sync.lark_fetcher import fetch_kb_markdown
 from rag_agent.sync.service import SyncService
 
@@ -65,17 +68,7 @@ retriever = KbRetriever(
     vector_weight=settings.retrieval_vector_weight,
     keyword_weight=settings.retrieval_keyword_weight,
 )
-generation_retriever = KbRetriever(
-    chroma_dir=settings.generation_chroma_dir,
-    status_path=settings.generation_sync_status_path,
-    embeddings=embeddings,
-    top_k=settings.retrieval_top_k,
-    candidate_k=settings.retrieval_candidate_k,
-    min_similarity=settings.retrieval_min_similarity,
-    min_hybrid_score=settings.retrieval_min_hybrid_score,
-    vector_weight=settings.retrieval_vector_weight,
-    keyword_weight=settings.retrieval_keyword_weight,
-)
+
 semantic_gate = SemanticGate(
     embeddings=embeddings,
     margin=settings.semantic_gate_margin,
@@ -210,42 +203,83 @@ def admin_query_log(request: Request, n: int = 20):
     return {"entries": entries}
 
 
-def _augment_generation(query: str):
+
+GENERATION_RAG_TTL_SECONDS = 60.0
+GENERATION_RAG_MIN_SIMILARITY = 0.42
+_generation_rag_lock = threading.Lock()
+_generation_rag_cache = {"fetched_at": 0.0, "docs": [], "doc_vectors": []}
+
+
+def _cosine_sim(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    norm_a = math.sqrt(sum(a * a for a in left))
+    norm_b = math.sqrt(sum(b * b for b in right))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _generation_kb_docs():
+    now = time.time()
+    with _generation_rag_lock:
+        if _generation_rag_cache["docs"] and now - _generation_rag_cache["fetched_at"] < GENERATION_RAG_TTL_SECONDS:
+            return _generation_rag_cache["docs"], _generation_rag_cache["doc_vectors"]
+
+    markdown = fetch_kb_markdown(api_client, settings.lark_generation_kb_doc_id)
+    docs = split_markdown(markdown)
+    vectors = embeddings.embed_documents([doc.page_content for doc in docs]) if docs else []
+
+    with _generation_rag_lock:
+        _generation_rag_cache.update({"fetched_at": time.time(), "docs": docs, "doc_vectors": vectors})
+    return docs, vectors
+
+
+def _preflight_generation_prompt(prompt: str) -> dict:
     try:
-        docs = generation_retriever.retrieve_with_scores(query)
-    except RuntimeError as exc:
-        return {"ok": True, "relevant": False, "context": "", "reason": str(exc)}
-    docs = docs[:3]
-    if not docs:
-        return {"ok": True, "relevant": False, "context": "", "reason": "no_hits"}
-    chunks = []
-    parts = []
-    for doc in docs:
-        meta = doc.metadata or {}
-        title = (meta.get("error_title") or meta.get("title") or meta.get("source") or "KB")
-        score = meta.get("retrieval_hybrid_score", 0)
-        content = (doc.page_content or "").strip()
-        chunks.append({"title": title, "score": score, "content": content[:1200]})
-        parts.append(f"[{title}]\n{content[:1200]}")
-    return {"ok": True, "relevant": True, "context": "\n\n".join(parts), "chunks": chunks}
+        docs, vectors = _generation_kb_docs()
+        if not docs:
+            return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
+
+        query_vector = embeddings.embed_query(prompt)
+        matches = []
+        for doc, vector in zip(docs, vectors):
+            score = _cosine_sim(query_vector, vector)
+            if score >= GENERATION_RAG_MIN_SIMILARITY:
+                matches.append(
+                    {
+                        "title": doc.metadata.get("error_title", ""),
+                        "content": doc.page_content.strip(),
+                        "score": round(score, 4),
+                    }
+                )
+
+        if not matches:
+            return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
+
+        matches.sort(key=lambda item: item["score"], reverse=True)
+        context = "\n\n".join(f"【{item['title']}】\n{item['content']}" for item in matches)
+        updated_prompt = f"{prompt.strip()}\n\n[飞书知识库自动补充]\n{context}"
+        return {"ok": True, "detected": True, "matches": matches, "updated_prompt": updated_prompt}
+    except Exception:
+        logger.exception("generation KB preflight failed")
+        return {"ok": False, "detected": False, "matches": [], "updated_prompt": prompt, "error": "RAG 检查暂时不可用"}
 
 
-@app.post("/api/augment")
-async def augment(request: Request):
-    client_ip = (request.client.host if request.client else "") or ""
-    if client_ip not in ("127.0.0.1", "::1"):
-        token = portal_token()
-        if token and verify_portal_identity(request.headers) is None:
-            return JSONResponse(status_code=403, content={"error": "forbidden"})
+@app.post("/api/rag/preflight")
+async def rag_preflight(request: Request):
+    token = portal_token()
+    if token and verify_portal_identity(request.headers) is None:
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
     try:
         body = await request.json()
     except Exception:
         return JSONResponse(status_code=400, content={"error": "JSON body required"})
-    query = str(body.get("query") or body.get("prompt") or "").strip()
-    if not query:
-        return JSONResponse(status_code=400, content={"error": "query required"})
-    return await run_in_threadpool(_augment_generation, query)
-
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        return JSONResponse(status_code=400, content={"error": "prompt required"})
+    return await run_in_threadpool(_preflight_generation_prompt, prompt)
 @app.post("/api/ask")
 async def ask(request: Request):
     token = portal_token()

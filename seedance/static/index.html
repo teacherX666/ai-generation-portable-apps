@@ -160,7 +160,7 @@
           <h2>Prompt <button type="button" @click="optimizePrompt()" :disabled="optimizing" class="optimizeBtn">{{ optimizing ? '⏳ 优化中...' : '✨ 优化' }}</button></h2>
           <textarea name="prompt" form="sd-form" spellcheck="false" placeholder="输入提示词，@ref_image1 引用参考图..."></textarea>
           <div v-if="optimizedPrompt" class="optimizeResult">
-            <div class="optimizeResultHeader">优化结果</div>
+            <div class="optimizeResultHeader">优化结果 <span style="font-size:11px;color:#94a3b8;font-weight:400;margin-left:6px">已由优化服务处理</span></div>
             <pre>{{ optimizedPrompt }}</pre>
             <div class="rowButtons">
               <button type="button" @click="replacePrompt()">✅ 一键替换</button>

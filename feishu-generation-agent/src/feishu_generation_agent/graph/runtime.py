@@ -752,7 +752,12 @@ class GraphRuntime:
             )
             audit = AuditReport.model_validate(state.get("audit_report", {}))
             if audit.corrections_required:
-                issues.extend(f"audit: {issue}" for issue in audit.issues)
+                issues.extend(
+                    f"audit: {issue}"
+                    for issue in audit.issues
+                    if issue.startswith("技术阻断")
+                    or "人工处理" in issue
+                )
             issues.extend(
                 record.display_message
                 for record in records

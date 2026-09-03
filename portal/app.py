@@ -226,140 +226,6 @@ def extract_job_metadata(content_type: str, body: bytes) -> dict:
         return result
 
 
-RAG_AUGMENT_ENABLED = os.environ.get("RAG_AUGMENT_ENABLED", "1") != "0"
-RAG_AUGMENT_TIMEOUT = 5
-RAG_PROMPT_KEYS = frozenset({"prompt", "text", "user_prompt", "instruction"})
-
-
-def _rag_context_for_query(query: str) -> str:
-    if not RAG_AUGMENT_ENABLED or not (query or "").strip():
-        return ""
-    rag = APPS.get("rag-assistant")
-    if not rag:
-        return ""
-    conn = None
-    try:
-        conn = http.client.HTTPConnection("127.0.0.1", rag["port"], timeout=RAG_AUGMENT_TIMEOUT)
-        payload = json.dumps({"query": query.strip()}, ensure_ascii=False).encode("utf-8")
-        conn.request("POST", "/api/augment", body=payload, headers={"Content-Type": "application/json"})
-        resp = conn.getresponse()
-        if resp.status != 200:
-            return ""
-        data = json.loads(resp.read().decode("utf-8", "replace"))
-        if data.get("ok") and data.get("relevant"):
-            return str(data.get("context") or "").strip()
-    except Exception:
-        return ""
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-    return ""
-
-
-def _append_rag_context(text: str, context: str) -> str:
-    if not text or not context:
-        return text
-    return f"{text.strip()}\n\n[RAG 知识库]\n{context.strip()}"
-
-
-def _iter_prompt_values(data: Any):
-    if isinstance(data, dict):
-        for key, value in data.items():
-            if isinstance(key, str) and key.lower() in RAG_PROMPT_KEYS and isinstance(value, str):
-                yield key, value
-            else:
-                yield from _iter_prompt_values(value)
-    elif isinstance(data, list):
-        for item in data:
-            yield from _iter_prompt_values(item)
-
-
-def _inject_json_body(body: bytes, context: str):
-    try:
-        data = json.loads(body.decode("utf-8", "replace"))
-    except Exception:
-        return body, None
-    prompts = list(_iter_prompt_values(data))
-    if not prompts or not context:
-        return body, prompts[0][1].strip() if prompts else ""
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, value in list(node.items()):
-                if isinstance(key, str) and key.lower() in RAG_PROMPT_KEYS and isinstance(value, str):
-                    node[key] = _append_rag_context(value, context)
-                else:
-                    walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(data)
-    return json.dumps(data, ensure_ascii=False).encode("utf-8"), prompts[0][1].strip()
-
-
-def _escape_header_value(value: str) -> str:
-    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\r", "").replace("\n", "")
-
-
-def _multipart_item(field):
-    if field is None:
-        return "", "", None, None
-    name = field.name or ""
-    if getattr(field, "filename", None):
-        blob = field.file.read() if hasattr(field.file, "read") else field.value
-        if isinstance(blob, str):
-            blob = blob.encode("utf-8")
-        return name, "", str(field.filename), blob
-    value = field.value
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", "replace")
-    return name, str(value), None, None
-
-
-def _parse_multipart_fields(content_type: str, body: bytes):
-    import cgi
-    import io
-
-    form = cgi.FieldStorage(
-        fp=io.BytesIO(body),
-        environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type, "CONTENT_LENGTH": str(len(body))},
-        keep_blank_values=True,
-    )
-    fields = []
-    for key in form.keys():
-        item = form[key]
-        if isinstance(item, list):
-            for sub in item:
-                fields.append(_multipart_item(sub))
-        else:
-            fields.append(_multipart_item(item))
-    return fields
-
-
-def _rebuild_multipart(fields, context: str):
-    boundary = "----RagAugment" + uuid.uuid4().hex
-    out = bytearray()
-    for name, value, filename, blob in fields:
-        out += f"--{boundary}\r\n".encode("utf-8")
-        disposition = f'Content-Disposition: form-data; name="{_escape_header_value(name)}"'
-        if filename is not None:
-            disposition += f'; filename="{_escape_header_value(filename)}"'
-        out += (disposition + "\r\n").encode("utf-8")
-        if filename is not None:
-            out += b"Content-Type: application/octet-stream\r\n"
-        out += b"\r\n"
-        if filename is not None:
-            out += blob or b""
-        else:
-            out += value.encode("utf-8")
-        out += b"\r\n"
-    out += f"--{boundary}--\r\n".encode("utf-8")
-    return bytes(out), f"multipart/form-data; boundary={boundary}"
-
 _STATUS_DONE = {"succeeded", "done", "completed", "success"}
 _STATUS_FAILED = {"failed", "cancelled", "canceled", "error"}
 _STATUS_RUNNING = {"running", "processing", "generating", "uploading"}
@@ -1121,6 +987,17 @@ def _prune_old_usage_jsonl(today: str):
     except Exception:
         pass
 
+
+def _append_analytics_jsonl(entry: dict):
+    """Append one analytics event to state/logs/analytics-events.jsonl. Best-effort."""
+    try:
+        logs_dir = STATE_DIR / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        path = logs_dir / "analytics-events.jsonl"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        print(f"  [analytics] jsonl append failed: {exc}", flush=True)
 
 class UsageTracker:
     def __init__(self):
@@ -2162,6 +2039,25 @@ class Handler(SimpleHTTPRequestHandler):
         else:
             self._serve_portal(path)
 
+    def _analytics_event(self, user: dict):
+        body = self._read_json()
+        if body is None:
+            return
+        event = str(body.get("event") or "").strip()
+        if not event:
+            self._json(400, {"ok": False, "error": "event is required"})
+            return
+        payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+        entry = {
+            "ts": int(time.time()),
+            "username": user.get("username", ""),
+            "user_id": user.get("user_id", ""),
+            "event": event,
+            "payload": payload,
+        }
+        _append_analytics_jsonl(entry)
+        self._json(200, {"ok": True})
+
     def do_POST(self):
         if self._reject_oversized_upload():
             return
@@ -2258,6 +2154,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/feishu/config":
             self._feishu_config_put(user)
             return
+        if path == "/api/analytics/event":
+            self._analytics_event(user)
+            return
         if not self._try_proxy(path, "POST", user):
             self._json(404, {"ok": False, "error": "not found"})
 
@@ -2350,13 +2249,13 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _cat_experiment_config(self, user: dict):
         if user.get("role") != "admin":
-            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验室"})
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
             return
         self._json(200, cat_experiment_service.config())
 
     def _cat_experiment_generate(self, user: dict):
         if user.get("role") != "admin":
-            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验室"})
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
             return
         body = self._read_json()
         if body is None:
@@ -3106,47 +3005,6 @@ class Handler(SimpleHTTPRequestHandler):
             headers["X-Portal-Ts"] = str(ts)
             headers["X-Portal-Sig"] = _sign_admin_header(username_encoded, is_admin, ts)
 
-            if is_job and method == "POST" and body:
-                incoming_ct = self.headers.get("Content-Type", "")
-                normalized_ct = incoming_ct.split(";", 1)[0].strip().lower()
-                try:
-                    if normalized_ct == "application/json":
-                        probe = json.loads(body.decode("utf-8", "replace"))
-                        prompts = list(_iter_prompt_values(probe))
-                        query = prompts[0][1].strip() if prompts else ""
-                        if query:
-                            context = _rag_context_for_query(query)
-                            if context:
-                                body, _ = _inject_json_body(body, context)
-                                headers["Content-Length"] = str(len(body))
-                    elif normalized_ct == "multipart/form-data":
-                        fields = _parse_multipart_fields(incoming_ct, body)
-                        prompt_value = next(
-                            (value for name, value, filename, _blob in fields
-                             if filename is None and name.lower() in RAG_PROMPT_KEYS),
-                            "",
-                        )
-                        query = prompt_value.strip() if prompt_value else ""
-                        if query:
-                            context = _rag_context_for_query(query)
-                            if context:
-                                fields = [
-                                    (
-                                        name,
-                                        _append_rag_context(value, context)
-                                        if filename is None and name.lower() in RAG_PROMPT_KEYS
-                                        else value,
-                                        filename,
-                                        blob,
-                                    )
-                                    for name, value, filename, blob in fields
-                                ]
-                                body, new_ct = _rebuild_multipart(fields, context)
-                                headers["Content-Type"] = new_ct
-                                headers["Content-Length"] = str(len(body))
-                except Exception:
-                    # RAG augmentation must never block or corrupt a generation request.
-                    pass
             conn.request(method, target_path, body=body, headers=headers)
             resp = conn.getresponse()
 
@@ -3160,7 +3018,7 @@ class Handler(SimpleHTTPRequestHandler):
                     metadata = {}
                     if method == "POST" and body:
                         metadata = extract_job_metadata(
-                            headers.get("Content-Type", self.headers.get("Content-Type", "")), body)
+                            self.headers.get("Content-Type", ""), body)
                     tracker.register_job(app_name, jid_header, user["username"],
                                          job_type, metadata=metadata)
                     tracker.inc_daily_jobs(app_name)

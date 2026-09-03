@@ -1,6 +1,7 @@
 import re
 import unittest
 from pathlib import Path
+import json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,17 @@ class PortalNavStructureTests(unittest.TestCase):
         self.assertIn('id="helpBtn"', html)
         self.assertIn('id="optimizeBtn"', html)
 
+
+
+    def test_nav_matches_apps_registry(self):
+        apps = json.loads((ROOT / "portal" / "apps.json").read_text(encoding="utf-8"))
+        non_nav = {"director"}
+        native = {"history", "keys", "stats"}
+        alias = {"nano-banana": "nb"}
+        expected = {alias.get(a["name"], a["name"]) for a in apps if a.get("name") not in non_nav} | native
+        html = self._read()
+        nav_tabs = set(re.findall(r'class="app-tab[^"]*"[^>]*data-tab="([^"]+)"', html))
+        self.assertEqual(sorted(nav_tabs), sorted(expected))
 
 if __name__ == "__main__":
     unittest.main()

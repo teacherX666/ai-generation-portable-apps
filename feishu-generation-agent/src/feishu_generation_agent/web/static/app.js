@@ -21,6 +21,7 @@
     modes: { bitable: false, legacy_delivery: false },
     providers: null,
     providerDefaults: null,
+    providerPreferences: null,
     bitable: BitableState.createState(),
     review: ReviewState.createReviewState(),
     referenceUploads: ReferenceUploadState.createState(),
@@ -88,6 +89,13 @@
   const plannerPromptSave = byId("planner-prompt-save");
   const plannerPromptReset = byId("planner-prompt-reset");
   const plannerPromptFeedback = byId("planner-prompt-feedback");
+  const advancedSettingsEntry = byId("advanced-settings-entry");
+  const advancedSettingsButton = byId("advanced-settings-button");
+  const advancedSettingsModal = byId("advanced-settings-modal");
+  const advancedVideoProvider = byId("advanced-video-provider");
+  const advancedImageProvider = byId("advanced-image-provider");
+  const advancedSettingsSave = byId("advanced-settings-save");
+  const advancedSettingsFeedback = byId("advanced-settings-feedback");
   const TERMINAL_RUN_STATUSES = new Set([
     "succeeded", "completed_with_errors", "failed", "cancelled", "delivery_failed",
   ]);
@@ -188,6 +196,90 @@
     plannerPromptReset.disabled = prompt.resetDisabled;
     plannerPromptFeedback.textContent = prompt.statusMessage;
     plannerPromptFeedback.className = `planner-prompt-feedback${prompt.statusType ? ` is-${prompt.statusType}` : ""}`;
+  }
+
+  function providerOptions(kind) {
+    return (state.providers?.[kind] || []).map((provider) => ({
+      value: provider.name,
+      label: `${provider.label}${provider.mode === "local" ? "（免费）" : "（付费）"}`,
+      local: provider.mode === "local",
+    }));
+  }
+
+  function renderAdvancedSettings() {
+    if (!plannerPromptModal || !advancedVideoProvider || !advancedImageProvider) return;
+    const preferences = state.providerPreferences;
+    if (!preferences) return;
+    const videoOptions = providerOptions("video");
+    const imageOptions = providerOptions("image");
+    if (advancedVideoProvider.childElementCount === 0) {
+      videoOptions.forEach((option) => {
+        const node = element("option", "", option.label);
+        node.value = option.value;
+        advancedVideoProvider.append(node);
+      });
+    }
+    if (advancedImageProvider.childElementCount === 0) {
+      imageOptions.forEach((option) => {
+        const node = element("option", "", option.label);
+        node.value = option.value;
+        advancedImageProvider.append(node);
+      });
+    }
+    advancedVideoProvider.value = preferences.video_provider;
+    advancedImageProvider.value = preferences.image_provider;
+    advancedSettingsFeedback.textContent = "";
+    advancedSettingsFeedback.className = "planner-prompt-feedback";
+  }
+
+  async function loadProviderPreferences() {
+    try {
+      const payload = await api("/api/provider-preferences");
+      state.providerPreferences = payload;
+      renderAdvancedSettings();
+      renderProviderStatus();
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  function openAdvancedSettings() {
+    if (!plannerPromptModal || !state.providerPreferences) return;
+    renderAdvancedSettings();
+    plannerPromptModal.hidden = false;
+  }
+
+  function closeAdvancedSettings() {
+    if (plannerPromptModal) plannerPromptModal.hidden = true;
+  }
+
+  async function saveProviderPreferences() {
+    if (!advancedVideoProvider || !advancedImageProvider || !advancedSettingsSave) return;
+    advancedSettingsSave.disabled = true;
+    advancedSettingsFeedback.textContent = "保存中...";
+    advancedSettingsFeedback.className = "planner-prompt-feedback is-loading";
+    try {
+      const payload = await api("/api/provider-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          video_provider: advancedVideoProvider.value,
+          image_provider: advancedImageProvider.value,
+        }),
+      });
+      state.providerPreferences = payload;
+      advancedSettingsFeedback.textContent = "模型偏好已保存";
+      advancedSettingsFeedback.className = "planner-prompt-feedback is-success";
+      renderAdvancedSettings();
+      renderProviderStatus();
+      setTimeout(closeAdvancedSettings, 700);
+    } catch (error) {
+      advancedSettingsFeedback.textContent = error.message || "保存失败";
+      advancedSettingsFeedback.className = "planner-prompt-feedback is-error";
+      showError(error);
+    } finally {
+      advancedSettingsSave.disabled = false;
+    }
   }
 
   async function loadPlannerPrompt() {
@@ -702,6 +794,7 @@
       state.providers = health.providers || null;
       state.providerDefaults = health.defaults || null;
       renderProviderStatus();
+      await loadProviderPreferences();
     } catch (error) {
       showError(error);
     }
@@ -2001,6 +2094,7 @@
     plannerPromptButton.addEventListener("click", () => {
       state.plannerPrompt = PlannerPromptState.openPromptEditor(state.plannerPrompt);
       renderPlannerPrompt();
+      renderAdvancedSettings();
       plannerPromptText.focus();
     });
     byId("planner-prompt-close").addEventListener("click", closePlannerPromptEditor);
@@ -2015,6 +2109,7 @@
     });
     plannerPromptSave.addEventListener("click", savePlannerPrompt);
     plannerPromptReset.addEventListener("click", resetPlannerPrompt);
+    if (advancedSettingsSave) advancedSettingsSave.addEventListener("click", saveProviderPreferences);
   }
   [
     ["bitable-tasks-toggle", "bitable-tasks-body"],

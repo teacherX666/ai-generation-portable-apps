@@ -375,7 +375,7 @@ FALLBACK_PROVIDERS = {
             "label": "T8Star Images API",
             "base_url": DEFAULT_BASE_URL,
             "api_style": "openai_images",
-            "defaults": {"mode": "img2img", "model": "nano-banana-2", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 900, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
+            "defaults": {"mode": "img2img", "model": "gemini-3-pro-image", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 900, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
             "models": [{"id": "nano-banana-2", "label": "nano-banana-2"}, {"id": "gemini-3.1-flash-image-preview", "label": "gemini-3.1-flash-image-preview"}, {"id": "gemini-3-pro-image-2k", "label": "gemini-3-pro-image-2k"}, {"id": "gemini-3-pro-image-4k", "label": "gemini-3-pro-image-4k"}],
         },
         "gemini": {

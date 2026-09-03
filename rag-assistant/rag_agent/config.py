@@ -98,13 +98,6 @@ class Settings:
     def sync_status_path(self) -> Path:
         return self.state_dir / "sync_status.json"
 
-    @property
-    def generation_chroma_dir(self) -> Path:
-        return self.data_dir / "generation_chroma"
-
-    @property
-    def generation_sync_status_path(self) -> Path:
-        return self.state_dir / "generation_sync_status.json"
 
 
 def load_settings() -> Settings:

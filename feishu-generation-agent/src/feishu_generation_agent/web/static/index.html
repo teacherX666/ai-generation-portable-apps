@@ -16,12 +16,11 @@
       <div id="planner-prompt-entry" class="planner-prompt-entry" hidden>
         <span id="planner-prompt-mode" class="planner-prompt-mode">使用 Prime</span>
         <button id="planner-prompt-button" type="button" class="secondary" disabled>
-          计划提示词设置
+          高级设置
         </button>
       </div>
-    </header>
 
-    <p id="provider-status-bar" class="provider-status-bar mode-message" hidden></p>
+    </header>
 
     <p id="error-message" class="error-message" role="alert" hidden></p>
 
@@ -262,8 +261,8 @@
         aria-labelledby="planner-prompt-title">
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">PLANNER PROMPT</p>
-            <h2 id="planner-prompt-title">计划提示词设置</h2>
+            <p class="eyebrow">ADVANCED SETTINGS</p>
+            <h2 id="planner-prompt-title">高级设置</h2>
           </div>
           <button id="planner-prompt-close" type="button" class="quiet-button">关闭</button>
         </div>
@@ -275,6 +274,17 @@
         <div class="planner-prompt-actions">
           <button id="planner-prompt-reset" type="button" class="secondary">恢复 Prime</button>
           <button id="planner-prompt-save" type="button" class="primary">保存个人版本</button>
+        </div>
+        <hr class="advanced-settings-divider" />
+        <div class="advanced-settings-grid">
+          <label for="advanced-video-provider">视频模型</label>
+          <select id="advanced-video-provider"></select>
+          <label for="advanced-image-provider">图片模型</label>
+          <select id="advanced-image-provider"></select>
+        </div>
+        <p id="advanced-settings-feedback" class="planner-prompt-feedback" aria-live="polite"></p>
+        <div class="planner-prompt-actions">
+          <button id="advanced-settings-save" type="button" class="primary">保存模型偏好</button>
         </div>
       </section>
     </div>
@@ -319,74 +329,5 @@
     <script src="static/planner-prompt-state.js" defer></script>
     <script src="static/app.js" defer></script>
     <script src="static/effects.js" defer></script>
-    <!-- 使用说明入口：新标签页打开飞书文档（Portal iframe 与独立模式都可见） -->
-  <a id="manualLink" class="manual-link" draggable="false" target="_blank" rel="noopener"
-     title="可拖动到任意位置 · 点击打开使用说明（飞书文档）"
-     href="https://redcqchina.feishu.cn/docx/F9MRdZqkGoH1zvxKWoDc6MbBnpe">📖 使用说明</a>
-
-
-  <script>
-  /* 使用说明按钮：可拖动 + 记住位置（按应用分 key，避免同源页面互相覆盖） */
-  (function () {
-    function initDrag(id, key) {
-      var el = document.getElementById(id);
-      if (!el) return;
-      /* 禁止 <a> 原生拖拽（会吃掉 pointer 事件，导致按钮拖不动只拖出链接） */
-      el.setAttribute('draggable', 'false');
-      el.addEventListener('dragstart', function (e) { e.preventDefault(); });
-      var MOVE = 4, startX = 0, startY = 0, oL = 0, oT = 0, moved = false, dragging = false;
-      function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
-      function save() {
-        var r = el.getBoundingClientRect();
-        try { localStorage.setItem(key, JSON.stringify({ left: r.left, top: r.top, w: r.width, h: r.height })); } catch (e) {}
-      }
-      function restore() {
-        try {
-          var p = JSON.parse(localStorage.getItem(key) || 'null');
-          if (!p || typeof p.left !== 'number') return;
-          var w = el.offsetWidth || p.w || 120, h = el.offsetHeight || p.h || 40;
-          el.style.right = 'auto'; el.style.bottom = 'auto';
-          el.style.left = clamp(p.left, 0, window.innerWidth - w - 8) + 'px';
-          el.style.top = clamp(p.top, 0, window.innerHeight - h - 8) + 'px';
-        } catch (e) {}
-      }
-      el.addEventListener('pointerdown', function (e) {
-        if (e.button !== 0) return;
-        dragging = true; moved = false;
-        startX = e.clientX; startY = e.clientY;
-        var r = el.getBoundingClientRect();
-        el.style.right = 'auto'; el.style.bottom = 'auto';
-        el.style.left = r.left + 'px'; el.style.top = r.top + 'px';
-        oL = r.left; oT = r.top;
-        el.classList.add('is-dragging');
-        try { el.setPointerCapture(e.pointerId); } catch (err) {}
-      });
-      el.addEventListener('pointermove', function (e) {
-        if (!dragging) return;
-        if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > MOVE) moved = true;
-        if (moved) {
-          el.style.left = clamp(oL + e.clientX - startX, 0, window.innerWidth - el.offsetWidth - 8) + 'px';
-          el.style.top = clamp(oT + e.clientY - startY, 0, window.innerHeight - el.offsetHeight - 8) + 'px';
-        }
-      });
-      function end() {
-        if (!dragging) return;
-        dragging = false;
-        el.classList.remove('is-dragging');
-        save();
-        if (moved) {
-          /* 拖动后抑制本次点击，避免误开文档 */
-          var cancel = function (ev) { ev.preventDefault(); ev.stopPropagation(); el.removeEventListener('click', cancel, true); };
-          el.addEventListener('click', cancel, true);
-          setTimeout(function () { el.removeEventListener('click', cancel, true); }, 400);
-        }
-      }
-      el.addEventListener('pointerup', end);
-      el.addEventListener('pointercancel', end);
-      restore();
-    }
-    initDrag('manualLink', 'manualLinkPos_agent');
-  })();
-  </script>
-</body>
+  </body>
 </html>
