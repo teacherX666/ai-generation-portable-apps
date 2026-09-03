@@ -274,7 +274,74 @@
   window.__requestNotifyPermission = function () {
     try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
   };
-  window.__notifyJobDone = function (jobId, status, label) {
+
+  // === 页面内任务完成弹窗（主提醒通道）===
+  // 系统通知不够显眼（用户盯着页面时根本看不到），改为顶部滑入的
+  // 卡片弹窗：带状态色、应用名、「查看结果」直达对应 tab。页面切走
+  // （document.hidden）时才补系统 Notification + 标题闪烁兜底。
+  function _notifyEsc(s) { return s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''; }
+  let _notifyPopStyles = false;
+  function _notifyEnsureStyles() {
+    if (_notifyPopStyles) return;
+    _notifyPopStyles = true;
+    const style = document.createElement('style');
+    style.textContent = [
+      '#portalNotifyStack{position:fixed;top:64px;right:16px;z-index:999999;display:flex;flex-direction:column;gap:10px;pointer-events:none}',
+      '.portal-notify-pop{pointer-events:auto;width:340px;max-width:calc(100vw - 32px);background:var(--surface,#fff);color:var(--text,#172033);border:1px solid var(--border,#d9e0ea);border-left:4px solid #10b981;border-radius:10px;box-shadow:0 12px 32px rgba(20,32,51,.18);padding:12px 14px;font-size:13px;animation:portalNotifyIn .28s cubic-bezier(.2,.9,.3,1.2)}',
+      '.portal-notify-pop.is-bad{border-left-color:#ef4444}',
+      '.portal-notify-pop.is-cancel{border-left-color:#f59e0b}',
+      '@keyframes portalNotifyIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}',
+      '.portal-notify-pop__head{display:flex;align-items:center;gap:8px;font-weight:700}',
+      '.portal-notify-pop__icon{font-size:16px}',
+      '.portal-notify-pop__title{flex:1}',
+      '.portal-notify-pop__close{border:0;background:none;color:var(--text-secondary,#475569);font-size:16px;cursor:pointer;padding:0 4px;line-height:1}',
+      '.portal-notify-pop__close:hover{color:var(--text,#172033)}',
+      '.portal-notify-pop__body{color:var(--text-secondary,#475569);margin:6px 0 8px;font-size:12px}',
+      '.portal-notify-pop__go{border:1px solid var(--accent,#235fd6);background:var(--accent,#235fd6);color:#fff;font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer;font-weight:600}',
+      '.portal-notify-pop__go:hover{background:var(--accent-hover,#184fbf)}',
+    ].join('\n');
+    document.head.appendChild(style);
+  }
+  function _notifyPopup(norm, label, tab) {
+    try {
+      _notifyEnsureStyles();
+      let stack = document.getElementById('portalNotifyStack');
+      if (!stack) {
+        stack = document.createElement('div');
+        stack.id = 'portalNotifyStack';
+        stack.setAttribute('aria-live', 'assertive');
+        document.body.appendChild(stack);
+      }
+      const ok = norm === 'succeeded';
+      const cancel = norm === 'cancelled';
+      const title = (label || '生成任务') + (ok ? ' 已完成' : cancel ? ' 已取消' : ' 已结束');
+      const body = ok ? '结果已就绪，点击「查看结果」直接打开。' : cancel ? '任务已取消，可重新发起。' : '任务失败了，点击查看详情与原因。';
+      const pop = document.createElement('div');
+      pop.className = 'portal-notify-pop' + (ok ? '' : cancel ? ' is-cancel' : ' is-bad');
+      pop.setAttribute('role', 'alert');
+      pop.innerHTML =
+        '<div class="portal-notify-pop__head"><span class="portal-notify-pop__icon">' + (ok ? '✅' : cancel ? '⛔' : '❌') + '</span>'
+        + '<span class="portal-notify-pop__title">' + _notifyEsc(title) + '</span>'
+        + '<button class="portal-notify-pop__close" type="button" aria-label="关闭">×</button></div>'
+        + '<div class="portal-notify-pop__body">' + _notifyEsc(body) + '</div>'
+        + (tab ? '<button class="portal-notify-pop__go" type="button">查看结果 →</button>' : '');
+      pop.querySelector('.portal-notify-pop__close').addEventListener('click', () => pop.remove());
+      const go = pop.querySelector('.portal-notify-pop__go');
+      if (go) {
+        go.addEventListener('click', () => {
+          const btn = document.querySelector('.app-tab[data-tab="' + tab + '"]');
+          if (btn && typeof activatePortalTab === 'function') activatePortalTab(btn);
+          pop.remove();
+        });
+      }
+      stack.appendChild(pop);
+      // 防止堆积：同一时间最多 3 条，超出移除最旧
+      while (stack.children.length > 3) stack.firstElementChild.remove();
+      setTimeout(() => pop.remove(), 15000);
+    } catch (e) { /* 弹窗尽力而为 */ }
+  }
+
+  window.__notifyJobDone = function (jobId, status, label, tab) {
     try {
       if (jobId === undefined || jobId === null || jobId === '') return;
       const norm = normalizeNotifyStatus(String(status));
@@ -287,13 +354,17 @@
       const ok = norm === 'succeeded';
       const title = (label || '生成任务') + (ok ? ' 已完成' : ' 已结束');
       const body = ok ? '结果已就绪，回到页面即可查看和下载。' : '任务以「' + norm + '」结束，请回到页面查看详情。';
-      if ('Notification' in window && Notification.permission === 'granted') {
-        try {
-          const n = new Notification(title, { body: body, tag: 'ai-portal-job-done' });
-          n.onclick = () => { try { window.focus(); } catch (e) {} n.close(); };
-        } catch (e) { /* 构造失败时降级标题闪烁 */ }
+      // 页面内弹窗永远弹（主通道）；切走时才补系统通知 + 标题闪烁
+      _notifyPopup(norm, label, tab);
+      if (document.hidden) {
+        if ('Notification' in window && Notification.permission === 'granted') {
+          try {
+            const n = new Notification(title, { body: body, tag: 'ai-portal-job-done' });
+            n.onclick = () => { try { window.focus(); } catch (e) {} n.close(); };
+          } catch (e) { /* 构造失败时降级标题闪烁 */ }
+        }
+        _notifyFlashTitle(title);
       }
-      _notifyFlashTitle(title);
     } catch (e) { /* 通知尽力而为，绝不打断主流程 */ }
   };
   window.notifyJobDone = window.__notifyJobDone;
@@ -313,8 +384,23 @@
     } catch (e) {}
   }
 
+  // 通知只看自己的任务：终态转场检测按当前登录用户名过滤。
+  // 子应用 /api/jobs 返回全量任务（管理员能看到所有人的），不过滤
+  // 的话管理员会收到全公司每个任务完成的提醒。
+  let _meUsername = null;
+  async function currentUsername() {
+    if (_meUsername !== null) return _meUsername;
+    try {
+      const me = await api('/api/auth/me');
+      _meUsername = (me && me.username) || '';
+    } catch (e) { _meUsername = ''; }
+    return _meUsername;
+  }
+
   async function refresh() {
     ensureBadges();
+    // 拿不到用户名时（/me 失败）宁可不弹，也不要把别人的任务弹给当前用户
+    const me = await currentUsername();
     await Promise.all(specs.map(async (spec) => {
       let list = [];
       try {
@@ -324,7 +410,7 @@
       if (!Array.isArray(list)) return;
       const count = list.filter((job) => job && isActive(job.status)).length;
       setBadge(spec.tab, count);
-      // 终态转场检测：上一轮 active、这一轮终态 → 弹系统通知
+      // 终态转场检测：上一轮 active、这一轮终态 → 弹完成弹窗（仅自己的任务）
       const prev = _notifySeenStates[spec.app] || {};
       const next = {};
       for (const job of list) {
@@ -333,9 +419,12 @@
         if (!id) continue;
         const status = String(job.status || '').toLowerCase();
         next[id] = status;
+        if (!me) continue; // 身份未知：只跟踪状态，不弹通知
+        const owner = String(job.username || job.user || '');
+        if (owner && owner !== me) continue; // 别人的任务：不弹
         const prevStatus = prev[id];
         if (prevStatus !== undefined && isActive(prevStatus) && !isActive(status)) {
-          window.__notifyJobDone(id, status, spec.label);
+          window.__notifyJobDone(id, status, spec.label, spec.tab);
         }
       }
       _notifySeenStates[spec.app] = next;

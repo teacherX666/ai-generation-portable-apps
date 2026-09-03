@@ -70,8 +70,8 @@ function requestNotifyPermission() {
   if (window.__requestNotifyPermission) return window.__requestNotifyPermission();
   try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
 }
-function notifyJobDone(jobId, status, label) {
-  if (window.__notifyJobDone) return window.__notifyJobDone(jobId, status, label);
+function notifyJobDone(jobId, status, label, tab) {
+  if (window.__notifyJobDone) return window.__notifyJobDone(jobId, status, label, tab);
 }
 
 // 友好错误提示（即梦）：把高频失败原因翻译成中文+下一步
@@ -681,7 +681,7 @@ function DreaminaApp() {
           stop();
           // 系统通知：状态归一后与 Portal 15s 兜底轮询按 jobId 去重
           const st = String(job.status).toLowerCase();
-          notifyJobDone(jobId, st === 'completed' ? 'succeeded' : (st === 'cancelled' || st === 'canceled') ? 'cancelled' : 'failed', '即梦生成');
+          notifyJobDone(jobId, st === 'completed' ? 'succeeded' : (st === 'cancelled' || st === 'canceled') ? 'cancelled' : 'failed', '即梦生成', 'dreamina');
           if (job.status === 'completed' && this.dirHandle && allFiles.length) {
             await this.saveDreaminaToClient(allFiles);
           } else if (job.status === 'completed' && this.autoDownload && allFiles.length) {
@@ -2617,7 +2617,7 @@ function VolcenginePortraitApp() {
         }
         if (['succeeded', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
           // 系统通知：与 Portal 15s 兜底轮询按 jobId 去重
-          notifyJobDone(jobId, String(job.status).toLowerCase() === 'canceled' ? 'cancelled' : String(job.status).toLowerCase(), '人像视频');
+          notifyJobDone(jobId, String(job.status).toLowerCase() === 'canceled' ? 'cancelled' : String(job.status).toLowerCase(), '人像视频', 'volcengine-portrait');
           break;
         }
         await new Promise(r => setTimeout(r, 3000));

@@ -42,6 +42,12 @@ function requestNotifyPermission() {
 }
 function notifyJobDone(jobId, status, label) {
   try {
+    // Portal iframe 内：交给父窗口统一弹窗（同源可直调；去重/页面内弹窗
+    // 都在父层处理），独立模式才走本地下方逻辑
+    if (window.parent && window.parent !== window && typeof window.parent.__notifyJobDone === 'function') {
+      window.parent.__notifyJobDone(jobId, status, label, 'dreamina');
+      return;
+    }
     if (jobId === undefined || jobId === null || jobId === '') return;
     // 状态归一化：与 Portal 侧 15s 兜底轮询用同一套 token 去重
     const s = String(status).toLowerCase();
