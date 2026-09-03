@@ -656,7 +656,7 @@
               </div>
             </div>
 
-            <label style="margin-top:10px">Prompt <textarea v-model="prompt" rows="3" placeholder="描述你想生成的内容..."></textarea></label>
+            <label style="margin-top:10px">Prompt <textarea v-model="prompt" name="prompt" rows="3" placeholder="描述你想生成的内容..."></textarea></label>
             <label style="margin-top:8px">模型
               <select v-model="model" @change="onModelChange()">
                 <option v-for="m in portraitModels" :value="m.id">{{ m.label }}</option>
@@ -701,6 +701,7 @@
               必须时长 -1 + 比例 adaptive；<strong>视频延长</strong>（「续写、向前/向后延长」）必须比例 adaptive；
               <strong>首帧/首尾帧</strong>也必须比例 adaptive。普通参考生视频填正常秒数即可。
             </p>
+            <p v-if="statusText && !submitting && statusText !== '空闲'" class="hint" style="margin-top:6px;color:#b45309">{{ statusText }}</p>
             <button @click="createJob()" :disabled="submitting" class="ui-btn ui-btn--primary" style="margin-top:8px;width:100%">
               {{ submitting ? statusText : '开始生成' }}
             </button>

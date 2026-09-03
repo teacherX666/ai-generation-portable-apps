@@ -15,6 +15,7 @@ import math
 import re
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -334,10 +335,30 @@ def _preflight_generation_prompt(prompt: str) -> dict:
         matches.sort(key=lambda item: item["score"], reverse=True)
         context = "\n\n".join(f"【{item['title']}】\n{item['content']}" for item in matches)
         updated_prompt = f"{prompt.strip()}\n\n[飞书知识库自动补充]\n{context}"
+        optimized_prompt = _director_optimize_prompt(updated_prompt)
+        if optimized_prompt:
+            updated_prompt = optimized_prompt
         return {"ok": True, "detected": True, "matches": matches, "updated_prompt": updated_prompt}
     except Exception:
         logger.exception("generation KB preflight failed")
         return {"ok": False, "detected": False, "matches": [], "updated_prompt": prompt, "error": "RAG 检查暂时不可用"}
+
+
+def _director_optimize_prompt(prompt: str) -> str:
+    try:
+        port = int(os.environ.get("DIRECTOR_PORT", "8895"))
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/optimize-prompt",
+            data=json.dumps({"text": prompt, "mode": "rag"}, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        if data.get("ok") and data.get("prompt"):
+            return str(data["prompt"]).strip()
+    except Exception:
+        logger.exception("director rag prompt optimization failed")
+    return ""
 
 @app.post("/api/rag/preflight")
 async def rag_preflight(request: Request):

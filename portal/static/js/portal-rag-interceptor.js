@@ -86,6 +86,54 @@
     return response.json().catch(() => ({ detected: false }));
   }
 
+  function showInlineOptimizeWindow(originalPrompt, optimizedPrompt, titles) {
+    const promptElement = document.querySelector(
+      ['textarea[name="prompt"]', 'input[name="prompt"]', 'textarea[name="text"]', 'input[name="text"]'].join(',')
+    );
+    if (!promptElement) return false;
+
+    let host = promptElement.closest('.promptPanel') || promptElement.closest('label') || promptElement.parentElement;
+    if (!host) return false;
+
+    let box = host.querySelector('.rag-optimize-inline');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'rag-optimize-inline';
+      box.style.cssText = 'margin-top:8px;border:1px solid #d9e0ea;border-radius:8px;background:#f8fafc;padding:10px;color:#172033';
+      host.appendChild(box);
+    }
+
+    box.innerHTML = '';
+    const header = document.createElement('div');
+    header.style.cssText = 'font-size:12px;color:#64748b;margin-bottom:6px';
+    header.textContent = titles.length ? '检测到：' + titles.join('、') : '飞书知识库优化结果';
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'white-space:pre-wrap;margin:0 0 8px;font-size:12px;line-height:1.6;max-height:180px;overflow:auto';
+    pre.textContent = optimizedPrompt;
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.textContent = '应用优化结果';
+    applyBtn.style.cssText = 'padding:6px 10px;border-radius:6px;border:1px solid #2563eb;background:#2563eb;color:#fff;cursor:pointer';
+    applyBtn.addEventListener('click', () => {
+      updatePromptElement(optimizedPrompt);
+      box.remove();
+      notify('已应用优化提示词，请再次点击生成。');
+    });
+    const keepBtn = document.createElement('button');
+    keepBtn.type = 'button';
+    keepBtn.textContent = '保持原提示词';
+    keepBtn.style.cssText = 'padding:6px 10px;border-radius:6px;border:1px solid #d1d5db;background:#fff;color:#111;cursor:pointer';
+    keepBtn.addEventListener('click', () => {
+      box.remove();
+      notify('已保持原提示词，请再次点击生成。');
+    });
+    actions.append(applyBtn, keepBtn);
+    box.append(header, pre, actions);
+    return true;
+  }
+
   const originalFetch = window.fetch.bind(window);
   window.fetch = async function (input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
@@ -106,14 +154,19 @@
         return originalFetch(input, init);
       }
 
-      lastReviewedPrompt = prompt;
-      updatePromptElement(result.updated_prompt || prompt);
-      const titles = (result.matches || []).map((item) => item.title).filter(Boolean).join('、');
-      notify(`飞书知识库检测到相关规则：${titles || '已自动补充提示词'}。提示词已更新，请再次点击生成。`);
+      const titles = (result.matches || []).map((item) => item.title).filter(Boolean);
+      const shown = showInlineOptimizeWindow(prompt, result.updated_prompt || prompt, titles);
+      if (!shown) notify('飞书知识库检测到相关规则，已生成优化提示词。请再次点击生成保持原提示词。');
 
-      const paused = new Error('Generation paused for RAG review');
-      paused.name = 'AbortError';
-      throw paused;
+      lastReviewedPrompt = prompt;
+      return new Response(JSON.stringify({
+        ok: false,
+        error: '已暂停生成，请处理提示词优化结果后再次生成',
+        rag_review: true
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
     } catch (error) {
       if (error && error.name === 'AbortError') throw error;
       return originalFetch(input, init);

@@ -285,7 +285,13 @@ def optimize_prompt(text: str, mode: str) -> dict[str, Any]:
             "提示词优化未配置 DeepSeek API Key，"
             "请联系管理员把 sk-... 写入 director/state/deepseek.key"
         )}
-    if mode == "langgpt":
+    if mode == "rag":
+        mode_text = (
+            "把上面的原始提示词和飞书知识库建议合并成一个自然、可直接用于生成模型的提示词。\n"
+            "保留用户原始主体和意图；把知识库中的「不要/避免/禁止」类要求自然融合进去，不要逐条粘贴知识库标题或原文；\n"
+            "只输出最终提示词正文，不要解释。"
+        )
+    elif mode == "langgpt":
         mode_text = (
             "把上面的内容改写成 LangGPT 结构化提示词：\n"
             "# Role（角色定义，一句话）\n## Profile（专业背景/能力）\n"
