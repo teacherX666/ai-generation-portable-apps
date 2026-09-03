@@ -2753,6 +2753,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
         values = {key: get_field(form, key) for key in form.keys() if not getattr(form[key], "filename", None)}
+
         _cfg, _ = load_provider_config()
         provider = resolve_effective_provider(_cfg, str(values.get("provider") or ""))
         values["provider"] = provider

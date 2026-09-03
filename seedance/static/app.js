@@ -1431,6 +1431,29 @@ function SeedanceApp() {
           + '</article>';
       }
 
+      // Some embedded/test DOM shims expose appendChild but do not implement
+      // insertAdjacentHTML or retain the newly-created containers. Fall back
+      // to a single HTML write there so tab-state rehydration still renders
+      // the snapshot; real browsers use the incremental path below.
+      if (typeof resultBox.insertAdjacentHTML !== 'function') {
+        let html = statusBox.innerHTML || '';
+        const results = job.results || [];
+        for (const r of results) {
+          const url = APP_PATH + (r.download_url || '');
+          html += '<article class="result ui-result-card">'
+            + '<div class="video-lazy ui-media-placeholder" data-src="' + url + '" tabindex="0" role="button" aria-label="播放视频">'
+            + '<div><div class="ui-media-placeholder__icon">▶</div><div class="ui-caption">点击加载视频</div></div></div>'
+            + '<a href="' + url + '" class="dl-btn ui-result-card__download" data-url="' + url + '" data-filename="' + escHtml(r.filename || 'video') + '">下载</a>'
+            + '<div class="ui-result-card__meta">Run ' + (r.index || '') + ' · ' + (r.task_id || '') + '</div>'
+            + '</article>';
+        }
+        for (const err of job.errors || []) {
+          html += '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(err) + '</article>';
+        }
+        resultsEl.innerHTML = html;
+        return;
+      }
+
       // 结果卡：任务结果只会越来越多，增量追加新增结果即可；旧结果
       // （含正在播放的 <video>）原样保留，轮询不再反复重建。
       if (resultsSig !== prev.resultsSig) {
