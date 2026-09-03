@@ -1054,6 +1054,12 @@ def handle_virtual_groups_post(handler):
     json_response(handler, 200, {"ok": True, "group_id": gid})
 
 
+def _is_mj_named(name):
+    """素材库列表不展示 MJ/mj 开头的条目（大小写不敏感，strip 后前缀匹配）。
+    与 infinite-canvas/ark_library.py 的过滤规则保持一致。"""
+    return isinstance(name, str) and name.strip().lower().startswith("mj")
+
+
 def handle_virtual_groups_get(handler):
     """List asset groups via ListAssetGroups.
 
@@ -1096,6 +1102,8 @@ def handle_virtual_groups_get(handler):
 
     groups = []
     for item in all_items:
+        if _is_mj_named(item.get("Name")):
+            continue
         groups.append({
             "group_id": item.get("Id", ""),
             "name": item.get("Name", ""),
@@ -1106,6 +1114,8 @@ def handle_virtual_groups_get(handler):
     # Also merge with local cache
     with GROUP_LOCK:
         for gid, g in GROUPS.items():
+            if _is_mj_named(g.get("name")):
+                continue
             if not any(x["group_id"] == gid for x in groups):
                 groups.append(g)
     json_response(handler, 200, {"ok": True, "groups": groups})
@@ -1302,6 +1312,8 @@ def handle_virtual_assets_get(handler, asset_id=None):
         if "error" not in result:
             for item in openapi_result(result).get("Items") or []:
                 aid = item.get("Id") or item.get("AssetId", "")
+                if _is_mj_named(item.get("Name")):
+                    continue
                 api_assets.append({
                     "asset_id": aid,
                     "group_id": item.get("GroupId", ""),
@@ -1323,6 +1335,8 @@ def handle_virtual_assets_get(handler, asset_id=None):
         api_ids = {a["asset_id"] for a in api_assets}
         merged = api_assets.copy()
         for a in local:
+            if _is_mj_named(a.get("file_name")):
+                continue
             if a.get("asset_id") in api_ids:
                 continue
             if wanted_groups and a.get("group_id") not in wanted_groups:
@@ -2061,6 +2075,7 @@ def _run_virtual_job_impl(job_id, job):
     # JOBS_LOCK is a non-reentrant lock.  We already hold it here, so read the
     # flag directly instead of calling _job_cancel_requested() (which would
     # try to acquire JOBS_LOCK a second time and leave every worker stuck).
+    # （2026-09-02 全站楔死根因：两处会话独立定位到同一行；seedance 同段即直接读字段）
     with JOBS_LOCK:
         if job.get("cancel_requested"):
             # 已完成的条目保留（已真实生成且计费）；未完成条目不计

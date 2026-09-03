@@ -174,7 +174,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **ComfyUI 工作流库**：管理员侧边栏「工作流库」→ 导入/预览/导出/启停工作流；`execution_available` 恒 False（执行切片上游也没交付）。服务配置 `state/comfyui-services.json`（可选）；启用但未配置服务时 409。放行策略：**启用即全员可见**（上游按人授权在 Portal 形态不可用）。模块 `comfy_lib.py`（解析/校验）+ `comfy_api.py`（API）。
 - **TOS 预签名 GET 的坑**：canonical_headers 必须以 `\n` 结尾、模板再补 `\n`（即空行），否则 SignatureDoesNotMatch —— 与 AWS SigV4 不同，与 volcengine-portrait/app.py:246-254 一致。
 - **跳过**：注册/密码管理/凭证池/后台日志等上游服务端功能（Portal 负责身份与统计，见 docs/infinite-canvas/01-前端改造.md 的裁剪原则）。
-- 上游同步点：`c3d5aed` → `b7abf47` 选择性移植（8/28 窗口 6d1d2c6→8c355b3 全量 12+4 项见 docs/infinite-canvas/05-上游同步；9/2 窗口 8c355b3→b7abf47 移植：取消任务（后端委派子应用 POST /api/jobs/{id}/cancel + 前端 CancelJobDialog/节点/托盘按钮）、画布 undo/redo （useCanvasUndo 100 条快照 + 右键菜单快捷键提示）、提交前守卫（translate.py 参数/端口校验中文原因）、可折叠节点侧栏。跳过：三级角色权限、admin 帮助页（Portal 自管身份）、飞书分镜提示词模板（待确认）。前端单测 471 全过；四个生成子应用 + Portal tracker 的取消后端需重启生产才生效。
+- 上游同步点：`c3d5aed` → `b7abf47` 选择性移植（8/28 窗口 6d1d2c6→8c355b3 全量 12+4 项见 docs/infinite-canvas/05-上游同步；9/2 窗口 8c355b3→b7abf47 移植：取消任务（后端委派子应用 POST /api/jobs/{id}/cancel + 前端 CancelJobDialog/节点/托盘按钮）、画布 undo/redo （useCanvasUndo 100 条快照 + 右键菜单快捷键提示）、提交前守卫（translate.py 参数/端口校验中文原因）、可折叠节点侧栏。跳过：三级角色权限、admin 帮助页（Portal 自管身份）、飞书分镜提示词模板（待确认）。前端单测 471 全过；四个生成子应用 + Portal tracker 的取消后端已于 2026-09-02 17:18 随生产重启生效。
 
 ## 稳定教训（跨版本长期有效）
 
@@ -255,6 +255,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 ### Volcengine Portrait 子应用要点
 
 - **ProjectName 硬编码 `Seedance2.0`**（所有 Action 无例外），`handle_virtual_groups_post` 移除了从请求体覆盖能力
+- **MJ 前缀过滤有两处独立实现**：`infinite-canvas/ark_library.py` 和 `volcengine-portrait/app.py` 的 `_is_mj_named`（列表不展示 MJ/mj 开头的组和资产）。改过滤规则要两处同步改；2026-09-02 只改了画布侧，人像资产库照样显示 56 个 MJ 组
 - **真人认证是控制台流程，没有 API**：真人和虚拟素材最终都是 `asset://` 引用，Real handler 全部委托给 Virtual handler
 - **Ark Files API `purpose` 只接受 `user_data` 或 `agent`**（`private-avatar` 会 400；旧文档写错了）
 - CreateAsset 需要**公开可访问的 HTTP/HTTPS URL**，Ark v3 上传后返回的 URL 需 Bearer Token → TOS 后端拉不到 → 走 `_upload_to_public_host()` 传 uguu.se
@@ -301,6 +302,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **修复模式（seedance/nano-banana/dreamina 三处已修）**：结果区拆成「状态卡」「结果卡」两个容器（`display: contents` 包装，不影响 `.results` 网格与 `grid-column:1/-1`）；状态卡按签名去重重建，结果卡只 `insertAdjacentHTML` 增量追加；容器缺失或 `_renderedJobId` 变化时全量重建（覆盖 submit 清空/切主题）
 - **`innerHTML +=` 会销毁全部旧子元素**（重解析），追加必须用 `insertAdjacentHTML('beforeend', ...)`，否则正在播放的 `<video>` 还是被重拉
 - **事件委托不能挂在 `v-if` 区域内的容器上**：`#sd-results` 在 `v-if="statusText !== '空闲'"` 里，init 时是 null → `if (dlContainer)` 静默跳过 → 运行卡的视频点击/下载按钮一直是死的。委托挂页面常驻元素（`#sd-app`）
+- **自动预览只播第一个结果**（prev.count===0 时 click 索引 0）：每个新结果都自动预览会让 repeat 任务挂 N 条并发视频流——客户端解码 + Portal 整文件缓冲双重压力（实测 5 条流吃服务机 27% CPU）。「页面卡死、刷新恢复」的机制：任务跑得越久流的视频越多 → 页面越卡；刷新时任务已结束 → 切到历史视图（惰性占位）→ 恢复。2026-09-02 修
 - 验证手段：`/tmp/verify-render-dedupe.mjs` 式 playwright 断言（事件刷屏 10 次结果卡 DOM 元素引用不变、新结果只追加、切任务无残留）；页面加载后 `statusText` 是「空闲」时 `#sd-results` 不存在，测试要先设 statusText 再等 v-if 渲染
 
 ### 主线程 TLS 握手楔子（2026-09-02 断服根因）
@@ -310,6 +312,15 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **修复**（`portal/app.py`）：wrap 时 `do_handshake_on_connect=False`（握手推迟）+ `Handler.setup()` 里 `conn.settimeout(10)` 后显式 `do_handshake()`，失败静默关闭（readline 读空 → handle_one_request 自行收尾，无 traceback 噪音），成功后 `settimeout(None)` 恢复阻塞语义
 - **验证**：`/tmp/test-tls-wedge.py` 式最小复刻——raw socket 只 connect 不发字节，同时 curl 真 HTTPS 必须照常 200，坏连接 ~10s 被服务器关闭
 - 排查用的 `sample <pid> N` 要抓全量线程栈（`-file`），只 grep 前 12 行会漏掉深层的 ssl 帧
+
+### 人像楔死两连击（2026-09-02 下午断服根因，13:37 引入 → 17:18 修复）
+
+- **症状**：人像每 5-15 分钟楔死一次——所有端点挂起含 /health、TCP 能连；watchdog 每 10+ 分钟杀一次，任务全丢；13:52 起 0 成功（28 条孤儿 running）
+- **根因 1（锁重入自锁死）**：`44898ad` 取消功能在 `_run_virtual_job_impl` 收尾块里 `with JOBS_LOCK:` 内调 `_job_cancel_requested`，而它内部**再次** `with JOBS_LOCK:`——threading.Lock 非重入，同一线程二次 acquire 自锁死并**永久占锁**。任务一完成 worker 就死，随后任何拿 JOBS_LOCK 的请求（含 Portal 统计每 15s 的 `GET /api/jobs/{id}`）全部排队 → 全站冻结。**修复**：锁内直接读 `job.get("cancel_requested")`（seedance 同段即此写法，移植时抄错）
+- **根因 2（结构缺陷）**：`app_fastapi.py` 的 `_bridge_call` 把同步 legacy 处理器直接跑在 asyncio 事件循环线程——一次慢 Ark 调用/重试退避（最多 6 次 × 120s + 63s 退避）或锁等待就冻结整个 uvicorn。**修复**：`run_in_threadpool` 移出事件循环（并发实测 /health 保持 ~1ms）。**教训**：async 端点里跑阻塞代码 = 全站单点故障；FastAPI 同步 `def` 端点自带线程池，`async def` 里必须手动卸载
+- **看门狗盲区**：watchdog 只用 TCP connect 探活——HTTP 层卡死时 connect 依然成功，楔子存活 10+ 分钟直到 backlog 打满。**修复**（`portal/app.py`）：升级为 HTTP GET 探针（**任何响应含 404 都算活**，TCP 通但 HTTP 无响应计 unhealthy），发现时间 → ~45s
+- **诊断钩子**：`app_fastapi.py` 启动时 `faulthandler.register(signal.SIGUSR1, file=logs/fault.log, all_threads=True)`——再楔死时 `kill -USR1 <pid>` 拿全线程 Python 函数栈（无需 root，替代 py-spy）
+- **时间线定位法**：卡死任务起始时间（activity_log）↔ 可疑提交时间（`git log -1 --format=%ci`）↔ 进程启动时间（`ps -o lstart`）三者对齐即可定罪，不用等复现
 
 ### 通用调试直觉
 

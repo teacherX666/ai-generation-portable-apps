@@ -1355,11 +1355,16 @@ function SeedanceApp() {
           resultBox.insertAdjacentHTML('beforeend', '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(job.errors[ei]) + '</article>');
         }
 
-        // Auto-preview only the *newly arrived* first result; progress-event
-        // refresh no longer re-pulls the video every 2.5s.
-        const nextCard = resultBox.querySelector('[data-result-index="' + prev.count + '"]');
-        const nextLazy = nextCard && nextCard.querySelector('.video-lazy[data-src]');
-        if (nextLazy) nextLazy.click();
+        // Auto-preview only the FIRST finished video, and only once per job
+        // (prev.count === 0 = this is the first render for this job).
+        // 每个新结果都自动预览会让 repeat 任务挂 N 条并发视频流：客户端
+        // 解码压力 + Portal 整文件缓冲双重负担（实测 5 条流吃 27% CPU，
+        // 2026-09-02 页面卡死根因）。后续结果保持点击播放占位。
+        if (prev.count === 0) {
+          const firstCard = resultBox.querySelector('[data-result-index="0"]');
+          const firstLazy = firstCard && firstCard.querySelector('.video-lazy[data-src]');
+          if (firstLazy) firstLazy.click();
+        }
       }
     },
 
