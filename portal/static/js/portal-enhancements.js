@@ -300,24 +300,28 @@
       purpose: '从飞书文档拆解任务，审批后批量生成图片或视频。',
       steps: ['打开飞书文档并授权读取', '选择要拆解的任务并提交审批', '审批通过后自动排队生成'],
       result: '结果进入全局「创作记录」，可在那里下载或复用参数。',
+      docUrl: 'https://redcqchina.feishu.cn/docx/F9MRdZqkGoH1zvxKWoDc6MbBnpe',
     },
     'seedance': {
       title: '视频生成',
       purpose: '文生视频、图生视频和首尾帧视频。',
       steps: ['选好模型、时长和分辨率', '输入提示词，可 @ 引用参考图', '提交后等待排队生成'],
       result: '完成后进入「创作记录」，可预览和下载视频。',
+      docUrl: 'https://redcqchina.feishu.cn/docx/KOtMdAlFeoWYmUxFui1cngvlnsc',
     },
     'nb': {
       title: '图片生成',
       purpose: '文生图、图生图和批量出图。',
       steps: ['选择供应商（免费本地或付费）', '填写提示词或上传参考图', '提交生成并下载图片'],
       result: '图片结果进入「创作记录」，可复用参数再次生成。',
+      docUrl: 'https://redcqchina.feishu.cn/docx/MEsId6oYwotQp6xxBSocP7K7ncg',
     },
     'volcengine-portrait': {
       title: '人像视频',
       purpose: '数字人口播和虚拟人物视频。',
       steps: ['上传或选择人像资产', '填写口播文案或提示词', '提交生成口播视频'],
       result: '视频进入「创作记录」，可下载。',
+      docUrl: 'https://redcqchina.feishu.cn/docx/ZrqUdhuxfo1KtSxH1Toca7iVnhx',
     },
     'infinite-canvas': {
       title: '创意画布',
@@ -330,18 +334,21 @@
       purpose: '3D 摆位、机位设计和镜头快照。',
       steps: ['新建分镜场景', '摆放模型和机位', '导出镜头快照'],
       result: '快照保存在分镜模块内，可用于后续视频生成。',
+      docUrl: 'https://redcqchina.feishu.cn/docx/UbpUdfC4zo42Q8xJPWqcT3isnbb',
     },
     'dreamina': {
       title: '即梦创作',
       purpose: '管理即梦账号并生成图片/视频。',
       steps: ['先安装或登录即梦账号', '选择账号和生成模式', '提交任务并等待结果'],
       result: '结果进入「创作记录」，可下载。',
+      docUrl: 'https://redcqchina.feishu.cn/docx/NxwZdjsCzo4VAnxaoJccN9kKnvg',
     },
     'rag-assistant': {
       title: '报错助手',
       purpose: '粘贴报错信息，快速定位原因和下一步。',
       steps: ['复制报错文字或截图', '粘贴到输入框并提交', '按返回的建议处理'],
       result: '处理建议直接显示在当前页面。',
+      docUrl: 'https://redcqchina.feishu.cn/docx/LPf8dKvx7ocfnRxbgCXcL5dfnOb',
     },
     'history': {
       title: '创作记录',
@@ -382,7 +389,8 @@
       '</div>' +
       '<p id="moduleHelpPurpose"></p>' +
       '<div class="portal-help-steps" id="moduleHelpSteps"></div>' +
-      '<p class="portal-module-help-result" id="moduleHelpResult"></p>';
+      '<p class="portal-module-help-result" id="moduleHelpResult"></p>' +
+      '<a id="moduleHelpDoc" class="module-help-doc" target="_blank" rel="noopener" href="#" hidden>查看完整文档 ↗</a>';
     document.body.appendChild(dialog);
     dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
     dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
@@ -403,6 +411,11 @@
       '<div class="portal-help-step"><span class="portal-help-step__num">' + (i + 1) + '</span><div><b>' + s + '</b></div></div>'
     ).join('');
     dialog.querySelector('#moduleHelpResult').textContent = help.result;
+    const docLink = dialog.querySelector('#moduleHelpDoc');
+    if (docLink) {
+      if (help.docUrl) { docLink.href = help.docUrl; docLink.hidden = false; }
+      else { docLink.hidden = true; }
+    }
     dialog.showModal();
   }
 

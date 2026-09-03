@@ -1596,6 +1596,27 @@ body.director-collapsed .director-body { display: none !important; }
   font-size: 13px;
   line-height: 1.6;
 }
+.module-help-doc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 9px 16px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--surface);
+  font-size: 13px;
+  font-weight: 720;
+  text-decoration: none;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--transition-base), transform var(--transition-fast), box-shadow var(--transition-base);
+}
+.module-help-doc:hover:not([hidden]) {
+  background: var(--accent-hover);
+  box-shadow: 0 8px 18px rgba(20, 32, 51, 0.12);
+}
+.module-help-doc:active:not([hidden]) { transform: translateY(1px); }
+.module-help-doc[hidden] { display: none; }
 .portal-help-step button {
   width: auto;
   height: auto;
