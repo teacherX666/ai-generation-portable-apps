@@ -286,7 +286,9 @@
     _notifyPopStyles = true;
     const style = document.createElement('style');
     style.textContent = [
-      '#portalNotifyStack{position:fixed;top:64px;right:16px;z-index:999999;display:flex;flex-direction:column;gap:10px;pointer-events:none}',
+      '#portalNotifyStack{position:fixed;top:64px;right:16px;z-index:999999;display:flex;flex-direction:column;gap:10px;pointer-events:none;transition:right .2s ease}',
+      // 导演台展开时右侧 320px 被占：弹窗自动左移到导演台左侧，避免视觉重叠
+      'body.director-open #portalNotifyStack{right:356px}',
       '.portal-notify-pop{pointer-events:auto;width:340px;max-width:calc(100vw - 32px);background:var(--surface,#fff);color:var(--text,#172033);border:1px solid var(--border,#d9e0ea);border-left:4px solid #10b981;border-radius:10px;box-shadow:0 12px 32px rgba(20,32,51,.18);padding:12px 14px;font-size:13px;animation:portalNotifyIn .28s cubic-bezier(.2,.9,.3,1.2)}',
       '.portal-notify-pop.is-bad{border-left-color:#ef4444}',
       '.portal-notify-pop.is-cancel{border-left-color:#f59e0b}',
