@@ -71,6 +71,19 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
   let signupEnabled = false;
   let isFirstRun = false;
 
+  // 后端英文错误中文化
+  function friendlyLoginError(msg) {
+    if (!msg) return '';
+    const m = String(msg);
+    if (/invalid credentials|用户名或密码|wrong password|user not found/i.test(m)) return '用户名或密码错误';
+    if (/username required|用户名/i.test(m)) return '请输入用户名';
+    if (/password/i.test(m) && /min|length|至少|6/i.test(m)) return '密码至少 6 位';
+    if (/registration disabled|注册.*关闭|未开启/i.test(m)) return '注册未开启，请联系管理员开通账号';
+    if (/already exists|已存在|taken/i.test(m)) return '该用户名已被占用，请换一个';
+    if (/rate|too many|频繁|429/i.test(m)) return '尝试过于频繁，请稍后再试';
+    return m;
+  }
+
   // Already logged in?
   try {
     const r = await fetch('/api/auth/me', {credentials: 'include'});
@@ -159,7 +172,8 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
       const d = await r.json();
       if (d.ok) { location.replace(next); }
       else {
-        err.textContent = d.error || '操作失败';
+        // 后端英文错误中文化（此前 "invalid credentials" 等原文直出）
+        err.textContent = friendlyLoginError(d.error) || '操作失败';
         btn.disabled = false;
         btn.textContent = origLabel;
       }

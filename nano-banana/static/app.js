@@ -10,6 +10,68 @@ const APP_PATH  = IN_PORTAL ? '/nano-banana' : '';
 var TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'failure', 'cancelled', 'canceled']);
 
 // ============================================================
+// 任务完成系统通知（浏览器 Notification + 标题闪烁，按 jobId 去重）
+// Portal 反向代理下所有页面同源、localStorage 共享 → 子应用与 Portal
+// 双侧检测到同一任务终态时只弹一次。Notification 需要安全上下文：
+// 生产 HTTPS（自签证书点过「继续访问」后算安全上下文）可用，HTTP
+// 测试环境自动降级为标题闪烁。
+// ============================================================
+var _notifiedJobs = null;
+function _notifyLoadSeen() {
+  if (_notifiedJobs) return _notifiedJobs;
+  try { _notifiedJobs = JSON.parse(localStorage.getItem('aiPortal.notifiedJobs') || '{}') || {}; }
+  catch (e) { _notifiedJobs = {}; }
+  return _notifiedJobs;
+}
+function requestNotifyPermission() {
+  // 必须在用户手势（提交点击）内调用；浏览器对每个站点只提示一次
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
+}
+function notifyJobDone(jobId, status, label) {
+  try {
+    if (jobId === undefined || jobId === null || jobId === '') return;
+    // 状态归一化：与 Portal 侧 15s 兜底轮询用同一套 token 去重
+    var s = String(status).toLowerCase();
+    var norm = ['succeeded', 'success', 'completed'].indexOf(s) >= 0 ? 'succeeded'
+      : ['failed', 'fail', 'failure'].indexOf(s) >= 0 ? 'failed'
+      : ['cancelled', 'canceled'].indexOf(s) >= 0 ? 'cancelled' : s;
+    var map = _notifyLoadSeen();
+    if (map[jobId] === norm) return; // 已通知过（含 Portal 侧先弹）
+    map[jobId] = norm;
+    var keys = Object.keys(map);
+    if (keys.length > 200) keys.slice(0, keys.length - 200).forEach(function (k) { delete map[k]; });
+    localStorage.setItem('aiPortal.notifiedJobs', JSON.stringify(map));
+    var ok = norm === 'succeeded';
+    var title = (label || '生成任务') + (ok ? ' 已完成' : ' 已结束');
+    var body = ok ? '结果已就绪，回到页面即可查看和下载。' : '任务以「' + norm + '」结束，请回到页面查看详情。';
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        var n = new Notification(title, { body: body, tag: 'ai-portal-job-done' });
+        n.onclick = function () { try { window.focus(); } catch (e) {} n.close(); };
+      } catch (e) { /* 构造失败时降级标题闪烁 */ }
+    }
+    _notifyFlashTitle(title);
+  } catch (e) { /* 通知尽力而为，绝不打断主流程 */ }
+}
+var _notifyFlashTimer = null;
+function _notifyFlashTitle(message) {
+  try {
+    // iframe 模式下闪烁顶层标题（同源可访问 parent），独立模式闪自己
+    var doc = (window.parent && window.parent !== window) ? window.parent.document : document;
+    var base = doc.title;
+    var count = 0;
+    var tick = function () {
+      count += 1;
+      doc.title = (count % 2 === 1) ? ('✅ ' + message + ' — ' + base) : base;
+      if (count >= 10) { clearInterval(_notifyFlashTimer); _notifyFlashTimer = null; doc.title = base; }
+    };
+    if (_notifyFlashTimer) clearInterval(_notifyFlashTimer);
+    _notifyFlashTimer = setInterval(tick, 1500);
+    tick();
+  } catch (e) {}
+}
+
+// ============================================================
 // Module 2: Utilities
 // ============================================================
 function _workspaceId() {
@@ -86,6 +148,25 @@ function jobStatusClass(status) {
 function jobStatusBadgeTone(status) {
   var state = jobStatusClass(status);
   return state === 'is-success' ? 'success' : state === 'is-failed' ? 'danger' : state === 'is-pending' ? 'warning' : 'info';
+}
+
+// 友好错误提示：把高频失败类型翻译成中文+下一步。返回原文兜底时
+// 与 job.errors[0] 严格相等，调用方据此决定是否 escHtml。
+function friendlyJobErrorHint(job) {
+  var errors = (job && job.errors) || [];
+  if (!errors.length) return '';
+  var firstError = errors[0];
+  if (/\[auth_failed\]/i.test(firstError) || /\bHTTP\s+401\b/i.test(firstError) || /\b401\s+Unauthorized\b/i.test(firstError)) return '❌ API Key 无效或已过期，请检查配置';
+  if (/\[rate_limited\]/i.test(firstError) || /\bHTTP\s+429\b/i.test(firstError) || /\b429\s+Too Many Requests\b/i.test(firstError)) return '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
+  if (/\[permission_denied\]/i.test(firstError) || /\bHTTP\s+403\b/i.test(firstError) || /\b403\s+Forbidden\b/i.test(firstError)) return '🚫 权限不足或配额已用完，请联系管理员';
+  if (firstError.indexOf('[server_error]') >= 0) return '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
+  if (firstError.indexOf('[network_error]') >= 0) return '🌐 网络连接失败，请检查网络或 API 地址';
+  if (/requires at least one reference image|requires a reference image|需要参考图|至少.*参考图/i.test(firstError)) return '请上传至少一张参考图，或切换到文生图模型';
+  if (/requires a prompt|需要提示词|请输入提示词|prompt is required/i.test(firstError)) return '请输入生成提示词';
+  if (/ComfyUI.*未启动|未启动.*ComfyUI|timed out|WinError 10061|connection refused/i.test(firstError)) return '本地模型服务未就绪，正在自动拉起，请稍后重试';
+  if (/model_kind.*已停用|已停用.*model_kind|not yet supported|unsupported model/i.test(firstError)) return '当前模型不可用，请切换到其它可用模型';
+  if (/no output files|no images|produced no output|missing.*reference/i.test(firstError)) return '模型没有返回结果，请检查参考图或更换模型';
+  return firstError;
 }
 
 // ============================================================
@@ -706,6 +787,8 @@ function NanoBananaApp() {
         if (self.activeTabId === ownerWorkspaceId) self[name] = value;
       };
       if (self.submitting) return;
+      // 首次提交时请求系统通知权限（用户手势内调用才有效）
+      requestNotifyPermission();
       var selectedProvider = nbField('provider') ? nbField('provider').value : self.provider;
       var selectedModel = nbField('model') ? nbField('model').value : '';
       var hasReference = false;
@@ -748,16 +831,22 @@ function NanoBananaApp() {
       var res;
       try {
         res = await api(APP_PATH + '/api/jobs', 'POST', data, ownerWorkspaceId);
-      } finally {
+      } catch (e) {
         setOwnerState('submitting', false);
+        setOwnerState('statusText', '提交失败：网络异常，请重试');
+        return;
       }
       if (!res || res.error) {
+        setOwnerState('submitting', false);
         setOwnerState('statusText', (res && res.error) || '提交失败');
         return;
       }
       if (!ownerExists() || ownerCache()._submissionToken !== submissionToken) return;
       ownerCache()._activeJobId = res.job_id;
-      setOwnerState('statusText', '已提交，任务在后台运行');
+      // submitting 保持 true 直到任务终态：防止第二次提交 bump token 后
+      // 上一个任务的轮询静默失效（用户误以为第一个任务死了）。想同时
+      // 跑多个任务请开新主题标签页。
+      setOwnerState('statusText', '已提交，任务 ' + res.job_id + ' 在后台运行');
       try { self.loadActivity(); } catch (e) { /* ignore */ }
       self.pollJob(res.job_id, ownerWorkspaceId, submissionToken, delivery);
     },
@@ -796,19 +885,22 @@ function NanoBananaApp() {
       // looping forever on "unknown".
       var MAX_FAILS = 15;
       var consecutiveFails = 0;
+      // 退出时保留的终态文案：非空则不再回「空闲」，避免失败提示
+      // 转瞬即逝（此前 break 后紧跟 setStatus('空闲') 会把错误抹掉）。
+      var finalStatus = null;
 
       while (true) {
         if (!isCurrent()) break;
         var r = await pollJobOnce(APP_PATH + '/api/jobs/' + jobId, ownerWsId);
         if (!isCurrent()) break;
         if (r.kind === 'gone') {
-          setStatus('任务已失效(服务可能重启过),请查看活动记录或重新提交');
+          finalStatus = '任务已失效(服务可能重启过)，请查看活动记录或重新提交';
           break;
         }
         if (r.kind === 'error') {
           consecutiveFails++;
           if (consecutiveFails >= MAX_FAILS) {
-            setStatus('网络不稳定,已停止刷新 · 稍后可重新提交');
+            finalStatus = '网络不稳定，已停止刷新 · 稍后可重新提交';
             break;
           }
           var wait = Math.min(10000, 2500 * Math.pow(1.5, consecutiveFails - 1));
@@ -835,29 +927,39 @@ function NanoBananaApp() {
         }
 
         if (TERMINAL_STATUSES.has((job.status || '').toLowerCase())) {
+          // 系统通知：确认终态后立即弹（去重后与 Portal 侧 15s 兜底轮询不重复）
+          notifyJobDone(jobId, job.status, '图片生成');
           // Preserved terminal-status behavior from original pollJob:
           //   - job.status === 'succeeded' + dirHandle → saveToClient
           //   - job.status === 'succeeded' + autoDownload → triggerDownloads
           // Delivery settings are captured at submit time. Reading self.* here
           // would use whichever topic happens to be active when the task ends.
+          var deliveryNote = '';
           if (job.status === 'succeeded' && delivery && delivery.dirHandle) {
             var saved = await self.saveToClient(job, delivery.dirHandle);
-            if (saved) setStatus('已保存 ' + saved + ' 个文件到 ' + delivery.outputDir);
+            if (saved) deliveryNote = ' · 已保存 ' + saved + ' 个文件到 ' + delivery.outputDir;
           } else if (job.status === 'succeeded' && delivery && delivery.autoDownload) {
             var downloaded = self.triggerDownloads(job);
-            if (downloaded) setStatus('已下载 ' + downloaded + ' 个文件');
+            if (downloaded) deliveryNote = ' · 已下载 ' + downloaded + ' 个文件';
           }
-          setSubmitting(false);
-          setStatus('空闲');
+          // 终态摘要常驻状态栏（不再秒变「空闲」把错误提示抹掉），
+          // 结果卡保留可下载，下一轮提交时 submit 会清空重建。
+          var s = String(job.status || '').toLowerCase();
+          if (['succeeded', 'success', 'completed'].indexOf(s) >= 0) {
+            finalStatus = '上次任务：已完成' + ((job.results || []).length ? '（' + job.results.length + ' 个结果）' : '') + deliveryNote;
+          } else if (s === 'failed' || s === 'failure') {
+            finalStatus = '上次任务：失败 · ' + String(friendlyJobErrorHint(job) || '未记录原因').slice(0, 80);
+          } else {
+            finalStatus = '上次任务：已取消';
+          }
           break;
         }
         await new Promise(function (r) { setTimeout(r, 2500); });
       }
       // Clear status + submitting on ALL exit paths (terminal AND null-break).
-      // The terminal branch above already sets these for clarity, but this
-      // catches the `if (!job) break;` early exit that otherwise leaves stale
-      // progress text and a locked submit button.
-      setStatus('空闲');
+      // finalStatus 非空时保留终态文案（gone / 网络中断 / 成功 / 失败），
+      // 仅「非终态提前退出」（如切 tab 后 token 失配）回到空闲。
+      setStatus(finalStatus || '空闲');
       setSubmitting(false);
       // Refresh activity list + jobs list on exit (original always ran activity).
       try { self.loadActivity(); } catch (e) { /* ignore */ }
@@ -938,38 +1040,17 @@ function NanoBananaApp() {
         }).join('');
 
         // 友好错误提示：识别错误类型，显示用户友好的消息
-        var errorHint = '';
-        if (job.errors && job.errors.length > 0) {
-          var firstError = job.errors[0];
-          if (/\[auth_failed\]/i.test(firstError) || /\bHTTP\s+401\b/i.test(firstError) || /\b401\s+Unauthorized\b/i.test(firstError)) {
-            errorHint = '❌ API Key 无效或已过期，请检查配置';
-          } else if (/\[rate_limited\]/i.test(firstError) || /\bHTTP\s+429\b/i.test(firstError) || /\b429\s+Too Many Requests\b/i.test(firstError)) {
-            errorHint = '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
-          } else if (/\[permission_denied\]/i.test(firstError) || /\bHTTP\s+403\b/i.test(firstError) || /\b403\s+Forbidden\b/i.test(firstError)) {
-            errorHint = '🚫 权限不足或配额已用完，请联系管理员';
-          } else if (firstError.indexOf('[server_error]') >= 0) {
-            errorHint = '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
-          } else if (firstError.indexOf('[network_error]') >= 0) {
-            errorHint = '🌐 网络连接失败，请检查网络或 API 地址';
-          } else if (/requires at least one reference image|requires a reference image|需要参考图|至少.*参考图/i.test(firstError)) {
-            errorHint = '请上传至少一张参考图，或切换到文生图模型';
-          } else if (/requires a prompt|需要提示词|请输入提示词|prompt is required/i.test(firstError)) {
-            errorHint = '请输入生成提示词';
-          } else if (/ComfyUI.*未启动|未启动.*ComfyUI|timed out|WinError 10061|connection refused/i.test(firstError)) {
-            errorHint = '本地模型服务未就绪，正在自动拉起，请稍后重试';
-          } else if (/model_kind.*已停用|已停用.*model_kind|not yet supported|unsupported model/i.test(firstError)) {
-            errorHint = '当前模型不可用，请切换到其它可用模型';
-          } else if (/no output files|no images|produced no output|missing.*reference/i.test(firstError)) {
-            errorHint = '模型没有返回结果，请检查参考图或更换模型';
-          } else {
-            errorHint = escHtml(firstError);
-          }
-        }
+        // （friendlyJobErrorHint 返回原文兜底时与 job.errors[0] 相等，需转义）
+        var errorHint = friendlyJobErrorHint(job);
+        if (errorHint && errorHint === (job.errors || [])[0]) errorHint = escHtml(errorHint);
 
         statusBox.innerHTML = '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">' +
           '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--' + jobStatusBadgeTone(job.status) + '">' + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0)
           + (jobId && !TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
              ? '<button type="button" class="cancel-job-btn" onclick="window._app_nb.cancelJob(\'' + escHtml(jobId) + '\',\'' + escHtml(job.status || 'queued') + '\')">取消任务</button>'
+             : '')
+          + (jobId && (job.results || []).length && TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
+             ? '<button type="button" class="cancel-job-btn" onclick="window._app_nb.downloadAll(\'' + escHtml(jobId) + '\')">下载全部 (' + job.results.length + ')</button>'
              : '')
           + '</div>' +
           (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '') +
@@ -991,7 +1072,12 @@ function NanoBananaApp() {
         }
         var errs = job.errors || [];
         for (var ei = prev.errorsCount; ei < errs.length; ei++) {
-          resultBox.insertAdjacentHTML('beforeend', '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(errs[ei]) + '</article>');
+          // 原始报错默认折叠，友好提示已在上方状态卡展示
+          resultBox.insertAdjacentHTML('beforeend',
+            '<details class="ui-raw-error" style="margin:8px 0;font-size:12px;color:#697386">'
+            + '<summary style="cursor:pointer">查看原始报错 ' + (ei + 1) + '/' + errs.length + '</summary>'
+            + '<pre style="white-space:pre-wrap;margin:6px 0 0;padding:8px;background:#fff1f0;border-radius:6px;color:#b42318">'
+            + escHtml(errs[ei]) + '</pre></details>');
         }
       }
     },
@@ -1064,6 +1150,31 @@ function NanoBananaApp() {
         this._blobDownload(urls[ui].url, urls[ui].filename);
       }
       return urls.length;
+    },
+
+    // 一键下载全部：错开 400ms 逐个下载，避免并发打满 Portal 代理缓冲
+    downloadAll(jobId) {
+      var app = this;
+      var cache = this._tabStateCache[this.activeTabId];
+      var job = (this.jobs || []).find(function (j) { return (j.id || j.job_id) === jobId; })
+        || (cache && cache._latestJob && (cache._latestJob.id === jobId || cache._latestJob.job_id === jobId) && cache._latestJob);
+      if (!job || !(job.results || []).length) {
+        this.statusText = '没有可下载的结果';
+        return;
+      }
+      var count = 0;
+      (job.results || []).forEach(function (r, i) {
+        var imgs = r.images || [];
+        imgs.forEach(function (im, k) {
+          if (im.download_url) {
+            count += 1;
+            setTimeout(function () {
+              app._blobDownload(APP_PATH + im.download_url, im.filename || ('result-' + (im.index ?? k)));
+            }, (i * imgs.length + k) * 400);
+          }
+        });
+      });
+      this.statusText = '开始下载 ' + count + ' 个结果…';
     },
 
     async _blobDownload(url, filename) {

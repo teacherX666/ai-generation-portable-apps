@@ -25,6 +25,96 @@ let frameCount = 2;
 let pollTimers = {};
 let dirHandle = null;  // File System Access API handle
 
+// === 任务完成系统通知（与 Portal 同源去重） ===
+// Portal 反向代理下所有页面同源、localStorage 共享 → 子应用与 Portal
+// 双侧检测到同一任务终态时只弹一次。Notification 需要安全上下文：
+// 生产 HTTPS 可用，HTTP 测试环境自动降级为标题闪烁。
+let _notifiedJobs = null;
+function _notifyLoadSeen() {
+  if (_notifiedJobs) return _notifiedJobs;
+  try { _notifiedJobs = JSON.parse(localStorage.getItem('aiPortal.notifiedJobs') || '{}') || {}; }
+  catch (e) { _notifiedJobs = {}; }
+  return _notifiedJobs;
+}
+function requestNotifyPermission() {
+  // 必须在用户手势（提交点击）内调用；浏览器对每个站点只提示一次
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
+}
+function notifyJobDone(jobId, status, label) {
+  try {
+    if (jobId === undefined || jobId === null || jobId === '') return;
+    // 状态归一化：与 Portal 侧 15s 兜底轮询用同一套 token 去重
+    const s = String(status).toLowerCase();
+    const norm = ['succeeded', 'success', 'completed'].includes(s) ? 'succeeded'
+      : ['failed', 'fail', 'failure'].includes(s) ? 'failed'
+      : ['cancelled', 'canceled'].includes(s) ? 'cancelled' : s;
+    const map = _notifyLoadSeen();
+    if (map[jobId] === norm) return; // 已通知过（含 Portal 侧先弹）
+    map[jobId] = norm;
+    const keys = Object.keys(map);
+    if (keys.length > 200) keys.slice(0, keys.length - 200).forEach(k => { delete map[k]; });
+    localStorage.setItem('aiPortal.notifiedJobs', JSON.stringify(map));
+    const ok = norm === 'succeeded';
+    const title = (label || '生成任务') + (ok ? ' 已完成' : ' 已结束');
+    const body = ok ? '结果已就绪，回到页面即可查看和下载。' : '任务以「' + norm + '」结束，请回到页面查看详情。';
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification(title, { body: body, tag: 'ai-portal-job-done' });
+        n.onclick = () => { try { window.focus(); } catch (e) {} n.close(); };
+      } catch (e) { /* 构造失败时降级标题闪烁 */ }
+    }
+    _notifyFlashTitle(title);
+  } catch (e) { /* 通知尽力而为，绝不打断主流程 */ }
+}
+let _notifyFlashTimer = null;
+function _notifyFlashTitle(message) {
+  try {
+    // iframe 模式下闪烁顶层标题（同源可访问 parent），独立模式闪自己
+    const doc = (window.parent && window.parent !== window) ? window.parent.document : document;
+    const base = doc.title;
+    let count = 0;
+    const tick = () => {
+      count += 1;
+      doc.title = (count % 2 === 1) ? ('✅ ' + message + ' — ' + base) : base;
+      if (count >= 10) { clearInterval(_notifyFlashTimer); _notifyFlashTimer = null; doc.title = base; }
+    };
+    if (_notifyFlashTimer) clearInterval(_notifyFlashTimer);
+    _notifyFlashTimer = setInterval(tick, 1500);
+    tick();
+  } catch (e) {}
+}
+
+// 轻量非阻断提示（替代 alert 用于一次性反馈）
+function dmToast(message) {
+  try {
+    let stack = document.getElementById('dmToastStack');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.id = 'dmToastStack';
+      stack.style.cssText = 'position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;';
+      document.body.appendChild(stack);
+    }
+    const toast = document.createElement('div');
+    toast.style.cssText = 'background:#111827;color:#f9fafb;padding:10px 14px;border-radius:8px;font-size:13px;max-width:320px;box-shadow:0 4px 16px rgba(0,0,0,.25);';
+    toast.textContent = message;
+    stack.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+  } catch (e) {}
+}
+
+// 友好错误提示：把高频失败原因翻译成中文+下一步
+function friendlyDreaminaError(msg) {
+  if (!msg) return '';
+  const m = String(msg);
+  if (/401|Unauthorized|未授权|登录已过期|token.*(expired|invalid)|invalid.*token/i.test(m)) return '❌ 账号登录已过期，请重新登录即梦账号';
+  if (/429|Too Many Requests|频率/i.test(m)) return '⏱️ 请求过于频繁，请稍后再试';
+  if (/403|Forbidden|权限不足/i.test(m)) return '🚫 权限不足，请联系管理员';
+  if (/quota|额度|余额|Credit|balance|不足/i.test(m)) return '💰 额度或余额不足，请检查账号余额';
+  if (/timeout|超时|timed out/i.test(m)) return '⚠️ 请求超时，请稍后重试';
+  if (/queue|排队|busy/i.test(m)) return '⏳ 当前排队人数较多，任务已进入队列，请耐心等待';
+  return m;
+}
+
 // === Init ===
 document.addEventListener('DOMContentLoaded', () => {
   checkEnv();
@@ -225,13 +315,42 @@ function makeDrop(name, label, accept) {
 }
 
 function wireAllDrops() {
-  $$('.drop input[type="file"]').forEach(input => {
+  // renderFrames 重建容器后会再次调用本函数，dataset.wired 防重复绑定
+  $$('.drop').forEach(drop => {
+    const input = drop.querySelector('input[type="file"]');
+    if (!input || drop.dataset.wired) return;
+    drop.dataset.wired = '1';
     input.addEventListener('change', () => {
-      const drop = input.closest('.drop');
       const file = input.files?.[0];
       if (!file) { clearDropPreview(drop); return; }
       renderDropPreview(drop, input.accept, file);
     });
+    // 拖拽上传：拖入高亮 + 放下即选（类型不匹配给中文提示）
+    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('dragging'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('dragging'));
+    drop.addEventListener('drop', e => {
+      e.preventDefault();
+      drop.classList.remove('dragging');
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return;
+      if (input.accept && !acceptsFile(input.accept, file.type)) {
+        dmToast('文件类型不匹配：需要 ' + input.accept.replace(/\*/g, '任意'));
+        return;
+      }
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      renderDropPreview(drop, input.accept, file);
+    });
+  });
+}
+
+function acceptsFile(accept, type) {
+  if (!type) return true;
+  return accept.split(',').some(a => {
+    const t = a.trim();
+    if (t.endsWith('/*')) return type.startsWith(t.slice(0, -1));
+    return t === type;
   });
 }
 
@@ -263,13 +382,13 @@ function buildMultiframeUI() {
 
 function bindMultiframeControls() {
   $('#addFrameBtn').addEventListener('click', () => {
-    if (frameCount >= 9) return;
+    if (frameCount >= 9) { dmToast('最多支持 9 帧'); return; }
     frameCount++;
     $('#frameCount').textContent = frameCount;
     renderFrames();
   });
   $('#removeFrameBtn').addEventListener('click', () => {
-    if (frameCount <= 2) return;
+    if (frameCount <= 2) { dmToast('最少需要 2 帧'); return; }
     frameCount--;
     $('#frameCount').textContent = frameCount;
     renderFrames();
@@ -278,6 +397,16 @@ function bindMultiframeControls() {
 
 function renderFrames() {
   const container = $('#framesContainer');
+  // 增减帧会重建容器：先快照已上传的帧图片和过渡描述，
+  // 重建后按名字恢复——否则用户点一下 +/− 已传文件全丢。
+  const savedFiles = {};
+  const savedPrompts = {};
+  container.querySelectorAll('input[type="file"]').forEach(inp => {
+    if (inp.files && inp.files[0]) savedFiles[inp.name] = inp.files[0];
+  });
+  container.querySelectorAll('.transition-input').forEach(inp => {
+    if (inp.value) savedPrompts[inp.name] = inp.value;
+  });
   container.innerHTML = '';
   for (let i = 1; i <= frameCount; i++) {
     const item = document.createElement('div');
@@ -285,12 +414,21 @@ function renderFrames() {
     item.innerHTML = `<div class="frame-item-header">帧 ${i}</div>`;
     const drop = makeDrop(`frame_${i}`, `上传图片`, 'image/*');
     item.appendChild(drop);
+    const prevFile = savedFiles['frame_' + i];
+    if (prevFile) {
+      const inp = drop.querySelector('input[type="file"]');
+      const dt = new DataTransfer();
+      dt.items.add(prevFile);
+      inp.files = dt.files;
+      renderDropPreview(drop, 'image/*', prevFile);
+    }
     if (i < frameCount) {
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'transition-input';
       input.name = `transition_prompt_${i}`;
       input.placeholder = `帧${i} → 帧${i+1} 过渡描述`;
+      if (savedPrompts[input.name]) input.value = savedPrompts[input.name];
       item.appendChild(input);
     }
     container.appendChild(item);
@@ -308,7 +446,9 @@ function bindForm() {
 
 async function submitJob() {
   const prompt = $('#prompt').value.trim();
-  if (!prompt && currentMode !== 'multiframe2video') { alert('请输入 Prompt'); return; }
+  if (!prompt && currentMode !== 'multiframe2video') { dmToast('请输入 Prompt'); return; }
+  // 首次提交时请求系统通知权限（用户手势内调用才有效）
+  requestNotifyPermission();
 
   const btn = $('#submitBtn');
   btn.disabled = true;
@@ -346,8 +486,9 @@ async function submitJob() {
     if (res.ok) {
       startPollingJob(res.job_id);
       loadJobs();
+      dmToast('已提交，任务 ' + res.job_id + ' 在后台运行');
     } else {
-      alert(res.error || '提交失败');
+      dmToast(friendlyDreaminaError(res.error) || '提交失败');
     }
   } finally {
     btn.disabled = false;
@@ -390,6 +531,8 @@ function startPollingJob(jobId) {
     if (job.status === 'completed' || job.status === 'failed') {
       clearInterval(pollTimers[jobId]);
       delete pollTimers[jobId];
+      // 系统通知：状态归一为 succeeded/failed 与 Portal 侧 15s 兜底轮询去重
+      notifyJobDone(jobId, job.status === 'completed' ? 'succeeded' : 'failed', '即梦生成');
       loadHistory();
     }
     renderJobs();
@@ -412,6 +555,40 @@ function renderJobsList(jobs) {
   list.innerHTML = all.map(renderJobCard).join('');
   bindRetryButtons();
   bindThumbClicks();
+  bindDownloadAllButtons();
+}
+
+// 一键下载全部：错开 400ms 逐个下载，避免并发打满代理缓冲
+async function blobDownload(url, filename) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  } catch (e) {
+    window.open(url, '_blank'); // 兜底：交给浏览器下载管理器
+  }
+}
+function bindDownloadAllButtons() {
+  $$('.btn-download-all').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const job = _lastJobsForRender.find(j => j.job_id === btn.dataset.job);
+      const files = (job && job.result && job.result.files) || [];
+      if (!files.length) { dmToast('没有可下载的结果'); return; }
+      files.forEach((f, i) => {
+        setTimeout(() => blobDownload('/' + f, f.split('/').pop()), i * 400);
+      });
+      dmToast('开始下载 ' + files.length + ' 个结果…');
+    });
+  });
 }
 
 async function renderJobs() { await loadJobs(); }
@@ -451,6 +628,9 @@ function renderJobCard(job) {
       }
       return `<img class="result-thumb" src="/${f}" data-src="/${f}" alt="result">`;
     }).join('') + '</div>';
+    if (files.length > 1) {
+      resultHtml += `<div class="job-actions"><button class="btn-download-all" data-job="${job.job_id}">下载全部 (${files.length})</button></div>`;
+    }
   }
   let progressHtml = '';
   if (job.total > 1 && (job.status === 'running' || job.status === 'pending')) {
@@ -464,7 +644,10 @@ function renderJobCard(job) {
   }
   let errorHtml = '';
   if (job.status === 'failed' && job.error) {
-    errorHtml = `<div class="job-error ui-job-status-card__error">${escHtml(job.error.slice(0, 200))}</div>`;
+    const friendly = friendlyDreaminaError(job.error);
+    errorHtml = `<div class="job-error ui-job-status-card__error">${escHtml(friendly)}</div>`;
+    // 原始报错默认折叠（翻译后的友好提示已在上方）
+    errorHtml += `<details style="margin:8px 0;font-size:12px;color:#697386"><summary style="cursor:pointer">查看原始报错</summary><pre style="white-space:pre-wrap;margin:6px 0 0;padding:8px;background:#fff1f0;border-radius:6px;color:#b42318">${escHtml(job.error.slice(0, 200))}</pre></details>`;
   }
   let actionsHtml = '';
   if (job.status === 'failed' && job.retryable) {

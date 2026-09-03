@@ -62,6 +62,31 @@ async function dmPollOnce(url) {
   }
 }
 
+// === 任务完成系统通知桥接 ===
+// 实现放在 js/portal-enhancements.js（window.__notifyJobDone / window.__requestNotifyPermission），
+// 本文件先于它加载，提交/轮询发生在用户交互时点，彼时全局已就绪。
+// 防御性降级：若增强脚本未加载，直接请求权限/静默跳过通知。
+function requestNotifyPermission() {
+  if (window.__requestNotifyPermission) return window.__requestNotifyPermission();
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
+}
+function notifyJobDone(jobId, status, label) {
+  if (window.__notifyJobDone) return window.__notifyJobDone(jobId, status, label);
+}
+
+// 友好错误提示（即梦）：把高频失败原因翻译成中文+下一步
+function friendlyDmError(msg) {
+  if (!msg) return '';
+  const m = String(msg);
+  if (/401|Unauthorized|未授权|登录已过期|token.*(expired|invalid)|invalid.*token/i.test(m)) return '❌ 账号登录已过期，请重新登录即梦账号';
+  if (/429|Too Many Requests|频率/i.test(m)) return '⏱️ 请求过于频繁，请稍后再试';
+  if (/403|Forbidden|权限不足/i.test(m)) return '🚫 权限不足，请联系管理员';
+  if (/quota|额度|余额|Credit|balance|不足/i.test(m)) return '💰 额度或余额不足，请检查账号余额';
+  if (/timeout|超时|timed out/i.test(m)) return '⚠️ 请求超时，请稍后重试';
+  if (/queue|排队|busy/i.test(m)) return '⏳ 当前排队人数较多，任务已进入队列，请耐心等待';
+  return m;
+}
+
 function makeDrop(container, name, label, accept, formId) {
   const el = document.createElement('label');
   el.className = 'drop';
@@ -321,6 +346,9 @@ function DreaminaApp() {
       this.isAdmin = me?.role === 'admin';
       await this.checkEnv();
       this.buildSlots();
+      // 表单草稿：刷新不丢参数（提交成功后清除）
+      setTimeout(() => this.restoreDraft(), 100);
+      this.wireDraftAutosave();
       if (this.loggedIn && this.accounts.length) this.refreshAllAccounts();
     },
 
@@ -521,12 +549,22 @@ function DreaminaApp() {
     },
 
     async submit() {
+      // 空 Prompt 前端校验（与独立版行为一致，避免空请求直接打到服务端）
+      const promptEl = document.querySelector('#dm-form textarea[name="prompt"]');
+      if (this.mode !== 'multiframe2video' && !(promptEl?.value || '').trim()) {
+        window.portalToast('请输入提示词', 'danger');
+        return;
+      }
+      // 首次提交时请求系统通知权限（用户手势内调用才有效）
+      requestNotifyPermission();
       this.submitting = true;
       const data = new FormData(document.getElementById('dm-form'));
       data.set('mode', this.mode);
       const res = await api(`/dreamina/api/${this.mode}`, 'POST', data);
-      if (!res || res.error) { this.submitting = false; window.portalToast(res?.error || '提交失败', 'danger'); return; }
+      if (!res || res.error) { this.submitting = false; window.portalToast(friendlyDmError(res?.error) || '提交失败', 'danger'); return; }
       this.submitting = false;
+      this.clearDraft();
+      window.portalToast('已提交，任务 ' + (res.job_id || res.id) + ' 在后台运行');
       this.pollJob(res.job_id || res.id);
     },
 
@@ -538,6 +576,8 @@ function DreaminaApp() {
       const cardId = 'card-' + jobId.slice(0, 8);
       card.id = cardId;
       card.innerHTML = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--info">处理中</span> · Job ${jobId.slice(0, 8)}</div>`;
+      const emptyPh = el.querySelector('.dm-jobs-empty');
+      if (emptyPh) emptyPh.remove();
       el.prepend(card);
       // Guard against stacked loops: loadJobs() can run repeatedly (login poll,
       // manual refresh) and must not spawn a second poller for the same job.
@@ -603,7 +643,14 @@ function DreaminaApp() {
           let html = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--${jobStatusBadgeTone(status)}">${jobStatusLabel(status)}</span> · ${job.task_type || ''} · ${job.done || 0}/${job.total || 0}</div>`;
           if (events) html += `<div class="ui-job-status-card__events">${events}</div>`;
           else html += '<div class="ui-job-status-card__events">等待服务器响应...</div>';
-          if (job.status === 'failed' || job.status === 'cancelled') html += `<div class="ui-job-status-card__error">${escHtml(job.error || '生成失败')}</div>`;
+          if (job.status === 'failed' || job.status === 'cancelled') {
+            // 友好错误提示 + 原始报错折叠（此前即梦错误零翻译、原文直出）
+            const friendly = job.status === 'cancelled' ? '任务已取消，输入和参数已保留。' : (friendlyDmError(job.error) || '生成失败');
+            html += `<div class="ui-job-status-card__error">${escHtml(friendly)}</div>`;
+            if (job.error && friendly !== job.error) {
+              html += `<details style="margin:8px 0;font-size:12px;color:#697386"><summary style="cursor:pointer">查看原始报错</summary><pre style="white-space:pre-wrap;margin:6px 0 0;padding:8px;background:#fff1f0;border-radius:6px;color:#b42318">${escHtml(String(job.error).slice(0, 300))}</pre></details>`;
+            }
+          }
           if (!['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
             html += `<button type="button" class="cancel-job-btn" onclick="window._dmApp.cancelJob('${escHtml(jobId)}','${escHtml(job.status || 'queued')}')">取消任务</button>`;
           }
@@ -618,7 +665,23 @@ function DreaminaApp() {
           filesEl.innerHTML = this.renderFiles(allFiles);
         }
         if (['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
+          // 一键下载全部（仅多结果时显示，错开 400ms 逐个下载）
+          if (allFiles.length > 1 && titleEl && !titleEl.querySelector('.dm-dl-all')) {
+            const dlAll = document.createElement('button');
+            dlAll.type = 'button';
+            dlAll.className = 'cancel-job-btn dm-dl-all';
+            dlAll.textContent = '下载全部 (' + allFiles.length + ')';
+            dlAll.addEventListener('click', () => {
+              allFiles.forEach((f, i) => {
+                setTimeout(() => this._blobDownload('/dreamina/' + f.replace(/^\//, ''), f.split('/').pop()), i * 400);
+              });
+            });
+            titleEl.appendChild(dlAll);
+          }
           stop();
+          // 系统通知：状态归一后与 Portal 15s 兜底轮询按 jobId 去重
+          const st = String(job.status).toLowerCase();
+          notifyJobDone(jobId, st === 'completed' ? 'succeeded' : (st === 'cancelled' || st === 'canceled') ? 'cancelled' : 'failed', '即梦生成');
           if (job.status === 'completed' && this.dirHandle && allFiles.length) {
             await this.saveDreaminaToClient(allFiles);
           } else if (job.status === 'completed' && this.autoDownload && allFiles.length) {
@@ -733,9 +796,20 @@ function DreaminaApp() {
         const url = '/dreamina/' + f.replace(/^\//, '');
         const name = f.split('/').pop();
         const blobClick = `window._dmApp._blobDownload('${url}','${name}');return false`;
-        if (/\.(mp4|mov|webm|avi)$/i.test(f)) return `<video controls src="${url}" style="width:100%;max-height:200px;border-radius:5px;margin-top:6px"></video><a href="${url}" download="${name}" onclick="${blobClick}">下载</a>`;
+        // 视频懒加载（点击占位才拉流）：多并发多视频 eager 渲染会同时
+        // 拉 N 条流，弱机卡顿（seedance/nano-banana 已同款修复）
+        if (/\.(mp4|mov|webm|avi)$/i.test(f)) return `<div class="video-lazy ui-media-placeholder" data-src="${url}" onclick="window._dmApp._loadLazyVideo(this)" style="cursor:pointer"><div>▶ 点击加载视频</div></div><a href="${url}" download="${name}" onclick="${blobClick}">下载</a>`;
         return `<img src="${url}" style="width:100%;max-height:180px;object-fit:contain;border-radius:5px;margin-top:6px;cursor:zoom-in" onclick="openPreview('image','${url}')"><a href="${url}" download="${name}" onclick="${blobClick}">下载</a>`;
       }).join('');
+    },
+
+    _loadLazyVideo(el) {
+      const v = document.createElement('video');
+      v.controls = true;
+      v.autoplay = true;
+      v.src = el.dataset.src;
+      v.style.cssText = 'width:100%;max-height:200px;border-radius:5px;margin-top:6px';
+      el.replaceWith(v);
     },
 
     async loadJobs() {
@@ -1157,13 +1231,29 @@ function DreaminaApp() {
       }
     },
 
-    addFrame() { if (this.frameCount < 9) { this.frameCount++; this.rebuildFrames(); } },
-    removeFrame() { if (this.frameCount > 2) { this.frameCount--; this.rebuildFrames(); } },
+    addFrame() { if (this.frameCount >= 9) { window.portalToast('最多支持 9 帧'); return; } this.frameCount++; this.rebuildFrames(); },
+    removeFrame() { if (this.frameCount <= 2) { window.portalToast('最少需要 2 帧'); return; } this.frameCount--; this.rebuildFrames(); },
     rebuildFrames() {
       const c = document.getElementById('dm-framesContainer');
       if (!c) return;
+      // 增减帧重建容器前先快照已上传文件，重建后恢复（否则点一下 +/− 全丢）
+      const saved = {};
+      c.querySelectorAll('input[type="file"]').forEach(inp => {
+        if (inp.files && inp.files[0]) saved[inp.name] = inp.files[0];
+      });
       c.innerHTML = '';
-      for (let i = 1; i <= this.frameCount; i++) makeDrop(c, `frame_${i}`, `帧${i}`, 'image/*', 'dm-form');
+      for (let i = 1; i <= this.frameCount; i++) {
+        makeDrop(c, `frame_${i}`, `帧${i}`, 'image/*', 'dm-form');
+        const prev = saved['frame_' + i];
+        if (prev) {
+          const drop = c.lastElementChild;
+          const input = drop.querySelector('input[type="file"]');
+          const dt = new DataTransfer();
+          dt.items.add(prev);
+          input.files = dt.files;
+          showPreview(drop, input.name, URL.createObjectURL(prev), prev.name);
+        }
+      }
     },
 
     buildSlots() {
@@ -1181,8 +1271,63 @@ function DreaminaApp() {
           const input = drop.querySelector('input[type="file"]');
           if (input && !input.dataset.wired) { input.dataset.wired = '1'; wireFileDrop(drop, input, input.name); }
         });
+        // 静态首帧/尾帧 drop 补「移除」按钮（makeDrop 动态槽位自带，这两个是写死的）
+        ['first_frame', 'last_frame'].forEach(name => {
+          const input = document.querySelector('#tab-dreamina input[name="' + name + '"]');
+          const drop = input && input.closest('.drop');
+          if (!input || !drop || drop.querySelector('.removeMediaBtn')) return;
+          const btn = document.createElement('button');
+          btn.className = 'removeMediaBtn'; btn.type = 'button'; btn.textContent = '移除';
+          btn.addEventListener('click', e => {
+            e.preventDefault(); e.stopPropagation();
+            input.value = '';
+            drop.classList.remove('hasPreview');
+            drop.querySelector('.preview')?.remove();
+            drop.querySelector('span').textContent = '未上传';
+          });
+          drop.appendChild(btn);
+        });
       });
-    }
+    },
+
+    // === 表单草稿持久化：刷新不丢参数 ===
+    restoreDraft() {
+      try {
+        const d = JSON.parse(localStorage.getItem('aiPortal.draft.dreamina') || 'null');
+        if (!d) return;
+        Object.keys(d).forEach(name => {
+          const el = document.querySelector('#dm-form [name="' + name + '"]');
+          if (!el || el.type === 'file') return;
+          if (el.type === 'checkbox') el.checked = !!d[name];
+          else el.value = d[name];
+        });
+      } catch (e) { /* 草稿恢复尽力而为 */ }
+    },
+    wireDraftAutosave() {
+      const save = () => {
+        try {
+          const out = {};
+          document.querySelectorAll('#dm-form [name]').forEach(el => {
+            if (el.type === 'file') return;
+            if (el.type === 'checkbox') out[el.name] = el.checked ? 1 : 0;
+            else out[el.name] = el.value || '';
+          });
+          localStorage.setItem('aiPortal.draft.dreamina', JSON.stringify(out));
+        } catch (e) {}
+      };
+      const root = document.getElementById('tab-dreamina');
+      if (root) { root.addEventListener('input', save); root.addEventListener('change', save); }
+    },
+    clearDraft() { try { localStorage.removeItem('aiPortal.draft.dreamina'); } catch (e) {} },
+
+    async copyAccountLoginUrl(url) {
+      try {
+        await navigator.clipboard.writeText(url);
+        window.portalToast('已复制登录链接，请粘贴到无痕窗口打开', 'success');
+      } catch (e) {
+        window.portalToast('复制失败，请点输入框手动全选复制', 'danger');
+      }
+    },
   };
 }
 
@@ -1425,7 +1570,22 @@ function StatsApp() {
     async loadPlatformStatus() {
       const res = await api('/api/platform/status');
       if (!res?.ok) return;
-      document.getElementById('lanInfo').textContent = `LAN: ${location.protocol}//${res.lan_ip}:${res.portal_port}`;
+      const lan = document.getElementById('lanInfo');
+      const lanUrl = `${location.protocol}//${res.lan_ip}:${res.portal_port}/`;
+      lan.textContent = `LAN: ${location.protocol}//${res.lan_ip}:${res.portal_port} 📋`;
+      lan.title = '点击复制当前访问地址（IP 每周可能变化，同事分享用）';
+      lan.style.cursor = 'pointer';
+      if (!lan.dataset.copyWired) {
+        lan.dataset.copyWired = '1';
+        lan.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(lanUrl);
+            window.portalToast('已复制当前访问地址：' + lanUrl, 'success');
+          } catch (e) {
+            window.portalToast('复制失败，请手动记录：' + lanUrl, 'danger');
+          }
+        });
+      }
       document.getElementById('barStats').textContent = `今日: ${this.todayJobs} jobs`;
     },
 
@@ -1970,8 +2130,32 @@ function VolcenginePortraitApp() {
       this.loadGroups();
       this.loadJobs();
       this.loadOutputDir();
+      // 表单草稿：刷新不丢参数（提交成功后清除）
+      this.restoreDraft();
+      setInterval(() => this.saveDraft(), 5000);
       setInterval(() => { this.runtimeTick = (this.runtimeTick + 1) % 1e9; }, 1000);
     },
+
+    // === 表单草稿持久化（v-model 状态字段）===
+    restoreDraft() {
+      try {
+        const d = JSON.parse(localStorage.getItem('aiPortal.draft.portrait') || 'null');
+        if (!d) return;
+        ['prompt', 'genAssetId', 'model', 'duration', 'resolution', 'ratio', 'repeat'].forEach(k => {
+          if (d[k] !== undefined) this[k] = d[k];
+        });
+      } catch (e) { /* 草稿恢复尽力而为 */ }
+    },
+    saveDraft() {
+      try {
+        const d = {
+          prompt: this.prompt, genAssetId: this.genAssetId, model: this.model,
+          duration: this.duration, resolution: this.resolution, ratio: this.ratio, repeat: this.repeat,
+        };
+        localStorage.setItem('aiPortal.draft.portrait', JSON.stringify(d));
+      } catch (e) {}
+    },
+    clearDraft() { try { localStorage.removeItem('aiPortal.draft.portrait'); } catch (e) {} },
 
     formatRuntime(job) {
       const _ = this.runtimeTick;
@@ -2338,6 +2522,8 @@ function VolcenginePortraitApp() {
       if (!this.genAssetId) { this.statusText = '请选择资产 ID（图1）'; return; }
       if (!this.prompt) { this.statusText = '请输入 Prompt'; return; }
       if (this.submitting) return;
+      // 首次提交时请求系统通知权限（用户手势内调用才有效）
+      requestNotifyPermission();
       this.submitting = true; this.statusText = '提交中...'; this.events = ''; this.results = [];
 
       let res;
@@ -2371,9 +2557,10 @@ function VolcenginePortraitApp() {
         this.submitting = false;
       }
       if (res?.ok) {
-        this.statusText = '已提交，任务在后台运行';
+        this.statusText = '已提交，任务 ' + res.job_id + ' 在后台运行';
         this._activeVpJobId = res.job_id;
         this._activeVpStatus = '';
+        this.clearDraft();
         this.loadJobs();
         this.pollJob(res.job_id);
       } else {
@@ -2409,7 +2596,11 @@ function VolcenginePortraitApp() {
             if (!this.results.find(x => x.url === url)) this.results.push({ url, filename: r.filename });
           }
         }
-        if (['succeeded', 'failed', 'cancelled', 'canceled'].includes(job.status)) break;
+        if (['succeeded', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
+          // 系统通知：与 Portal 15s 兜底轮询按 jobId 去重
+          notifyJobDone(jobId, String(job.status).toLowerCase() === 'canceled' ? 'cancelled' : String(job.status).toLowerCase(), '人像视频');
+          break;
+        }
         await new Promise(r => setTimeout(r, 3000));
       }
       this._activeVpJobId = null;
@@ -2692,6 +2883,16 @@ function HistoryApp() {
       }
     },
 
+    // 报错助手是独立 iframe 应用，无法跨帧预填输入框：
+    // 复制错误文本 + 切到报错助手 tab，用户粘贴即查。
+    async openRagWithError(text) {
+      const t = String(text || '').slice(0, 4000);
+      await this._copyText(t);
+      const btn = document.querySelector('.app-tab[data-tab="rag-assistant"]');
+      if (btn) activatePortalTab(btn);
+      window.portalToast('已复制错误信息，粘贴到报错助手输入框即可分析');
+    },
+
     async _copyText(text) {
       try {
         await navigator.clipboard.writeText(text);
@@ -2742,6 +2943,8 @@ function DirectorApp() {
     images: [],
     collapsed: false,
     async init() {
+      // 窄屏（手机/平板竖屏）默认收起导演台：320px 固定侧栏会遮住主内容
+      if (window.innerWidth < 960) this.collapsed = true;
       document.body.classList.toggle("director-collapsed", this.collapsed);
       document.body.classList.toggle("director-open", !this.collapsed);
       try {

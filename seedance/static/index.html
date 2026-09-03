@@ -125,9 +125,10 @@
               <label>并发数<input name="concurrency" type="number" min="1" max="20" value="1"></label>
             </div>
             <div class="grid2">
-              <label>轮询秒<input name="poll_interval" type="number" min="3" max="120" value="10"></label>
+              <label>后端轮询秒<input name="poll_interval" type="number" min="3" max="120" value="10"></label>
               <label>超时秒<input name="timeout" type="number" min="60" value="3600"></label>
             </div>
+            <p class="hint">后端轮询秒是服务端查状态的间隔（3-120），页面实时刷新固定 2.5 秒，无需调整。</p>
             <div class="toggles">
               <label><input name="vary_seed" type="checkbox" checked> 每次 seed +1</label>
             </div>
@@ -194,9 +195,13 @@
             </template>
           </div>
           <div v-show="wsTab==='jobs'">
-            <!-- Active polling display (during job execution) -->
+            <!-- Active polling display (during job execution).
+                 任务终态后 statusText 变为「上次任务：…」摘要，此面板保留
+                 结果与下载按钮；「← 返回历史」切回历史列表视图。 -->
             <div v-if="statusText !== '空闲'">
-              <div class="resultHeader"><h2>运行中</h2><span>{{ statusText }}</span></div>
+              <div class="resultHeader"><h2>{{ statusText.indexOf('上次任务') === 0 ? '上次任务' : '运行中' }}</h2><span>{{ statusText }}</span>
+                <button v-if="statusText.indexOf('上次任务') === 0" @click="backToHistory()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">← 返回历史</button>
+              </div>
               <div class="results" id="sd-results"></div>
               <pre id="sd-events">{{ eventsText }}</pre>
             </div>

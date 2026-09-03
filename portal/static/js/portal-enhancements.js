@@ -244,17 +244,100 @@
   }
 
   const specs = [
-    { tab: 'seedance', app: 'seedance', url: '/seedance/api/jobs' },
-    { tab: 'nb', app: 'nano-banana', url: '/nano-banana/api/jobs' },
-    { tab: 'dreamina', app: 'dreamina', url: '/dreamina/api/jobs' },
-    { tab: 'volcengine-portrait', app: 'volcengine-portrait', url: '/volcengine-portrait/api/jobs' },
+    { tab: 'seedance', app: 'seedance', label: '视频生成', url: '/seedance/api/jobs' },
+    { tab: 'nb', app: 'nano-banana', label: '图片生成', url: '/nano-banana/api/jobs' },
+    { tab: 'dreamina', app: 'dreamina', label: '即梦生成', url: '/dreamina/api/jobs' },
+    { tab: 'volcengine-portrait', app: 'volcengine-portrait', label: '人像视频', url: '/volcengine-portrait/api/jobs' },
   ];
+
+  // === 任务完成系统通知（15s 粒度的兜底检测）===
+  // 子应用自身 2.5s/3s 轮询已先弹通知时，按 jobId 去重跳过（同源
+  // localStorage 共享）。本检测兜底覆盖：iframe 旧缓存、Portal 原生
+  // 面板（即梦/人像）未弹、以及页面在前台但子应用 iframe 未挂载的
+  // 情况。Notification 需要安全上下文：生产 HTTPS（自签证书点过
+  // 「继续访问」后算安全上下文）可用，HTTP 测试环境自动降级为标题闪烁。
+  const _notifySeenStates = {}; // app -> {jobId: status}
+  let _notifiedJobs = null;
+  function _notifyLoadSeen() {
+    if (_notifiedJobs) return _notifiedJobs;
+    try { _notifiedJobs = JSON.parse(localStorage.getItem('aiPortal.notifiedJobs') || '{}') || {}; }
+    catch (e) { _notifiedJobs = {}; }
+    return _notifiedJobs;
+  }
+  function normalizeNotifyStatus(s) {
+    if (['succeeded', 'success', 'completed'].includes(s)) return 'succeeded';
+    if (['failed', 'fail', 'failure'].includes(s)) return 'failed';
+    if (['cancelled', 'canceled'].includes(s)) return 'cancelled';
+    return s;
+  }
+  window.__requestNotifyPermission = function () {
+    try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
+  };
+  window.__notifyJobDone = function (jobId, status, label) {
+    try {
+      if (jobId === undefined || jobId === null || jobId === '') return;
+      const norm = normalizeNotifyStatus(String(status));
+      const map = _notifyLoadSeen();
+      if (map[jobId] === norm) return; // 已通知过（含子应用侧先弹）
+      map[jobId] = norm;
+      const keys = Object.keys(map);
+      if (keys.length > 200) keys.slice(0, keys.length - 200).forEach((k) => { delete map[k]; });
+      localStorage.setItem('aiPortal.notifiedJobs', JSON.stringify(map));
+      const ok = norm === 'succeeded';
+      const title = (label || '生成任务') + (ok ? ' 已完成' : ' 已结束');
+      const body = ok ? '结果已就绪，回到页面即可查看和下载。' : '任务以「' + norm + '」结束，请回到页面查看详情。';
+      if ('Notification' in window && Notification.permission === 'granted') {
+        try {
+          const n = new Notification(title, { body: body, tag: 'ai-portal-job-done' });
+          n.onclick = () => { try { window.focus(); } catch (e) {} n.close(); };
+        } catch (e) { /* 构造失败时降级标题闪烁 */ }
+      }
+      _notifyFlashTitle(title);
+    } catch (e) { /* 通知尽力而为，绝不打断主流程 */ }
+  };
+  window.notifyJobDone = window.__notifyJobDone;
+  let _notifyFlashTimer = null;
+  function _notifyFlashTitle(message) {
+    try {
+      const base = document.title;
+      let count = 0;
+      const tick = () => {
+        count += 1;
+        document.title = (count % 2 === 1) ? ('✅ ' + message + ' — ' + base) : base;
+        if (count >= 10) { clearInterval(_notifyFlashTimer); _notifyFlashTimer = null; document.title = base; }
+      };
+      if (_notifyFlashTimer) clearInterval(_notifyFlashTimer);
+      _notifyFlashTimer = setInterval(tick, 1500);
+      tick();
+    } catch (e) {}
+  }
 
   async function refresh() {
     ensureBadges();
     await Promise.all(specs.map(async (spec) => {
-      const count = await countActive(spec);
+      let list = [];
+      try {
+        const res = await api(spec.url);
+        list = Array.isArray(res) ? res : (res?.jobs || res?.items || []);
+      } catch (e) { list = []; }
+      if (!Array.isArray(list)) return;
+      const count = list.filter((job) => job && isActive(job.status)).length;
       setBadge(spec.tab, count);
+      // 终态转场检测：上一轮 active、这一轮终态 → 弹系统通知
+      const prev = _notifySeenStates[spec.app] || {};
+      const next = {};
+      for (const job of list) {
+        if (!job) continue;
+        const id = job.id !== undefined && job.id !== null ? String(job.id) : (job.job_id !== undefined ? String(job.job_id) : '');
+        if (!id) continue;
+        const status = String(job.status || '').toLowerCase();
+        next[id] = status;
+        const prevStatus = prev[id];
+        if (prevStatus !== undefined && isActive(prevStatus) && !isActive(status)) {
+          window.__notifyJobDone(id, status, spec.label);
+        }
+      }
+      _notifySeenStates[spec.app] = next;
     }));
   }
 

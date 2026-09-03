@@ -173,7 +173,8 @@
           </select>
           <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': kind==='all'}" @click="kind='all';reload()">全部</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='image'}" @click="kind='image';reload()">图片</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='video'}" @click="kind='video';reload()">视频</button><button class="ui-segment__button" type="button" :class="{'is-active': kind==='agent'}" @click="kind='agent';reload()">Agent</button></div>
           <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': status==='all'}" @click="status='all';reload()">全部状态</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='done'}" @click="status='done';reload()">成功</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='failed'}" @click="status='failed';reload()">失败</button><button class="ui-segment__button" type="button" :class="{'is-active': status==='running'}" @click="status='running';reload()">生成中</button></div>
-          <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': days===7}" @click="days=7;reload()">近7天</button><button class="ui-segment__button" type="button" :class="{'is-active': days===30}" @click="days=30;reload()">近30天</button><button class="ui-segment__button" type="button" :class="{'is-active': days===90}" @click="days=90;reload()">近90天</button></div>
+          <!-- 服务端历史保留 30 天（portal/app.py HISTORY_DAYS），「近90天」选项移除避免误导 -->
+          <div class="seg ui-segment"><button class="ui-segment__button" type="button" :class="{'is-active': days===7}" @click="days=7;reload()">近7天</button><button class="ui-segment__button" type="button" :class="{'is-active': days===30}" @click="days=30;reload()">近30天</button></div>
           </div>
           <div class="hist-filters__row ui-filter-bar__row hist-filters__search-row">
           <input class="ctrl hist-search" v-model="q" placeholder="搜索提示词 / 任务编号" @keyup.enter="reload()">
@@ -252,6 +253,7 @@
             </dl>
             <div class="hist-errbox" v-if="detail.error">{{ detail.error }}</div>
             <div class="hist-errbox" v-else-if="detail.status==='failed'">未记录详细错误（可能是旧任务，采集修复前的记录）</div>
+            <button type="button" class="hist-reuse" v-if="detail.error" @click="openRagWithError(detail.error)">🤖 用报错助手分析这个错误</button>
             <div class="hist-results" v-if="detail.results && detail.results.length">
               <div class="hist-result-row" v-for="(r, i) in detail.results" :key="r.url">
                 <span class="hist-result-kind">{{ r.kind==='video' ? '视频' : '图片' }} {{ i + 1 }}</span>
@@ -322,6 +324,7 @@
               <div v-if="accountLoginUrl && accountLoginUrl.id === acc.id" class="account-login-url">
                 <div class="account-login-url__hint">请在无痕/隐私窗口中打开以下链接登录：</div>
                 <input type="text" :value="accountLoginUrl.url" readonly @click="$event.target.select()">
+                <button type="button" class="btn-icon" title="复制链接（粘贴到无痕窗口打开）" @click="copyAccountLoginUrl(accountLoginUrl.url)">⧉</button>
               </div>
             </div>
           </div>
@@ -467,7 +470,7 @@
           </div>
           <div v-show="wsTab==='jobs'">
             <div class="resultHeader"><h2>任务</h2><span class="running-count">{{ runningCount ? runningCount + ' 进行中' : '' }}</span></div>
-            <div class="results" id="dm-jobsList"></div>
+            <div class="results" id="dm-jobsList"><p class="ui-empty ui-empty--compact dm-jobs-empty">暂无任务，提交后这里显示进度</p></div>
           </div>
           <div v-show="wsTab==='history'">
             <div class="resultHeader">
@@ -802,8 +805,9 @@
       <section class="stats-panel ui-panel ui-admin-page__section">
         <h2>今日用量</h2>
         <div class="stats-row ui-kpi-grid">
-          <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ todayJobs }}</div><div class="stat-label ui-kpi__label">Today Jobs</div></div>
-          <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ todayRequests }}</div><div class="stat-label ui-kpi__label">Today Requests</div></div>
+          <!-- 口径说明：KPI 是全站合计，下方明细对普通用户只显示本人（后端角色过滤） -->
+          <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ todayJobs }}</div><div class="stat-label ui-kpi__label">今日任务（全站）</div></div>
+          <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ todayRequests }}</div><div class="stat-label ui-kpi__label">今日请求（全站）</div></div>
         </div>
       </section>
       <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">

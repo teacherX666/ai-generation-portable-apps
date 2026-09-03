@@ -12,6 +12,68 @@ const APP_PATH = IN_PORTAL ? '/seedance' : '';
 const TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'failure', 'cancelled', 'canceled']);
 
 // ============================================================
+// 任务完成系统通知（浏览器 Notification + 标题闪烁，按 jobId 去重）
+// Portal 反向代理下所有页面同源、localStorage 共享 → 子应用与 Portal
+// 双侧检测到同一任务终态时只弹一次。Notification 需要安全上下文：
+// 生产 HTTPS（自签证书点过「继续访问」后算安全上下文）可用，HTTP
+// 测试环境自动降级为标题闪烁。
+// ============================================================
+let _notifiedJobs = null;
+function _notifyLoadSeen() {
+  if (_notifiedJobs) return _notifiedJobs;
+  try { _notifiedJobs = JSON.parse(localStorage.getItem('aiPortal.notifiedJobs') || '{}') || {}; }
+  catch (e) { _notifiedJobs = {}; }
+  return _notifiedJobs;
+}
+function requestNotifyPermission() {
+  // 必须在用户手势（提交点击）内调用；浏览器对每个站点只提示一次
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
+}
+function notifyJobDone(jobId, status, label) {
+  try {
+    if (jobId === undefined || jobId === null || jobId === '') return;
+    // 状态归一化：与 Portal 侧 15s 兜底轮询用同一套 token 去重
+    const s = String(status).toLowerCase();
+    const norm = ['succeeded', 'success', 'completed'].includes(s) ? 'succeeded'
+      : ['failed', 'fail', 'failure'].includes(s) ? 'failed'
+      : ['cancelled', 'canceled'].includes(s) ? 'cancelled' : s;
+    const map = _notifyLoadSeen();
+    if (map[jobId] === norm) return; // 已通知过（含 Portal 侧先弹）
+    map[jobId] = norm;
+    const keys = Object.keys(map);
+    if (keys.length > 200) keys.slice(0, keys.length - 200).forEach(k => { delete map[k]; });
+    localStorage.setItem('aiPortal.notifiedJobs', JSON.stringify(map));
+    const ok = norm === 'succeeded';
+    const title = (label || '生成任务') + (ok ? ' 已完成' : ' 已结束');
+    const body = ok ? '结果已就绪，回到页面即可查看和下载。' : '任务以「' + norm + '」结束，请回到页面查看详情。';
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification(title, { body: body, tag: 'ai-portal-job-done' });
+        n.onclick = function () { try { window.focus(); } catch (e) {} n.close(); };
+      } catch (e) { /* 构造失败时降级标题闪烁 */ }
+    }
+    _notifyFlashTitle(title);
+  } catch (e) { /* 通知尽力而为，绝不打断主流程 */ }
+}
+let _notifyFlashTimer = null;
+function _notifyFlashTitle(message) {
+  try {
+    // iframe 模式下闪烁顶层标题（同源可访问 parent），独立模式闪自己
+    const doc = (window.parent && window.parent !== window) ? window.parent.document : document;
+    const base = doc.title;
+    let count = 0;
+    const tick = () => {
+      count += 1;
+      doc.title = (count % 2 === 1) ? ('✅ ' + message + ' — ' + base) : base;
+      if (count >= 10) { clearInterval(_notifyFlashTimer); _notifyFlashTimer = null; doc.title = base; }
+    };
+    if (_notifyFlashTimer) clearInterval(_notifyFlashTimer);
+    _notifyFlashTimer = setInterval(tick, 1500);
+    tick();
+  } catch (e) {}
+}
+
+// ============================================================
 // UTILITIES
 // ============================================================
 function workspaceId() {
@@ -88,6 +150,20 @@ function jobStatusClass(status) {
 function jobStatusBadgeTone(status) {
   const state = jobStatusClass(status);
   return state === 'is-success' ? 'success' : state === 'is-failed' ? 'danger' : state === 'is-pending' ? 'warning' : 'info';
+}
+
+// 友好错误提示：把高频失败类型翻译成中文+下一步。返回原文兜底时
+// 与 job.errors[0] 严格相等，调用方据此决定是否 escHtml。
+function friendlyJobErrorHint(job) {
+  const errors = (job && job.errors) || [];
+  if (!errors.length) return '';
+  const firstError = errors[0];
+  if (firstError.includes('[auth_failed]') || firstError.includes('401')) return '❌ API Key 无效或已过期，请检查配置';
+  if (firstError.includes('[rate_limited]') || firstError.includes('429')) return '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
+  if (firstError.includes('[permission_denied]') || firstError.includes('403')) return '🚫 权限不足或配额已用完，请联系管理员';
+  if (firstError.includes('[server_error]') || /HTTP 5\d\d/.test(firstError)) return '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
+  if (firstError.includes('[network_error]')) return '🌐 网络连接失败，请检查网络或 API 地址';
+  return firstError;
 }
 
 // ============================================================
@@ -1045,6 +1121,8 @@ function SeedanceApp() {
         if (this.activeTabId === ownerWorkspaceId) this[name] = value;
       };
       if (this.submitting) return;
+      // 首次提交时请求系统通知权限（用户手势内调用才有效）
+      requestNotifyPermission();
       const submissionToken = (this._topicSubmissionSeq[ownerWorkspaceId] || 0) + 1;
       this._topicSubmissionSeq[ownerWorkspaceId] = submissionToken;
       const delivery = {
@@ -1084,16 +1162,22 @@ function SeedanceApp() {
       let res;
       try {
         res = await api(APP_PATH + '/api/jobs', 'POST', data, ownerWorkspaceId);
-      } finally {
+      } catch (e) {
         setOwnerState('submitting', false);
+        setOwnerState('statusText', '提交失败：网络异常，请重试');
+        return;
       }
       if (!res || res.error) {
+        setOwnerState('submitting', false);
         setOwnerState('statusText', res?.error || '提交失败');
         return;
       }
       if (!ownerExists() || ownerCache()._submissionToken !== submissionToken) return;
       ownerCache()._activeJobId = res.job_id;
-      setOwnerState('statusText', '已提交，任务在后台运行');
+      // submitting 保持 true 直到任务终态：防止第二次提交 bump token 后
+      // 上一个任务的轮询静默失效（用户误以为第一个任务死了）。想同时
+      // 跑多个任务请开新主题标签页。
+      setOwnerState('statusText', '已提交，任务 ' + res.job_id + ' 在后台运行');
       this.loadJobs();
       this.pollJob(res.job_id, ownerWorkspaceId, submissionToken, delivery);
     },
@@ -1131,6 +1215,9 @@ function SeedanceApp() {
       // cleared JOBS) exits cleanly instead of looping forever on "unknown".
       const MAX_FAILS = 15;
       let consecutiveFails = 0;
+      // 退出时保留的终态文案：非空则不再回「空闲」，避免失败提示
+      // 转瞬即逝（此前 break 后紧跟 setStatus('空闲') 会把错误抹掉）。
+      let finalStatus = null;
 
       while (true) {
         if (!isCurrent()) break;
@@ -1139,13 +1226,13 @@ function SeedanceApp() {
         if (r.kind === 'gone') {
           // Job no longer exists server-side (restart). Refresh the jobs list so
           // any completed result recorded in activity can still surface there.
-          setStatus('任务已失效(服务可能重启过),请查看活动记录或重新提交');
+          finalStatus = '任务已失效(服务可能重启过)，请查看活动记录或重新提交';
           break;
         }
         if (r.kind === 'error') {
           consecutiveFails++;
           if (consecutiveFails >= MAX_FAILS) {
-            setStatus('网络不稳定,已停止刷新 · 稍后可重新提交');
+            finalStatus = '网络不稳定，已停止刷新 · 稍后可重新提交';
             break;
           }
           // Exponential backoff capped at 10s, starting from the 2.5s cadence.
@@ -1173,29 +1260,39 @@ function SeedanceApp() {
         }
 
         if (TERMINAL_STATUSES.has((job.status || '').toLowerCase())) {
+          // 系统通知：确认终态后立即弹（去重后与 Portal 侧 15s 兜底轮询不重复）
+          notifyJobDone(jobId, job.status, '视频生成');
           // Preserved terminal-status behavior from original pollJob:
           //   - job.status === 'succeeded' + dirHandle → saveToClient
           //   - job.status === 'succeeded' + autoDownload → triggerDownloads
           // Delivery settings are captured at submit time. Reading this.* here
           // would use whichever topic happens to be active when the task ends.
+          let deliveryNote = '';
           if (job.status === 'succeeded' && delivery?.dirHandle) {
             const saved = await this.saveToClient(job, delivery.dirHandle);
-            if (saved) setStatus('已保存 ' + saved + ' 个文件到 ' + delivery.outputDir);
+            if (saved) deliveryNote = ' · 已保存 ' + saved + ' 个文件到 ' + delivery.outputDir;
           } else if (job.status === 'succeeded' && delivery?.autoDownload) {
             const downloaded = this.triggerDownloads(job);
-            if (downloaded) setStatus('已下载 ' + downloaded + ' 个文件');
+            if (downloaded) deliveryNote = ' · 已下载 ' + downloaded + ' 个文件';
           }
-          setSubmitting(false);
-          setStatus('空闲');
+          // 终态摘要常驻状态栏（不再秒变「空闲」把错误提示抹掉），
+          // 结果卡保留可下载，下一轮提交时 submit 会清空重建。
+          const s = String(job.status || '').toLowerCase();
+          if (['succeeded', 'success', 'completed'].includes(s)) {
+            finalStatus = '上次任务：已完成' + ((job.results || []).length ? '（' + job.results.length + ' 个结果）' : '') + deliveryNote;
+          } else if (s === 'failed' || s === 'failure') {
+            finalStatus = '上次任务：失败 · ' + String(friendlyJobErrorHint(job) || '未记录原因').slice(0, 80);
+          } else {
+            finalStatus = '上次任务：已取消';
+          }
           break;
         }
         await new Promise(r => setTimeout(r, 2500));
       }
       // Clear status + submitting on ALL exit paths (terminal AND null-break).
-      // The terminal branch above already sets these for clarity, but this
-      // catches the `if (!job) break;` early exit that otherwise leaves stale
-      // progress text and a locked submit button.
-      setStatus('空闲');
+      // finalStatus 非空时保留终态文案（gone / 网络中断 / 成功 / 失败），
+      // 仅「非终态提前退出」（如切 tab 后 token 失配）回到空闲。
+      setStatus(finalStatus || '空闲');
       setSubmitting(false);
       // Original pollJob always refreshed the jobs list on exit — keep that.
       this.loadJobs();
@@ -1276,23 +1373,9 @@ function SeedanceApp() {
           : '<div class="ui-job-status-card__events">等待服务器响应...</div>';
 
         // 友好错误提示：识别错误类型，显示用户友好的消息
-        let errorHint = '';
-        if (job.errors && job.errors.length > 0) {
-          const firstError = job.errors[0];
-          if (firstError.includes('[auth_failed]') || firstError.includes('401')) {
-            errorHint = '❌ API Key 无效或已过期，请检查配置';
-          } else if (firstError.includes('[rate_limited]') || firstError.includes('429')) {
-            errorHint = '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
-          } else if (firstError.includes('[permission_denied]') || firstError.includes('403')) {
-            errorHint = '🚫 权限不足或配额已用完，请联系管理员';
-          } else if (firstError.includes('[server_error]') || /HTTP 5\d\d/.test(firstError)) {
-            errorHint = '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
-          } else if (firstError.includes('[network_error]')) {
-            errorHint = '🌐 网络连接失败，请检查网络或 API 地址';
-          } else {
-            errorHint = escHtml(firstError);
-          }
-        }
+        // （friendlyJobErrorHint 返回原文兜底时与 job.errors[0] 相等，需转义）
+        let errorHint = friendlyJobErrorHint(job);
+        if (errorHint && errorHint === (job.errors || [])[0]) errorHint = escHtml(errorHint);
 
         statusBox.innerHTML =
           '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">'
@@ -1300,6 +1383,9 @@ function SeedanceApp() {
           + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0)
           + (jobId && !TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
              ? '<button type="button" class="cancel-job-btn" onclick="window._app_sd.cancelJob(\'' + escHtml(jobId) + '\',\'' + escHtml(job.status || 'queued') + '\')">取消任务</button>'
+             : '')
+          + (jobId && (job.results || []).length && TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
+             ? '<button type="button" class="cancel-job-btn" onclick="window._app_sd.downloadAll(\'' + escHtml(jobId) + '\')">下载全部 (' + job.results.length + ')</button>'
              : '')
           + '</div>'
           + (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '')
@@ -1329,7 +1415,12 @@ function SeedanceApp() {
             + '</article>');
         }
         for (let ei = prev.errorsCount; ei < (job.errors || []).length; ei++) {
-          resultBox.insertAdjacentHTML('beforeend', '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(job.errors[ei]) + '</article>');
+          // 原始报错默认折叠，友好提示已在上方状态卡展示
+          resultBox.insertAdjacentHTML('beforeend',
+            '<details class="ui-raw-error" style="margin:8px 0;font-size:12px;color:#697386">'
+            + '<summary style="cursor:pointer">查看原始报错 ' + (ei + 1) + '/' + (job.errors || []).length + '</summary>'
+            + '<pre style="white-space:pre-wrap;margin:6px 0 0;padding:8px;background:#fff1f0;border-radius:6px;color:#b42318">'
+            + escHtml(job.errors[ei]) + '</pre></details>');
         }
 
         // Auto-preview only the FIRST finished video, and only once per job
@@ -1382,6 +1473,34 @@ function SeedanceApp() {
         this._blobDownload(url, filename);
       }
       return urls.length;
+    },
+
+    // 终态摘要 → 历史列表视图：同步写回 tab 缓存，避免切走再切回时
+    // loadTargetTabState 用缓存里的旧摘要覆盖
+    backToHistory() {
+      this.statusText = '空闲';
+      this.eventsText = '';
+      this._renderedJobId = null;
+      const cache = this._tabStateCache[this.activeTabId];
+      if (cache) { cache.statusText = '空闲'; cache.eventsText = ''; delete cache._latestJob; }
+      this.loadJobs();
+    },
+
+    // 一键下载全部：错开 400ms 逐个下载，避免并发打满 Portal 代理缓冲
+    downloadAll(jobId) {
+      const cache = this._tabStateCache[this.activeTabId];
+      const job = (this.jobs || []).find(j => (j.id || j.job_id) === jobId)
+        || (cache && cache._latestJob && (cache._latestJob.id === jobId || cache._latestJob.job_id === jobId) && cache._latestJob);
+      if (!job || !(job.results || []).length) {
+        this.statusText = '没有可下载的结果';
+        return;
+      }
+      job.results.forEach((r, i) => {
+        if (r.download_url) {
+          setTimeout(() => this._blobDownload(APP_PATH + r.download_url, r.filename || ('result-' + (r.index ?? i))), i * 400);
+        }
+      });
+      this.statusText = '开始下载 ' + job.results.length + ' 个结果…';
     },
 
     async _blobDownload(url, filename) {

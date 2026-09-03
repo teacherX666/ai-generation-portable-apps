@@ -166,7 +166,7 @@
             </section>
 
             <div class="toggles">
-              <label><input name="skip_error" type="checkbox"> 跳过错误</label>
+              <label title="勾选后某个并发失败不影响其余并发继续，不勾选则一个失败全部停止"><input name="skip_error" type="checkbox"> 跳过错误</label>
               <label><input name="vary_seed" type="checkbox" checked :disabled="!supportsSeed"> seed +1</label>
             </div>
             <label>输出名
@@ -187,7 +187,7 @@
               </label>
             </div>
             <div class="grid2">
-              <label>轮询秒
+              <label>后端轮询秒
                 <input name="poll_interval" type="number" min="3" max="120" value="10">
               </label>
               <label>超时秒
@@ -240,7 +240,7 @@
         <!-- Reference Images -->
         <div class="panel ui-panel">
           <h2>参考图</h2>
-          <p class="hint" v-if="maxReferenceImages < 14">当前模型最多支持 {{ maxReferenceImages }} 张参考图。</p>
+          <p class="hint" v-if="maxReferenceImages < 14">当前模型最多支持 {{ maxReferenceImages }} 张参考图，超出部分已隐藏。</p>
           <p class="hint">text2img 模式带了参考图时，会自动按 img2img 发送。</p>
           <div class="uploadGrid refs" id="nb-imageRefs"></div>
         </div>
@@ -259,7 +259,8 @@
           <!-- Jobs Tab -->
           <div v-show="wsTab==='jobs'">
             <div class="resultHeader"><h2>结果</h2><span>{{ statusText }}</span></div>
-            <div class="results" id="nb-results"></div>
+            <!-- 静态空状态：首次渲染时被 _renderJobToDom 的 innerHTML='' 清掉即可 -->
+            <div class="results" id="nb-results"><p class="hint">暂无生成记录，提交任务后自动显示进度和结果。</p></div>
             <pre id="nb-events">{{ eventsText }}</pre>
           </div>
 
