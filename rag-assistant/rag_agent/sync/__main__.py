@@ -18,6 +18,11 @@ def main() -> int:
         action="store_true",
         help="只切分打印章节,不 embed 不写库",
     )
+    parser.add_argument(
+        "--generation",
+        action="store_true",
+        help="同步生成任务知识库（而不是报错问答知识库）",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -27,6 +32,9 @@ def main() -> int:
 
     settings = load_settings()
     api_client = build_api_client(settings)
+    doc_id = settings.lark_generation_kb_doc_id if args.generation else settings.lark_kb_doc_id
+    chroma_dir = settings.generation_chroma_dir if args.generation else settings.chroma_dir
+    status_path = settings.generation_sync_status_path if args.generation else settings.sync_status_path
 
     embeddings = OpenAIEmbeddings(
         model=settings.openai_embedding_model,
@@ -35,15 +43,15 @@ def main() -> int:
     )
 
     def fetcher() -> str:
-        return fetch_kb_markdown(api_client, settings.lark_kb_doc_id)
+        return fetch_kb_markdown(api_client, doc_id)
 
     svc = SyncService(
         fetcher=fetcher,
         embeddings=embeddings,
-        chroma_dir=settings.chroma_dir,
+        chroma_dir=chroma_dir,
         snapshots_dir=settings.kb_snapshots_dir,
-        status_path=settings.sync_status_path,
-        doc_id=settings.lark_kb_doc_id,
+        status_path=status_path,
+        doc_id=doc_id,
     )
 
     try:

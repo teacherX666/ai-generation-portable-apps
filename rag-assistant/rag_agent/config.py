@@ -27,6 +27,7 @@ class Settings:
     lark_app_id: str
     lark_app_secret: str
     lark_kb_doc_id: str
+    lark_generation_kb_doc_id: str
     lark_kb_pending_doc_id: str
 
     # OpenAI 兼容（embedding，走 t8star）
@@ -97,6 +98,14 @@ class Settings:
     def sync_status_path(self) -> Path:
         return self.state_dir / "sync_status.json"
 
+    @property
+    def generation_chroma_dir(self) -> Path:
+        return self.data_dir / "generation_chroma"
+
+    @property
+    def generation_sync_status_path(self) -> Path:
+        return self.state_dir / "generation_sync_status.json"
+
 
 def load_settings() -> Settings:
     s = _secrets()
@@ -104,6 +113,7 @@ def load_settings() -> Settings:
         lark_app_id=s["lark_app_id"],
         lark_app_secret=s["lark_app_secret"],
         lark_kb_doc_id=s["lark_kb_doc_id"],
+        lark_generation_kb_doc_id=s.get("lark_generation_kb_doc_id", s["lark_kb_doc_id"]),
         lark_kb_pending_doc_id=s["lark_kb_pending_doc_id"],
         openai_api_key=s["embedding_api_key"],
         openai_base_url=s["embedding_base_url"],

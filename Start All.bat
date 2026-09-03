@@ -53,6 +53,8 @@ set "VOLCENGINE_PORTRAIT_ENGINE=fastapi"
 set "INFINITE_CANVAS_ENGINE=fastapi"
 set "RAG_ASSISTANT_ENGINE=fastapi"
 
+
+if not defined AIPORT_BASE_URL set "AIPORT_BASE_URL=http://UT-20210713KMWD.local:8801"
 start "AI Portal Server" /B "%PYTHON%" "app.py"
 
 :: Wait for portal to be ready (HTTPS on 9090, HTTP redirect on 9089)

@@ -1,41 +1,8 @@
 'use strict';
 
-// === Utilities ===
-function workspaceId() {
-  let id = localStorage.getItem('workspace_id');
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem('workspace_id', id); }
-  return id;
-}
 
-async function api(url, method, body) {
-  try {
-    const opts = { method: method || 'GET', headers: { 'X-Workspace-Id': workspaceId() } };
-    if (body) opts.body = body;
-    const res = await fetch(url, opts);
-    return await res.json();
-  } catch (e) { return null; }
-}
 
-function escHtml(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''; }
 
-function jobStatusLabel(status) {
-  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消' };
-  return map[String(status || '').toLowerCase()] || String(status || '未知');
-}
-
-function jobStatusClass(status) {
-  const s = String(status || '').toLowerCase();
-  if (['succeeded', 'success', 'completed'].includes(s)) return 'is-success';
-  if (['failed', 'failure'].includes(s)) return 'is-failed';
-  if (['pending', 'queued'].includes(s)) return 'is-pending';
-  if (s === 'querying') return 'is-querying';
-  return 'is-running';
-}
-
-function jobStatusBadgeTone(status) {
-  const state = jobStatusClass(status);
-  return state === 'is-success' ? 'success' : state === 'is-failed' ? 'danger' : state === 'is-pending' ? 'warning' : 'info';
-}
 
 // Status-aware single poll for the Dreamina tab, mirroring seedance's
 // pollJobOnce (seedance/static/app.js). The portal-wide api() returns null on
@@ -116,163 +83,6 @@ function openPreview(kind, url) {
   body.append(m); dlg.showModal();
 }
 
-// === Tab Switching (vanilla) ===
-// Keep the visual class, hidden state, ARIA state, mobile selector, and lazy
-// iframe lifecycle in sync. Only the initial Seedance iframe loads eagerly;
-// other iframe applications are mounted on their first visit and then kept
-// alive so drafts and running-task views are preserved when switching away.
-function iframeTarget(iframe) {
-  return iframe?.dataset.resolvedSrc || iframe?.dataset.src || iframe?.dataset.fallbackSrc || '';
-}
-
-function setIframeLoadState(iframe, state, message = '') {
-  const panel = iframe?.closest('.iframe-panel');
-  if (!panel) return;
-  panel.classList.toggle('is-loading', state === 'loading');
-  panel.classList.toggle('has-load-error', state === 'error');
-  const status = panel.querySelector('.iframe-load-status');
-  if (!status) return;
-  status.hidden = state === 'ready';
-  status.querySelector('.iframe-load-message').textContent = message || (state === 'error' ? '应用加载失败' : '正在加载应用…');
-  status.querySelector('.iframe-retry').hidden = state !== 'error';
-}
-
-function ensureIframeStatus(iframe) {
-  const panel = iframe?.closest('.iframe-panel');
-  if (!panel || panel.querySelector('.iframe-load-status')) return;
-  const status = document.createElement('div');
-  status.className = 'iframe-load-status';
-  status.setAttribute('role', 'status');
-  status.innerHTML = '<div class="spinner" aria-hidden="true"></div><p class="iframe-load-message">正在加载应用…</p><button class="iframe-retry ui-btn ui-btn--secondary" type="button" hidden>重新加载</button>';
-  status.querySelector('.iframe-retry').addEventListener('click', () => loadPortalIframe(iframe, { force: true }));
-  panel.insertBefore(status, iframe);
-  iframe.addEventListener('load', () => setIframeLoadState(iframe, 'ready'));
-  iframe.addEventListener('error', () => setIframeLoadState(iframe, 'error', '应用加载失败，请检查服务状态后重试。'));
-}
-
-function loadPortalIframe(iframe, { force = false } = {}) {
-  if (!iframe) return;
-  ensureIframeStatus(iframe);
-  const target = iframeTarget(iframe);
-  if (!target) {
-    setIframeLoadState(iframe, 'error', '应用地址尚未配置。');
-    return;
-  }
-  if (!force && iframe.dataset.loaded === 'true') return;
-  setIframeLoadState(iframe, 'loading');
-  iframe.dataset.loaded = 'true';
-  if (force && iframe.getAttribute('src') === target) {
-    iframe.src = 'about:blank';
-    requestAnimationFrame(() => { iframe.src = target; });
-  } else {
-    iframe.src = target;
-  }
-}
-
-function loadIframeForPanel(panel) {
-  const iframe = panel?.querySelector('iframe.portal-iframe');
-  if (iframe) loadPortalIframe(iframe);
-}
-
-function activatePortalTab(btn, { focus = false } = {}) {
-  if (!btn) return;
-  const panel = document.getElementById('tab-' + btn.dataset.tab);
-  if (!panel) return;
-  document.querySelectorAll('.app-tab').forEach(t => {
-    const active = t === btn;
-    t.classList.toggle('active', active);
-    t.setAttribute('aria-selected', active ? 'true' : 'false');
-    t.tabIndex = active ? 0 : -1;
-  });
-  document.querySelectorAll('.tab-panel').forEach(p => {
-    const active = p === panel;
-    p.classList.toggle('active', active);
-    p.hidden = !active;
-  });
-  const mobileSelect = document.getElementById('mobileAppSelect');
-  if (mobileSelect && mobileSelect.value !== btn.dataset.tab) mobileSelect.value = btn.dataset.tab;
-  loadIframeForPanel(panel);
-  if (focus) btn.focus();
-}
-
-const portalTabButtons = Array.from(document.querySelectorAll('.app-tab'));
-const mobileAppSelect = document.getElementById('mobileAppSelect');
-if (mobileAppSelect) {
-  mobileAppSelect.addEventListener('change', () => {
-    const btn = portalTabButtons.find(item => item.dataset.tab === mobileAppSelect.value);
-    activatePortalTab(btn);
-  });
-}
-
-// Fixed overlays must follow the real stacked header height. The title row can
-// wrap on narrow screens and the application tab strip can change height as
-// modules are added, so a hard-coded top offset eventually places the director
-// toggle underneath navigation.
-function syncPortalHeaderHeight() {
-  if (typeof document.querySelector !== 'function') return;
-  const header = document.querySelector('.topbar-stack');
-  if (!header) return;
-  document.documentElement.style.setProperty('--portal-header-height', `${Math.ceil(header.getBoundingClientRect().height)}px`);
-}
-syncPortalHeaderHeight();
-if (typeof window.addEventListener === 'function') {
-  window.addEventListener('resize', syncPortalHeaderHeight, { passive: true });
-}
-if ('ResizeObserver' in window && typeof document.querySelector === 'function') {
-  const portalHeader = document.querySelector('.topbar-stack');
-  if (portalHeader) new ResizeObserver(syncPortalHeaderHeight).observe(portalHeader);
-}
-
-portalTabButtons.forEach(btn => {
-  btn.addEventListener('click', () => activatePortalTab(btn));
-  btn.addEventListener('keydown', e => {
-    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return;
-    e.preventDefault();
-    const index = portalTabButtons.indexOf(btn);
-    const nextIndex = e.key === 'Home' ? 0
-      : e.key === 'End' ? portalTabButtons.length - 1
-      : (index + ((e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : -1) + portalTabButtons.length) % portalTabButtons.length;
-    activatePortalTab(portalTabButtons[nextIndex], { focus: true });
-  });
-});
-
-// Iframe URLs are supplied by the Portal's app registry so they stay relative
-// to whichever origin, protocol, and hostname serves this Portal instance.
-// Registry discovery only resolves URLs; it does not eagerly navigate hidden
-// iframes. If a user opens a tab before discovery completes, its fallback URL
-// loads immediately and remains usable.
-async function initConfiguredIframes() {
-  document.querySelectorAll('iframe.portal-iframe').forEach(iframe => {
-    ensureIframeStatus(iframe);
-    if (iframe.getAttribute('src')) {
-      iframe.dataset.loaded = 'true';
-      // The eager Seedance iframe may have completed before this late script
-      // attaches its load listener. Do not leave a loading mask over an
-      // already-visible application; future navigations still use load/error.
-      setIframeLoadState(iframe, 'ready');
-    }
-    const fallback = iframe.dataset.src || iframe.dataset.fallbackSrc || iframe.getAttribute('src');
-    if (fallback) iframe.dataset.resolvedSrc = fallback;
-  });
-
-  const initialPortalTab = document.querySelector('.app-tab.active') || portalTabButtons[0];
-  if (initialPortalTab) activatePortalTab(initialPortalTab);
-
-  const res = await api('/api/apps');
-  if (!res?.ok || !Array.isArray(res.apps)) return;
-  document.querySelectorAll('iframe[data-app]').forEach(iframe => {
-    const app = res.apps.find(item => item.name === iframe.dataset.app);
-    if (!app?.iframe_url) return;
-    const fallback = iframe.dataset.fallbackSrc || '';
-    // The registry may return either an explicit iframe mount or a proxy-style
-    // entry whose URL is still the correct browser route. Prefer the configured
-    // URL without making lazy loading depend on the mount label.
-    if (app.mount === 'iframe' || !fallback || app.iframe_url !== fallback) {
-      iframe.dataset.resolvedSrc = app.iframe_url;
-    }
-  });
-}
-initConfiguredIframes();
 
 document.getElementById('closePreviewBtn').addEventListener('click', () => document.getElementById('previewDialog').close());
 document.getElementById('previewDialog').addEventListener('click', e => { if (e.target.id === 'previewDialog') e.target.close(); });
@@ -584,40 +394,16 @@ function DreaminaApp() {
         const events = (job.events || []).slice(-6).map(e => `<div><span class="ui-job-status-card__event-time">${escHtml(e.time)}</span> ${escHtml(e.message)}</div>`).join('');
         const status = String(job.status || '').toLowerCase();
         card.className = `ui-job-status-card ${jobStatusClass(status)}`;
-        // 渲染去重（与 seedance/nano-banana 同源）：轮询每 2.5s 一次，
-        // 旧实现每次整卡 innerHTML 重建，卡片里的 <video> 每 2.5s 被
-        // 销毁重拉一次。现在状态/事件区和文件区分开按签名更新，
-        // 文件区只有在结果集真正变化时才重建。
-        let titleEl = card.querySelector('.dm-card-status');
-        let filesEl = card.querySelector('.dm-card-files');
-        if (!titleEl || !filesEl) {
-          card.innerHTML = '<div class="dm-card-status"></div><div class="dm-card-files"></div>';
-          titleEl = card.querySelector('.dm-card-status');
-          filesEl = card.querySelector('.dm-card-files');
-          card.dataset.sig = '';
-          card.dataset.fsig = '';
-        }
-        const statusSig = [status, events].join('\u0001');
-        if (card.dataset.sig !== statusSig) {
-          card.dataset.sig = statusSig;
-          let html = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--${jobStatusBadgeTone(status)}">${jobStatusLabel(status)}</span> · ${job.task_type || ''} · ${job.done || 0}/${job.total || 0}</div>`;
-          if (events) html += `<div class="ui-job-status-card__events">${events}</div>`;
-          else html += '<div class="ui-job-status-card__events">等待服务器响应...</div>';
-          if (job.status === 'failed' || job.status === 'cancelled') html += `<div class="ui-job-status-card__error">${escHtml(job.error || '生成失败')}</div>`;
-          if (!['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
-            html += `<button type="button" class="cancel-job-btn" onclick="window._dmApp.cancelJob('${escHtml(jobId)}','${escHtml(job.status || 'queued')}')">取消任务</button>`;
-          }
-          titleEl.innerHTML = html;
-        }
+        let html = `<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--${jobStatusBadgeTone(status)}">${jobStatusLabel(status)}</span> · ${job.task_type || ''} · ${job.done || 0}/${job.total || 0}</div>`;
+        if (events) html += `<div class="ui-job-status-card__events">${events}</div>`;
+        else html += '<div class="ui-job-status-card__events">等待服务器响应...</div>';
+        if (job.status === 'failed') html += `<div class="ui-job-status-card__error">${escHtml(job.error || '生成失败')}</div>`;
         const allFiles = [];
         for (const r of job.results || []) { if (r.files) allFiles.push(...r.files); }
         if (job.result?.files) allFiles.push(...job.result.files);
-        const filesSig = allFiles.join('\u0001');
-        if (card.dataset.fsig !== filesSig) {
-          card.dataset.fsig = filesSig;
-          filesEl.innerHTML = this.renderFiles(allFiles);
-        }
-        if (['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
+        html += this.renderFiles(allFiles);
+        card.innerHTML = html;
+        if (['completed', 'failed'].includes(job.status)) {
           stop();
           if (job.status === 'completed' && this.dirHandle && allFiles.length) {
             await this.saveDreaminaToClient(allFiles);
@@ -629,28 +415,6 @@ function DreaminaApp() {
         await new Promise(r => setTimeout(r, 3000));
       }
       this.loadHistory();
-    },
-
-    // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）：
-    // 排队中直接取消；运行中弹确认（已计费提示）。CLI 无法强杀，
-    // 后端走「取消标志 + 结果丢弃」兜底；409 = 任务已结束。
-    async cancelJob(jobId, status) {
-      if (status === 'running') {
-        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
-      }
-      const res = await api(`/dreamina/api/jobs/${encodeURIComponent(jobId)}/cancel`, 'POST');
-      const card = document.getElementById('card-' + String(jobId).slice(0, 8));
-      if (!res || res.error) {
-        if (card) {
-          card.className = 'ui-job-status-card is-failed';
-          card.innerHTML = `<div class="ui-job-status-card__error">${escHtml((res && res.error) || '取消失败：网络异常，请重试')}</div>`;
-        }
-        return;
-      }
-      if (card) {
-        card.className = 'ui-job-status-card is-failed';
-        card.innerHTML = '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--warning">已取消</span></div><div class="ui-job-status-card__error">任务已取消，输入和参数已保留。</div>';
-      }
     },
 
     async saveDreaminaToClient(files) {
@@ -1928,8 +1692,6 @@ function VolcenginePortraitApp() {
       },
     ],
     submitting: false, events: '', results: [], jobs: [], activityRecords: [],
-    _activeVpJobId: null,
-    _activeVpStatus: '',
     runtimeTick: 0,
     outputDir: '', outputDirInput: '', showOutputDirInput: false,
     savingOutputDir: false, outputDirMsg: '', outputDirOk: true,
@@ -2372,8 +2134,6 @@ function VolcenginePortraitApp() {
       }
       if (res?.ok) {
         this.statusText = '已提交，任务在后台运行';
-        this._activeVpJobId = res.job_id;
-        this._activeVpStatus = '';
         this.loadJobs();
         this.pollJob(res.job_id);
       } else {
@@ -2399,9 +2159,7 @@ function VolcenginePortraitApp() {
           continue;
         }
         fails = 0;
-        this._activeVpStatus = job.status || '';
-        const vpLabel = { queued: '排队中', running: '处理中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }[job.status] || job.status;
-        this.statusText = `${vpLabel} ${job.done || 0}/${job.total || 0}`;
+        this.statusText = `${job.status} ${job.done || 0}/${job.total || 0}`;
         this.events = (job.events || []).map(e => '<div>' + e.time + ' ' + e.message + '</div>').join('');
         for (const r of job.results || []) {
           if (r.download_url) {
@@ -2409,29 +2167,10 @@ function VolcenginePortraitApp() {
             if (!this.results.find(x => x.url === url)) this.results.push({ url, filename: r.filename });
           }
         }
-        if (['succeeded', 'failed', 'cancelled', 'canceled'].includes(job.status)) break;
+        if (['succeeded', 'failed'].includes(job.status)) break;
         await new Promise(r => setTimeout(r, 3000));
       }
-      this._activeVpJobId = null;
-      this._activeVpStatus = '';
       this.statusText = '空闲'; this.loadJobs();
-    },
-
-    // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）
-    async cancelJob() {
-      const jobId = this._activeVpJobId;
-      if (!jobId) return;
-      if (this._activeVpStatus === 'running') {
-        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
-      }
-      const res = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}/cancel`, 'POST');
-      if (res?.ok) {
-        this.statusText = '任务已取消，输入和参数已保留。';
-      } else if (res && res.error) {
-        this.statusText = res.error;
-      } else {
-        this.statusText = '取消失败：网络异常，请重试';
-      }
     },
 
     async loadJobs() {
@@ -2552,6 +2291,14 @@ function HistoryApp() {
         this.total = res.total || 0;
       }
       if (this.page > this.totalPages) { this.page = this.totalPages; return this._fetch(); }
+      if (!this.isAdmin && !localStorage.getItem('portal_analytics_first_success')) {
+        const doneStatuses = ['done', 'succeeded', 'completed', 'success'];
+        const first = this.items.find(it => doneStatuses.includes(String(it.status).toLowerCase()));
+        if (first) {
+          localStorage.setItem('portal_analytics_first_success', '1');
+          if (window.portalAnalytics) window.portalAnalytics.track('first_successful_output', { app: first.app, job_id: first.job_id });
+        }
+      }
       this.detail = null;
     },
     favKey(it) { return (it && it.app) + ":" + (it && it.job_id); },

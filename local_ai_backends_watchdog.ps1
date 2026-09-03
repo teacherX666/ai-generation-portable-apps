@@ -11,6 +11,10 @@ $WatchdogLog = Join-Path $StateDir "watchdog.log"
 $StopFile = Join-Path $StateDir "watchdog.stop"
 $PollIntervalSeconds = 5
 
+# Keep 127.0.0.1 by default. Set LOCAL_AI_LISTEN=0.0.0.0 only when
+# another server on the LAN needs to reach the AI Port gateway.
+$ListenAddress = if ($env:LOCAL_AI_LISTEN) { $env:LOCAL_AI_LISTEN } else { "127.0.0.1" }
+
 $ComfyRoot = "E:\AI Tool\ComfyUI_windows_portable"
 $ComfyPython = Join-Path $ComfyRoot "python_embeded\python.exe"
 $StudioRoot = "E:\AI Tool\projects\work\ai-portable-studio"
@@ -78,7 +82,7 @@ function Initialize-BackendEnvironment {
     $env:CUDA_CACHE_MAXSIZE = "2147483648"
     $env:CUBLAS_WORKSPACE_CONFIG = ":4096:8"
     $env:PORT = "8801"
-    $env:LISTEN = "127.0.0.1"
+    $env:LISTEN = $ListenAddress
 
     New-Item -ItemType Directory -Path $env:CUDA_CACHE_PATH -Force | Out-Null
 }

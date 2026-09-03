@@ -149,6 +149,8 @@ Write-WatchdogLog "using Python: $python"
 $env:INFINITE_CANVAS_ENGINE = "fastapi"
 $env:RAG_ASSISTANT_ENGINE = "fastapi"
 
+if (-not $env:AIPORT_BASE_URL) { $env:AIPORT_BASE_URL = "http://UT-20210713KMWD.local:8801" }
+
 $child = $null
 $healthFailures = 0
 

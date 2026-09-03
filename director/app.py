@@ -36,6 +36,7 @@ ASPECT_RATIOS = ("1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9", "9:2
 
 # 来自 nano-banana 子应用实测约束，勿凭空推导。
 _SEEDREAM_5_PRO_SIZES: dict[str, dict[str, str]] = {
+
     "1K": {
         "1:1": "1024x1024", "4:3": "1152x864", "3:4": "864x1152",
         "16:9": "1424x800", "9:16": "800x1424", "3:2": "1248x832",
@@ -61,6 +62,8 @@ def _load_providers() -> dict[str, Any]:
 
 
 PROVIDERS = _load_providers()
+
+LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
 
 
 def seedream_size(resolution: str, aspect_ratio: str) -> str:
@@ -89,6 +92,15 @@ def _load_deepseek_key() -> str:
     return ""
 
 
+
+def local_gateway_available(timeout: float = 1.5) -> bool:
+    """Return True when the local AI Port gateway answers on the configured URL."""
+    try:
+        with urllib.request.urlopen(LOCAL_GATEWAY_BASE_URL + "/api/modules", timeout=timeout) as resp:
+            return resp.status < 500
+    except Exception:
+        return False
+
 def config_payload() -> dict[str, Any]:
     ark = PROVIDERS.get("ark", {})
     deepseek = PROVIDERS.get("deepseek", {})
@@ -102,7 +114,7 @@ def config_payload() -> dict[str, Any]:
         "default_resolution": ark.get("default_resolution", "2K"),
         "default_aspect_ratio": ark.get("default_aspect_ratio", "1:1"),
         "default_count": int(ark.get("default_count", 1)),
-        "local_ready": True,
+        "local_ready": local_gateway_available(),
         "local_model": local.get("model_kind", "qwen2511"),
         "ark_ready": bool(_ark_key()),
         "deepseek_ready": bool(_load_deepseek_key() or SKILL_PATH.exists()),

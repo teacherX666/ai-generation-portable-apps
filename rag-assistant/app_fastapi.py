@@ -1,6 +1,13 @@
 """报错问答助手 —— web 入口（对齐 rag-agent，Claude→DeepSeek，飞书机器人→网页）。"""
 from __future__ import annotations
 
+import os
+
+# 本应用访问的是国内端点（ai.t8star.org / DeepSeek / 飞书），直连即可。
+# 系统代理若是 socks4://127.0.0.1:1080 会被 httpx 拒绝并导致启动崩溃，这里显式绕过。
+os.environ.setdefault("NO_PROXY", "*")
+os.environ.setdefault("no_proxy", "*")
+
 import base64
 import json
 import logging
@@ -50,6 +57,17 @@ embeddings = OpenAIEmbeddings(
 retriever = KbRetriever(
     chroma_dir=settings.chroma_dir,
     status_path=settings.sync_status_path,
+    embeddings=embeddings,
+    top_k=settings.retrieval_top_k,
+    candidate_k=settings.retrieval_candidate_k,
+    min_similarity=settings.retrieval_min_similarity,
+    min_hybrid_score=settings.retrieval_min_hybrid_score,
+    vector_weight=settings.retrieval_vector_weight,
+    keyword_weight=settings.retrieval_keyword_weight,
+)
+generation_retriever = KbRetriever(
+    chroma_dir=settings.generation_chroma_dir,
+    status_path=settings.generation_sync_status_path,
     embeddings=embeddings,
     top_k=settings.retrieval_top_k,
     candidate_k=settings.retrieval_candidate_k,
@@ -191,6 +209,42 @@ def admin_query_log(request: Request, n: int = 20):
     entries = [json.loads(line) for line in lines[-n:] if line.strip()]
     return {"entries": entries}
 
+
+def _augment_generation(query: str):
+    try:
+        docs = generation_retriever.retrieve_with_scores(query)
+    except RuntimeError as exc:
+        return {"ok": True, "relevant": False, "context": "", "reason": str(exc)}
+    docs = docs[:3]
+    if not docs:
+        return {"ok": True, "relevant": False, "context": "", "reason": "no_hits"}
+    chunks = []
+    parts = []
+    for doc in docs:
+        meta = doc.metadata or {}
+        title = (meta.get("error_title") or meta.get("title") or meta.get("source") or "KB")
+        score = meta.get("retrieval_hybrid_score", 0)
+        content = (doc.page_content or "").strip()
+        chunks.append({"title": title, "score": score, "content": content[:1200]})
+        parts.append(f"[{title}]\n{content[:1200]}")
+    return {"ok": True, "relevant": True, "context": "\n\n".join(parts), "chunks": chunks}
+
+
+@app.post("/api/augment")
+async def augment(request: Request):
+    client_ip = (request.client.host if request.client else "") or ""
+    if client_ip not in ("127.0.0.1", "::1"):
+        token = portal_token()
+        if token and verify_portal_identity(request.headers) is None:
+            return JSONResponse(status_code=403, content={"error": "forbidden"})
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "JSON body required"})
+    query = str(body.get("query") or body.get("prompt") or "").strip()
+    if not query:
+        return JSONResponse(status_code=400, content={"error": "query required"})
+    return await run_in_threadpool(_augment_generation, query)
 
 @app.post("/api/ask")
 async def ask(request: Request):

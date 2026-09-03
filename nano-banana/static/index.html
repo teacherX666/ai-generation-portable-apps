@@ -46,7 +46,7 @@
             </label>
             <p class="hint">{{ keyHint }}</p>
             <label>供应商
-              <select name="provider" v-model="provider" @change="applyProvider($event.target.value)">
+              <select name="provider" v-model="provider" @change="onProviderChange($event.target.value)">
                 <option v-for="(cfg, key) in providers" :value="key">{{ cfg.label || key }}</option>
               </select>
             </label>

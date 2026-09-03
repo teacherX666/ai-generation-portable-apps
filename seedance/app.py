@@ -509,6 +509,8 @@ def _ws_preset_path(ws_id: str) -> Path:
 
 
 OFFICIAL_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+
+LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
 TERMINAL_STATUSES = {"succeeded", "success", "failed", "fail", "failure", "cancelled", "canceled"}
 
 # translate_ark_error lives in portal/ark_errors.py so seedance and
@@ -693,6 +695,40 @@ def api_error(code: str, message: str, detail: str = "", retryable: bool = False
         },
     }
 
+
+
+
+def providers_for_client(config: dict[str, Any]) -> dict[str, Any]:
+    """Return provider metadata with the configured local gateway URL."""
+    providers = json.loads(json.dumps(config.get("providers") or {}, ensure_ascii=False))
+    for provider_cfg in providers.values():
+        if isinstance(provider_cfg, dict) and provider_cfg.get("api_style") == "comfyui_workflow":
+            provider_cfg["base_url"] = LOCAL_GATEWAY_BASE_URL
+    return providers
+
+def local_gateway_available(timeout: float = 1.5) -> bool:
+    """Return True when the local AI Port gateway answers on the configured URL."""
+    try:
+        with urllib.request.urlopen(LOCAL_GATEWAY_BASE_URL + "/api/modules", timeout=timeout) as resp:
+            return resp.status < 500
+    except Exception:
+        return False
+
+
+def resolve_effective_provider(config: dict[str, Any], requested_provider: str = "") -> str:
+    """Choose a provider, preferring cloud defaults and never routing to an offline local gateway."""
+    providers = config.get("providers") or {}
+    requested = str(requested_provider or "").strip()
+    default = str(config.get("default_provider") or "volcengine").strip()
+    cloud = [key for key, cfg in providers.items() if isinstance(cfg, dict) and cfg.get("api_style") != "comfyui_workflow"]
+    if not cloud:
+        return requested or default or "comfyui_local"
+    fallback = default if default in cloud else cloud[0]
+    if requested == "comfyui_local":
+        return requested if local_gateway_available() else fallback
+    if requested in providers:
+        return requested
+    return fallback if default == "comfyui_local" else (default if default in providers else fallback)
 
 def load_provider_config() -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
@@ -1888,7 +1924,7 @@ def api_schema() -> dict[str, Any]:
 
 def request_template() -> dict[str, Any]:
     config, config_error = load_provider_config()
-    provider = str(config.get("default_provider") or "volcengine")
+    provider = resolve_effective_provider(config)
     defaults = provider_defaults(config, provider)
     minimal = {
         "api_key": "YOUR_API_KEY",
@@ -1953,7 +1989,7 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     if config_error:
         raise ValueError(f"{config_error['message']}: {config_error['detail']}")
     incoming = {key: payload[key] for key in VALUE_FIELDS if key in payload and payload[key] is not None}
-    provider = str(incoming.get("provider") or config.get("default_provider") or "volcengine")
+    provider = resolve_effective_provider(config, str(incoming.get("provider") or ""))
     values = provider_defaults(config, provider, str(incoming.get("model") or ""))
     values.update(incoming)
     values["provider"] = provider
@@ -2200,7 +2236,7 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
     config, _ = load_provider_config()
     provider_cfg = (config.get("providers") or {}).get(provider) or {}
     if provider_cfg.get("api_style") == "comfyui_workflow":
-        local_base = str(provider_cfg.get("base_url") or "http://127.0.0.1:8801").rstrip("/")
+        local_base = LOCAL_GATEWAY_BASE_URL
         return _run_local_video(job_id, index, form, form_values, form_files, ws_id, local_base)
     create_url = f"{base_url}/contents/generations/tasks"
     if _job_cancel_requested(job_id):
@@ -2457,8 +2493,9 @@ class Handler(SimpleHTTPRequestHandler):
             providers, config_error = load_provider_config()
             json_response(self, 200, {
                 "ok": config_error is None,
-                "providers": providers.get("providers", {}),
+                "providers": providers_for_client(providers),
                 "default_provider": providers.get("default_provider"),
+                "local_ready": local_gateway_available(),
                 "config_error": config_error,
             })
             return
@@ -2907,10 +2944,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
         form_values = {key: get_field(form, key) for key in form.keys() if not getattr(form[key], "filename", None)}
-        # Local-first: honor an explicit provider from the form, otherwise default local.
-        provider = str(form_values.get("provider") or "volcengine")
-        form_values["provider"] = provider
         _cfg, _ = load_provider_config()
+        provider = resolve_effective_provider(_cfg, str(form_values.get("provider") or ""))
+        form_values["provider"] = provider
         provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}
         if provider_cfg.get("api_style") == "comfyui_workflow":
             form_values["api_key"] = ""

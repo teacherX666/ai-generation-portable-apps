@@ -201,6 +201,7 @@
   const helpDialog = ensureHelpDialog();
   helpDialog.addEventListener('close', () => {
     localStorage.setItem('portal_onboarded', '1');
+    if (window.portalAnalytics) window.portalAnalytics.track('onboarding_completed');
   });
 
   setTimeout(maybeFirstRunHelp, 600);
