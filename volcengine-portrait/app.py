@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import cgi
 import concurrent.futures
+import copy
 import hashlib
 import hmac
 import http.client
@@ -54,11 +55,37 @@ _MODEL_MAX_DURATION = {
     "doubao-seedance-2-0-fast-260128": 15,
     "doubao-seedance-2-0-mini-260615": 15,
     "doubao-seedance-2-5-260628": 30,
+    "local-minimax-h3-ref2v": 30,
 }
 _ALLOWED_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
 # Keep in sync with the Portal selector; 21:9 was exposed in the UI but was
 # previously rejected by the backend, making that valid option unusable.
 _ALLOWED_RATIOS = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"}
+
+LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
+LOCAL_PORTRAIT_MODEL_ID = "local-minimax-h3-ref2v"
+_LOCAL_MODEL_KIND = "minimax_h3_all_reference"
+_H3_ASPECT_RATIOS = {
+    "16:9": "16:9 (Widescreen)",
+    "9:16": "9:16 (Portrait Widescreen)",
+    "1:1": "1:1 (Square)",
+    "4:3": "4:3 (Standard)",
+    "3:4": "3:4 (Portrait Standard)",
+    "21:9": "21:9 (Ultrawide)",
+    "adaptive": "9:16 (Portrait Widescreen)",
+}
+
+
+def _is_local_model(model: str) -> bool:
+    return str(model or "").startswith("local-")
+
+
+def local_gateway_available(timeout: float = 1.5) -> bool:
+    try:
+        with urllib.request.urlopen(LOCAL_GATEWAY_BASE_URL + "/api/modules", timeout=timeout) as resp:
+            return resp.status < 400
+    except Exception:
+        return False
 
 
 def _parse_int_field(value, default, field):
@@ -639,7 +666,7 @@ def handle_config_post(handler):
 
 def _public(d):
     """Return a copy of dict without internal fields."""
-    return {k: v for k, v in d.items() if k not in ("api_key", "access_key", "secret_key")}
+    return {k: v for k, v in d.items() if k not in ("api_key", "access_key", "secret_key", "local_extra_files")}
 
 
 def json_response(handler, status, data):
@@ -1673,6 +1700,7 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
             return
         resolution = form.getfirst("resolution", "720p")
         ratio = form.getfirst("ratio", "16:9")
+        provider = form.getfirst("provider", "")
 
         extra_files = []
         for key in form.keys():
@@ -1705,10 +1733,18 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
             return
         resolution = data.get("resolution", "720p")
         ratio = data.get("ratio", "16:9")
+        provider = data.get("provider", "")
         extra_files = []
 
-    if not asset_id or not prompt:
+    local_mode = _is_local_model(model) or str(provider or "").strip().lower() == "local"
+    if not prompt:
+        json_response(handler, 400, {"ok": False, "error": "prompt required"})
+        return
+    if not local_mode and not asset_id:
         json_response(handler, 400, {"ok": False, "error": "asset_id and prompt required"})
+        return
+    if local_mode and not asset_id and not extra_asset_ids and not extra_files:
+        json_response(handler, 400, {"ok": False, "error": "local model requires at least one reference asset or uploaded file"})
         return
 
     try:
@@ -1723,7 +1759,10 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
     # pass the public https URL to Ark. (Asset library uploads still go through
     # the CreateAsset flow — they're separate routes.)
     extra_image_urls = []
-    if extra_files:
+    local_extra_files = []
+    if local_mode:
+        local_extra_files = extra_files
+    elif extra_files:
         for ef in extra_files:
             try:
                 # Match asset-library uploads: TOS is preferred when fully
@@ -1772,7 +1811,9 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
             "done": 0,
             "results": [],
             "errors": [],
+            "provider": "local" if local_mode else "cloud",
             "extra_image_urls": extra_image_urls,
+            "local_extra_files": local_extra_files,
             "events": [{"time": time.strftime("%H:%M:%S"), "message": "任务已创建"}],
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "submitted_at": time.time(),
@@ -1814,7 +1855,7 @@ def handle_virtual_jobs_get(handler, job_id=None):
     if job_id:
         with JOBS_LOCK:
             job = JOBS.get(job_id)
-            data = _public(json.loads(json.dumps(job))) if job else None
+            data = _public(copy.deepcopy(job)) if job else None
         json_response(handler, 200 if data else 404,
                       data or {"ok": False, "error": "job not found"})
     else:
@@ -1825,6 +1866,316 @@ def handle_virtual_jobs_get(handler, job_id=None):
             jobs = [j for j in jobs if j.get("username", "") == username]
         jobs.sort(key=lambda j: (j.get("submitted_at") or 0), reverse=True)
         json_response(handler, 200, {"ok": True, "jobs": jobs[:50]})
+
+
+def _http_json(url, payload=None, timeout=120):
+    """Tiny JSON helper for talking to the local AI Port gateway."""
+    data = None
+    headers = {}
+    method = "GET"
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+        method = "POST"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        return {"ok": False, "error": f"HTTP {exc.code}", "detail": raw[:500]}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _download_public_file(url: str) -> tuple[bytes, str]:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = resp.read()
+        mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+        if not mime:
+            mime = mimetypes.guess_type(url)[0] or "application/octet-stream"
+    return data, mime
+
+
+def _asset_public_url(asset_id: str) -> str:
+    with ASSET_LOCK:
+        local = ASSETS.get(asset_id)
+        if isinstance(local, dict) and local.get("url"):
+            return local["url"]
+    result = openapi_call("GetAsset", {"Id": asset_id, "ProjectName": PROJECT_NAME})
+    if "error" in result:
+        raise RuntimeError(f"获取资产 {asset_id} 失败: {result.get('error')}")
+    item = openapi_result(result)
+    url = item.get("URL", "")
+    if not url:
+        raise RuntimeError(f"资产 {asset_id} 没有可下载的 URL")
+    with ASSET_LOCK:
+        ASSETS.setdefault(asset_id, {})["url"] = url
+    return url
+
+
+def _collect_local_reference_files(job: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build H3 reference files in the same order the cloud payload uses."""
+    refs: list[dict[str, Any]] = []
+    counts = {"image": 0, "video": 0, "audio": 0}
+
+    def add_ref(filename: str, data: bytes, mime: str | None) -> None:
+        mime = (mime or mimetypes.guess_type(filename)[0] or "application/octet-stream").lower()
+        if mime.startswith("image/"):
+            field = f"h3_image_{counts['image']}"
+            counts["image"] += 1
+        elif mime.startswith("video/"):
+            field = f"h3_video_{counts['video']}"
+            counts["video"] += 1
+        elif mime.startswith("audio/"):
+            field = f"h3_audio_{counts['audio']}"
+            counts["audio"] += 1
+        else:
+            return
+        refs.append({"field": field, "filename": filename, "data": data, "mime": mime})
+
+    asset_ids: list[str] = []
+    if job.get("asset_id"):
+        asset_ids.append(str(job.get("asset_id")))
+    for aid in job.get("extra_asset_ids", []) or []:
+        if aid and str(aid) not in asset_ids:
+            asset_ids.append(str(aid))
+
+    for aid in asset_ids:
+        url = _asset_public_url(aid)
+        data, mime = _download_public_file(url)
+        add_ref(aid, data, mime)
+
+    for ef in job.get("local_extra_files", []) or []:
+        if not isinstance(ef, dict):
+            continue
+        add_ref(
+            str(ef.get("filename") or "reference"),
+            bytes(ef.get("data") or b""),
+            str(ef.get("mime_type") or ""),
+        )
+    return refs
+
+
+def _submit_local_portrait_job(
+    prompt: str,
+    ratio: str,
+    resolution: str,
+    duration: int,
+    refs: list[dict[str, Any]],
+) -> str:
+    if not refs:
+        raise RuntimeError("本地模型至少需要一个参考素材")
+    aspect = _H3_ASPECT_RATIOS.get(str(ratio), _H3_ASPECT_RATIOS["adaptive"])
+    megapixels = {"480p": "0.4", "720p": "0.7", "1080p": "1.2", "4k": "2.4"}.get(
+        str(resolution), "0.7"
+    )
+    safe_duration = max(4, min(30, int(duration) if duration and int(duration) != -1 else 12))
+    num_frames = max(17, min(300, int(round(safe_duration * 30))))
+    files: dict[str, Any] = {}
+    for ref in refs:
+        mime = ref.get("mime") or "image/png"
+        data_url = f"data:{mime};base64,{base64.b64encode(ref['data']).decode('ascii')}"
+        files[ref["field"]] = {"filename": ref.get("filename") or "reference", "data_url": data_url}
+
+    payload = {
+        "values": {
+            "provider": "comfyui_local",
+            "base_url": "http://127.0.0.1:8188",
+            "model_kind": _LOCAL_MODEL_KIND,
+            "h3_task_mode": "ref2v",
+            "h3_aspect_ratio": aspect,
+            "h3_megapixels": megapixels,
+            "h3_multiple": "32",
+            "h3_ref_image_size": "max",
+            "h3_prompt_enhancer_enabled": "true",
+            "h3_prompt_enhancer_mode": "auto",
+            "h3_second_stage_enabled": "false",
+            "prompt": prompt,
+            "num_frames": str(num_frames),
+            "fps": "30",
+            "steps": "8",
+            "cfg": "1.0",
+            "vary_seed": "true",
+            "repeat_count": "1",
+            "concurrency": "1",
+            "poll_interval": "5",
+            "timeout": "3600",
+        },
+        "files": files,
+    }
+    res = _http_json(LOCAL_GATEWAY_BASE_URL + "/api/video_local/jobs/json", payload, timeout=180)
+    if not res.get("ok") or not res.get("job_id"):
+        raise RuntimeError(res.get("error") or res.get("detail") or "本地模型提交失败")
+    return str(res["job_id"])
+
+
+def _register_local_output(download_url: str, out_dir: Path, prefix: str, index: int) -> tuple[str, str]:
+    full = download_url if download_url.startswith("http") else LOCAL_GATEWAY_BASE_URL + download_url
+    data, mime = _download_public_file(full)
+    ext = mimetypes.guess_extension(mime or "video/mp4") or ".mp4"
+    local_name = f"{prefix}_{index}{ext}"
+    dest = out_dir / local_name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    token = uuid.uuid4().hex
+    with FILES_LOCK:
+        FILES[token] = dest
+    save_files_map()
+    return token, local_name
+
+
+def _run_local_virtual_job_impl(job_id: str, job: dict[str, Any]) -> None:
+    with JOBS_LOCK:
+        job["status"] = "running"
+        job["started_at"] = time.time()
+        job["events"].append({"time": time.strftime("%H:%M:%S"), "message": "开始提交本地生成任务..."})
+
+    prompt = str(job.get("prompt") or "")
+    requested_duration = int(job.get("requested_duration", job.get("duration", 12)))
+    if requested_duration == -1:
+        requested_duration = 12
+    resolution = job.get("resolution", "720p")
+    ratio = job.get("ratio", "16:9")
+    repeat_count = max(1, int(job.get("total", 1)))
+    out_dir = Path(job.get("output_dir")) if job.get("output_dir") else OUTPUT_DIR
+    prefix = f"local_portrait_{time.strftime('%Y%m%d_%H%M%S')}_{job_id[:8]}"
+
+    refs: list[dict[str, Any]] = []
+    refs_failed = False
+    try:
+        refs = _collect_local_reference_files(job)
+        if not refs:
+            raise RuntimeError("本地模型没有可用参考素材")
+    except Exception as exc:
+        refs_failed = True
+        with JOBS_LOCK:
+            job["errors"].append(str(exc))
+            job["done"] = repeat_count
+            job["events"].append({"time": time.strftime("%H:%M:%S"), "message": f"任务失败: {exc}"})
+
+    for idx in range(repeat_count):
+        if refs_failed:
+            break
+        if _job_cancel_requested(job_id):
+            break
+
+        try:
+            local_job_id = _submit_local_portrait_job(prompt, ratio, resolution, requested_duration, refs)
+            with JOBS_LOCK:
+                job["events"].append({
+                    "time": time.strftime("%H:%M:%S"),
+                    "message": f"Run {idx} 已提交本地任务 {local_job_id}",
+                })
+            run_finished = False
+            for _ in range(360):
+                time.sleep(5)
+                if _job_cancel_requested(job_id):
+                    run_finished = True
+                    break
+                st = _http_json(f"{LOCAL_GATEWAY_BASE_URL}/api/video_local/jobs/{local_job_id}", timeout=60)
+                if not isinstance(st, dict) or not st.get("id"):
+                    continue
+                local_status = str(st.get("status") or "").lower()
+                if local_status in ("succeeded", "success", "partial"):
+                    produced = 0
+                    for item in st.get("results") or []:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("ok") is False and item.get("error"):
+                            with JOBS_LOCK:
+                                job["errors"].append(f"Run {idx}: {item.get('error')}")
+                            continue
+                        download_url = item.get("download_url") or item.get("download_urls", [None])[0]
+                        if not download_url:
+                            continue
+                        try:
+                            token, local_name = _register_local_output(
+                                str(download_url), out_dir, prefix, idx
+                            )
+                        except Exception as exc:
+                            with JOBS_LOCK:
+                                job["errors"].append(f"Run {idx}: 下载本地结果失败: {exc}")
+                            continue
+                        produced += 1
+                        with JOBS_LOCK:
+                            job["results"].append({
+                                "filename": local_name,
+                                "download_url": f"/api/download/{token}",
+                                "status": "succeeded",
+                            })
+                            job["events"].append({
+                                "time": time.strftime("%H:%M:%S"),
+                                "message": f"Run {idx} 完成",
+                            })
+                    if not produced:
+                        with JOBS_LOCK:
+                            job["errors"].append(f"Run {idx}: 本地任务成功但没有可用视频")
+                            job["events"].append({
+                                "time": time.strftime("%H:%M:%S"),
+                                "message": f"Run {idx} 失败: 本地任务成功但没有可用视频",
+                            })
+                    with JOBS_LOCK:
+                        job["done"] += 1
+                    run_finished = True
+                    break
+                if local_status in ("failed", "fail", "failure", "cancelled", "canceled", "error"):
+                    error_text = str(st.get("error") or "")
+                    if not error_text:
+                        events = st.get("events") or []
+                        error_text = "; ".join(str(e.get("message") or e) for e in events[-5:])
+                    with JOBS_LOCK:
+                        job["errors"].append(f"Run {idx}: {error_text or local_status}")
+                        job["done"] += 1
+                        job["events"].append({
+                            "time": time.strftime("%H:%M:%S"),
+                            "message": f"Run {idx} 失败: {error_text or local_status}",
+                        })
+                    run_finished = True
+                    break
+            if not run_finished:
+                with JOBS_LOCK:
+                    job["errors"].append(f"Run {idx}: 本地模型生成超时（30 分钟未完成）")
+                    job["done"] += 1
+                    job["events"].append({
+                        "time": time.strftime("%H:%M:%S"),
+                        "message": f"Run {idx} 失败: 本地模型生成超时（30 分钟未完成）",
+                    })
+        except Exception as exc:
+            with JOBS_LOCK:
+                job["errors"].append(f"Run {idx}: {exc}")
+                job["done"] += 1
+                job["events"].append({
+                    "time": time.strftime("%H:%M:%S"),
+                    "message": f"Run {idx} 失败: {exc}",
+                })
+
+    with JOBS_LOCK:
+        if job.get("cancel_requested"):
+            job["status"] = "cancelled"
+            if not job.get("errors"):
+                job["errors"] = ["任务已取消。"]
+        else:
+            job["status"] = "failed" if job.get("errors") else "succeeded"
+        job["finished_at"] = time.time()
+        job["events"].append({"time": time.strftime("%H:%M:%S"), "message": f"任务结束: {job['status']}"})
+        final_snapshot = {
+            "status": job["status"],
+            "done": job.get("done", 0),
+            "total": job.get("total", 0),
+            "results": [{k: v for k, v in r.items()} for r in job.get("results", [])],
+            "errors": list(job.get("errors", [])),
+        }
+    try:
+        update_activity(
+            job.get("activity_id"),
+            status=final_snapshot["status"],
+            result=final_snapshot,
+            error="; ".join(final_snapshot["errors"][:3]) if final_snapshot["errors"] else None,
+        )
+    except Exception:
+        pass
 
 
 # === Video generation job runner (Ark v3 API) ===
@@ -1919,6 +2270,10 @@ def _run_virtual_job_impl(job_id, job):
     ratio = job.get("ratio", "16:9")
     repeat_count = int(job.get("total", 1))
     extra_image_urls = job.get("extra_image_urls", [])
+
+    if _is_local_model(model) or str(job.get("provider") or "").strip().lower() == "local":
+        _run_local_virtual_job_impl(job_id, job)
+        return
 
     with JOBS_LOCK:
         job["status"] = "running"
@@ -2208,6 +2563,15 @@ class Handler(SimpleHTTPRequestHandler):
                 "has_access_key": bool(ACCESS_KEY),
                 "has_secret_key": bool(SECRET_KEY),
                 "output_dir": str(OUTPUT_DIR),
+                "local_ready": local_gateway_available(),
+                "local_models": [
+                    {
+                        "id": LOCAL_PORTRAIT_MODEL_ID,
+                        "label": "本地 · 海螺 H3 全参考生视频",
+                        "maxDuration": 30,
+                        "resolutions": ["480p", "720p", "1080p"],
+                    }
+                ],
             })
             return
 

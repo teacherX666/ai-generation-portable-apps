@@ -1,11 +1,21 @@
 """报错问答助手 —— web 入口（对齐 rag-agent，Claude→DeepSeek，飞书机器人→网页）。"""
 from __future__ import annotations
 
+import os
+
+# 本应用访问的是国内端点（ai.t8star.org / DeepSeek / 飞书），直连即可。
+# 系统代理若是 socks4://127.0.0.1:1080 会被 httpx 拒绝并导致启动崩溃，这里显式绕过。
+os.environ.setdefault("NO_PROXY", "*")
+os.environ.setdefault("no_proxy", "*")
+
 import base64
 import json
 import logging
+import math
 import re
+import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -26,6 +36,7 @@ from rag_agent.query.retriever import KbRetriever
 from rag_agent.query.semantic_gate import SemanticGate
 from rag_agent.self_learn.analyzer import format_scan_answer, scan_and_analyze
 from rag_agent.self_learn.candidate_writer import write_candidate_if_new
+from rag_agent.sync.indexer import split_markdown
 from rag_agent.sync.lark_fetcher import fetch_kb_markdown
 from rag_agent.sync.service import SyncService
 
@@ -58,6 +69,7 @@ retriever = KbRetriever(
     vector_weight=settings.retrieval_vector_weight,
     keyword_weight=settings.retrieval_keyword_weight,
 )
+
 semantic_gate = SemanticGate(
     embeddings=embeddings,
     margin=settings.semantic_gate_margin,
@@ -192,6 +204,175 @@ def admin_query_log(request: Request, n: int = 20):
     return {"entries": entries}
 
 
+
+GENERATION_RAG_TTL_SECONDS = 0.0
+GENERATION_RAG_MIN_LEXICAL_SCORE = 1.0
+_generation_rag_lock = threading.Lock()
+_generation_rag_cache = {"fetched_at": 0.0, "docs": []}
+_RAG_WORD_RE = re.compile(r"[a-z0-9]+")
+_RAG_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def _rag_features(text: str) -> tuple[set[str], set[str]]:
+    normalized = (text or "").lower().replace("_", " ").replace("-", " ")
+    words = set(_RAG_WORD_RE.findall(normalized))
+    cjk = _RAG_CJK_RE.findall(normalized)
+    grams: set[str] = set()
+    if len(cjk) == 1:
+        grams.add(cjk[0])
+    for index in range(len(cjk) - 1):
+        grams.add(cjk[index] + cjk[index + 1])
+    return words, grams
+
+
+_RAG_STOPGRAMS = {
+    "不要", "一个", "生成", "图片", "视频", "内容", "出现", "可以", "如果",
+    "这个", "那个", "然后", "以及", "或者", "进行", "检查",
+    "直接", "使用", "下面", "类似", "个人", "经验", "写上", "严格", "参考",
+    "形象", "可以", "不行", "选择", "描述", "情绪", "人物", "时候",
+}
+_RAG_QUOTE_RE = re.compile(r"[「“]([^」”]+)[」”]")
+
+
+def _clean_title(title: str) -> str:
+    cleaned = re.sub(r"^\d+\.?\s*", "", title or "").strip()
+    return cleaned.rstrip("：:").strip()
+
+
+def _meaningful_doc_terms(doc, title: str) -> set[str]:
+    text = f"{title}\n{doc.page_content or ''}"
+    words, grams = _rag_features(text)
+    return {term for term in (words | grams) if term not in _RAG_STOPGRAMS and not term.isdigit()}
+
+
+def _quoted_phrases(content: str) -> list[str]:
+    return [phrase.strip() for phrase in _RAG_QUOTE_RE.findall(content or "") if phrase.strip()]
+
+
+def _contains_any(text: str, phrases: list[str]) -> bool:
+    return any(phrase and phrase in text for phrase in phrases)
+
+
+_PHONE_SATISFACTION_PHRASES = [
+    "手机不要漏出屏幕", "不要漏出屏幕", "不要露出屏幕", "禁止漏出屏幕",
+    "屏幕不要露", "手机背面", "手机背面图片", "手机背面特写",
+]
+_FACE_SATISFACTION_PHRASES = [
+    "不要脸红", "不脸红", "避免脸红", "拒绝夸张脸红", "不要夸张脸红",
+]
+
+
+def _satisfied_phrases(doc, title: str) -> list[str]:
+    phrases = [title]
+    if any(keyword in title for keyword in ("手机", "屏幕")):
+        phrases.extend(_PHONE_SATISFACTION_PHRASES)
+    if any(keyword in title for keyword in ("脸红", "表情", "愤怒", "生气")):
+        phrases.extend(_FACE_SATISFACTION_PHRASES)
+    content = doc.page_content or ""
+    phrases.extend(_quoted_phrases(content))
+
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if any(keyword in line for keyword in ("可直接", "不要", "禁止", "避免", "拒绝")):
+            phrases.append(line)
+            phrases.extend(part.strip() for part in re.split(r"[，,。；;]", line) if part.strip())
+
+    match = re.search(r"可直接写上[：:]\s*([^）)]+)", content)
+    if match:
+        phrases.append(match.group(1).strip())
+
+    return [phrase for phrase in phrases if phrase]
+
+
+def _generation_kb_docs():
+    now = time.time()
+    with _generation_rag_lock:
+        if _generation_rag_cache["docs"] and now - _generation_rag_cache["fetched_at"] < GENERATION_RAG_TTL_SECONDS:
+            return _generation_rag_cache["docs"]
+
+    markdown = fetch_kb_markdown(api_client, settings.lark_generation_kb_doc_id)
+    docs = split_markdown(markdown)
+
+    with _generation_rag_lock:
+        _generation_rag_cache.update({"fetched_at": time.time(), "docs": docs})
+    return docs
+
+
+def _preflight_generation_prompt(prompt: str) -> dict:
+    try:
+        docs = _generation_kb_docs()
+        if not docs:
+            return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
+
+        prompt_words, prompt_grams = _rag_features(prompt)
+        matches = []
+        for doc in docs:
+            raw_title = doc.metadata.get("error_title", "")
+            title = _clean_title(raw_title)
+            terms = _meaningful_doc_terms(doc, title)
+            relevant = any(term in prompt_words or term in prompt_grams for term in terms)
+            if not relevant:
+                continue
+
+            satisfied_phrases = _satisfied_phrases(doc, title)
+            if _contains_any(prompt, satisfied_phrases):
+                continue
+
+            score = sum(1 for term in terms if term in prompt_words or term in prompt_grams)
+            matches.append(
+                {
+                    "title": raw_title,
+                    "content": doc.page_content.strip(),
+                    "score": float(score),
+                }
+            )
+
+        if not matches:
+            return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
+
+        matches.sort(key=lambda item: item["score"], reverse=True)
+        context = "\n\n".join(f"【{item['title']}】\n{item['content']}" for item in matches)
+        updated_prompt = f"{prompt.strip()}\n\n[飞书知识库自动补充]\n{context}"
+        optimized_prompt = _director_optimize_prompt(updated_prompt)
+        if optimized_prompt:
+            updated_prompt = optimized_prompt
+        return {"ok": True, "detected": True, "matches": matches, "updated_prompt": updated_prompt}
+    except Exception:
+        logger.exception("generation KB preflight failed")
+        return {"ok": False, "detected": False, "matches": [], "updated_prompt": prompt, "error": "RAG 检查暂时不可用"}
+
+
+def _director_optimize_prompt(prompt: str) -> str:
+    try:
+        port = int(os.environ.get("DIRECTOR_PORT", "8895"))
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/optimize-prompt",
+            data=json.dumps({"text": prompt, "mode": "rag"}, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        if data.get("ok") and data.get("prompt"):
+            return str(data["prompt"]).strip()
+    except Exception:
+        logger.exception("director rag prompt optimization failed")
+    return ""
+
+@app.post("/api/rag/preflight")
+async def rag_preflight(request: Request):
+    token = portal_token()
+    if token and verify_portal_identity(request.headers) is None:
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "JSON body required"})
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        return JSONResponse(status_code=400, content={"error": "prompt required"})
+    return await run_in_threadpool(_preflight_generation_prompt, prompt)
 @app.post("/api/ask")
 async def ask(request: Request):
     token = portal_token()

@@ -435,6 +435,7 @@ function NanoBananaApp() {
     maxReferenceImages: 14,
     _providerKeys: {},
     _activeProvider: 't8star',
+    localReady: true,
     _personalKeyHint: '',
     outputDir: '',
     dirHandle: null,
@@ -586,11 +587,21 @@ function NanoBananaApp() {
       try { data = await response.json(); } catch (e) { return; }
       if (!data || !data.providers) return;
       this.providers = data.providers;
+      this.localReady = data.local_ready !== false;
       // 默认供应商以 default_provider 为准。曾有「保留当前选择」的启发式：
       // 新页面的下拉框默认是第一个选项，会把浏览器默认误当作用户选择，
       // 导致默认值（火山引擎）被 comfyui 顶掉。用户显式选择由草稿/存档
       // 的 applyPreset 路径保留，不需要这里的启发式。
       var defaultP = data.default_provider || Object.keys(data.providers)[0];
+      if (!this.localReady && defaultP === "comfyui_local") {
+        var cloudKeys = Object.keys(data.providers);
+        for (var ci = 0; ci < cloudKeys.length; ci++) {
+          if (cloudKeys[ci] !== "comfyui_local" && data.providers[cloudKeys[ci]]) {
+            defaultP = cloudKeys[ci];
+            break;
+          }
+        }
+      }
       this.applyProvider(defaultP);
       // Ensure select syncs
       var self = this;
@@ -606,7 +617,37 @@ function NanoBananaApp() {
       }
     },
 
+    onProviderChange(value) {
+      if (value === "comfyui_local" && this.localReady === false) {
+        var prev = this._activeProvider || this.provider;
+        if (prev === "comfyui_local") {
+          var keys = Object.keys(this.providers);
+          for (var i = 0; i < keys.length; i++) {
+            if (keys[i] !== "comfyui_local" && this.providers[keys[i]]) {
+              prev = keys[i];
+              break;
+            }
+          }
+        }
+        this.applyProvider(prev, true);
+        this.providerHint = "本地模型不可用，已恢复为 " + (this.providers[prev] ? (this.providers[prev].label || prev) : prev) + "。请先启动本地模型或检查服务器 AIPORT_BASE_URL 配置。";
+        var s = nbField("provider");
+        if (s) s.value = prev;
+        return;
+      }
+      this.applyProvider(value);
+    },
+
     applyProvider(provider, skipDefaults) {
+      if (provider === "comfyui_local" && this.localReady === false) {
+        var providerKeys = Object.keys(this.providers);
+        for (var ai = 0; ai < providerKeys.length; ai++) {
+          if (providerKeys[ai] !== "comfyui_local" && this.providers[providerKeys[ai]]) {
+            provider = providerKeys[ai];
+            break;
+          }
+        }
+      }
       var cfg = this.providers[provider];
       if (!cfg) return;
       var keyInput = nbField('api_key');
@@ -1622,7 +1663,20 @@ function NanoBananaApp() {
       this.eventsText = cache.eventsText || '';
       this.submitting = cache.submitting || false;
       if (cache.baseUrl !== undefined) this.baseUrl = cache.baseUrl;
-      if (cache.provider !== undefined) this.provider = cache.provider;
+      if (cache.provider !== undefined) {
+        var savedProvider = cache.provider;
+        if (savedProvider === "comfyui_local" && this.localReady === false) {
+          var tabCloudKeys = Object.keys(this.providers);
+          for (var ti = 0; ti < tabCloudKeys.length; ti++) {
+            if (tabCloudKeys[ti] !== "comfyui_local" && this.providers[tabCloudKeys[ti]]) {
+              savedProvider = tabCloudKeys[ti];
+              break;
+            }
+          }
+        }
+        this.provider = savedProvider;
+        this._activeProvider = savedProvider;
+      }
       if (cache.models !== undefined) this.models = cache.models;
       if (cache.workspaceName !== undefined) this.workspaceName = cache.workspaceName;
       this.outputDir = cache.outputDir !== undefined ? cache.outputDir : '';

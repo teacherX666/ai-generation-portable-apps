@@ -506,6 +506,8 @@ function SeedanceApp() {
     appStatus: 'unknown',
     providers: {},
     provider: 'volcengine',
+    localReady: true,
+    _activeProvider: 'volcengine',
     models: [],
     baseUrl: '',
     providerHint: '',
@@ -679,17 +681,53 @@ function SeedanceApp() {
         this.providers = normalized;
         // Provider locked to volcengine — ignore default_provider from config
         // and any localStorage residue. Frontend has no provider switch anyway.
-        this.applyProvider(res.default_provider || 'volcengine');
+        this.localReady = res.local_ready !== false;
+        let defaultP = res.default_provider || 'volcengine';
+        if (!this.localReady && defaultP === 'comfyui_local') {
+          defaultP = 'volcengine';
+        }
+        this.applyProvider(defaultP);
       } else {
         this.providers = FALLBACK_PROVIDERS;
         this.applyProvider('volcengine');
       }
     },
 
+    onProviderChange(value) {
+      if (value === 'comfyui_local' && this.localReady === false) {
+        let prev = this._activeProvider || this.provider;
+        if (prev === 'comfyui_local') {
+          const keys = Object.keys(this.providers);
+          for (let i = 0; i < keys.length; i++) {
+            if (keys[i] !== 'comfyui_local' && this.providers[keys[i]]) {
+              prev = keys[i];
+              break;
+            }
+          }
+        }
+        this.applyProvider(prev, true);
+        this.providerHint = '本地模型不可用，已恢复为 ' + (this.providers[prev] ? (this.providers[prev].label || prev) : prev) + '。请先启动本地模型或检查服务器 AIPORT_BASE_URL 配置。';
+        const s = field('provider');
+        if (s) s.value = prev;
+        return;
+      }
+      this.applyProvider(value);
+    },
+
     applyProvider(providerKey, skipDefaults) {
+      if (providerKey === 'comfyui_local' && this.localReady === false) {
+        const keys = Object.keys(this.providers);
+        for (let ai = 0; ai < keys.length; ai++) {
+          if (keys[ai] !== 'comfyui_local' && this.providers[keys[ai]]) {
+            providerKey = keys[ai];
+            break;
+          }
+        }
+      }
       const cfg = this.providers[providerKey];
       if (!cfg) return;
       this.provider = providerKey;
+      this._activeProvider = providerKey;
       this.baseUrl = cfg.base_url || '';
       this.providerHint = cfg.hint || '';
       this.models = cfg.models || [];
@@ -1815,7 +1853,20 @@ function SeedanceApp() {
       this.eventsText = cache.eventsText || '';
       this.submitting = cache.submitting || false;
       if (cache.baseUrl !== undefined) this.baseUrl = cache.baseUrl;
-      if (cache.provider !== undefined) this.provider = cache.provider;
+      if (cache.provider !== undefined) {
+        let savedProvider = cache.provider;
+        if (savedProvider === 'comfyui_local' && this.localReady === false) {
+          const keys = Object.keys(this.providers);
+          for (let ti = 0; ti < keys.length; ti++) {
+            if (keys[ti] !== 'comfyui_local' && this.providers[keys[ti]]) {
+              savedProvider = keys[ti];
+              break;
+            }
+          }
+        }
+        this.provider = savedProvider;
+        this._activeProvider = savedProvider;
+      }
       if (cache.models !== undefined) this.models = cache.models;
       if (cache.workspaceName !== undefined) this.workspaceName = cache.workspaceName;
       this.outputDir = cache.outputDir !== undefined ? cache.outputDir : '';

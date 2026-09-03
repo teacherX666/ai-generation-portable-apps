@@ -18,6 +18,7 @@ def main() -> int:
         action="store_true",
         help="只切分打印章节,不 embed 不写库",
     )
+
     args = parser.parse_args()
 
     logging.basicConfig(

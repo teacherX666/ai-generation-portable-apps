@@ -216,6 +216,15 @@ def api_config():
         "has_access_key": bool(legacy.ACCESS_KEY),
         "has_secret_key": bool(legacy.SECRET_KEY),
         "output_dir": str(legacy.OUTPUT_DIR),
+        "local_ready": legacy.local_gateway_available(),
+        "local_models": [
+            {
+                "id": legacy.LOCAL_PORTRAIT_MODEL_ID,
+                "label": "本地 · 海螺 H3 全参考生视频",
+                "maxDuration": 30,
+                "resolutions": ["480p", "720p", "1080p"],
+            }
+        ],
     }
 
 

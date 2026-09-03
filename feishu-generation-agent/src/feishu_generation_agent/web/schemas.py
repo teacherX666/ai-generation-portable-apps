@@ -126,6 +126,18 @@ class PlannerPromptResponse(BaseModel):
     source: Literal["prime", "personal"]
 
 
+class ProviderPreferencesUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    video_provider: str = Field(min_length=1)
+    image_provider: str = Field(min_length=1)
+
+
+class ProviderPreferencesResponse(BaseModel):
+    video_provider: str
+    image_provider: str
+
+
 class BitableClaimResponse(BaseModel):
     run_id: str
 

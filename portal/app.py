@@ -988,6 +988,17 @@ def _prune_old_usage_jsonl(today: str):
         pass
 
 
+def _append_analytics_jsonl(entry: dict):
+    """Append one analytics event to state/logs/analytics-events.jsonl. Best-effort."""
+    try:
+        logs_dir = STATE_DIR / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        path = logs_dir / "analytics-events.jsonl"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        print(f"  [analytics] jsonl append failed: {exc}", flush=True)
+
 class UsageTracker:
     def __init__(self):
         self._lock = threading.Lock()
@@ -2028,6 +2039,25 @@ class Handler(SimpleHTTPRequestHandler):
         else:
             self._serve_portal(path)
 
+    def _analytics_event(self, user: dict):
+        body = self._read_json()
+        if body is None:
+            return
+        event = str(body.get("event") or "").strip()
+        if not event:
+            self._json(400, {"ok": False, "error": "event is required"})
+            return
+        payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+        entry = {
+            "ts": int(time.time()),
+            "username": user.get("username", ""),
+            "user_id": user.get("user_id", ""),
+            "event": event,
+            "payload": payload,
+        }
+        _append_analytics_jsonl(entry)
+        self._json(200, {"ok": True})
+
     def do_POST(self):
         if self._reject_oversized_upload():
             return
@@ -2124,6 +2154,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/feishu/config":
             self._feishu_config_put(user)
             return
+        if path == "/api/analytics/event":
+            self._analytics_event(user)
+            return
         if not self._try_proxy(path, "POST", user):
             self._json(404, {"ok": False, "error": "not found"})
 
@@ -2216,13 +2249,13 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _cat_experiment_config(self, user: dict):
         if user.get("role") != "admin":
-            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验室"})
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
             return
         self._json(200, cat_experiment_service.config())
 
     def _cat_experiment_generate(self, user: dict):
         if user.get("role") != "admin":
-            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验室"})
+            self._json(403, {"ok": False, "error": "管理员才能使用猫咪生成实验台"})
             return
         body = self._read_json()
         if body is None:

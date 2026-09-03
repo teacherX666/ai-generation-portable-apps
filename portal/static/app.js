@@ -2044,6 +2044,9 @@ function VolcenginePortraitApp() {
   return {
     statusText: '空闲',
     appPath,  // exposed to petite-vue templates (used in index.html for download urls)
+    // 本地 AI Port 检测（PR #11）：/api/config 返回 local_ready/local_models
+    localReady: false,
+    localPortraitModels: [],
 
     // Unified state (merges virtual + real)
     groupName: '', groupId: '', creatingGroup: false,
@@ -2401,6 +2404,22 @@ function VolcenginePortraitApp() {
       if (res?.ok) {
         this.outputDir = res.output_dir || '';
         this.outputDirInput = this.outputDir;
+        this.localReady = res.local_ready === true;
+        this.applyLocalModels(res.local_models || []);
+      }
+    },
+
+    isLocalModel(id) { return String(id || '').startsWith('local-'); },
+    applyLocalModels(models) {
+      if (!this.localReady || !Array.isArray(models) || !models.length) return;
+      for (const m of models) {
+        if (!m || !m.id || this.portraitModels.some((x) => x.id === m.id)) continue;
+        this.portraitModels.push({
+          id: m.id,
+          label: m.label || m.id,
+          maxDuration: Number(m.maxDuration || 15),
+          resolutions: Array.isArray(m.resolutions) && m.resolutions.length ? m.resolutions : ['720p'],
+        });
       }
     },
 

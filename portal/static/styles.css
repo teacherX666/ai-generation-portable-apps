@@ -690,9 +690,9 @@ button:disabled,
 .card .row > input, .card [style*="display:flex"] > input { width: auto; flex: 1 1 auto; min-width: 120px; }
 .card input:focus, .card textarea:focus, .card select:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
 .card textarea { resize: vertical; }
-.card button { padding: 8px 16px; border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap; }
-.card button:hover { background: #eff6ff; border-color: #93c5fd; color: #1e40af; }
-.card button:disabled { opacity: 0.5; cursor: not-allowed; }
+.card button:not(.ui-btn) { padding: 8px 16px; border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.card button:not(.ui-btn):hover { background: #eff6ff; border-color: #93c5fd; color: #1e40af; }
+.card button:not(.ui-btn):disabled { opacity: 0.5; cursor: not-allowed; }
 .job-row { display: flex; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid #f1f5f9; font-size: 13px; color: #334155; }
 .job-row:last-child { border-bottom: none; }
 .job-row a { color: #2563eb; cursor: pointer; text-decoration: none; font-size: 12px; }
@@ -1596,6 +1596,27 @@ body.director-collapsed .director-body { display: none !important; }
   font-size: 13px;
   line-height: 1.6;
 }
+.module-help-doc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 9px 16px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--surface);
+  font-size: 13px;
+  font-weight: 720;
+  text-decoration: none;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--transition-base), transform var(--transition-fast), box-shadow var(--transition-base);
+}
+.module-help-doc:hover:not([hidden]) {
+  background: var(--accent-hover);
+  box-shadow: 0 8px 18px rgba(20, 32, 51, 0.12);
+}
+.module-help-doc:active:not([hidden]) { transform: translateY(1px); }
+.module-help-doc[hidden] { display: none; }
 .portal-help-step button {
   width: auto;
   height: auto;
@@ -1970,52 +1991,103 @@ body.director-collapsed .director-body { display: none !important; }
   flex: 0 0 auto;
 }
 .portal-toast__action:hover { background: var(--accent-soft); }
-/* 取消任务按钮（运行中面板内，琥珀警示色对齐画布上游） */
-.cancel-job-btn {
-  padding: 8px 14px;
-  border: 1px solid #f59e0b;
-  border-radius: 6px;
-  background: #fffbeb;
-  color: #b45309;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.cancel-job-btn:hover { background: #fef3c7; }
 
-/* 使用说明悬浮入口（右下角，避开左下角下载进度条与顶部导航） */
-.manual-link {
-  position: fixed;
-  right: 24px;
-  bottom: 24px;
-  z-index: 5000;
-  display: inline-flex;
+/* === Collapsible desktop navigation === */
+.portal-nav {
+  transition: flex-basis 0.2s ease, padding 0.2s ease;
+}
+.portal-nav__toggle {
+  align-self: flex-end;
+  width: 32px;
+  height: 30px;
+  margin: 0 2px 4px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 26px;
+  cursor: pointer;
+}
+.portal-nav__toggle:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+.portal-nav__toggle:focus-visible {
+  outline: 3px solid var(--accent-ring);
+  outline-offset: 1px;
+}
+.portal-nav.is-collapsed {
+  flex-basis: 72px;
   align-items: center;
-  gap: 6px;
-  padding: 10px 18px;
-  border-radius: 999px;
-  background: #235fd6;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
-  text-decoration: none;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
-  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
-  cursor: grab;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-user-drag: none;
-  touch-action: none;
+  padding-left: 10px;
+  padding-right: 10px;
 }
-.manual-link:hover {
-  color: #fff;
-  text-decoration: none;
-  background: #194fb8;
+.portal-nav.is-collapsed .portal-nav__toggle {
+  align-self: center;
+}
+.portal-nav.is-collapsed .portal-nav__group {
+  width: 100%;
+  margin-top: 8px;
+}
+.portal-nav.is-collapsed .portal-nav__title,
+.portal-nav.is-collapsed .portal-nav__label,
+.portal-nav.is-collapsed .portal-nav__desc {
+  display: none;
+}
+.portal-nav.is-collapsed .portal-nav__items {
+  align-items: center;
+}
+.portal-nav.is-collapsed .app-tab {
+  width: 50px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;
+  text-align: center;
   transform: none;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.32);
+  box-shadow: none;
 }
-.manual-link.is-dragging { cursor: grabbing; opacity: 0.92; box-shadow: 0 8px 22px rgba(15, 23, 42, 0.35); }
+.portal-nav.is-collapsed .app-tab::before {
+  content: attr(data-collapsed-label);
+  display: block;
+  color: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+}
+.portal-nav.is-collapsed .app-tab.active,
+.portal-nav.is-collapsed .app-tab[aria-selected="true"] {
+  width: 50px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  transform: none;
+  box-shadow: none;
+}
+.portal-nav.is-collapsed .portal-nav__footer {
+  width: 50px;
+}
+.portal-nav.is-collapsed .portal-help-btn {
+  width: 50px;
+  padding: 0;
+  font-size: 0;
+}
+.portal-nav.is-collapsed .portal-help-btn::before {
+  content: attr(data-collapsed-label);
+  font-size: 13px;
+  font-weight: 800;
+}
+.portal-nav.is-collapsed .portal-nav__badge {
+  top: 2px;
+  right: 1px;
+}
+@media (max-width: 680px) {
+  .portal-nav__toggle { display: none; }
+}
 
 /* === 易用性修补：Dreamina 任务卡视频懒加载占位 === */
 .video-lazy.ui-media-placeholder {
@@ -2028,9 +2100,6 @@ body.director-collapsed .director-body { display: none !important; }
 .video-lazy.ui-media-placeholder:hover {
   border-color: var(--accent, #235fd6); color: var(--accent, #235fd6);
 }
-
-/* === 易用性修补：历史弹窗「报错助手」按钮 === */
-.hist-reuse + .hist-reuse { margin-left: 8px; }
 
 /* === 易用性修补：LAN 徽章可复制提示 === */
 .portal-lan { user-select: none; }

@@ -272,6 +272,9 @@ def _ws_preset_path(ws_id: str) -> Path:
 
 
 DEFAULT_BASE_URL = "https://ai.t8star.org"
+
+LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
+
 DEFAULT_CONFIG = Path.home() / "ComfyUI/custom_nodes/Comfyui-zhenzhen/Comflyapi.json"
 MAX_SEED = 2147483647
 
@@ -359,7 +362,7 @@ VALUE_FIELDS = {
 FALLBACK_PROVIDERS = {
     "schema_version": 1,
     "app": "nano-banana",
-    "default_provider": "volcengine",
+    "default_provider": "t8star",
     "providers": {
         "comfyui_local": {
             "label": "Local ComfyUI (free)",
@@ -372,7 +375,7 @@ FALLBACK_PROVIDERS = {
             "label": "T8Star Images API",
             "base_url": DEFAULT_BASE_URL,
             "api_style": "openai_images",
-            "defaults": {"mode": "img2img", "model": "nano-banana-2", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 900, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
+            "defaults": {"mode": "img2img", "model": "gemini-3-pro-image", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 900, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
             "models": [{"id": "nano-banana-2", "label": "nano-banana-2"}, {"id": "gemini-3.1-flash-image-preview", "label": "gemini-3.1-flash-image-preview"}, {"id": "gemini-3-pro-image-2k", "label": "gemini-3-pro-image-2k"}, {"id": "gemini-3-pro-image-4k", "label": "gemini-3-pro-image-4k"}],
         },
         "gemini": {
@@ -708,12 +711,39 @@ def providers_for_client(config: dict[str, Any]) -> dict[str, Any]:
     """Return provider metadata plus key availability, never key plaintext."""
     providers = json.loads(json.dumps(config.get("providers") or {}, ensure_ascii=False))
     for provider_cfg in providers.values():
+        if provider_cfg.get("api_style") == "comfyui_workflow":
+            provider_cfg["base_url"] = LOCAL_GATEWAY_BASE_URL
         if isinstance(provider_cfg, dict) and provider_cfg.get("company_key"):
             provider_cfg["company_key_available"] = bool(
                 os.environ.get("VOLCENGINE_ARK_API_KEY", "").strip()
             )
     return providers
 
+
+
+def local_gateway_available(timeout: float = 1.5) -> bool:
+    """Return True when the local AI Port gateway answers on the configured URL."""
+    try:
+        with urllib.request.urlopen(LOCAL_GATEWAY_BASE_URL + "/api/modules", timeout=timeout) as resp:
+            return resp.status < 500
+    except Exception:
+        return False
+
+
+def resolve_effective_provider(config: dict[str, Any], requested_provider: str = "") -> str:
+    """Choose a provider, preferring cloud defaults and never routing to an offline local gateway."""
+    providers = config.get("providers") or {}
+    requested = str(requested_provider or "").strip()
+    default = str(config.get("default_provider") or "t8star").strip()
+    cloud = [key for key, cfg in providers.items() if isinstance(cfg, dict) and cfg.get("api_style") != "comfyui_workflow"]
+    if not cloud:
+        return requested or default or "comfyui_local"
+    fallback = default if default in cloud else cloud[0]
+    if requested == "comfyui_local":
+        return requested if local_gateway_available() else fallback
+    if requested in providers:
+        return requested
+    return fallback if default == "comfyui_local" else (default if default in providers else fallback)
 
 def mask_key(key: str) -> str:
     return f"{key[:5]}...{key[-4:]}" if key and len(key) > 12 else ("***" if key else "")
@@ -1257,7 +1287,7 @@ def api_schema() -> dict[str, Any]:
 
 def request_template() -> dict[str, Any]:
     config, config_error = load_provider_config()
-    provider = str(config.get("default_provider") or "comfyui_local")
+    provider = resolve_effective_provider(config)
     defaults = provider_defaults(config, provider)
     minimal = {
         "api_key": "YOUR_API_KEY",
@@ -1319,7 +1349,7 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     if config_error:
         raise ValueError(f"{config_error['message']}: {config_error['detail']}")
     incoming = {key: payload[key] for key in VALUE_FIELDS if key in payload and payload[key] is not None}
-    provider = str(incoming.get("provider") or config.get("default_provider") or "comfyui_local")
+    provider = resolve_effective_provider(config, str(incoming.get("provider") or ""))
     values = provider_defaults(config, provider, str(incoming.get("model") or ""))
     values.update(incoming)
     values["provider"] = provider
@@ -1743,7 +1773,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
     if provider_cfg.get("api_style") == "comfyui_workflow":
         # Local ComfyUI via AI Port. Lock the endpoint to the configured local
         # gateway so a client-supplied base_url can never redirect free work.
-        base_url = str(provider_cfg.get("base_url") or "http://127.0.0.1:8801").rstrip("/")
+        base_url = LOCAL_GATEWAY_BASE_URL
         model_kind = str(common["model"]).strip() or "qwen2511"
         files_payload: dict[str, Any] = {}
         for i in range(1, 15):
@@ -2178,7 +2208,7 @@ def _merge_local_batch_results(results: list[dict[str, Any]], index: int) -> dic
 
 def run_one_with_fallback(job_id: str, index: int, values: dict[str, Any], files: dict[str, tuple[str, bytes]], ws_id: str = "localhost") -> dict[str, Any]:
     config, _ = load_provider_config()
-    provider = str(values.get("provider") or config.get("default_provider") or "comfyui_local")
+    provider = str(values.get("provider") or config.get("default_provider") or "t8star")
     provider_cfg = (config.get("providers") or {}).get(provider) or {}
     if provider_cfg.get("api_style") != "comfyui_workflow":
         return run_one(job_id, index, values, files, ws_id)
@@ -2342,6 +2372,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "masked_key": mask_key(load_default_key()),
                 "providers": providers_for_client(providers),
                 "default_provider": providers.get("default_provider"),
+                "local_ready": local_gateway_available(),
                 "config_error": config_error,
             })
             return
@@ -2681,7 +2712,7 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 payload = read_json_body(self)
                 values, files = values_files_from_json(payload)
-                provider = str(values.get("provider") or "comfyui_local")
+                provider = str(values.get("provider") or "t8star")
                 _cfg, _ = load_provider_config()
                 provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}
                 if provider_cfg.get("api_style") == "comfyui_workflow":
@@ -2722,9 +2753,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
         values = {key: get_field(form, key) for key in form.keys() if not getattr(form[key], "filename", None)}
-        provider = str(values.get("provider") or "comfyui_local")
-        values["provider"] = provider
         _cfg, _ = load_provider_config()
+        provider = resolve_effective_provider(_cfg, str(values.get("provider") or ""))
+        values["provider"] = provider
         provider_cfg = (_cfg.get("providers") or {}).get(provider) or {}
         if provider_cfg.get("api_style") == "comfyui_workflow":
             values["api_key"] = ""
