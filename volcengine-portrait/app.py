@@ -1753,6 +1753,32 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
         json_response(handler, 400, {"ok": False, "error": str(exc)})
         return
 
+    # ── 提交前拦截：素材引用 GetAsset 逐项确认（历史失败记录最高频一类，
+    #    排队后必失败还占生成时间；2026-09-01 加的拦截在 fork 同步重写时
+    #    丢失，本次恢复并适配本地模式——本地模式走本地字节，跳过云端校验）──
+    if not local_mode:
+        try:
+            for aid in [asset_id] + [a for a in extra_asset_ids if isinstance(a, str) and a]:
+                check = openapi_call("GetAsset", {"Id": aid, "ProjectName": PROJECT_NAME},
+                                     timeout=20)
+                if isinstance(check, dict) and "error" in check:
+                    json_response(handler, 400, {"ok": False,
+                                                 "error": f"引用的素材（{aid}）已不存在，请重新上传或换一个素材"})
+                    return
+                item = openapi_result(check)
+                status = str(item.get("Status") or "").lower()
+                if status == "processing":
+                    json_response(handler, 400, {"ok": False,
+                                                 "error": f"素材（{aid}）还在审核处理中，请稍候再试"})
+                    return
+                if status != "active":
+                    json_response(handler, 400, {"ok": False,
+                                                 "error": f"素材（{aid}）当前不可用（状态：{status}），请重新上传"})
+                    return
+        except Exception:
+            # 校验通道本身故障时不阻断提交（上游会再报一次真实错误）
+            pass
+
     api_key = None
 
     # Local "图2 上传本地图" extras: PUT each blob to the company TOS bucket and
