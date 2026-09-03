@@ -77,7 +77,7 @@ export RAG_ASSISTANT_ENGINE=${RAG_ASSISTANT_ENGINE:-fastapi}
 
 
 export AIPORT_BASE_URL=${AIPORT_BASE_URL:-http://UT-20210713KMWD.local:8801}
-echo "Starting AI Generation Portal on port 9090 (HTTPS)..."
+echo "Starting RedCraft on port 9090 (HTTPS)..."
 echo "  Local:  https://127.0.0.1:9090"
 echo "  HTTP → HTTPS:  http://127.0.0.1:9089"
 # rag-assistant 是 FastAPI 引擎（stdlib app.py 只是占位 stub，会立即退出）

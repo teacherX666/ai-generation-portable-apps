@@ -385,7 +385,7 @@ def ensure_certs(cert_dir: Path) -> tuple[Path, Path] | None:
         openssl, "req", "-x509", "-newkey", "rsa:2048",
         "-keyout", str(key_file), "-out", str(cert_file),
         "-days", "365", "-nodes",
-        "-subj", "/CN=AI Generation Portal",
+        "-subj", "/CN=RedCraft",
         "-addext", f"subjectAltName=DNS:localhost,IP:127.0.0.1,IP:{current_ip}"
     ], check=True, capture_output=True)
     ip_file.write_text(current_ip)
@@ -3209,11 +3209,11 @@ def main():
             do_OPTIONS = do_GET
 
         redirect_server = ThreadingHTTPServer(("0.0.0.0", REDIRECT_PORT), RedirectHandler)
-        print(f"\n  AI Generation Portal (HTTPS):")
+        print(f"\n  RedCraft (HTTPS):")
         print(f"    Local:   https://127.0.0.1:{PORTAL_PORT}")
         print(f"    LAN:     https://{lan_ip}:{PORTAL_PORT}")
     else:
-        print(f"\n  AI Generation Portal (HTTP):")
+        print(f"\n  RedCraft (HTTP):")
         print(f"    Local:   http://127.0.0.1:{PORTAL_PORT}")
         print(f"    LAN:     http://{lan_ip}:{PORTAL_PORT}")
 
