@@ -5,6 +5,7 @@
   const PREFLIGHT_URL = '/rag-assistant/api/rag/preflight';
   const PROMPT_KEYS = ['prompt', 'text', 'user_prompt', 'instruction'];
   const MARKER = '[飞书知识库自动补充]';
+  let lastReviewedPrompt = null;
   const ENDPOINT_RE = /\/api\/(?:v1\/)?(?:jobs(?:\/json)?|virtual\/jobs|real\/jobs|projects\/[^/]+\/render|runs)/;
 
   function isGenerationRequest(url) {
@@ -94,7 +95,8 @@
     }
 
     const prompt = readPrompt(options.body);
-    if (!prompt || prompt.includes(MARKER)) {
+    if (!prompt || prompt.includes(MARKER) || prompt === lastReviewedPrompt) {
+      if (prompt === lastReviewedPrompt) lastReviewedPrompt = null;
       return originalFetch(input, init);
     }
 
@@ -104,6 +106,7 @@
         return originalFetch(input, init);
       }
 
+      lastReviewedPrompt = prompt;
       updatePromptElement(result.updated_prompt || prompt);
       const titles = (result.matches || []).map((item) => item.title).filter(Boolean).join('、');
       notify(`飞书知识库检测到相关规则：${titles || '已自动补充提示词'}。提示词已更新，请再次点击生成。`);

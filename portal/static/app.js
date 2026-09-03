@@ -1648,6 +1648,8 @@ function VolcenginePortraitApp() {
   return {
     statusText: '空闲',
     appPath,  // exposed to petite-vue templates (used in index.html for download urls)
+    localReady: false,
+    localPortraitModels: [],
 
     // Unified state (merges virtual + real)
     groupName: '', groupId: '', creatingGroup: false,
@@ -1979,6 +1981,22 @@ function VolcenginePortraitApp() {
       if (res?.ok) {
         this.outputDir = res.output_dir || '';
         this.outputDirInput = this.outputDir;
+        this.localReady = res.local_ready === true;
+        this.applyLocalModels(res.local_models || []);
+      }
+    },
+
+    isLocalModel(id) { return String(id || '').startsWith('local-'); },
+    applyLocalModels(models) {
+      if (!this.localReady || !Array.isArray(models) || !models.length) return;
+      for (const m of models) {
+        if (!m || !m.id || this.portraitModels.some((x) => x.id === m.id)) continue;
+        this.portraitModels.push({
+          id: m.id,
+          label: m.label || m.id,
+          maxDuration: Number(m.maxDuration || 15),
+          resolutions: Array.isArray(m.resolutions) && m.resolutions.length ? m.resolutions : ['720p'],
+        });
       }
     },
 
@@ -2097,7 +2115,12 @@ function VolcenginePortraitApp() {
     },
 
     async createJob() {
-      if (!this.genAssetId) { this.statusText = '请选择资产 ID（图1）'; return; }
+      const localMode = String(this.model || '').startsWith('local-');
+      if (!localMode && !this.genAssetId) { this.statusText = '请选择资产 ID（图1）'; return; }
+      if (localMode && !this.genAssetId && !this.extraAssetIds.length && !this.extraFiles.length) {
+        this.statusText = '本地模型至少需要一个参考素材（资产、附加资产或本地上传文件）';
+        return;
+      }
       if (!this.prompt) { this.statusText = '请输入 Prompt'; return; }
       if (this.submitting) return;
       this.submitting = true; this.statusText = '提交中...'; this.events = ''; this.results = [];
@@ -2107,9 +2130,10 @@ function VolcenginePortraitApp() {
         if (this.extraFiles.length) {
           // 多文件 + asset 任意组合 — 走 multipart
           const fd = new FormData();
-          fd.append('asset_id', this.genAssetId);
+          fd.append('asset_id', this.genAssetId || '');
           fd.append('prompt', this.prompt);
           fd.append('model', this.model);
+          fd.append('provider', localMode ? 'local' : 'cloud');
           fd.append('duration', this.duration);
           fd.append('resolution', this.resolution);
           fd.append('ratio', this.ratio);
@@ -2122,10 +2146,11 @@ function VolcenginePortraitApp() {
         } else {
           // 只有 asset 引用 — 走 JSON
           res = await vpApi.call(this, `${appPath}/api/virtual/jobs`, 'POST', JSON.stringify({
-            asset_id: this.genAssetId,
+            asset_id: this.genAssetId || '',
             extra_asset_ids: this.extraAssetIds,
             prompt: this.prompt,
             model: this.model,
+            provider: localMode ? 'local' : 'cloud',
             duration: this.duration, resolution: this.resolution, ratio: this.ratio, repeat_count: this.repeat
           }));
         }

@@ -204,8 +204,8 @@ def admin_query_log(request: Request, n: int = 20):
 
 
 
-GENERATION_RAG_TTL_SECONDS = 60.0
-GENERATION_RAG_MIN_LEXICAL_SCORE = 0.30
+GENERATION_RAG_TTL_SECONDS = 0.0
+GENERATION_RAG_MIN_LEXICAL_SCORE = 1.0
 _generation_rag_lock = threading.Lock()
 _generation_rag_cache = {"fetched_at": 0.0, "docs": []}
 _RAG_WORD_RE = re.compile(r"[a-z0-9]+")
@@ -224,15 +224,65 @@ def _rag_features(text: str) -> tuple[set[str], set[str]]:
     return words, grams
 
 
-def _lexical_score(query: str, document: str) -> float:
-    query_words, query_grams = _rag_features(query)
-    document_words, document_grams = _rag_features(document)
-    query_terms = query_words | query_grams
-    document_terms = document_words | document_grams
-    if not query_terms:
-        return 0.0
-    matched = sum(1 for term in query_terms if term in document_terms)
-    return matched / len(query_terms)
+_RAG_STOPGRAMS = {
+    "不要", "一个", "生成", "图片", "视频", "内容", "出现", "可以", "如果",
+    "这个", "那个", "然后", "以及", "或者", "进行", "检查",
+    "直接", "使用", "下面", "类似", "个人", "经验", "写上", "严格", "参考",
+    "形象", "可以", "不行", "选择", "描述", "情绪", "人物", "时候",
+}
+_RAG_QUOTE_RE = re.compile(r"[「“]([^」”]+)[」”]")
+
+
+def _clean_title(title: str) -> str:
+    cleaned = re.sub(r"^\d+\.?\s*", "", title or "").strip()
+    return cleaned.rstrip("：:").strip()
+
+
+def _meaningful_doc_terms(doc, title: str) -> set[str]:
+    text = f"{title}\n{doc.page_content or ''}"
+    words, grams = _rag_features(text)
+    return {term for term in (words | grams) if term not in _RAG_STOPGRAMS and not term.isdigit()}
+
+
+def _quoted_phrases(content: str) -> list[str]:
+    return [phrase.strip() for phrase in _RAG_QUOTE_RE.findall(content or "") if phrase.strip()]
+
+
+def _contains_any(text: str, phrases: list[str]) -> bool:
+    return any(phrase and phrase in text for phrase in phrases)
+
+
+_PHONE_SATISFACTION_PHRASES = [
+    "手机不要漏出屏幕", "不要漏出屏幕", "不要露出屏幕", "禁止漏出屏幕",
+    "屏幕不要露", "手机背面", "手机背面图片", "手机背面特写",
+]
+_FACE_SATISFACTION_PHRASES = [
+    "不要脸红", "不脸红", "避免脸红", "拒绝夸张脸红", "不要夸张脸红",
+]
+
+
+def _satisfied_phrases(doc, title: str) -> list[str]:
+    phrases = [title]
+    if any(keyword in title for keyword in ("手机", "屏幕")):
+        phrases.extend(_PHONE_SATISFACTION_PHRASES)
+    if any(keyword in title for keyword in ("脸红", "表情", "愤怒", "生气")):
+        phrases.extend(_FACE_SATISFACTION_PHRASES)
+    content = doc.page_content or ""
+    phrases.extend(_quoted_phrases(content))
+
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if any(keyword in line for keyword in ("可直接", "不要", "禁止", "避免", "拒绝")):
+            phrases.append(line)
+            phrases.extend(part.strip() for part in re.split(r"[，,。；;]", line) if part.strip())
+
+    match = re.search(r"可直接写上[：:]\s*([^）)]+)", content)
+    if match:
+        phrases.append(match.group(1).strip())
+
+    return [phrase for phrase in phrases if phrase]
 
 
 def _generation_kb_docs():
@@ -255,17 +305,28 @@ def _preflight_generation_prompt(prompt: str) -> dict:
         if not docs:
             return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
 
+        prompt_words, prompt_grams = _rag_features(prompt)
         matches = []
         for doc in docs:
-            score = _lexical_score(prompt, doc.page_content)
-            if score >= GENERATION_RAG_MIN_LEXICAL_SCORE:
-                matches.append(
-                    {
-                        "title": doc.metadata.get("error_title", ""),
-                        "content": doc.page_content.strip(),
-                        "score": round(score, 4),
-                    }
-                )
+            raw_title = doc.metadata.get("error_title", "")
+            title = _clean_title(raw_title)
+            terms = _meaningful_doc_terms(doc, title)
+            relevant = any(term in prompt_words or term in prompt_grams for term in terms)
+            if not relevant:
+                continue
+
+            satisfied_phrases = _satisfied_phrases(doc, title)
+            if _contains_any(prompt, satisfied_phrases):
+                continue
+
+            score = sum(1 for term in terms if term in prompt_words or term in prompt_grams)
+            matches.append(
+                {
+                    "title": raw_title,
+                    "content": doc.page_content.strip(),
+                    "score": float(score),
+                }
+            )
 
         if not matches:
             return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
