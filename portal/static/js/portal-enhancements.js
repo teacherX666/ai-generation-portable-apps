@@ -390,7 +390,7 @@
       '<p id="moduleHelpPurpose"></p>' +
       '<div class="portal-help-steps" id="moduleHelpSteps"></div>' +
       '<p class="portal-module-help-result" id="moduleHelpResult"></p>' +
-      '<a id="moduleHelpDoc" class="module-help-doc" target="_blank" rel="noopener" href="#" hidden>查看完整文档 ↗</a>';
+      '<a id="moduleHelpDoc" class="module-help-doc" target="_blank" rel="noopener" href="#" hidden>查看使用说明</a>';
     document.body.appendChild(dialog);
     dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
     dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
