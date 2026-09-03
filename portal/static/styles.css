@@ -104,6 +104,7 @@ body { height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
   background: var(--surface); border-bottom: 1px solid var(--border);
 }
 .portal-bar-left { display: flex; align-items: center; gap: 14px; }
+.portal-logo { width: 22px; height: 22px; flex: 0 0 auto; border-radius: 5px; }
 .portal-bar-right { justify-content: flex-end; }
 .portal-title { font-size: 16px; font-weight: 760; }
 .portal-lan { background: #e0f2fe; color: #0369a1; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }

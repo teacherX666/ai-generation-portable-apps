@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AI Generation Portal — 登录</title>
+<link rel="icon" type="image/png" href="/ui/brand/favicon.png">
 <link rel="stylesheet" href="/ui/portal-ui-core.css">
 <style>
 /* 登录发生在认证之前，因此这里必须保留一套可独立工作的最小样式。
@@ -46,10 +47,32 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
 .toggle{margin-top:14px;text-align:center;font-size:var(--ui-font-size-base);color:var(--ui-text-muted)}
 .toggle a{color:var(--ui-action-primary);cursor:pointer;text-decoration:underline}
 .toggle a:hover{color:var(--ui-action-primary-hover)}
+/* === 红海无限品牌面板（左侧） === */
+.login-wrap{display:flex;width:100%;max-width:900px;border-radius:16px;overflow:hidden;background:var(--ui-bg-surface);box-shadow:0 18px 50px rgba(15,23,42,.14)}
+.login-brand{flex:0 0 44%;display:flex;flex-direction:column;align-items:flex-start;padding:36px 32px 0;background:linear-gradient(160deg,#f83821 0%,#c81e2b 100%);color:#fff;position:relative;overflow:hidden}
+.login-brand__badge{width:170px;height:auto;filter:drop-shadow(0 6px 18px rgba(0,0,0,.28))}
+.login-brand__name{font-size:14px;font-weight:700;margin:16px 0 2px}
+.login-brand__tag{font-size:12px;opacity:.85;margin:0 0 10px}
+.login-brand__art{width:100%;height:auto;display:block;margin-top:auto;opacity:.96}
+.login-card{width:100%;max-width:430px;padding:36px 34px;background:var(--ui-bg-surface);border:none;border-radius:0;box-shadow:none}
+.login-logo{width:150px;height:auto;display:block;margin:0 0 20px}
+@media(max-width:780px){
+  .login-brand{display:none}
+  .login-wrap{max-width:430px}
+  .login-card{border-radius:12px}
+}
 </style>
 </head>
 <body class="ui-page">
+<div class="login-wrap">
+<aside class="login-brand">
+  <img class="login-brand__badge" src="/ui/brand/logo-badge.png" alt="RED INFINITY">
+  <p class="login-brand__name">北京红海无限科技发展有限公司</p>
+  <p class="login-brand__tag">RED INFINITY · 全球移动游戏</p>
+  <img class="login-brand__art" src="/ui/brand/art-boat.png" alt="">
+</aside>
 <div class="login-card ui-panel">
+  <img class="login-logo" src="/ui/brand/logo-full.png" alt="RED INFINITY">
   <h1 id="title">登录</h1>
   <p class="sub" id="subtitle">AI Generation Portal</p>
   <form id="form">
@@ -63,6 +86,7 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
     <span id="toggleText">还没有账号？</span><a id="toggleLink">立即注册</a>
   </div>
 </div>
+</div><!-- /.login-wrap -->
 <script>
 (async () => {
   const q = new URLSearchParams(location.search);
