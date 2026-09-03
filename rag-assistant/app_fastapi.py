@@ -205,48 +205,60 @@ def admin_query_log(request: Request, n: int = 20):
 
 
 GENERATION_RAG_TTL_SECONDS = 60.0
-GENERATION_RAG_MIN_SIMILARITY = 0.42
+GENERATION_RAG_MIN_LEXICAL_SCORE = 0.30
 _generation_rag_lock = threading.Lock()
-_generation_rag_cache = {"fetched_at": 0.0, "docs": [], "doc_vectors": []}
+_generation_rag_cache = {"fetched_at": 0.0, "docs": []}
+_RAG_WORD_RE = re.compile(r"[a-z0-9]+")
+_RAG_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
 
-def _cosine_sim(left: list[float], right: list[float]) -> float:
-    if len(left) != len(right):
+def _rag_features(text: str) -> tuple[set[str], set[str]]:
+    normalized = (text or "").lower().replace("_", " ").replace("-", " ")
+    words = set(_RAG_WORD_RE.findall(normalized))
+    cjk = _RAG_CJK_RE.findall(normalized)
+    grams: set[str] = set()
+    if len(cjk) == 1:
+        grams.add(cjk[0])
+    for index in range(len(cjk) - 1):
+        grams.add(cjk[index] + cjk[index + 1])
+    return words, grams
+
+
+def _lexical_score(query: str, document: str) -> float:
+    query_words, query_grams = _rag_features(query)
+    document_words, document_grams = _rag_features(document)
+    query_terms = query_words | query_grams
+    document_terms = document_words | document_grams
+    if not query_terms:
         return 0.0
-    dot = sum(a * b for a, b in zip(left, right))
-    norm_a = math.sqrt(sum(a * a for a in left))
-    norm_b = math.sqrt(sum(b * b for b in right))
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return dot / (norm_a * norm_b)
+    matched = sum(1 for term in query_terms if term in document_terms)
+    return matched / len(query_terms)
 
 
 def _generation_kb_docs():
     now = time.time()
     with _generation_rag_lock:
         if _generation_rag_cache["docs"] and now - _generation_rag_cache["fetched_at"] < GENERATION_RAG_TTL_SECONDS:
-            return _generation_rag_cache["docs"], _generation_rag_cache["doc_vectors"]
+            return _generation_rag_cache["docs"]
 
     markdown = fetch_kb_markdown(api_client, settings.lark_generation_kb_doc_id)
     docs = split_markdown(markdown)
-    vectors = embeddings.embed_documents([doc.page_content for doc in docs]) if docs else []
 
     with _generation_rag_lock:
-        _generation_rag_cache.update({"fetched_at": time.time(), "docs": docs, "doc_vectors": vectors})
-    return docs, vectors
+        _generation_rag_cache.update({"fetched_at": time.time(), "docs": docs})
+    return docs
 
 
 def _preflight_generation_prompt(prompt: str) -> dict:
     try:
-        docs, vectors = _generation_kb_docs()
+        docs = _generation_kb_docs()
         if not docs:
             return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
 
-        query_vector = embeddings.embed_query(prompt)
         matches = []
-        for doc, vector in zip(docs, vectors):
-            score = _cosine_sim(query_vector, vector)
-            if score >= GENERATION_RAG_MIN_SIMILARITY:
+        for doc in docs:
+            score = _lexical_score(prompt, doc.page_content)
+            if score >= GENERATION_RAG_MIN_LEXICAL_SCORE:
                 matches.append(
                     {
                         "title": doc.metadata.get("error_title", ""),
@@ -265,7 +277,6 @@ def _preflight_generation_prompt(prompt: str) -> dict:
     except Exception:
         logger.exception("generation KB preflight failed")
         return {"ok": False, "detected": False, "matches": [], "updated_prompt": prompt, "error": "RAG 检查暂时不可用"}
-
 
 @app.post("/api/rag/preflight")
 async def rag_preflight(request: Request):

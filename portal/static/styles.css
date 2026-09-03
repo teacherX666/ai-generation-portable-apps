@@ -690,53 +690,9 @@ button:disabled,
 .card .row > input, .card [style*="display:flex"] > input { width: auto; flex: 1 1 auto; min-width: 120px; }
 .card input:focus, .card textarea:focus, .card select:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
 .card textarea { resize: vertical; }
-.card button { padding: 8px 16px; border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap; }
-.card button:hover { background: #eff6ff; border-color: #93c5fd; color: #1e40af; }
-.card button:disabled { opacity: 0.5; cursor: not-allowed; }
-/* Portrait module buttons: the global button reset is full-width; row/small/inline
-   buttons need auto sizing so they stay aligned inside cards and chips. */
-.portrait-container button:not(.btn-sm):not(.primary) {
-  width: auto;
-  height: 32px;
-  padding: 0 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-.portrait-container button[style*="background:none"] {
-  width: auto;
-  height: auto;
-  min-height: 0;
-  padding: 0;
-  display: inline-block;
-  line-height: 1;
-}
-.portrait-container .btn-sm,
-.card button.btn-sm {
-  width: auto;
-  height: 28px;
-  min-height: 28px;
-  padding: 0 10px;
-  font-size: 11px;
-  line-height: 1;
-  border: 1px solid #cbd5e1;
-  background: #f1f5f9;
-  color: #475569;
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-}
-.extra-file-item .btn-sm {
-  width: auto;
-  height: auto;
-  min-height: 0;
-  padding: 2px 6px;
-  line-height: 1;
-}
+.card button:not(.ui-btn) { padding: 8px 16px; border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.card button:not(.ui-btn):hover { background: #eff6ff; border-color: #93c5fd; color: #1e40af; }
+.card button:not(.ui-btn):disabled { opacity: 0.5; cursor: not-allowed; }
 .job-row { display: flex; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid #f1f5f9; font-size: 13px; color: #334155; }
 .job-row:last-child { border-bottom: none; }
 .job-row a { color: #2563eb; cursor: pointer; text-decoration: none; font-size: 12px; }

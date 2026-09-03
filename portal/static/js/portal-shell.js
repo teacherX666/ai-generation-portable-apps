@@ -17,6 +17,22 @@
     status.querySelector('.iframe-retry').hidden = state !== 'error';
   }
 
+  function injectPortalRagInterceptor(iframe, attempt = 0) {
+    try {
+      const doc = iframe.contentDocument;
+      if (!doc || !doc.body) {
+        if (attempt < 8) setTimeout(() => injectPortalRagInterceptor(iframe, attempt + 1), 250);
+        return;
+      }
+      if (doc.getElementById('portal-rag-interceptor')) return;
+      const script = doc.createElement('script');
+      script.id = 'portal-rag-interceptor';
+      script.src = '/js/portal-rag-interceptor.js';
+      doc.body.appendChild(script);
+    } catch (e) {
+      if (attempt < 8) setTimeout(() => injectPortalRagInterceptor(iframe, attempt + 1), 250);
+    }
+  }
   function ensureIframeStatus(iframe) {
     const panel = iframe?.closest('.iframe-panel');
     if (!panel || panel.querySelector('.iframe-load-status')) return;
@@ -26,7 +42,7 @@
     status.innerHTML = '<div class="spinner" aria-hidden="true"></div><p class="iframe-load-message">正在加载应用…</p><button class="iframe-retry ui-btn ui-btn--secondary" type="button" hidden>重新加载</button>';
     status.querySelector('.iframe-retry').addEventListener('click', () => loadPortalIframe(iframe, { force: true }));
     panel.insertBefore(status, iframe);
-    iframe.addEventListener('load', () => setIframeLoadState(iframe, 'ready'));
+    iframe.addEventListener('load', () => { setIframeLoadState(iframe, 'ready'); injectPortalRagInterceptor(iframe); });
     iframe.addEventListener('error', () => setIframeLoadState(iframe, 'error', '应用加载失败，请检查服务状态后重试。'));
   }
 
@@ -88,6 +104,7 @@
       if (iframe.getAttribute('src')) {
         iframe.dataset.loaded = 'true';
         setIframeLoadState(iframe, 'ready');
+        injectPortalRagInterceptor(iframe);
       }
       const fallback = iframe.dataset.src || iframe.dataset.fallbackSrc || iframe.getAttribute('src');
       if (fallback) iframe.dataset.resolvedSrc = fallback;
