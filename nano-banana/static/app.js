@@ -1099,6 +1099,9 @@ function NanoBananaApp() {
           + (jobId && (job.results || []).length && TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
              ? '<button type="button" class="cancel-job-btn" onclick="window._app_nb.downloadAll(\'' + escHtml(jobId) + '\')">下载全部 (' + job.results.length + ')</button>'
              : '')
+          + (jobId && job.retryable
+             ? '<button type="button" class="cancel-job-btn" onclick="window._app_nb.retryJob(\'' + escHtml(jobId) + '\')">重试</button>'
+             : '')
           + '</div>' +
           (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '') +
           (eventsList ? '<div class="ui-job-status-card__events">' + eventsList + '</div>' : '<div class="ui-job-status-card__events">等待服务器响应...</div>') +
@@ -1215,6 +1218,33 @@ function NanoBananaApp() {
         this._blobDownload(urls[ui].url, urls[ui].filename);
       }
       return urls.length;
+    },
+
+    // 中断任务一键重试：后端按落盘参数重提新任务，前端切到新任务轮询
+    async retryJob(jobId) {
+      var ownerWsId = this.activeTabId;
+      const res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/retry', 'POST', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (!res || !res.ok) {
+        this.statusText = (res && res.error) || '重试失败：网络异常，请稍后重试';
+        return;
+      }
+      var submissionToken = (this._topicSubmissionSeq[ownerWsId] || 0) + 1;
+      this._topicSubmissionSeq[ownerWsId] = submissionToken;
+      var cache = this._tabStateCache[ownerWsId];
+      cache._submissionToken = submissionToken;
+      cache._activeJobId = res.job_id;
+      this.submitting = true;
+      this.statusText = '已重试，任务 ' + res.job_id + ' 在后台运行';
+      var resultsEl = document.getElementById('nb-results');
+      var eventsEl = document.getElementById('nb-events');
+      if (resultsEl) resultsEl.innerHTML = '';
+      if (eventsEl) eventsEl.textContent = '';
+      this.eventsText = '';
+      try { this.loadJobs(); } catch (e) { /* ignore */ }
+      this.pollJob(res.job_id, ownerWsId, submissionToken, {
+        dirHandle: this.dirHandle, autoDownload: this.autoDownload, outputDir: this.outputDir,
+      });
     },
 
     // 一键下载全部：错开 400ms 逐个下载，避免并发打满 Portal 代理缓冲

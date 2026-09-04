@@ -929,6 +929,158 @@ def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, by
     return {"values": safe_values, "media": media}
 
 
+# ─────────────────────────────────────────────────────────────
+# 任务队列持久化（2026-09-04）：更新重启不再丢任务
+# 排队中的任务重启后自动重新入队；运行中的任务标记「服务更新中断」
+# 并给 retryable 标记，前端展示「重试」按钮。重放数据取自
+# activity_log 的 restore 字段（参数 + 素材在创建时已落盘）。
+# ─────────────────────────────────────────────────────────────
+BACKLOG_PATH = STATE_DIR / "jobs_backlog.json"
+
+
+def _backlog_load() -> dict[str, Any]:
+    try:
+        if BACKLOG_PATH.exists():
+            data = json.loads(BACKLOG_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _backlog_save(backlog: dict[str, Any]) -> None:
+    try:
+        _atomic_write(BACKLOG_PATH, json.dumps(backlog, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _backlog_set_locked(job_id: str, **fields) -> None:
+    """调用方必须已持有 LOCK（写入文件在锁内，避免与恢复逻辑交错）。"""
+    backlog = _backlog_load()
+    backlog[job_id] = {**(backlog.get(job_id) or {}), **fields}
+    _backlog_save(backlog)
+
+
+def _backlog_remove_locked(job_id: str) -> None:
+    backlog = _backlog_load()
+    if job_id in backlog:
+        backlog.pop(job_id, None)
+        _backlog_save(backlog)
+
+
+def _files_from_restore(restore: dict[str, Any], ws_id: str) -> dict[str, tuple[str, bytes]]:
+    """copy_files_to_restore 的逆操作：从落盘的素材文件重建 files 字典。"""
+    files: dict[str, tuple[str, bytes]] = {}
+    media = (restore or {}).get("media") or {}
+    if not isinstance(media, dict):
+        return files
+    media_dir = _ws_media_dir(ws_id)
+    for key, item in media.items():
+        if key not in FILE_FIELDS or not isinstance(item, dict):
+            continue
+        stored = Path(str(item.get("stored", ""))).name
+        path = media_dir / stored
+        if not stored or not path.exists():
+            continue
+        try:
+            files[key] = (str(item.get("filename") or stored), path.read_bytes())
+        except OSError:
+            continue
+    return files
+
+
+def find_activity_by_job_id(job_id: str) -> dict[str, Any] | None:
+    for item in reversed(read_activity_log()):
+        if str(item.get("job_id")) == str(job_id):
+            return item
+    return None
+
+
+def retry_job(job_id: str) -> str:
+    """按 activity_log 的 restore 数据重新提交一个任务（新 job_id）。"""
+    act = find_activity_by_job_id(job_id)
+    restore = (act or {}).get("restore") or {}
+    if not isinstance(restore, dict) or "values" not in restore:
+        raise ValueError("该任务的参数已无法找回（记录可能已被清理），请手动重新填写")
+    values = dict(restore.get("values") or {})
+    # restore 有意剥离 api_key：重放时回填服务端统一配置（与原提交逻辑一致）
+    values.setdefault("api_key", resolve_provider_api_key(str(values.get("provider") or "")))
+    ws_id = str((act or {}).get("workspace_id") or "localhost")
+    files = _files_from_restore(restore, ws_id)
+    username = str((act or {}).get("username") or "")
+    return create_job(values, files, source="retry", request_kind="retry",
+                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username)
+
+
+def recover_backlog() -> tuple[int, int]:
+    """启动时恢复：queued → 自动重新入队；started → 标记服务更新中断。"""
+    recovered = 0
+    interrupted = 0
+    backlog = _backlog_load()
+    if not backlog:
+        return 0, 0
+    activities = {str(a.get("id")): a for a in read_activity_log()}
+    for job_id, meta in list(backlog.items()):
+        activity_id = str(meta.get("activity_id") or "")
+        try:
+            act = activities.get(activity_id) or {}
+            restore = act.get("restore") or {}
+            if not isinstance(restore, dict) or "values" not in restore:
+                raise ValueError("restore 数据缺失")
+            values = dict(restore.get("values") or {})
+            # restore 有意剥离 api_key：重放时回填服务端统一配置
+            values.setdefault("api_key", resolve_provider_api_key(str(values.get("provider") or "")))
+            ws_id = str(meta.get("ws_id") or "localhost")
+            files = _files_from_restore(restore, ws_id)
+            if meta.get("stage") == "started":
+                with LOCK:
+                    JOBS[job_id] = {
+                        "id": job_id, "status": "failed",
+                        "events": [{"time": time.strftime("%H:%M:%S"),
+                                    "message": "服务更新重启，任务中断"}],
+                        "results": [], "errors": ["服务更新重启，任务中断——请点击「重试」重新提交。"],
+                        "done": 0, "total": 0,
+                        "username": str(meta.get("username") or ""),
+                        "workspace_id": ws_id,
+                        "submitted_at": time.time(), "started_at": None,
+                        "finished_at": time.time(),
+                        "retryable": True,
+                    }
+                    _backlog_remove_locked(job_id)
+                update_activity(activity_id, status="failed",
+                                error="服务更新重启，任务中断——请点击重试",
+                                finished_at=time.time())
+                interrupted += 1
+                continue
+            with LOCK:
+                JOBS[job_id] = {
+                    "id": job_id, "status": "queued", "events": [{"time": time.strftime("%H:%M:%S"),
+                                                                   "message": "服务重启后自动恢复入队"}],
+                    "results": [], "errors": [], "done": 0, "total": 0,
+                    "username": str(meta.get("username") or ""),
+                    "workspace_id": ws_id,
+                    "submitted_at": time.time(), "started_at": None, "finished_at": None,
+                }
+                _backlog_set_locked(job_id, stage="queued", activity_id=activity_id, ws_id=ws_id)
+            threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True).start()
+            recovered += 1
+        except Exception as exc:
+            with LOCK:
+                JOBS[job_id] = {
+                    "id": job_id, "status": "failed",
+                    "events": [], "results": [],
+                    "errors": ["服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）"],
+                    "done": 0, "total": 0,
+                    "username": str(meta.get("username") or ""),
+                    "workspace_id": str(meta.get("ws_id") or "localhost"),
+                    "submitted_at": time.time(), "started_at": None, "finished_at": time.time(),
+                }
+                _backlog_remove_locked(job_id)
+            interrupted += 1
+    return recovered, interrupted
+
+
 def activity_record_for_client(record: dict[str, Any] | None) -> dict[str, Any] | None:
     if not record:
         return None
@@ -1383,6 +1535,9 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
             "started_at": None,
             "finished_at": None,
         }
+        # 队列持久化：重启后据此恢复（queued 自动重入队 / started 标记中断）
+        _backlog_set_locked(job_id, stage="queued", activity_id=activity_id,
+                            ws_id=ws_id, username=username)
         _prune_jobs_locked()
     response = job_id_response(job_id)
     record_activity({
@@ -2244,6 +2399,8 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
             add_event(job_id, "任务已取消。")
             update_activity(activity_id, status="cancelled", error="任务已取消。", finished_at=time.time())
             report_final_to_portal(job_id, "cancelled")
+            with LOCK:
+                _backlog_remove_locked(job_id)
             return
         requested_count = max(1, min(50, int(values.get("repeat_count") or 1)))
         requested_concurrency = max(1, min(20, int(values.get("concurrency") or 1)))
@@ -2254,6 +2411,9 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
             values["_auto_seed_base"] = secrets.randbelow(MAX_SEED) + 1
         set_job(job_id, status="running", total=count, done=0, results=[], errors=[], started_at=time.time())
         add_event(job_id, f"Started {count} run(s), concurrency {concurrency}, key {mask_key(values.get('api_key', ''))}")
+        # 已开跑：重启恢复策略从「自动重入队」切换为「标记中断可重试」
+        with LOCK:
+            _backlog_set_locked(job_id, stage="started")
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = [pool.submit(run_one_with_fallback, job_id, i, values, files, ws_id) for i in range(1, count + 1)]
             for future in concurrent.futures.as_completed(futures):
@@ -2305,10 +2465,13 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
                         **({"error": error_summary} if error_summary else {}))
         add_event(job_id, "任务已取消。" if cancelled else "Finished")
         report_final_to_portal(job_id, final_status)
+        with LOCK:
+            _backlog_remove_locked(job_id)
     except Exception as exc:
         set_job(job_id, status="failed", errors=[str(exc)], finished_at=time.time())
         with LOCK:
             final_job = json.loads(json.dumps(JOBS.get(job_id, {})))
+            _backlog_remove_locked(job_id)
         update_activity(activity_id, status="failed", error=str(exc), result=final_job, finished_at=time.time())
         add_event(job_id, f"Fatal: {exc}")
         report_final_to_portal(job_id, "failed")
@@ -2473,6 +2636,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "workspace_id": j.get("workspace_id", ""),
                         "results": results,
                         "errors": j.get("errors", []),
+                        "retryable": bool(j.get("retryable", False)),
                         "done": j.get("done", 0),
                         "total": j.get("total", 0),
                     })
@@ -2530,6 +2694,15 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._raw_path = self.path
         self.path = urllib.parse.urlparse(self.path).path
+        # POST /api/jobs/{id}/retry — 按活动记录的落盘参数重提一个任务。
+        if self.path.startswith("/api/jobs/") and self.path.endswith("/retry"):
+            job_id = self.path.rsplit("/", 2)[-2]
+            try:
+                new_id = retry_job(job_id)
+                json_response(self, 201, {"ok": True, "job_id": new_id})
+            except ValueError as exc:
+                json_response(self, 400, {"ok": False, "error": str(exc)})
+            return
         # POST /api/jobs/{id}/cancel — 取消排队/运行中的任务。
         # 刻意不返回 X-Job-Id：portal 统计按 X-Job-Id 登记，取消不触发计数。
         if self.path.startswith("/api/jobs/") and self.path.endswith("/cancel"):
@@ -2551,6 +2724,7 @@ class Handler(SimpleHTTPRequestHandler):
                 job["status"] = "cancelled"
                 job["errors"] = ["任务已取消。"]
                 job["finished_at"] = time.time()
+                _backlog_remove_locked(job_id)
             add_event(job_id, "任务已取消。")
             report_final_to_portal(job_id, "cancelled")
             json_response(self, 200, {"ok": True, "status": "cancelled"})
@@ -2786,6 +2960,13 @@ def main() -> None:
     if restored:
         FILES.update(restored)
         print(f"Restored {len(restored)} download file mapping(s)")
+    # 任务队列恢复：排队任务重新入队、运行中任务标记中断（更新重启不丢任务）
+    try:
+        recovered, interrupted = recover_backlog()
+        if recovered or interrupted:
+            print(f"[recover] 任务恢复：{recovered} 个排队任务重新入队，{interrupted} 个运行中任务标记中断")
+    except Exception as exc:
+        print(f"[recover] 任务恢复失败（不影响启动）: {exc}")
     port = int(os.environ.get("PORT", "8797"))
     host = os.environ.get("HOST", "127.0.0.1")
     server = ThreadingHTTPServer((host, port), Handler)

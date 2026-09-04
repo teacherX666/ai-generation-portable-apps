@@ -678,6 +678,23 @@ function DreaminaApp() {
             });
             titleEl.appendChild(dlAll);
           }
+          // 服务更新中断的任务一键重试（后端按落盘参数重提新任务）
+          if (job.retryable && titleEl && !titleEl.querySelector('.dm-retry')) {
+            const rb = document.createElement('button');
+            rb.type = 'button';
+            rb.className = 'cancel-job-btn dm-retry';
+            rb.textContent = '重试';
+            rb.addEventListener('click', async () => {
+              const r = await api(`/dreamina/api/jobs/${encodeURIComponent(jobId)}/retry`, 'POST');
+              if (r?.ok && r.job_id) {
+                window.portalToast('已重试，任务 ' + r.job_id + ' 在后台运行');
+                this.pollJob(r.job_id);
+              } else {
+                window.portalToast(r?.error || '重试失败：网络异常', 'danger');
+              }
+            });
+            titleEl.appendChild(rb);
+          }
           stop();
           // 系统通知：状态归一后与 Portal 15s 兜底轮询按 jobId 去重
           const st = String(job.status).toLowerCase();
@@ -2648,6 +2665,20 @@ function VolcenginePortraitApp() {
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs`);
       if (res?.ok) this.jobs = res.jobs || [];
       this.loadActivity();
+    },
+
+    // 服务更新中断的任务一键重试：后端按落盘参数重提新任务并开新轮询
+    async retryVpJob(jobId) {
+      const res = await vpApi.call(this, `${appPath}/api/virtual/jobs/${encodeURIComponent(jobId)}/retry`, 'POST');
+      if (res?.ok) {
+        this.statusText = '已重试，任务 ' + res.job_id + ' 在后台运行';
+        this._activeVpJobId = res.job_id;
+        this._activeVpStatus = '';
+        this.loadJobs();
+        this.pollJob(res.job_id);
+      } else {
+        this.statusText = '重试失败: ' + (res?.error || '网络异常，请稍后重试');
+      }
     },
 
     // Persisted activity log (survives sub-app restarts, unlike the in-memory

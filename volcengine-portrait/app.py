@@ -555,6 +555,177 @@ def update_activity(activity_id: str | None, **updates) -> None:
                 return
 
 
+# ─────────────────────────────────────────────────────────────
+# 任务队列持久化（2026-09-04）：更新重启不再丢任务
+# 排队中的任务重启后自动重新入队；运行中的任务标记「服务更新中断」
+# 并给 retryable 标记，前端展示「重试」按钮。本应用任务字典全字段
+# 可序列化（素材引用是方舟 asset 或公网 URL），直接存 spec 快照；
+# api_key 一律剥离，重试走服务端统一配置。
+# ─────────────────────────────────────────────────────────────
+BACKLOG_PATH = STATE_DIR / "jobs_backlog.json"
+
+
+def _backlog_load() -> dict:
+    try:
+        if BACKLOG_PATH.exists():
+            data = json.loads(BACKLOG_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _backlog_save(backlog: dict) -> None:
+    try:
+        _atomic_write(BACKLOG_PATH, json.dumps(backlog, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _backlog_set_locked(job_id: str, **fields) -> None:
+    """调用方必须已持有 JOBS_LOCK（写入文件在锁内，避免与恢复逻辑交错）。"""
+    backlog = _backlog_load()
+    backlog[job_id] = {**(backlog.get(job_id) or {}), **fields}
+    _backlog_save(backlog)
+
+
+def _backlog_remove_locked(job_id: str) -> None:
+    backlog = _backlog_load()
+    if job_id in backlog:
+        backlog.pop(job_id, None)
+        _backlog_save(backlog)
+
+
+def _spec_snapshot_locked(job_id: str) -> dict:
+    """JOBS 条目快照（剥离 api_key；全字段 JSON 可序列化）。"""
+    job = JOBS.get(job_id) or {}
+    return {k: v for k, v in job.items() if k != "api_key"}
+
+
+def retry_virtual_job(job_id: str) -> str:
+    """按中断任务记录重提一个新任务（新 job_id，走服务端统一 key）。"""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if job is None or not job.get("prompt"):
+        # 服务已重启且中断记录被剪枝：从 backlog 快照找回
+        meta = _backlog_load().get(job_id) or {}
+        job = dict(meta.get("spec") or {})
+    if not job or not job.get("prompt") or not job.get("asset_id"):
+        raise ValueError("该任务的参数已无法找回（记录可能已被清理），请手动重新填写")
+    new_job_id = uuid.uuid4().hex
+    activity_id = uuid.uuid4().hex
+    now = time.time()
+    with JOBS_LOCK:
+        JOBS[new_job_id] = {
+            "job_id": new_job_id, "activity_id": activity_id,
+            "task_type": job.get("task_type", "virtual"),
+            "status": "queued",
+            "total": int(job.get("total") or 1), "done": 0,
+            "results": [], "errors": [],
+            "events": [{"time": time.strftime("%H:%M:%S"), "message": "从中断任务重试"}],
+            "username": job.get("username", ""),
+            "asset_id": job.get("asset_id", ""),
+            "extra_asset_ids": list(job.get("extra_asset_ids") or []),
+            "prompt": job.get("prompt", ""),
+            "model": job.get("model", "doubao-seedance-2-0-260128"),
+            "duration": job.get("duration", 0),
+            "requested_duration": job.get("requested_duration", 12),
+            "resolution": job.get("resolution", "720p"),
+            "ratio": job.get("ratio", "16:9"),
+            "api_key": None,  # 不落盘用户 key，重试走服务端统一配置
+            "output_dir": job.get("output_dir", ""),
+            "extra_image_urls": list(job.get("extra_image_urls") or []),
+            "provider": job.get("provider", ""),
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "submitted_at": now, "started_at": None, "finished_at": None,
+            "retryable": False,
+        }
+        _backlog_set_locked(new_job_id, stage="queued", activity_id=activity_id,
+                            spec=_spec_snapshot_locked(new_job_id))
+        _backlog_remove_locked(job_id)  # 旧中断条目已转化为新任务
+        _prune_jobs_locked()
+    record_activity({
+        "id": activity_id,
+        "job_id": new_job_id,
+        "source": "retry",
+        "request_kind": job.get("task_type", "virtual"),
+        "status": "running",
+        "title": (job.get("prompt") or "").strip()[:80] or "portrait retry",
+        "username": job.get("username", ""),
+        "request": {"retried_from": job_id},
+        "response": {"job_id": new_job_id},
+    })
+    _executor.submit(run_virtual_job, new_job_id)
+    return new_job_id
+
+
+def recover_backlog() -> tuple[int, int]:
+    """启动时恢复：queued → 自动重新入队；started → 标记服务更新中断。"""
+    recovered = 0
+    interrupted = 0
+    backlog = _backlog_load()
+    if not backlog:
+        return 0, 0
+    for job_id, meta in list(backlog.items()):
+        spec = dict(meta.get("spec") or {})
+        try:
+            if meta.get("stage") == "started":
+                # 运行中被重启打断：不自动重跑（避免重复计费），标记可重试；
+                # backlog 保留 stage=interrupted，重试端点可从中找回参数
+                with JOBS_LOCK:
+                    JOBS[job_id] = dict(spec)
+                    JOBS[job_id].update({
+                        "job_id": job_id, "status": "failed",
+                        "errors": ["服务更新重启，任务中断——请点击「重试」重新提交。"],
+                        "events": list(spec.get("events") or []) + [
+                            {"time": time.strftime("%H:%M:%S"), "message": "服务更新重启，任务中断"}],
+                        "finished_at": time.time(),
+                        "retryable": True,
+                        "api_key": None,
+                    })
+                    _backlog_set_locked(job_id, stage="interrupted")
+                update_activity(meta.get("activity_id"), status="failed",
+                                error="服务更新重启，任务中断——请点击重试")
+                interrupted += 1
+                continue
+            if not spec or not spec.get("prompt"):
+                raise ValueError("spec 缺失")
+            with JOBS_LOCK:
+                JOBS[job_id] = dict(spec)
+                JOBS[job_id].update({
+                    "job_id": job_id, "status": "queued", "done": 0,
+                    "events": [{"time": time.strftime("%H:%M:%S"), "message": "服务重启后自动恢复入队"}],
+                    "finished_at": None, "started_at": None,
+                    "retryable": False, "api_key": None,
+                })
+                _backlog_set_locked(job_id, stage="queued", activity_id=meta.get("activity_id"), spec=spec)
+                _prune_jobs_locked()
+            _executor.submit(run_virtual_job, job_id)
+            recovered += 1
+        except Exception as exc:
+            with JOBS_LOCK:
+                JOBS[job_id] = dict(spec)
+                JOBS[job_id].update({
+                    "job_id": job_id, "status": "failed",
+                    "errors": ["服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）"],
+                    "finished_at": time.time(), "retryable": False, "api_key": None,
+                })
+                _backlog_remove_locked(job_id)
+            interrupted += 1
+    return recovered, interrupted
+    if not activity_id:
+        return
+    with ACTIVITY_LOCK:
+        items = read_activity_log()
+        for item in items:
+            if item.get("id") == activity_id:
+                item.update(updates)
+                item["updated_at"] = _now_text()
+                content = json.dumps(items[-ACTIVITY_LIMIT:], ensure_ascii=False, indent=2)
+                _atomic_write(ACTIVITY_PATH, content)
+                return
+
+
 def activity_list(sees_all: bool = True, username: str = "") -> dict:
     items = read_activity_log()
     if not sees_all and username:
@@ -1849,6 +2020,9 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
             "api_key": api_key,
             "output_dir": output_dir_str,
         }
+        # 队列持久化：重启后据此恢复（queued 自动重入队 / started 标记中断）
+        _backlog_set_locked(job_id, stage="queued", activity_id=activity_id,
+                            spec=_spec_snapshot_locked(job_id))
         _prune_jobs_locked()
     title = (prompt or "").strip()[:80] or f"{task_type} task"
     record_activity({
@@ -2057,6 +2231,8 @@ def _run_local_virtual_job_impl(job_id: str, job: dict[str, Any]) -> None:
         job["status"] = "running"
         job["started_at"] = time.time()
         job["events"].append({"time": time.strftime("%H:%M:%S"), "message": "开始提交本地生成任务..."})
+        # 已开跑：重启恢复策略从「自动重入队」切换为「标记中断可重试」
+        _backlog_set_locked(job_id, stage="started")
 
     prompt = str(job.get("prompt") or "")
     requested_duration = int(job.get("requested_duration", job.get("duration", 12)))
@@ -2193,6 +2369,7 @@ def _run_local_virtual_job_impl(job_id: str, job: dict[str, Any]) -> None:
             "results": [{k: v for k, v in r.items()} for r in job.get("results", [])],
             "errors": list(job.get("errors", [])),
         }
+        _backlog_remove_locked(job_id)
     try:
         update_activity(
             job.get("activity_id"),
@@ -2218,6 +2395,7 @@ def run_virtual_job(job_id):
             job["finished_at"] = time.time()
             job.setdefault("errors", []).append(f"fatal: {exc}")
             job.setdefault("events", []).append({"time": time.strftime("%H:%M:%S"), "message": f"任务异常: {exc}"})
+            _backlog_remove_locked(job_id)
         try:
             update_activity(job.get("activity_id"), status="failed", error=str(exc), result={
                 "status": "failed",
@@ -2284,6 +2462,7 @@ def _run_virtual_job_impl(job_id, job):
             job["errors"] = ["任务已取消。"]
             job["finished_at"] = time.time()
             job["events"].append({"time": time.strftime("%H:%M:%S"), "message": "任务已取消。"})
+            _backlog_remove_locked(job_id)
         return
     api_key = job.get("api_key")
     asset_id = job.get("asset_id", "")
@@ -2305,6 +2484,8 @@ def _run_virtual_job_impl(job_id, job):
         job["status"] = "running"
         job["started_at"] = time.time()
         job["events"].append({"time": time.strftime("%H:%M:%S"), "message": "开始提交生成任务..."})
+        # 已开跑：重启恢复策略从「自动重入队」切换为「标记中断可重试」
+        _backlog_set_locked(job_id, stage="started")
 
     # Resolve each asset's real type once per job (image/video/audio) so a video
     # or audio virtual-portrait asset is referenced in the matching content field
@@ -2474,6 +2655,7 @@ def _run_virtual_job_impl(job_id, job):
             "results": [{k: v for k, v in r.items()} for r in job.get("results", [])],
             "errors": list(job.get("errors", [])),
         }
+        _backlog_remove_locked(job_id)
     try:
         update_activity(job.get("activity_id"), status=final_snapshot["status"], result=final_snapshot,
                         error="; ".join(final_snapshot["errors"][:3]) if final_snapshot["errors"] else None)
@@ -2716,6 +2898,15 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
+        # POST /api/{virtual,real}/jobs/{id}/retry — 按中断任务记录重提一个新任务。
+        if (path.startswith("/api/virtual/jobs/") or path.startswith("/api/real/jobs/")) and path.endswith("/retry"):
+            job_id = path.rsplit("/", 2)[-2]
+            try:
+                new_id = retry_virtual_job(job_id)
+                json_response(self, 201, {"ok": True, "job_id": new_id})
+            except ValueError as exc:
+                json_response(self, 400, {"ok": False, "error": str(exc)})
+            return
         # POST /api/{virtual,real}/jobs/{id}/cancel — 取消排队/运行中的任务。
         # 刻意不返回 X-Job-Id：portal 统计按 X-Job-Id 登记，取消不触发计数。
         if (path.startswith("/api/virtual/jobs/") or path.startswith("/api/real/jobs/")) and path.endswith("/cancel"):
@@ -2739,6 +2930,7 @@ class Handler(SimpleHTTPRequestHandler):
                     job["errors"] = ["任务已取消。"]
                 job["finished_at"] = time.time()
                 job["events"].append({"time": time.strftime("%H:%M:%S"), "message": "任务已取消。"})
+                _backlog_remove_locked(job_id)
             report_final_to_portal(job_id, "cancelled")
             json_response(self, 200, {"ok": True, "status": "cancelled"})
             return
@@ -2821,6 +3013,13 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main():
     load_config()
+    # 任务队列恢复：排队任务重新入队、运行中任务标记中断（更新重启不丢任务）
+    try:
+        recovered, interrupted = recover_backlog()
+        if recovered or interrupted:
+            print(f"[recover] 任务恢复：{recovered} 个排队任务重新入队，{interrupted} 个运行中任务标记中断")
+    except Exception as exc:
+        print(f"[recover] 任务恢复失败（不影响启动）: {exc}")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"  Volcengine Portrait → http://{HOST}:{PORT}")
     print(f"  Base URL: {ARK_BASE_URL}")
