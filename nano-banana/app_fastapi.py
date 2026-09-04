@@ -241,6 +241,7 @@ def api_config():
         "default_provider": providers.get("default_provider"),
         "has_key": bool(key),
         "masked_key": legacy.mask_key(key) if key else "",
+        "local_ready": legacy.local_gateway_available(),
         "config_error": config_error,
     }
 

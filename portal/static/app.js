@@ -2540,6 +2540,13 @@ function VolcenginePortraitApp() {
     async createJob() {
       if (!this.genAssetId) { this.statusText = '请选择资产 ID（图1）'; return; }
       if (!this.prompt) { this.statusText = '请输入 Prompt'; return; }
+      // 本地模型未连接时兜底：即使草稿/历史残留 local-* 模型，也切回云端再拦
+      // 截，避免把本地模型请求发到不可达的 AI Port。
+      if (this.isLocalModel(this.model) && !this.localReady) {
+        this.model = 'doubao-seedance-2-0-260128';
+        this.statusText = '本地模型未连接，已切回云端模型，请确认后重新提交';
+        return;
+      }
       if (this.submitting) return;
       // 首次提交时请求系统通知权限（用户手势内调用才有效）
       requestNotifyPermission();

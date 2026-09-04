@@ -256,8 +256,9 @@ def api_config():
     providers, config_error = legacy.load_provider_config()
     return {
         "ok": config_error is None,
-        "providers": providers.get("providers", {}),
+        "providers": legacy.providers_for_client(providers),
         "default_provider": providers.get("default_provider"),
+        "local_ready": legacy.local_gateway_available(),
         "config_error": config_error,
     }
 

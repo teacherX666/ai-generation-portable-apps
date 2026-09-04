@@ -13,6 +13,7 @@ import json
 import mimetypes
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -76,13 +77,42 @@ _H3_ASPECT_RATIOS = {
 }
 
 
+def _force_ipv4(url: str) -> str:
+    """把 URL 里的主机名解析成第一个 IPv4 地址（本地 AI Port 网关专用）。
+
+    mDNS（.local）名字常先返回不可路由的 IPv6 link-local 地址；Python urllib
+    按顺序逐个连接、每个都烧满超时才轮到 IPv4，导致 1.5s 探活必失败、每次
+    调用慢几秒（curl 有 happy-eyeballs 所以正常）。这里固定走 IPv4。
+    """
+    if not url:
+        return url
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    host = parts.hostname or ""
+    if not host or re.match(r"^\d+\.\d+\.\d+\.\d+$", host) or host.lower() in ("localhost", "::1"):
+        return url
+    try:
+        first = socket.getaddrinfo(
+            host,
+            parts.port or (443 if parts.scheme == "https" else 80),
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+        )[0][4][0]
+    except (socket.gaierror, IndexError):
+        return url
+    netloc = first if parts.port is None else f"{first}:{parts.port}"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def _is_local_model(model: str) -> bool:
     return str(model or "").startswith("local-")
 
 
 def local_gateway_available(timeout: float = 1.5) -> bool:
     try:
-        with urllib.request.urlopen(LOCAL_GATEWAY_BASE_URL + "/api/modules", timeout=timeout) as resp:
+        with urllib.request.urlopen(_force_ipv4(LOCAL_GATEWAY_BASE_URL) + "/api/modules", timeout=timeout) as resp:
             return resp.status < 400
     except Exception:
         return False
@@ -1896,6 +1926,7 @@ def handle_virtual_jobs_get(handler, job_id=None):
 
 def _http_json(url, payload=None, timeout=120):
     """Tiny JSON helper for talking to the local AI Port gateway."""
+    url = _force_ipv4(url)
     data = None
     headers = {}
     method = "GET"
@@ -2039,6 +2070,7 @@ def _submit_local_portrait_job(
 
 def _register_local_output(download_url: str, out_dir: Path, prefix: str, index: int) -> tuple[str, str]:
     full = download_url if download_url.startswith("http") else LOCAL_GATEWAY_BASE_URL + download_url
+    full = _force_ipv4(full)
     data, mime = _download_public_file(full)
     ext = mimetypes.guess_extension(mime or "video/mp4") or ".mp4"
     local_name = f"{prefix}_{index}{ext}"
@@ -2298,6 +2330,13 @@ def _run_virtual_job_impl(job_id, job):
     extra_image_urls = job.get("extra_image_urls", [])
 
     if _is_local_model(model) or str(job.get("provider") or "").strip().lower() == "local":
+        if not local_gateway_available():
+            with JOBS_LOCK:
+                job["status"] = "failed"
+                job["errors"] = ["本地 AI Port 未连接，无法使用本地模型。请先启动模型机上的 AI Port/ComfyUI，或改用云端模型。"]
+                job["finished_at"] = time.time()
+                job["events"].append({"time": time.strftime("%H:%M:%S"), "message": "任务失败: 本地 AI Port 未连接"})
+            return
         _run_local_virtual_job_impl(job_id, job)
         return
 

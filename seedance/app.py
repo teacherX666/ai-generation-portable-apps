@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -511,6 +512,36 @@ def _ws_preset_path(ws_id: str) -> Path:
 OFFICIAL_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
 LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
+_LOCAL_MODEL_IDS = {"minimax_h3_all_reference"}
+
+
+def _force_ipv4(url: str) -> str:
+    """把 URL 里的主机名解析成第一个 IPv4 地址（本地 AI Port 网关专用）。
+
+    mDNS（.local）名字常先返回不可路由的 IPv6 link-local 地址；Python urllib
+    按顺序逐个连接、每个都烧满超时才轮到 IPv4，导致 1.5s 探活必失败、每次
+    调用慢几秒（curl 有 happy-eyeballs 所以正常）。这里固定走 IPv4。
+    """
+    if not url:
+        return url
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    host = parts.hostname or ""
+    if not host or re.match(r"^\d+\.\d+\.\d+\.\d+$", host) or host.lower() in ("localhost", "::1"):
+        return url
+    try:
+        first = socket.getaddrinfo(
+            host,
+            parts.port or (443 if parts.scheme == "https" else 80),
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+        )[0][4][0]
+    except (socket.gaierror, IndexError):
+        return url
+    netloc = first if parts.port is None else f"{first}:{parts.port}"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 TERMINAL_STATUSES = {"succeeded", "success", "failed", "fail", "failure", "cancelled", "canceled"}
 
 # translate_ark_error lives in portal/ark_errors.py so seedance and
@@ -703,13 +734,13 @@ def providers_for_client(config: dict[str, Any]) -> dict[str, Any]:
     providers = json.loads(json.dumps(config.get("providers") or {}, ensure_ascii=False))
     for provider_cfg in providers.values():
         if isinstance(provider_cfg, dict) and provider_cfg.get("api_style") == "comfyui_workflow":
-            provider_cfg["base_url"] = LOCAL_GATEWAY_BASE_URL
+            provider_cfg["base_url"] = _force_ipv4(LOCAL_GATEWAY_BASE_URL)
     return providers
 
 def local_gateway_available(timeout: float = 1.5) -> bool:
     """Return True when the local AI Port gateway answers on the configured URL."""
     try:
-        with urllib.request.urlopen(LOCAL_GATEWAY_BASE_URL + "/api/modules", timeout=timeout) as resp:
+        with urllib.request.urlopen(_force_ipv4(LOCAL_GATEWAY_BASE_URL) + "/api/modules", timeout=timeout) as resp:
             return resp.status < 500
     except Exception:
         return False
@@ -2231,13 +2262,23 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
 
     api_key = str(form_values["api_key"]).strip()
     provider = str(form_values.get("provider") or "volcengine")
-    # Provider is hardcoded to volcengine — t8star path removed.
-    base_url = str(form_values.get("base_url") or OFFICIAL_ARK_BASE_URL).rstrip("/")
     config, _ = load_provider_config()
     provider_cfg = (config.get("providers") or {}).get(provider) or {}
-    if provider_cfg.get("api_style") == "comfyui_workflow":
-        local_base = LOCAL_GATEWAY_BASE_URL
-        return _run_local_video(job_id, index, form, form_values, form_files, ws_id, local_base)
+    requested_model = str(form_values.get("custom_model") or form_values.get("model") or "").strip()
+    local_requested = (
+        provider_cfg.get("api_style") == "comfyui_workflow"
+        or requested_model in _LOCAL_MODEL_IDS
+    )
+    if local_requested:
+        # 本地模型未连通时直接拒绝，绝不带着本地 base_url / 本地模型走云端路径
+        # （曾出现表单分裂：provider=volcengine + base_url=127.0.0.1:8801 + 本地
+        # 模型，结果把公司 Ark key 打到本机空端口，6 次 Connection refused）。
+        if not local_gateway_available():
+            raise RuntimeError("本地 AI Port 未连接，无法使用本地模型。请先启动模型机上的 AI Port/ComfyUI，或改用云端模型。")
+        return _run_local_video(job_id, index, form, form_values, form_files, ws_id, _force_ipv4(LOCAL_GATEWAY_BASE_URL))
+    # 云端/托管 provider：绝不信任客户端传来的 base_url（会把公司 Ark key 发到
+    # 任意地址）。锁定到 providers.json 里提交的官方端点——与 nano-banana 一致。
+    base_url = str(provider_cfg.get("base_url") or OFFICIAL_ARK_BASE_URL).rstrip("/")
     create_url = f"{base_url}/contents/generations/tasks"
     if _job_cancel_requested(job_id):
         raise TaskCancelled("任务已取消。")
@@ -2375,7 +2416,13 @@ def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tupl
         count = max(requested_count, requested_concurrency)
         concurrency = min(count, requested_concurrency)
         set_job(job_id, status="running", total=count, done=0, results=[], errors=[], started_at=time.time())
-        add_event(job_id, f"Started {count} run(s), concurrency {concurrency}, key {mask_key(form_values.get('api_key', ''))}")
+        _provider = str(form_values.get("provider") or "volcengine")
+        _model = str(form_values.get("custom_model") or form_values.get("model") or "").strip()
+        if _provider == "comfyui_local" or _model in _LOCAL_MODEL_IDS:
+            _start_desc = f"provider={_provider}, model={_model or '?'}（本地模型，不走云端 key）"
+        else:
+            _start_desc = f"provider={_provider}, model={_model or '?'}, key={mask_key(form_values.get('api_key', ''))}"
+        add_event(job_id, f"Started {count} run(s), concurrency {concurrency}, {_start_desc}")
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = [pool.submit(run_one, job_id, i, form_values, form_files, ws_id) for i in range(1, count + 1)]
             for future in concurrent.futures.as_completed(futures):
