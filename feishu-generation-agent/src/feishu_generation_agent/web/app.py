@@ -799,7 +799,10 @@ def create_app(
         app_state = request.app.state
         current = getattr(app_state, "provider_preferences", None)
         if current is not None:
-            app_state.provider_preferences = preferences
+            # 就地更新共享对象：GraphServices.provider_preferences 与 app.state
+            # 持有同一引用，改它即可让图执行层的路由立即生效，无需重启服务。
+            current.video_provider = preferences.video_provider
+            current.image_provider = preferences.image_provider
         return ProviderPreferencesResponse(
             video_provider=preferences.video_provider,
             image_provider=preferences.image_provider,

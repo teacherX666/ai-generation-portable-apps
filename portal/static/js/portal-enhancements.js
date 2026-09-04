@@ -360,21 +360,6 @@
   setInterval(refresh, 15000);
   setInterval(refreshQueueMeta, 15000);
 })();
-// === Global prompt optimization entry ===
-(function () {
-  const btn = document.getElementById('optimizeBtn');
-  if (!btn) return;
-  btn.addEventListener('click', () => {
-    if (document.body.classList.contains('director-collapsed')) {
-      const toggle = document.getElementById('director-toggle');
-      if (toggle) toggle.click();
-    }
-    setTimeout(() => {
-      const input = document.querySelector('.director-sidebar .director-field textarea');
-      if (input) input.focus();
-    }, 80);
-  });
-})();
 // === Contextual per-module help ===
 (function () {
   const MODULE_HELP = {
@@ -505,4 +490,17 @@
   const btn = document.getElementById('moduleHelpBtn');
   if (btn) btn.addEventListener('click', openModuleHelp);
   window.portalModuleHelp = openModuleHelp;
+})();
+// === Release notice ===
+(function () {
+  const VERSION = 'nav-home-2026-09-03';
+  const notice = document.getElementById('releaseNotice');
+  if (!notice) return;
+  const close = () => { notice.hidden = true; try { localStorage.setItem('portal_release_seen', VERSION); } catch (e) {} };
+  document.getElementById('releaseNoticeClose')?.addEventListener('click', close);
+  document.getElementById('releaseNoticeConfirm')?.addEventListener('click', close);
+  notice.addEventListener('click', (e) => { if (e.target === notice) close(); });
+  let seen = false;
+  try { seen = localStorage.getItem('portal_release_seen') === VERSION; } catch (e) {}
+  if (!seen) window.setTimeout(() => { notice.hidden = false; }, 180);
 })();

@@ -786,6 +786,16 @@ function NanoBananaApp() {
       self.optimizedPrompt = '';
       var res = null;
       try {
+        var rag = await fetch('/rag-assistant/api/rag/preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: prompt, optimize: true }),
+        }).then(function (r) { return r.json(); }).catch(function () { return null; });
+        if (rag && rag.ok && rag.detected && rag.updated_prompt) {
+          self.optimizedPrompt = rag.updated_prompt;
+          self.optimizing = false;
+          return;
+        }
         var resp = await fetch('/director/api/optimize-prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

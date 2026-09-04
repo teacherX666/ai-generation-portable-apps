@@ -70,7 +70,7 @@
     if (iframe) loadPortalIframe(iframe);
   }
 
-  function activatePortalTab(btn, { focus = false } = {}) {
+  function activatePortalTab(btn, { focus = false, persist = true } = {}) {
     if (!btn) return;
     const panel = document.getElementById('tab-' + btn.dataset.tab);
     if (!panel) return;
@@ -87,7 +87,13 @@
     });
     const mobileSelect = document.getElementById('mobileAppSelect');
     if (mobileSelect && mobileSelect.value !== btn.dataset.tab) mobileSelect.value = btn.dataset.tab;
+    if (btn.dataset.tab !== 'home' && persist) { try { localStorage.setItem('portal_last_non_home_tab', btn.dataset.tab); } catch (e) {} }
+    const isHome = btn.dataset.tab === 'home';
+    document.body.classList.toggle('portal-home-active', isHome);
+    const homeExit = document.getElementById('portalHomeExitBtn');
+    if (homeExit) homeExit.hidden = !isHome;
     loadIframeForPanel(panel);
+    if (persist) { try { localStorage.setItem('portal_active_tab', btn.dataset.tab); } catch (e) {} }
     if (focus) btn.focus();
   }
 
@@ -110,8 +116,10 @@
       if (fallback) iframe.dataset.resolvedSrc = fallback;
     });
 
-    const initialPortalTab = document.querySelector('.app-tab.active') || portalTabButtons[0];
-    if (initialPortalTab) activatePortalTab(initialPortalTab);
+
+    const initialName = (() => { try { return localStorage.getItem('portal_active_tab'); } catch (e) { return null; } })();
+    const initialPortalTab = (initialName && portalTabButtons.find(btn => btn.dataset.tab === initialName)) || document.getElementById("portalHomeBtn") || portalTabButtons[0];
+    if (initialPortalTab) activatePortalTab(initialPortalTab, { persist: false });
 
     const res = await api('/api/apps');
     if (!res?.ok || !Array.isArray(res.apps)) return;
@@ -127,6 +135,24 @@
 
   const portalTabButtons = Array.from(document.querySelectorAll('.app-tab'));
   const mobileAppSelect = document.getElementById('mobileAppSelect');
+  const portalHomeBtn = document.getElementById('portalHomeBtn');
+  if (portalHomeBtn) portalHomeBtn.addEventListener('click', () => activatePortalTab(portalHomeBtn));
+  const portalHomeExitBtn = document.getElementById('portalHomeExitBtn');
+  if (portalHomeExitBtn) portalHomeExitBtn.addEventListener('click', () => {
+    let name = 'feishu-generation-agent';
+    try { name = localStorage.getItem('portal_last_non_home_tab') || name; } catch (e) {}
+    activatePortalTab(portalTabButtons.find(item => item.dataset.tab === name) || portalTabButtons[0]);
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !document.body.classList.contains('portal-home-active')) return;
+    portalHomeExitBtn?.click();
+  });  const portalDebugReturnBtn = document.getElementById('portalDebugReturnBtn');
+  if (portalDebugReturnBtn) portalDebugReturnBtn.addEventListener('click', () => {
+    let name = 'feishu-generation-agent';
+    try { name = localStorage.getItem('portal_last_non_home_tab') || name; } catch (e) {}
+    const btn = portalTabButtons.find(item => item.dataset.tab === name) || portalTabButtons[0];
+    activatePortalTab(btn);
+  });
   if (mobileAppSelect) {
     mobileAppSelect.addEventListener('change', () => {
       const btn = portalTabButtons.find(item => item.dataset.tab === mobileAppSelect.value);

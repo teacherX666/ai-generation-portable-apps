@@ -29,6 +29,12 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared import local_gateway  # noqa: E402
+
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 STATIC_DIR = ROOT / "static"
 
@@ -2390,7 +2396,7 @@ class Handler(SimpleHTTPRequestHandler):
             info["url"] = f"/{name}/"
             apps_info.append(info)
         self._json(200, {"ok": True, "lan_ip": lan_ip, "portal_port": PORTAL_PORT,
-                         "disk_free_gb": disk_free_gb, "apps": apps_info})
+                         "disk_free_gb": disk_free_gb, "local_gateway": local_gateway.snapshot(timeout=0.8), "apps": apps_info})
 
     def _platform_stats(self, user: dict):
         stats = tracker.get_stats(username=user["username"], role=user["role"])

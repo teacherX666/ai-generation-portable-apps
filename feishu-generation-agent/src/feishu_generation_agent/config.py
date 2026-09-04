@@ -1,5 +1,5 @@
 import re
-import subprocess
+import socket
 from pathlib import Path
 from typing import Literal
 
@@ -8,25 +8,29 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _lan_base_url(port: int = 8765) -> str:
-    """默认素材库对外地址：动态探测本机 LAN IP（服务机 IP 每周变动，禁止
-    硬编码）。探测失败回退 127.0.0.1（至少本机可用）。"""
+    """Discover this machine's preferred private LAN URL without hardcoding IPs."""
+    hostname = socket.gethostname()
+    candidates: list[str] = []
     try:
-        out = subprocess.run(
-            ["ifconfig"], capture_output=True, text=True, timeout=10
-        ).stdout
-        ips = re.findall(r"inet (\d+\.\d+\.\d+\.\d+)", out)
-        private = [
-            ip for ip in ips
-            if ip.startswith(("192.168.", "10."))
-            or re.match(r"172\.(1[6-9]|2\d|3[01])\.", ip)
-        ]
-        candidates = private or [
-            ip for ip in ips if not ip.startswith(("127.", "169.254."))
-        ]
-        if candidates:
-            return f"http://{candidates[0]}:{port}"
-    except Exception:
+        for family, _kind, _proto, _name, sockaddr in socket.getaddrinfo(
+            hostname, None, socket.AF_INET, socket.SOCK_STREAM
+        ):
+            ip = str(sockaddr[0])
+            if ip not in candidates:
+                candidates.append(ip)
+    except OSError:
         pass
+    private = [
+        ip for ip in candidates
+        if ip.startswith(("192.168.", "10."))
+        or (ip.startswith("172.") and 16 <= int(ip.split(".")[1]) <= 31)
+    ]
+    ordered = private or [
+        ip for ip in candidates
+        if not ip.startswith(("127.", "169.254."))
+    ]
+    if ordered:
+        return f"http://{ordered[0]}:{port}"
     return f"http://127.0.0.1:{port}"
 
 

@@ -23,7 +23,7 @@
       </div>
     </div>
 
-    <div class="mobile-app-switcher">
+    <div class="mobile-app-switcher portal-mobile-switcher">
       <label for="mobileAppSelect">当前应用</label>
             <select id="mobileAppSelect" aria-label="切换应用">
         <optgroup label="创作区">
@@ -53,12 +53,12 @@
        （lan_ip/portal_port 已有；disk_free_gb 由后端 Phase 2 补充后自动激活）。 -->
     <div class="app-body">
     <aside class="portal-nav" aria-label="应用模块">
-    <button id="portalNavToggle" class="portal-nav__toggle" type="button" aria-expanded="true" aria-label="收缩导航栏" title="收缩导航栏">‹</button>
+    <div class="portal-nav__topline"><button id="portalHomeBtn" class="app-tab ui-tab portal-nav__home" role="tab" aria-selected="false" aria-controls="tab-home" tabindex="-1" type="button" data-tab="home" aria-label="首页"><span>首页</span></button><button id="portalNavToggle" class="portal-nav__toggle" type="button" aria-expanded="true" aria-label="收缩导航栏" title="收缩导航栏">‹</button></div>
 
     <div class="portal-nav__group">
       <div class="portal-nav__title">创作区</div>
       <div class="portal-nav__items">
-        <button id="tab-btn-feishu-generation-agent" class="app-tab ui-tab portal-nav__item--featured active" role="tab" aria-selected="true" aria-controls="tab-feishu-generation-agent" tabindex="0" data-tab="feishu-generation-agent">
+        <button id="tab-btn-feishu-generation-agent" class="app-tab ui-tab portal-nav__item--featured" role="tab" aria-selected="false" aria-controls="tab-feishu-generation-agent" tabindex="-1" data-tab="feishu-generation-agent">
           <span class="portal-nav__label">飞书创作助手</span>
           <span class="portal-nav__desc">从飞书文档拆任务，审批后批量出图出片</span>
         </button>
@@ -117,13 +117,113 @@
       </div>
     </div>
     <div class="portal-nav__footer">
-      <button id="optimizeBtn" class="portal-help-btn portal-optimize-btn" type="button">优化提示词</button>
+
       <button id="helpBtn" class="portal-help-btn" type="button">新手指南</button>
       <button id="moduleHelpBtn" class="portal-help-btn" type="button">模块帮助</button>
     </div>
   </aside>
   <div class="ui-portal-content ui-shell__body">
-  <div id="globalBanner" class="global-banner ui-banner" style="display:none"></div>
+    <div id="globalBanner" class="global-banner ui-banner" style="display:none"></div>
+  <div id="releaseNotice" class="release-notice-backdrop" hidden>
+    <section class="release-notice" role="dialog" aria-modal="true" aria-labelledby="releaseNoticeTitle">
+      <button id="releaseNoticeClose" class="release-notice__close" type="button" aria-label="关闭更新公告">×</button>
+      <span class="release-notice__eyebrow">AI PORTABLE STUDIO · 更新公告</span>
+      <h2 id="releaseNoticeTitle">工作台导航体验更新</h2>
+      <p>从今天开始，打开门户将优先进入首页；刷新页面会保留你当前所在的模块。</p>
+      <ul>
+        <li>左上角新增“首页”入口，位于展开/收缩箭头左侧</li>
+        <li>移除左下角“优化提示词”按钮，减少干扰</li>
+        <li>首页当前为设计占位版，后续会根据你的反馈继续完善</li>
+      </ul>
+      <div class="release-notice__actions"><button id="releaseNoticeConfirm" class="ui-btn ui-btn--strong" type="button">我知道了</button></div>
+    </section>
+  </div>
+  <section id="tab-home" class="tab-panel portal-home-panel" role="tabpanel" aria-labelledby="portalHomeBtn" hidden>
+  <div class="rc-home">
+    <header class="rc-home__bar">
+      <div class="rc-brand">
+        <span class="rc-brand__mark" aria-hidden="true">R</span>
+        <div class="rc-brand__copy">
+          <strong>RedCraft</strong>
+          <span>红海无限 AI 创作平台</span>
+        </div>
+      </div>
+      <button id="portalHomeExitBtn" class="rc-back" type="button" hidden>返回工作台</button>
+    </header>
+
+    <section class="rc-hero">
+      <div class="rc-hero__eyebrow"><span class="rc-hero__dot" aria-hidden="true"></span>RED INFINITY · 全球移动游戏</div>
+      <h1 class="rc-hero__title">让灵感，<br><span class="rc-hero__accent">跑赢时间</span></h1>
+      <p class="rc-hero__lead">一站式 AI 创作平台，整合图像、视频、数字人与创意画布，从概念到成片，在一个工作台内完成。</p>
+      <div class="rc-hero__actions">
+        <button class="rc-btn rc-btn--red" type="button" data-scroll="rc-quick">开始创作</button>
+        <button class="rc-btn rc-btn--ghost" type="button" data-scroll="rc-more">了解更多</button>
+      </div>
+    </section>
+
+    <section id="rc-quick" class="rc-section">
+      <div class="rc-section__head">
+        <div class="rc-section__titlewrap">
+          <span class="rc-kicker">QUICK START</span>
+          <h2>选择创作入口</h2>
+        </div>
+        <p class="rc-section__hint">六个创作模块，一处完成</p>
+      </div>
+      <div class="rc-grid">
+        <a class="rc-card rc-launch" data-tab="feishu-generation-agent" href="#" role="button">
+          <span class="rc-card__index">01</span>
+          <span class="rc-card__body"><strong>飞书创作助手</strong><em>从文档拆任务，审批后批量出图出片</em></span>
+          <span class="rc-card__arrow">→</span>
+        </a>
+        <a class="rc-card rc-launch" data-tab="seedance" href="#" role="button">
+          <span class="rc-card__index">02</span>
+          <span class="rc-card__body"><strong>视频生成</strong><em>文生视频 · 图生视频 · 首尾帧</em></span>
+          <span class="rc-card__arrow">→</span>
+        </a>
+        <a class="rc-card rc-launch" data-tab="nb" href="#" role="button">
+          <span class="rc-card__index">03</span>
+          <span class="rc-card__body"><strong>图片生成</strong><em>文生图 · 图生图 · 批量出图</em></span>
+          <span class="rc-card__arrow">→</span>
+        </a>
+        <a class="rc-card rc-launch" data-tab="volcengine-portrait" href="#" role="button">
+          <span class="rc-card__index">04</span>
+          <span class="rc-card__body"><strong>人像视频</strong><em>数字人口播 · 虚拟人物视频</em></span>
+          <span class="rc-card__arrow">→</span>
+        </a>
+        <a class="rc-card rc-launch" data-tab="infinite-canvas" href="#" role="button">
+          <span class="rc-card__index">05</span>
+          <span class="rc-card__body"><strong>创意画布</strong><em>节点式组织参考图、提示词与模型</em></span>
+          <span class="rc-card__arrow">→</span>
+        </a>
+        <a class="rc-card rc-launch" data-tab="dreamina" href="#" role="button">
+          <span class="rc-card__index">06</span>
+          <span class="rc-card__body"><strong>即梦创作</strong><em>即梦账号的图片与视频生成</em></span>
+          <span class="rc-card__arrow">→</span>
+        </a>
+      </div>
+    </section>
+
+    <section id="rc-more" class="rc-section">
+      <div class="rc-section__head">
+        <div class="rc-section__titlewrap">
+          <span class="rc-kicker">CAPABILITIES</span>
+          <h2>一个工作台，完整创作闭环</h2>
+        </div>
+      </div>
+      <div class="rc-cap-list">
+        <div class="rc-cap"><span class="rc-cap__mark">A</span><div><strong>统一入口</strong><p>所有创作工具集中管理，不切换多个系统。</p></div></div>
+        <div class="rc-cap"><span class="rc-cap__mark">B</span><div><strong>即时状态</strong><p>本地服务与资源状态一目了然，减少等待。</p></div></div>
+        <div class="rc-cap"><span class="rc-cap__mark">C</span><div><strong>记录回放</strong><p>创作记录与历史任务可随时回看和复用。</p></div></div>
+        <div class="rc-cap"><span class="rc-cap__mark">D</span><div><strong>资产沉淀</strong><p>图片、视频与灵感素材沉淀在同一个工作区。</p></div></div>
+      </div>
+    </section>
+
+    <footer class="rc-footer">
+      <div class="rc-footer__brand"><strong>RedCraft</strong><span>红海无限 AI 创作平台</span></div>
+      <div class="rc-footer__meta">© 2026 RED INFINITY · 北京红海无限科技发展有限公司</div>
+    </footer>
+  </div>
+</section>
 
   <!-- SEEDANCE -->
   <div class="tab-panel iframe-panel" id="tab-seedance" role="tabpanel" aria-labelledby="tab-btn-seedance" hidden>
@@ -136,7 +236,7 @@
   </div>
 
   <!-- FEISHU GENERATION AGENT -->
-  <div class="tab-panel iframe-panel active" id="tab-feishu-generation-agent" role="tabpanel" aria-labelledby="tab-btn-feishu-generation-agent">
+  <div class="tab-panel iframe-panel" id="tab-feishu-generation-agent" role="tabpanel" aria-labelledby="tab-btn-feishu-generation-agent">
     <iframe class="portal-iframe" id="iframe-feishu-generation-agent" data-app="feishu-generation-agent" data-fallback-src="/feishu-generation-agent/" title="飞书任务 Agent" allow="fullscreen"></iframe>
   </div>
 
@@ -1217,5 +1317,22 @@
   <script src="/js/portal-rag-interceptor.js"></script>
   <script src="/effects.js"></script>
   <script src="/dino.js"></script>
+<script>
+(function () {
+  document.querySelectorAll('.rc-launch[data-tab]').forEach(function (el) {
+    el.addEventListener('click', function (e) {
+      e.preventDefault();
+      var btn = document.querySelector('.app-tab[data-tab="' + el.getAttribute('data-tab') + '"]');
+      if (btn) btn.click();
+    });
+  });
+  document.querySelectorAll('[data-scroll]').forEach(function (el) {
+    el.addEventListener('click', function () {
+      var target = document.getElementById(el.getAttribute('data-scroll'));
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+})();
+</script>
 </body>
 </html>

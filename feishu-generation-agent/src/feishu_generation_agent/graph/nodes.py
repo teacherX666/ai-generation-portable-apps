@@ -1528,7 +1528,8 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
     aiport_video_generator = getattr(services, "aiport_video_generator", None)
     preferences = getattr(services, "provider_preferences", None)
     preferred_video = getattr(preferences, "video_provider", None)
-    configured_provider = preferred_video or getattr(settings, "video_provider", None)
+    settings_provider = getattr(settings, "video_provider", None)
+    configured_provider = preferred_video or settings_provider
     requested = (
         "aiport"
         if configured_provider == "aiport"
@@ -1543,7 +1544,16 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
         binding = await services.production_task_store.get_by_run(run_id)
         if binding is not None and binding.snapshot.task_type == "真人类":
             return "volcengine_portrait", services.portrait_video_generator.for_run(run_id)
-    return "seedance", services.video_generator
+    # Seedance 生成器只在 settings.video_provider == "seedance" 时由 bootstrap
+    # 创建（services.video_generator 才会是 SeedanceVideoGenerator）。本地部署
+    # （aiport）不创建它；此时返回 "seedance" 会让「标签」与「生成器身份」不一致，
+    # 被执行层判成「生成服务拒绝了请求」。这里回退到本地 aiport。
+    if settings_provider != "aiport":
+        return "seedance", services.video_generator
+    generator = aiport_video_generator or services.video_generator
+    if generator is None:
+        raise _validation_error("本地视频 provider 未配置")
+    return "aiport", generator
 
 
 async def _transition_operation(

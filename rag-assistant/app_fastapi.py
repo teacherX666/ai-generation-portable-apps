@@ -205,10 +205,13 @@ def admin_query_log(request: Request, n: int = 20):
 
 
 
-GENERATION_RAG_TTL_SECONDS = 0.0
+GENERATION_RAG_TTL_SECONDS = 30.0
 GENERATION_RAG_MIN_LEXICAL_SCORE = 1.0
+GENERATION_RAG_SEMANTIC_MIN_SIMILARITY = 0.28
+GENERATION_RAG_SEMANTIC_TOP_K = 20
+
 _generation_rag_lock = threading.Lock()
-_generation_rag_cache = {"fetched_at": 0.0, "docs": []}
+_generation_rag_cache = {"fetched_at": 0.0, "docs": [], "vectors": []}
 _RAG_WORD_RE = re.compile(r"[a-z0-9]+")
 _RAG_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
@@ -225,114 +228,296 @@ def _rag_features(text: str) -> tuple[set[str], set[str]]:
     return words, grams
 
 
-_RAG_STOPGRAMS = {
-    "不要", "一个", "生成", "图片", "视频", "内容", "出现", "可以", "如果",
-    "这个", "那个", "然后", "以及", "或者", "进行", "检查",
-    "直接", "使用", "下面", "类似", "个人", "经验", "写上", "严格", "参考",
-    "形象", "可以", "不行", "选择", "描述", "情绪", "人物", "时候",
-}
-_RAG_QUOTE_RE = re.compile(r"[「“]([^」”]+)[」”]")
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    if len(a) != len(b) or not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
+
+def _semantic_doc_text(doc) -> str:
+    metadata = doc.metadata or {}
+    title = str(metadata.get("error_title", "") or "").strip()
+    keywords = str(metadata.get("kb_keywords", "") or "").strip()
+    content = (doc.page_content or "").strip()
+    return "\n".join(part for part in (title, keywords, content) if part)
+
+
+def _embed_texts_safe(texts: list[str]) -> list[list[float]]:
+    if not texts:
+        return []
+    try:
+        return embeddings.embed_documents(texts)
+    except Exception:
+        logger.exception("generation rule embedding failed")
+        return []
+
+
+def _embed_query_safe(text: str) -> list[float] | None:
+    try:
+        return embeddings.embed_query(text)
+    except Exception:
+        logger.exception("generation query embedding failed")
+        return None
+
+
+_GENERIC_RULE_STOPWORDS = {
+    "生成", "图片", "图像", "人物", "画面", "出现", "露出", "漏出", "带有", "包含", "使用", "描写", "描述",
+    "不要", "避免", "禁止", "请勿", "不得", "严禁", "拒绝", "不可", "切勿", "防止", "任何", "以及", "或者",
+    "一个", "这个", "那个", "时候", "可以", "需要", "应该", "建议", "内容", "提示词", "视频", "照片", "镜头",
+    "背景", "场景", "风格", "无法", "不能", "无需", "没有", "没", "不", "无", "画面中", "生成图片", "生成图像",
+}
+_GENERIC_NEGATION_RE = re.compile(r"(?:禁止|不要|避免|请勿|不得|严禁|拒绝|不可|切勿|防止)([^。；;\n，,]{0,40})")
+
+
+def _generic_rule_terms(doc, title: str) -> list[str]:
+    metadata = doc.metadata or {}
+    title_core = _clean_title(title)
+    title_core = re.sub(r"^(?:禁止|不要|避免|请勿|不得|严禁|拒绝|不可|切勿|防止)\s*", "", title_core)
+    seeds = [title_core, str(metadata.get("kb_keywords", "") or "")]
+    for match in _GENERIC_NEGATION_RE.finditer(doc.page_content or ""):
+        clause = match.group(1).strip()
+        if clause:
+            seeds.append(clause)
+
+    terms: set[str] = set()
+
+    def add_seed(seed: str) -> None:
+        cleaned = re.sub(r"^(?:出现|露出|漏出|带有|包含|使用|描写|描述|需要|应该|建议)\s*", "", seed.strip())
+        cleaned = cleaned.strip()
+        if len(cleaned) >= 2 and cleaned not in _GENERIC_RULE_STOPWORDS:
+            terms.add(cleaned)
+        for part in re.split(r"[，,、/；;]", cleaned):
+            part = part.strip()
+            if len(part) >= 2 and part not in _GENERIC_RULE_STOPWORDS:
+                terms.add(part)
+
+    for seed in seeds:
+        if not seed:
+            continue
+        add_seed(seed)
+        lower = seed.casefold()
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_.:/-]{1,}|\d+(?:\.\d+)?|[\u4e00-\u9fff]{2,}", lower):
+            if re.fullmatch(r"[\u4e00-\u9fff]+", token):
+                for size in range(2, min(5, len(token)) + 1):
+                    for index in range(len(token) - size + 1):
+                        gram = token[index:index + size]
+                        if gram not in _GENERIC_RULE_STOPWORDS:
+                            terms.add(gram)
+            elif token not in _GENERIC_RULE_STOPWORDS and len(token) >= 2:
+                terms.add(token)
+
+    return sorted(terms, key=len, reverse=True)
+
+
+def _generic_rule_satisfied(prompt: str, terms: list[str], doc, title: str) -> bool:
+    normalized = (prompt or "").strip()
+    title_core = _clean_title(title)
+    title_core = re.sub(r"^(?:禁止|不要|避免|请勿|不得|严禁|拒绝|不可|切勿|防止)\s*", "", title_core)
+    phrases = [title_core] + terms
+    for phrase in phrases:
+        if not phrase or len(phrase) < 2:
+            continue
+        for prefix in ("不要出现", "不要露出", "不要带", "不要包含", "不出现", "不穿", "不带", "不包含", "不要", "不", "无", "没有", "没", "避免", "禁止", "拒绝", "请勿", "不得", "严禁", "不可"):
+            if (prefix + phrase) in normalized:
+                return True
+        for suffix in ("不可见", "不出现", "隐藏", "朝向自己", "背面", "遮住", "遮挡", "模糊"):
+            if (phrase + suffix) in normalized:
+                return True
+    return False
+
+
+def _generic_rule_match(prompt: str, doc, title: str) -> tuple[bool, float]:
+    terms = _generic_rule_terms(doc, title)
+    if not terms:
+        return False, 0.0
+    if _generic_rule_satisfied(prompt, terms, doc, title):
+        return False, 0.0
+    normalized = (prompt or "").strip()
+    hit_terms = [term for term in terms if term in normalized]
+    if not hit_terms:
+        return False, 0.0
+    return True, float(len(hit_terms))
+
+
+_FACE_TRIGGER_PHRASES = (
+    "愤怒", "生气", "恼怒", "发怒", "怒气", "怒火", "愤懑", "暴怒", "愤怒的", "生气的",
+)
+_FACE_SATISFIED_PHRASES = (
+    "不要脸红", "不脸红", "避免脸红", "拒绝夸张脸红", "不要夸张脸红",
+    "脸色正常", "肤色正常", "自然肤色", "面部肤色保持自然", "面部保持自然肤色",
+    "不出现泛红", "不泛红", "不要泛红", "面部无泛红", "面部不泛红",
+    "只描述表情", "使用具体表情", "具体表情描述", "皱起眉头", "紧锁眉头", "瘪嘴", "咧着嘴",
+)
+_FACE_TRIGGER_EXCLUSIONS = (
+    "生气勃勃",
+)
+_FACE_NEGATED_PHRASES = (
+    "不生气", "没有生气", "没生气", "别生气", "不要生气",
+    "不愤怒", "没有愤怒", "没愤怒", "别愤怒", "不要愤怒",
+)
+_PHONE_TRIGGER_PHRASES = (
+    "手机", "智能手机", "电话", "移动电话", "手拿手机", "拿着手机", "拿手机",
+)
+_PHONE_SATISFIED_PHRASES = (
+    "手机不要漏出屏幕", "不要漏出屏幕", "不要露出屏幕", "禁止漏出屏幕",
+    "屏幕不要露", "屏幕不可见", "手机屏幕不可见", "屏幕完全隐藏", "屏幕完全朝向自己",
+    "屏幕朝向自己", "手机背面", "手机背面图片", "手机背面特写", "背面朝向镜头",
+    "禁止露出手机屏幕", "禁止漏出手机屏幕",
+)
+_PHONE_EXPLICIT_OVERRIDE_PHRASES = (
+    "手机屏幕清晰可见", "屏幕清晰可见", "屏幕可见", "展示手机屏幕", "显示手机屏幕",
+    "露出手机屏幕", "漏出手机屏幕",
+)
+
+
+_PHONE_NEGATED_PHRASES = (
+    "没有手机", "没手机", "不要手机", "不要出现手机", "无手机",
+    "不出现手机", "没有出现手机", "禁止出现手机",
+)
 
 def _clean_title(title: str) -> str:
     cleaned = re.sub(r"^\d+\.?\s*", "", title or "").strip()
     return cleaned.rstrip("：:").strip()
 
 
-def _meaningful_doc_terms(doc, title: str) -> set[str]:
-    text = f"{title}\n{doc.page_content or ''}"
-    words, grams = _rag_features(text)
-    return {term for term in (words | grams) if term not in _RAG_STOPGRAMS and not term.isdigit()}
+def _contains_phrase(text: str, phrases: tuple[str, ...] | list[str]) -> bool:
+    normalized = (text or "").strip()
+    return any(phrase in normalized for phrase in phrases)
 
 
-def _quoted_phrases(content: str) -> list[str]:
-    return [phrase.strip() for phrase in _RAG_QUOTE_RE.findall(content or "") if phrase.strip()]
+def _rule_kind(title: str) -> str:
+    if any(word in title for word in ("手机", "屏幕")):
+        return "phone"
+    if any(word in title for word in ("脸红", "表情", "愤怒", "生气")):
+        return "face"
+    return "unknown"
 
 
-def _contains_any(text: str, phrases: list[str]) -> bool:
-    return any(phrase and phrase in text for phrase in phrases)
+def _rule_match(prompt: str, doc, title: str) -> tuple[bool, float]:
+    kind = _rule_kind(title)
+    if kind == "face":
+        if _contains_phrase(prompt, _FACE_TRIGGER_EXCLUSIONS):
+            return False, 0.0
+        if _contains_phrase(prompt, _FACE_NEGATED_PHRASES):
+            return False, 0.0
+        if not _contains_phrase(prompt, _FACE_TRIGGER_PHRASES):
+            return False, 0.0
+        if _contains_phrase(prompt, _FACE_SATISFIED_PHRASES):
+            return False, 0.0
+        score = sum(1 for phrase in _FACE_TRIGGER_PHRASES if phrase in prompt)
+        return True, float(score)
 
+    if kind == "phone":
+        if _contains_phrase(prompt, _PHONE_NEGATED_PHRASES):
+            return False, 0.0
+        if not _contains_phrase(prompt, _PHONE_TRIGGER_PHRASES):
+            return False, 0.0
+        if _contains_phrase(prompt, _PHONE_SATISFIED_PHRASES):
+            return False, 0.0
+        # An explicit request to show the screen is a user intention, not a
+        # missing constraint. Do not override it with the KB recommendation.
+        if _contains_phrase(prompt, _PHONE_EXPLICIT_OVERRIDE_PHRASES):
+            return False, 0.0
+        score = sum(1 for phrase in _PHONE_TRIGGER_PHRASES if phrase in prompt)
+        return True, float(score)
 
-_PHONE_SATISFACTION_PHRASES = [
-    "手机不要漏出屏幕", "不要漏出屏幕", "不要露出屏幕", "禁止漏出屏幕",
-    "屏幕不要露", "手机背面", "手机背面图片", "手机背面特写",
-]
-_FACE_SATISFACTION_PHRASES = [
-    "不要脸红", "不脸红", "避免脸红", "拒绝夸张脸红", "不要夸张脸红",
-]
-
-
-def _satisfied_phrases(doc, title: str) -> list[str]:
-    phrases = [title]
-    if any(keyword in title for keyword in ("手机", "屏幕")):
-        phrases.extend(_PHONE_SATISFACTION_PHRASES)
-    if any(keyword in title for keyword in ("脸红", "表情", "愤怒", "生气")):
-        phrases.extend(_FACE_SATISFACTION_PHRASES)
-    content = doc.page_content or ""
-    phrases.extend(_quoted_phrases(content))
-
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if any(keyword in line for keyword in ("可直接", "不要", "禁止", "避免", "拒绝")):
-            phrases.append(line)
-            phrases.extend(part.strip() for part in re.split(r"[，,。；;]", line) if part.strip())
-
-    match = re.search(r"可直接写上[：:]\s*([^）)]+)", content)
-    if match:
-        phrases.append(match.group(1).strip())
-
-    return [phrase for phrase in phrases if phrase]
+    return False, 0.0
 
 
 def _generation_kb_docs():
     now = time.time()
     with _generation_rag_lock:
-        if _generation_rag_cache["docs"] and now - _generation_rag_cache["fetched_at"] < GENERATION_RAG_TTL_SECONDS:
+        if (
+            _generation_rag_cache["docs"]
+            and now - _generation_rag_cache["fetched_at"] < GENERATION_RAG_TTL_SECONDS
+        ):
             return _generation_rag_cache["docs"]
 
     markdown = fetch_kb_markdown(api_client, settings.lark_generation_kb_doc_id)
     docs = split_markdown(markdown)
 
     with _generation_rag_lock:
-        _generation_rag_cache.update({"fetched_at": time.time(), "docs": docs})
+        _generation_rag_cache.update({"fetched_at": time.time(), "docs": docs, "vectors": []})
     return docs
 
 
-def _preflight_generation_prompt(prompt: str) -> dict:
+def _generation_kb_vectors(docs) -> list[list[float]]:
+    with _generation_rag_lock:
+        cached = _generation_rag_cache.get("vectors") or []
+        if len(cached) == len(docs):
+            return cached
+
+    vectors = _embed_texts_safe([_semantic_doc_text(doc) for doc in docs])
+    with _generation_rag_lock:
+        _generation_rag_cache["vectors"] = vectors
+    return vectors
+
+
+def _preflight_generation_prompt(prompt: str, optimize: bool = False) -> dict:
     try:
         docs = _generation_kb_docs()
         if not docs:
             return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
 
-        prompt_words, prompt_grams = _rag_features(prompt)
-        matches = []
-        for doc in docs:
+        matches: list[dict] = []
+        unknown_entries: list[tuple[object, str, int]] = []
+        for index, doc in enumerate(docs):
             raw_title = doc.metadata.get("error_title", "")
             title = _clean_title(raw_title)
-            terms = _meaningful_doc_terms(doc, title)
-            relevant = any(term in prompt_words or term in prompt_grams for term in terms)
-            if not relevant:
+            kind = _rule_kind(title)
+            if kind == "unknown":
+                unknown_entries.append((doc, raw_title, index))
                 continue
-
-            satisfied_phrases = _satisfied_phrases(doc, title)
-            if _contains_any(prompt, satisfied_phrases):
+            matched, score = _rule_match(prompt, doc, title)
+            if not matched:
                 continue
-
-            score = sum(1 for term in terms if term in prompt_words or term in prompt_grams)
             matches.append(
                 {
                     "title": raw_title,
                     "content": doc.page_content.strip(),
-                    "score": float(score),
+                    "score": score,
                 }
             )
+
+        if unknown_entries:
+            doc_vectors = _generation_kb_vectors(docs)
+            query_vector = _embed_query_safe(prompt)
+            candidates: list[tuple[float, object, str]] = []
+            if query_vector:
+                for doc, raw_title, index in unknown_entries:
+                    if index >= len(doc_vectors) or not doc_vectors[index]:
+                        continue
+                    similarity = _cosine_similarity(query_vector, doc_vectors[index])
+                    if similarity >= GENERATION_RAG_SEMANTIC_MIN_SIMILARITY:
+                        candidates.append((similarity, doc, raw_title))
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            candidates = candidates[:GENERATION_RAG_SEMANTIC_TOP_K]
+
+            for similarity, doc, raw_title in candidates:
+                title = _clean_title(raw_title)
+                matched, _ = _generic_rule_match(prompt, doc, title)
+                if not matched:
+                    continue
+                matches.append(
+                    {
+                        "title": raw_title,
+                        "content": doc.page_content.strip(),
+                        "score": similarity,
+                        "source": "semantic",
+                    }
+                )
 
         if not matches:
             return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
 
         matches.sort(key=lambda item: item["score"], reverse=True)
+        if not optimize:
+            return {"ok": True, "detected": True, "matches": matches, "updated_prompt": prompt}
         context = "\n\n".join(f"【{item['title']}】\n{item['content']}" for item in matches)
         updated_prompt = f"{prompt.strip()}\n\n[飞书知识库自动补充]\n{context}"
         optimized_prompt = _director_optimize_prompt(updated_prompt)
@@ -352,12 +537,12 @@ def _director_optimize_prompt(prompt: str) -> str:
             data=json.dumps({"text": prompt, "mode": "rag"}, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8"))
         if data.get("ok") and data.get("prompt"):
             return str(data["prompt"]).strip()
     except Exception:
-        logger.exception("director rag prompt optimization failed")
+        logger.warning("director rag prompt optimization unavailable; using KB context")
     return ""
 
 @app.post("/api/rag/preflight")
@@ -372,7 +557,8 @@ async def rag_preflight(request: Request):
     prompt = str(body.get("prompt") or "").strip()
     if not prompt:
         return JSONResponse(status_code=400, content={"error": "prompt required"})
-    return await run_in_threadpool(_preflight_generation_prompt, prompt)
+    optimize = bool(body.get("optimize"))
+    return await run_in_threadpool(_preflight_generation_prompt, prompt, optimize)
 @app.post("/api/ask")
 async def ask(request: Request):
     token = portal_token()

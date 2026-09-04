@@ -70,6 +70,7 @@ class PackRepositorySecurityTests(unittest.TestCase):
             self.assertNotIn("DO_NOT_LEAK", packed)
             self.assertNotIn("state/secrets.json", packed)
 
+    @unittest.skipIf(os.name == "nt", "symlink requires admin privileges on Windows")
     def test_symlink_is_not_followed_and_scan_does_not_write(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
             root = Path(tmp)

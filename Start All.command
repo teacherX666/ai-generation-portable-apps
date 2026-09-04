@@ -76,7 +76,11 @@ export INFINITE_CANVAS_ENGINE=${INFINITE_CANVAS_ENGINE:-fastapi}
 export RAG_ASSISTANT_ENGINE=${RAG_ASSISTANT_ENGINE:-fastapi}
 
 
-export AIPORT_BASE_URL=${AIPORT_BASE_URL:-http://UT-20210713KMWD.local:8801}
+if [ -f "$SCRIPT_DIR/config/local_ai.env" ]; then
+  set -a
+  . "$SCRIPT_DIR/config/local_ai.env"
+  set +a
+fi
 echo "Starting AI Generation Portal on port 9090 (HTTPS)..."
 echo "  Local:  https://127.0.0.1:9090"
 echo "  HTTP → HTTPS:  http://127.0.0.1:9089"

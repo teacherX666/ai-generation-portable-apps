@@ -4,7 +4,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
-@dataclass(frozen=True, slots=True)
+# 注意：这里必须是可变 dataclass（去掉 frozen）。飞书网页端更新偏好后，
+# web/app.py 会就地改写共享对象，让图执行层的路由无需重启即可生效。
+@dataclass(slots=True)
 class ProviderPreferences:
     video_provider: str = "aiport"
     image_provider: str = "aiport"

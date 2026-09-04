@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app": "nano-banana",
-  "default_provider": "t8star",
+  "default_provider": "comfyui_local",
   "providers": {
     "comfyui_local": {
       "label": "本地 ComfyUI（免费）",
@@ -190,5 +190,6 @@
         }
       ]
     }
-  }
+  },
+  "cloud_fallback_provider": "t8star"
 }

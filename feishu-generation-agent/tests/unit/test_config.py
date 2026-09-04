@@ -51,7 +51,7 @@ def test_tos_reference_media_target_is_configurable() -> None:
 
 
 def test_env_example_documents_production_requirement_type_field() -> None:
-    example = (Path(__file__).parents[2] / ".env.example").read_text()
+    example = (Path(__file__).parents[2] / ".env.example").read_text(encoding="utf-8")
 
     assert "生产表模式只读「需求名称、需求类型、需求附件" in example
 

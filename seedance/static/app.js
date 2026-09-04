@@ -949,6 +949,16 @@ function SeedanceApp() {
       this.optimizedPrompt = '';
       this.optimizeError = '';
       try {
+        const rag = await fetch('/rag-assistant/api/rag/preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: prompt, optimize: true }),
+        }).then((r) => r.json()).catch(() => null);
+        if (this.activeTabId !== ownerWsId) return;
+        if (rag && rag.ok && rag.detected && rag.updated_prompt) {
+          this.optimizedPrompt = rag.updated_prompt;
+          return;
+        }
         const res = await api(APP_PATH + '/api/optimize-prompt', 'POST', JSON.stringify({ prompt: prompt }), ownerWsId);
         if (this.activeTabId !== ownerWsId) return;
         if (!res) {
@@ -1159,6 +1169,23 @@ function SeedanceApp() {
         if (this.activeTabId === ownerWorkspaceId) this[name] = value;
       };
       if (this.submitting) return;
+      // reference 模式同时覆盖纯文生视频和参考生视频，素材全部可选；仅延长/编辑必须提供视频。
+      const modelEl = field('model');
+      const chosenModel = (modelEl && modelEl.value) || this.customModel || '';
+      const usesLocalH3 = this.provider === 'comfyui_local' || chosenModel === 'minimax_h3_all_reference';
+      const firstFrameEl = document.querySelector('input[name="first_frame"]');
+      const lastFrameEl = document.querySelector('input[name="last_frame"]');
+      const hasFrame = (firstFrameEl && firstFrameEl.files && firstFrameEl.files.length) || (lastFrameEl && lastFrameEl.files && lastFrameEl.files.length);
+      const mediaKeys = Object.keys(this.savedMedia || {});
+      const hasRefImage = mediaKeys.some((k) => k.startsWith('ref_image_'));
+      const hasRefVideo = mediaKeys.some((k) => k.startsWith('ref_video_'));
+      if ((this.taskMode === 'extend' || this.taskMode === 'edit') && !hasRefVideo && !hasFrame) {
+        const msg = '请先上传参考视频（或首帧）后再开始生成。';
+        setOwnerState('submitting', false);
+        setOwnerState('statusText', msg);
+        alert(msg);
+        return;
+      }
       // 首次提交时请求系统通知权限（用户手势内调用才有效）
       requestNotifyPermission();
       const submissionToken = (this._topicSubmissionSeq[ownerWorkspaceId] || 0) + 1;
@@ -1182,13 +1209,16 @@ function SeedanceApp() {
       }
       setOwnerState('eventsText', '');
 
-      // 参考视频时长校验：超 4–30 秒范围立即拦截（实测本地文件，不消耗生成配额）
-      try {
-        await validateReferenceVideoDurations();
-      } catch (err) {
-        setOwnerState('submitting', false);
-        setOwnerState('statusText', err.message || '参考视频时长不合规');
-        return;
+
+      // 方舟要求参考视频 4–30 秒；本地 H3 的 ref2v 仅校验素材是否存在，不限时长。
+      if (!usesLocalH3) {
+        try {
+          await validateReferenceVideoDurations();
+        } catch (err) {
+          setOwnerState('submitting', false);
+          setOwnerState('statusText', err.message || '参考视频时长不合规');
+          return;
+        }
       }
 
       // 前后端对齐：选了本地模型（minimax_h3_all_reference）但供应商仍是云端

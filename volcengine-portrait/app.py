@@ -28,6 +28,12 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared import local_gateway  # noqa: E402
+
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 STATIC_DIR = ROOT / "static"
 
@@ -63,7 +69,7 @@ _ALLOWED_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
 # previously rejected by the backend, making that valid option unusable.
 _ALLOWED_RATIOS = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"}
 
-LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
+LOCAL_GATEWAY_BASE_URL = local_gateway.configured_url()
 LOCAL_PORTRAIT_MODEL_ID = "local-minimax-h3-ref2v"
 _LOCAL_MODEL_KIND = "minimax_h3_all_reference"
 _H3_ASPECT_RATIOS = {
@@ -78,32 +84,7 @@ _H3_ASPECT_RATIOS = {
 
 
 def _force_ipv4(url: str) -> str:
-    """把 URL 里的主机名解析成第一个 IPv4 地址（本地 AI Port 网关专用）。
-
-    mDNS（.local）名字常先返回不可路由的 IPv6 link-local 地址；Python urllib
-    按顺序逐个连接、每个都烧满超时才轮到 IPv4，导致 1.5s 探活必失败、每次
-    调用慢几秒（curl 有 happy-eyeballs 所以正常）。这里固定走 IPv4。
-    """
-    if not url:
-        return url
-    try:
-        parts = urllib.parse.urlsplit(url)
-    except ValueError:
-        return url
-    host = parts.hostname or ""
-    if not host or re.match(r"^\d+\.\d+\.\d+\.\d+$", host) or host.lower() in ("localhost", "::1"):
-        return url
-    try:
-        first = socket.getaddrinfo(
-            host,
-            parts.port or (443 if parts.scheme == "https" else 80),
-            socket.AF_INET,
-            socket.SOCK_STREAM,
-        )[0][4][0]
-    except (socket.gaierror, IndexError):
-        return url
-    netloc = first if parts.port is None else f"{first}:{parts.port}"
-    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    return local_gateway.force_ipv4(url)
 
 
 def _is_local_model(model: str) -> bool:
@@ -111,11 +92,7 @@ def _is_local_model(model: str) -> bool:
 
 
 def local_gateway_available(timeout: float = 1.5) -> bool:
-    try:
-        with urllib.request.urlopen(_force_ipv4(LOCAL_GATEWAY_BASE_URL) + "/api/modules", timeout=timeout) as resp:
-            return resp.status < 400
-    except Exception:
-        return False
+    return local_gateway.ready(timeout)
 
 
 def _parse_int_field(value, default, field):
@@ -2628,6 +2605,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "has_access_key": bool(ACCESS_KEY),
                 "has_secret_key": bool(SECRET_KEY),
                 "output_dir": str(OUTPUT_DIR),
+                "local_gateway": local_gateway.snapshot(timeout=0.8),
                 "local_ready": local_gateway_available(),
                 "local_models": [
                     {

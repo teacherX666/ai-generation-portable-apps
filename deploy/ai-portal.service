@@ -28,7 +28,8 @@ Environment=DREAMINA_ENGINE=fastapi
 Environment=VOLCENGINE_PORTRAIT_ENGINE=fastapi
 Environment=INFINITE_CANVAS_ENGINE=fastapi
 Environment=RAG_ASSISTANT_ENGINE=fastapi
-Environment=AIPORT_BASE_URL=http://UT-20210713KMWD.local:8801
+# 每台机器单独维护，文件不存在时子应用回退 127.0.0.1:8801。
+EnvironmentFile=-/opt/ai-portal/config/local_ai.env
 # dreamina CLI 会话存 $HOME/.dreamina_cli，systemd 默认不设 HOME，必须显式指到 /root
 Environment=HOME=/root
 Environment=PATH=/opt/ai-portal/.venv/bin:/usr/local/bin:/usr/bin:/bin
