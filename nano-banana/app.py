@@ -30,6 +30,12 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared import local_gateway  # noqa: E402
+
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 STATIC_DIR = ROOT / "static"
 OUTPUT_DIR = _DATA_BASE / "outputs"
@@ -274,36 +280,11 @@ def _ws_preset_path(ws_id: str) -> Path:
 
 DEFAULT_BASE_URL = "https://ai.t8star.org"
 
-LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
+LOCAL_GATEWAY_BASE_URL = local_gateway.configured_url()
 
 
 def _force_ipv4(url: str) -> str:
-    """把 URL 里的主机名解析成第一个 IPv4 地址（本地 AI Port 网关专用）。
-
-    mDNS（.local）名字常先返回不可路由的 IPv6 link-local 地址；Python urllib
-    按顺序逐个连接、每个都烧满超时才轮到 IPv4，导致 1.5s 探活必失败、每次
-    调用慢几秒（curl 有 happy-eyeballs 所以正常）。这里固定走 IPv4。
-    """
-    if not url:
-        return url
-    try:
-        parts = urllib.parse.urlsplit(url)
-    except ValueError:
-        return url
-    host = parts.hostname or ""
-    if not host or re.match(r"^\d+\.\d+\.\d+\.\d+$", host) or host.lower() in ("localhost", "::1"):
-        return url
-    try:
-        first = socket.getaddrinfo(
-            host,
-            parts.port or (443 if parts.scheme == "https" else 80),
-            socket.AF_INET,
-            socket.SOCK_STREAM,
-        )[0][4][0]
-    except (socket.gaierror, IndexError):
-        return url
-    netloc = first if parts.port is None else f"{first}:{parts.port}"
-    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    return local_gateway.force_ipv4(url)
 
 
 DEFAULT_CONFIG = Path.home() / "ComfyUI/custom_nodes/Comfyui-zhenzhen/Comflyapi.json"
@@ -399,7 +380,7 @@ FALLBACK_PROVIDERS = {
             "label": "Local ComfyUI (free)",
             "base_url": "http://127.0.0.1:8801",
             "api_style": "comfyui_workflow",
-            "defaults": {"mode": "img2img", "model": "auto", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 3, "timeout": 900, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
+            "defaults": {"mode": "img2img", "model": "auto", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 3, "timeout": 2400, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
             "models": [{"id": "auto", "label": "Auto (recommended)"}, {"id": "qwen2511", "label": "Qwen 2511"}, {"id": "flux2_klein_allinone", "label": "Klein"}, {"id": "krea2_three_stage", "label": "Krea T2I"}, {"id": "anime2real_auto", "label": "Anime2Real"}, {"id": "zimage_multifunction", "label": "Z-Image"}, {"id": "klein_true_v3_assets", "label": "Klein Assets"}, {"id": "krea2_style_transfer", "label": "Krea Style"}],
         },
         "t8star": {
@@ -753,28 +734,27 @@ def providers_for_client(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def local_gateway_available(timeout: float = 1.5) -> bool:
-    """Return True when the local AI Port gateway answers on the configured URL."""
-    try:
-        with urllib.request.urlopen(_force_ipv4(LOCAL_GATEWAY_BASE_URL) + "/api/modules", timeout=timeout) as resp:
-            return resp.status < 500
-    except Exception:
-        return False
+    return local_gateway.ready(timeout)
 
 
 def resolve_effective_provider(config: dict[str, Any], requested_provider: str = "") -> str:
-    """Choose a provider, preferring cloud defaults and never routing to an offline local gateway."""
+    """Choose provider: explicit user choice wins; otherwise local first, cloud fallback."""
     providers = config.get("providers") or {}
     requested = str(requested_provider or "").strip()
-    default = str(config.get("default_provider") or "t8star").strip()
-    cloud = [key for key, cfg in providers.items() if isinstance(cfg, dict) and cfg.get("api_style") != "comfyui_workflow"]
-    if not cloud:
-        return requested or default or "comfyui_local"
-    fallback = default if default in cloud else cloud[0]
-    if requested == "comfyui_local":
-        return requested if local_gateway_available() else fallback
+    default = str(config.get("default_provider") or "").strip()
+    local = [key for key, cfg in providers.items()
+             if isinstance(cfg, dict) and cfg.get("api_style") == "comfyui_workflow"]
+    cloud = [key for key, cfg in providers.items()
+             if isinstance(cfg, dict) and cfg.get("api_style") != "comfyui_workflow"]
+    fallback = default if default in cloud else (cloud[0] if cloud else (local[0] if local else ""))
     if requested in providers:
+        if requested in local and not local_gateway_available(timeout=0.8):
+            return fallback
         return requested
-    return fallback if default == "comfyui_local" else (default if default in providers else fallback)
+    for candidate in local:
+        if local_gateway_available(timeout=0.8):
+            return candidate
+    return fallback
 
 def mask_key(key: str) -> str:
     return f"{key[:5]}...{key[-4:]}" if key and len(key) > 12 else ("***" if key else "")
@@ -1983,18 +1963,20 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         }
         if seed > 0:
             values_payload["seed"] = seed
+        values_payload["timeout"] = int(values.get("timeout") or 2400)
+        values_payload["poll_interval"] = max(2, int(values.get("poll_interval") or 3))
         submit = request_json(
             "POST",
             f"{base_url}/api/image_local/jobs/json",
             "",
             {"values": values_payload, "files": files_payload},
-            timeout=int(values.get("timeout") or 600),
+            timeout=int(values.get("timeout") or 2400),
         )
         local_job_id = submit.get("job_id")
         if not local_job_id:
             raise RuntimeError("Local ComfyUI did not return a job id")
         poll_interval = max(2, int(values.get("poll_interval") or 3))
-        timeout = int(values.get("timeout") or 900)
+        timeout = int(values.get("timeout") or 2400)
         start = time.time()
         results: list[dict[str, Any]] = []
         while True:
@@ -2337,10 +2319,10 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
 
 
 _LOCAL_AUTO_MODEL_CHAIN = {
-    0: ["krea2_three_stage", "flux2_klein_allinone"],
-    1: ["qwen2511", "flux2_klein_allinone"],
-    2: ["qwen2511", "flux2_klein_allinone"],
-    3: ["qwen2511", "flux2_klein_allinone"],
+    0: ["krea2_three_stage"],
+    1: ["qwen2511"],
+    2: ["qwen2511"],
+    3: ["qwen2511"],
 }
 
 
@@ -2422,6 +2404,25 @@ def run_one_with_fallback(job_id: str, index: int, values: dict[str, Any], files
         except Exception as exc:
             last_error = exc
             add_event(job_id, f"Run {index}: auto model {candidate} failed: {exc}")
+    fallback_provider = str(config.get("cloud_fallback_provider") or "")
+    cloud_cfg = (config.get("providers") or {}).get(fallback_provider) or {}
+    if files:
+        raise RuntimeError(
+            "本地图像生成失败；检测到参考素材。为避免未经确认上传到云端，"
+            "系统未自动切换，请确认后选择云端重试。"
+        ) from last_error
+    if fallback_provider and cloud_cfg.get("api_style") != "comfyui_workflow":
+        add_event(job_id, f"Run {index}: local models failed, falling back to cloud provider {fallback_provider}")
+        fallback_values = dict(values)
+        cloud_defaults = provider_defaults(config, fallback_provider)
+        fallback_values["provider"] = fallback_provider
+        fallback_values["api_key"] = resolve_provider_api_key(fallback_provider)
+        fallback_values["base_url"] = cloud_defaults.get("base_url", cloud_cfg.get("base_url", ""))
+        fallback_values["model"] = cloud_defaults.get("model", "")
+        fallback_values["custom_model"] = ""
+        if fallback_values["api_key"]:
+            return run_one(job_id, index, fallback_values, files, ws_id)
+        last_error = RuntimeError(f"云端兜底 {fallback_provider} 未配置 API Key")
     raise RuntimeError(f"Auto model routing exhausted: {last_error}")
 
 def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, bytes]], activity_id: str | None = None, ws_id: str = "localhost") -> None:
@@ -2574,6 +2575,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "masked_key": mask_key(load_default_key()),
                 "providers": providers_for_client(providers),
                 "default_provider": providers.get("default_provider"),
+                "local_gateway": local_gateway.snapshot(timeout=0.8),
                 "local_ready": local_gateway_available(),
                 "config_error": config_error,
             })

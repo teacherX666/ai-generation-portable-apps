@@ -30,6 +30,12 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared import local_gateway  # noqa: E402
+from shared import model_gateway  # noqa: E402
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 STATIC_DIR = ROOT / "static"
 
@@ -511,37 +517,12 @@ def _ws_preset_path(ws_id: str) -> Path:
 
 OFFICIAL_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
-LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
+LOCAL_GATEWAY_BASE_URL = local_gateway.configured_url()
 _LOCAL_MODEL_IDS = {"minimax_h3_all_reference"}
 
 
 def _force_ipv4(url: str) -> str:
-    """把 URL 里的主机名解析成第一个 IPv4 地址（本地 AI Port 网关专用）。
-
-    mDNS（.local）名字常先返回不可路由的 IPv6 link-local 地址；Python urllib
-    按顺序逐个连接、每个都烧满超时才轮到 IPv4，导致 1.5s 探活必失败、每次
-    调用慢几秒（curl 有 happy-eyeballs 所以正常）。这里固定走 IPv4。
-    """
-    if not url:
-        return url
-    try:
-        parts = urllib.parse.urlsplit(url)
-    except ValueError:
-        return url
-    host = parts.hostname or ""
-    if not host or re.match(r"^\d+\.\d+\.\d+\.\d+$", host) or host.lower() in ("localhost", "::1"):
-        return url
-    try:
-        first = socket.getaddrinfo(
-            host,
-            parts.port or (443 if parts.scheme == "https" else 80),
-            socket.AF_INET,
-            socket.SOCK_STREAM,
-        )[0][4][0]
-    except (socket.gaierror, IndexError):
-        return url
-    netloc = first if parts.port is None else f"{first}:{parts.port}"
-    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    return local_gateway.force_ipv4(url)
 TERMINAL_STATUSES = {"succeeded", "success", "failed", "fail", "failure", "cancelled", "canceled"}
 
 # translate_ark_error lives in portal/ark_errors.py so seedance and
@@ -738,28 +719,27 @@ def providers_for_client(config: dict[str, Any]) -> dict[str, Any]:
     return providers
 
 def local_gateway_available(timeout: float = 1.5) -> bool:
-    """Return True when the local AI Port gateway answers on the configured URL."""
-    try:
-        with urllib.request.urlopen(_force_ipv4(LOCAL_GATEWAY_BASE_URL) + "/api/modules", timeout=timeout) as resp:
-            return resp.status < 500
-    except Exception:
-        return False
+    return local_gateway.ready(timeout)
 
 
 def resolve_effective_provider(config: dict[str, Any], requested_provider: str = "") -> str:
-    """Choose a provider, preferring cloud defaults and never routing to an offline local gateway."""
+    """Choose provider: explicit user choice wins; otherwise local first, cloud fallback."""
     providers = config.get("providers") or {}
     requested = str(requested_provider or "").strip()
-    default = str(config.get("default_provider") or "volcengine").strip()
-    cloud = [key for key, cfg in providers.items() if isinstance(cfg, dict) and cfg.get("api_style") != "comfyui_workflow"]
-    if not cloud:
-        return requested or default or "comfyui_local"
-    fallback = default if default in cloud else cloud[0]
-    if requested == "comfyui_local":
-        return requested if local_gateway_available() else fallback
+    default = str(config.get("default_provider") or "").strip()
+    local = [key for key, cfg in providers.items()
+             if isinstance(cfg, dict) and cfg.get("api_style") == "comfyui_workflow"]
+    cloud = [key for key, cfg in providers.items()
+             if isinstance(cfg, dict) and cfg.get("api_style") != "comfyui_workflow"]
+    fallback = default if default in cloud else (cloud[0] if cloud else (local[0] if local else ""))
     if requested in providers:
+        if requested in local and not local_gateway_available(timeout=0.8):
+            return fallback
         return requested
-    return fallback if default == "comfyui_local" else (default if default in providers else fallback)
+    for candidate in local:
+        if local_gateway_available(timeout=0.8):
+            return candidate
+    return fallback
 
 def load_provider_config() -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
@@ -1457,44 +1437,32 @@ def choose_output_dir() -> str:
 
 
 def optimize_prompt(user_prompt: str) -> dict[str, Any]:
-    """Optimize a user prompt using DeepSeek with the Seedance 2.0 skill."""
+    """Optimize a user prompt with DeepSeek."""
     if not SEEDANCE_SKILL:
         return {"ok": False, "error": "SKILL.md 未找到或为空，无法进行优化"}
     if not user_prompt.strip():
         return {"ok": False, "error": "请先输入提示词"}
-    api_key = _load_deepseek_key()
-    if not api_key:
-        return {"ok": False, "error": (
-            "提示词优化未配置 DeepSeek API Key。"
-            f"请将 sk-... 写入 {DEEPSEEK_KEY_PATH}（一行,不带引号）"
-        )}
-
-    body = {
-        "model": "deepseek-chat",
-        "messages": [
+    result = model_gateway.call_llm(
+        [
             {"role": "system", "content": SEEDANCE_SKILL},
             {"role": "user", "content": user_prompt.strip()},
         ],
-        "temperature": 0.3,
-        "max_tokens": 4096,
+        api_key=_load_deepseek_key(),
+        provider="deepseek",
+        local_first=False,
+        enable_thinking=False,
+        temperature=0.3,
+        max_tokens=4096,
+        timeout=30,
+    )
+    if not result.get("ok"):
+        return {"ok": False, "error": f"优化请求失败：{result.get('error', '大模型调用失败')}"}
+    return {
+        "ok": True,
+        "optimized": str(result.get("content", "")).strip(),
+        "provider": result.get("provider"),
+        "model": result.get("model"),
     }
-    try:
-        result = request_json(
-            "POST",
-            "https://api.deepseek.com/v1/chat/completions",
-            api_key,
-            body,
-            timeout=120,
-        )
-        optimized = (result.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        if not optimized:
-            return {"ok": False, "error": "DeepSeek 返回为空，请稍后重试"}
-        return {"ok": True, "optimized": optimized.strip()}
-    except RuntimeError as exc:
-        msg = str(exc)
-        if "401" in msg:
-            msg = f"DeepSeek API Key 无效或已过期({msg[:120]})"
-        return {"ok": False, "error": f"优化请求失败：{msg}"}
 
 
 def mask_key(key: str) -> str:
@@ -2324,6 +2292,13 @@ def _run_local_video(job_id: str, index: int, form: cgi.FieldStorage, form_value
     fps = 24
     num_frames = max(17, seconds * fps)
 
+    enhancer_enabled = (
+        len(prompt.strip()) > 80
+        or len(image_items) > 1
+        or bool(ref_videos)
+        or bool(ref_audios)
+    )
+
     values_payload: dict[str, Any] = {
         "model_kind": model_kind,
         "prompt": prompt,
@@ -2341,12 +2316,20 @@ def _run_local_video(job_id: str, index: int, form: cgi.FieldStorage, form_value
         except ValueError:
             pass
 
+    values_payload["timeout"] = int(form_values.get("timeout") or 7200)
+    values_payload["poll_interval"] = max(2, int(form_values.get("poll_interval") or 5))
+    values_payload["steps"] = 8
+    values_payload["cfg"] = 1.0
+    values_payload["h3_prompt_enhancer_enabled"] = enhancer_enabled
+    if mode == "ref2v":
+        values_payload["h3_ref_image_size"] = "match"
+
     submit = request_json(
         "POST",
         f"{base_url}/api/video_local/jobs/json",
         "",
         {"values": values_payload, "files": files_payload},
-        timeout=int(form_values.get("timeout") or 3600),
+        timeout=int(form_values.get("timeout") or 7200),
     )
     local_job_id = submit.get("job_id")
     if not local_job_id:
@@ -2564,6 +2547,38 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
         }
 
 
+def run_one_with_fallback(job_id: str, index: int, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], ws_id: str = "localhost") -> dict[str, Any]:
+    """Run local first; only no-reference jobs may auto-fallback to Ark cloud.
+
+    Reference media is never uploaded to cloud implicitly. The caller receives a
+    clear confirmation-needed error instead.
+    """
+    provider = str(form_values.get("provider") or "")
+    config, _ = load_provider_config()
+    provider_cfg = (config.get("providers") or {}).get(provider) or {}
+    if provider_cfg.get("api_style") != "comfyui_workflow":
+        return run_one(job_id, index, form_values, form_files, ws_id)
+    try:
+        return run_one(job_id, index, form_values, form_files, ws_id)
+    except Exception as exc:
+        if form_files:
+            raise RuntimeError(
+                "本地视频生成失败；检测到参考素材。为避免未经确认上传到云端，"
+                "系统未自动切换，请确认后选择云端重试。"
+            ) from exc
+        fallback_provider = str(config.get("cloud_fallback_provider") or "volcengine")
+        cloud_cfg = (config.get("providers") or {}).get(fallback_provider) or {}
+        api_key = str(SECRETS.get("volcengine_api_key") or "").strip()
+        if not api_key or cloud_cfg.get("api_style") == "comfyui_workflow":
+            raise
+        fallback_values = dict(form_values)
+        fallback_values["provider"] = fallback_provider
+        fallback_values["api_key"] = api_key
+        fallback_values["base_url"] = cloud_cfg.get("base_url") or OFFICIAL_ARK_BASE_URL
+        add_event(job_id, f"Run {index}: local generation failed, retrying cloud provider {fallback_provider}")
+        return run_one(job_id, index, fallback_values, form_files, ws_id)
+
+
 def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], activity_id: str | None = None, ws_id: str = "localhost") -> None:
     try:
         # 排队期间被取消：直接置终态，不再启动任何 worker
@@ -2591,7 +2606,7 @@ def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tupl
         with JOBS_LOCK:
             _backlog_set_locked(job_id, stage="started")
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = [pool.submit(run_one, job_id, i, form_values, form_files, ws_id) for i in range(1, count + 1)]
+            futures = [pool.submit(run_one_with_fallback, job_id, i, form_values, form_files, ws_id) for i in range(1, count + 1)]
             for future in concurrent.futures.as_completed(futures):
                 try:
                     result = future.result()
@@ -2712,6 +2727,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "ok": config_error is None,
                 "providers": providers_for_client(providers),
                 "default_provider": providers.get("default_provider"),
+                "local_gateway": local_gateway.snapshot(timeout=0.8),
                 "local_ready": local_gateway_available(),
                 "config_error": config_error,
             })

@@ -4,6 +4,7 @@ import pytest
 
 from feishu_generation_agent.domain.plan import GenerationTask
 from feishu_generation_agent.graph.nodes import _generator_for_task
+from feishu_generation_agent.storage.provider_preferences import ProviderPreferences
 
 
 def _image_task(**updates: object) -> GenerationTask:
@@ -146,3 +147,44 @@ async def test_video_task_still_routes_to_seedance(fake_services):
 
     assert provider == "seedance"
     assert generator is fake_services.video_generator
+
+
+async def test_video_task_routes_to_local_aiport_when_seedance_unavailable(fake_services):
+    """本地部署（settings.video_provider=aiport）时，即使偏好/任务指向 seedance，
+    也要回退到本地 aiport，避免「标签=seedance、生成器=aiport」的身份错配。"""
+    aiport = "aiport-generator"
+    services = replace(
+        fake_services,
+        settings=fake_services.settings.model_copy(update={"video_provider": "aiport"}),
+        aiport_video_generator=aiport,
+        video_generator=aiport,
+        provider_preferences=ProviderPreferences(
+            video_provider="seedance",
+            image_provider="seedream",
+        ),
+    )
+
+    task = _video_task().model_copy(update={"video_provider": "seedance"})
+
+    provider, generator = await _generator_for_task("run-1", task, services)
+
+    assert provider == "aiport"
+    assert generator == "aiport-generator"
+
+
+async def test_video_task_prefers_local_aiport_when_preference_says_so(fake_services):
+    """云部署（settings.video_provider=seedance）时，用户偏好 aiport 则走本地。"""
+    aiport = "aiport-generator"
+    services = replace(
+        fake_services,
+        aiport_video_generator=aiport,
+        provider_preferences=ProviderPreferences(
+            video_provider="aiport",
+            image_provider="seedream",
+        ),
+    )
+
+    provider, generator = await _generator_for_task("run-1", _video_task(), services)
+
+    assert provider == "aiport"
+    assert generator == "aiport-generator"

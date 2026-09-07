@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import shutil
+import sys
 import threading
 import time
 import urllib.error
@@ -21,6 +22,12 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared import local_gateway  # noqa: E402
+from shared import model_gateway  # noqa: E402
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 OUTPUT_DIR = _DATA_BASE / "outputs"
 STATE_DIR = _DATA_BASE / "state"
@@ -63,7 +70,7 @@ def _load_providers() -> dict[str, Any]:
 
 PROVIDERS = _load_providers()
 
-LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
+LOCAL_GATEWAY_BASE_URL = local_gateway.configured_url()
 
 
 def seedream_size(resolution: str, aspect_ratio: str) -> str:
@@ -94,12 +101,8 @@ def _load_deepseek_key() -> str:
 
 
 def local_gateway_available(timeout: float = 1.5) -> bool:
-    """Return True when the local AI Port gateway answers on the configured URL."""
-    try:
-        with urllib.request.urlopen(LOCAL_GATEWAY_BASE_URL + "/api/modules", timeout=timeout) as resp:
-            return resp.status < 500
-    except Exception:
-        return False
+    return local_gateway.ready(timeout)
+
 
 def config_payload() -> dict[str, Any]:
     ark = PROVIDERS.get("ark", {})
@@ -114,6 +117,7 @@ def config_payload() -> dict[str, Any]:
         "default_resolution": ark.get("default_resolution", "2K"),
         "default_aspect_ratio": ark.get("default_aspect_ratio", "1:1"),
         "default_count": int(ark.get("default_count", 1)),
+        "local_gateway": local_gateway.snapshot(timeout=0.8),
         "local_ready": local_gateway_available(),
         "local_model": local.get("model_kind", "qwen2511"),
         "ark_ready": bool(_ark_key()),
@@ -279,12 +283,6 @@ def optimize_prompt(text: str, mode: str) -> dict[str, Any]:
         return {"ok": False, "error": "SKILL.md 未找到或为空，无法进行优化"}
     if not (text or "").strip():
         return {"ok": False, "error": "请先输入提示词"}
-    api_key = _load_deepseek_key()
-    if not api_key:
-        return {"ok": False, "error": (
-            "提示词优化未配置 DeepSeek API Key，"
-            "请联系管理员把 sk-... 写入 director/state/deepseek.key"
-        )}
     if mode == "rag":
         mode_text = (
             "把上面的原始提示词和飞书知识库建议合并成一个自然、可直接用于生成模型的提示词。\n"
@@ -301,26 +299,28 @@ def optimize_prompt(text: str, mode: str) -> dict[str, Any]:
         )
     else:
         mode_text = "按「优化 refine」规则改写" if mode == "refine" else "按「扩写 expand」规则改写"
-    body = {
-        "model": DEEPSEEK_MODEL,
-        "messages": [
+    force_deepseek = True
+    result = model_gateway.call_llm(
+        [
             {"role": "system", "content": skill},
             {"role": "user", "content": f"{mode_text}：\n{text.strip()}"},
         ],
-        "temperature": 0.3,
-        "max_tokens": 4096,
+        provider="deepseek" if force_deepseek else None,
+        api_key=_load_deepseek_key(),
+        local_first=not force_deepseek,
+        enable_thinking=False,
+        temperature=0.3,
+        max_tokens=4096,
+        timeout=20,
+    )
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error", "大模型调用失败")}
+    return {
+        "ok": True,
+        "prompt": result.get("content", ""),
+        "provider": result.get("provider"),
+        "model": result.get("model"),
     }
-    try:
-        result = request_json(
-            # 推理模型长指令延迟可达 2-3 分钟（上游 c5d1c10 同款放宽 30s→180s）
-            "POST", f"{DEEPSEEK_BASE}/chat/completions", api_key, body, timeout=180,
-        )
-        content = (result.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        if not content.strip():
-            return {"ok": False, "error": "DeepSeek 返回了空结果，请重试"}
-        return {"ok": True, "prompt": content.strip()}
-    except APIError as exc:
-        return {"ok": False, "error": exc.message}
 
 
 class Handler(SimpleHTTPRequestHandler):

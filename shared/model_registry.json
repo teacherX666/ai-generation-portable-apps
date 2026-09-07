@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "providers": {
+    "local_gateway": {
+      "label": "本地 ComfyUI 网关",
+      "kind": "local",
+      "base_url": "http://127.0.0.1:8801",
+      "health_path": "/api/modules",
+      "api_style": "comfyui_workflow"
+    },
+    "local_llm": {
+      "label": "本地 Qwen 大模型",
+      "kind": "local",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "health_path": "/models",
+      "model": "qwen3.8:27b",
+      "api_style": "openai_chat",
+      "thinking": true
+    },
+    "ark": {
+      "label": "火山方舟 Ark",
+      "kind": "cloud",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "api_style": "ark",
+      "env": ["VOLCENGINE_ARK_API_KEY"]
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "kind": "cloud",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_style": "openai_chat",
+      "model": "deepseek-chat",
+      "env": ["DEEPSEEK_API_KEY"]
+    },
+    "t8star": {
+      "label": "T8Star",
+      "kind": "cloud",
+      "base_url": "https://ai.t8star.org",
+      "api_style": "openai_images",
+      "env": ["T8STAR_API_KEY"]
+    },
+    "chiyun": {
+      "label": "Chiyun",
+      "kind": "cloud",
+      "base_url": "https://chiyun.work",
+      "api_style": "gemini_generate_content",
+      "env": ["CHIYUN_API_KEY"]
+    }
+  },
+  "capabilities": {
+    "image": {
+      "label": "图像生成",
+      "local_first": true,
+      "providers": ["local_gateway", "ark", "t8star", "chiyun"]
+    },
+    "video": {
+      "label": "视频生成",
+      "local_first": true,
+      "providers": ["local_gateway", "ark"]
+    },
+    "llm": {
+      "label": "语言模型",
+      "local_first": true,
+      "providers": ["local_llm", "deepseek"]
+    }
+  }
+}

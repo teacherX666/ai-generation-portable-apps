@@ -2105,3 +2105,359 @@ body.director-collapsed .director-body { display: none !important; }
 /* === 易用性修补：LAN 徽章可复制提示 === */
 .portal-lan { user-select: none; }
 .portal-lan:hover { opacity: 0.85; }
+/* Minimal home entry: added without changing main-repo nav geometry or motion. */
+.portal-nav__topline { display:flex; align-items:center; justify-content:flex-end; gap:8px; margin:0 2px 4px; }
+.portal-nav__home { width:auto; min-width:0; height:30px; min-height:30px; margin:0; padding:0 4px; border:0; border-radius:0; background:transparent; color:var(--text-secondary); font-family:inherit; font-size:15px; font-weight:700; letter-spacing:.08em; cursor:pointer; transition:color .15s ease; }
+.portal-nav__home:hover,.portal-nav__home:focus-visible { background:transparent; color:var(--accent); transform:none; box-shadow:none; text-shadow:none; }
+.portal-nav__home.active,.portal-nav__home[aria-selected="true"] { background:transparent; color:var(--accent); }
+.portal-nav__home span:first-child { font:inherit; letter-spacing:inherit; color:inherit; }
+.portal-nav__home::before,.portal-nav__home::after { content:none; display:none; }
+.portal-nav.is-collapsed .portal-nav__topline { flex-direction:row; justify-content:center; gap:0; }
+.portal-nav.is-collapsed .portal-nav__home { display:none; }
+.portal-home-panel { overflow:auto; padding:clamp(28px,5vw,72px); }
+.portal-home-placeholder { max-width:760px; margin:10vh auto 0; padding:clamp(32px,6vw,72px); border:1px solid var(--border); border-radius:24px; background:linear-gradient(135deg,var(--surface),var(--surface-soft)); box-shadow:var(--shadow-md); text-align:center; }
+.portal-home-placeholder__eyebrow { color:var(--accent); font-size:11px; font-weight:800; letter-spacing:.18em; }
+.portal-home-placeholder h1 { margin:18px 0 10px; font-size:clamp(28px,4vw,46px); }
+.portal-home-placeholder p { max-width:560px; margin:0 auto; color:var(--text-secondary); line-height:1.8; }
+/* 2026-09-04: restore the large home landing surface; preserve the top row only. */
+body.portal-home-active .portal-nav,
+body.portal-home-active .app-body > .portal-nav,
+body.portal-home-active .director-sidebar { display:none !important; }
+body.portal-home-active .app-body { display:block !important; }
+body.portal-home-active .app-body > .ui-portal-content { width:100% !important; height:calc(100vh - var(--portal-header-height, 56px)) !important; padding:0 !important; }
+body.portal-home-active .portal-home-panel { display:grid !important; place-items:center !important; min-height:calc(100vh - var(--portal-header-height, 56px)) !important; padding:40px 7vw !important; overflow:auto !important; background:radial-gradient(circle at 50% 36%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 42%), var(--background) !important; }
+body.portal-home-active .portal-home-placeholder { width:min(980px,100%) !important; margin:0 !important; padding:clamp(44px,9vw,120px) 24px !important; border:0 !important; border-radius:0 !important; background:transparent !important; box-shadow:none !important; text-align:center !important; }
+body.portal-home-active .portal-home-placeholder__eyebrow { font-size:clamp(11px,1vw,14px) !important; letter-spacing:.32em !important; }
+body.portal-home-active .portal-home-placeholder h1 { margin:10px 0 26px !important; font-family:Georgia, "Songti SC", "STSong", "Noto Serif CJK SC", serif !important; font-size:clamp(96px,18vw,280px) !important; font-weight:500 !important; letter-spacing:.06em !important; line-height:.82 !important; color:transparent !important; background:linear-gradient(135deg,var(--text) 8%,var(--accent) 52%,color-mix(in srgb,var(--accent) 48%,var(--text)) 92%) !important; -webkit-background-clip:text !important; background-clip:text !important; filter:drop-shadow(0 18px 40px color-mix(in srgb,var(--accent) 18%,transparent)) !important; transform:scale(1.02) !important; }
+body.portal-home-active .portal-home-placeholder p { max-width:620px !important; font-size:clamp(14px,1.3vw,18px) !important; }
+body.portal-home-active #globalBanner { display:none !important; }
+body.portal-home-active .portal-mobile-switcher { display:none !important; }
+/* Keep the original portal top row visually untouched on the landing page. */
+#portalHomeExitBtn,
+.portal-home-debug-btn { display:none !important; }
+/* 2026-09-04: restore the preferred simple large home label and a usable return path. */
+.portal-nav__topline .portal-nav__home,
+.portal-nav__topline .portal-nav__home.active,
+.portal-nav__topline .portal-nav__home[aria-selected="true"] {
+  width:auto !important; min-width:0 !important; height:46px !important; min-height:46px !important; padding:0 !important; border:0 !important; border-radius:0 !important; background:transparent !important; color:var(--text) !important; font-family:"Microsoft YaHei UI","PingFang SC","Noto Sans CJK SC",sans-serif !important; font-size:32px !important; font-weight:700 !important; letter-spacing:.04em !important; line-height:46px !important; text-shadow:none !important; transform:none !important; box-shadow:none !important; transition:color .18s ease !important;
+}
+.portal-nav__topline .portal-nav__home span:first-child { font:inherit !important; letter-spacing:inherit !important; color:inherit !important; }
+.portal-nav__topline .portal-nav__home:hover,.portal-nav__topline .portal-nav__home:focus-visible { color:var(--accent) !important; background:transparent !important; transform:none !important; box-shadow:none !important; text-shadow:none !important; }
+.portal-nav__topline .portal-nav__home::before,.portal-nav__topline .portal-nav__home::after { content:none !important; display:none !important; }
+.portal-nav.is-collapsed .portal-nav__topline .portal-nav__home { display:none !important; }
+
+/* The existing header return button is the real way back from the landing page. */
+body.portal-home-active #portalHomeExitBtn { display:inline-flex !important; align-items:center !important; width:auto !important; min-height:30px !important; margin:0 0 0 18px !important; padding:0 14px !important; border:1px solid var(--accent) !important; border-radius:999px !important; background:transparent !important; color:var(--accent) !important; font-size:12px !important; font-weight:750 !important; cursor:pointer !important; }
+body.portal-home-active #portalHomeExitBtn:hover { background:var(--accent) !important; color:#fff !important; }
+.portal-home-debug-btn { display:none !important; }
+/* 2026-09-04: requested final home navigation treatment. */
+.portal-nav__topline .portal-nav__home,
+.portal-nav__topline .portal-nav__home.active,
+.portal-nav__topline .portal-nav__home[aria-selected="true"] {
+  width:auto !important; min-width:0 !important; height:46px !important; min-height:46px !important; margin:0 !important; padding:0 !important; border:0 !important; border-radius:0 !important; background:transparent !important; color:#202938 !important; font-family:"Inter","SF Pro Display","PingFang SC","Noto Sans CJK SC","Microsoft YaHei UI",sans-serif !important; font-size:27px !important; font-weight:650 !important; letter-spacing:.1em !important; line-height:1 !important; text-align:left !important; text-shadow:none !important; box-shadow:none !important; transform:none !important; transition:color .22s ease !important;
+}
+.portal-nav__topline .portal-nav__home span:first-child { font-family:inherit !important; font-size:inherit !important; font-weight:inherit !important; letter-spacing:inherit !important; line-height:inherit !important; color:inherit !important; }
+.portal-nav__topline .portal-nav__home:hover,
+.portal-nav__topline .portal-nav__home:focus-visible { background:transparent !important; color:var(--accent) !important; transform:none !important; box-shadow:none !important; text-shadow:none !important; }
+.portal-nav__topline .portal-nav__home.active,
+.portal-nav__topline .portal-nav__home[aria-selected="true"] { background:transparent !important; color:var(--accent) !important; }
+.portal-nav__topline .portal-nav__home::before,
+.portal-nav__topline .portal-nav__home::after { content:none !important; display:none !important; }
+.portal-nav.is-collapsed .portal-nav__topline .portal-nav__home { display:none !important; }
+
+/* Return action belongs to the landing page, not the global top row. */
+#portalHomeExitBtn { display:none !important; }
+body.portal-home-active #portalHomeExitBtn { display:inline-flex !important; align-items:center !important; justify-content:center !important; width:auto !important; min-height:38px !important; margin:30px auto 0 !important; padding:0 22px !important; border:1px solid var(--border-strong) !important; border-radius:999px !important; background:transparent !important; color:var(--text-secondary) !important; font-size:13px !important; font-weight:650 !important; cursor:pointer !important; transition:color .18s ease,border-color .18s ease,background .18s ease !important; }
+body.portal-home-active #portalHomeExitBtn:hover { color:var(--accent) !important; border-color:var(--accent) !important; background:transparent !important; }
+/* 2026-09-04: align expanded home label to the left, keep collapse control right. */
+.portal-nav__topline {
+  justify-content: space-between !important;
+  align-items: center !important;
+}
+.portal-nav__topline .portal-nav__home {
+  margin-right: auto !important;
+}
+.portal-nav.is-collapsed .portal-nav__topline {
+  justify-content: center !important;
+}
+/* 2026-09-04: recapture the preferred balanced home-label placement. */
+.portal-nav__topline { justify-content:flex-end !important; align-items:center !important; gap:8px !important; margin:0 2px 4px !important; }
+.portal-nav__topline .portal-nav__home,
+.portal-nav__topline .portal-nav__home.active,
+.portal-nav__topline .portal-nav__home[aria-selected="true"] { width:auto !important; min-width:0 !important; height:46px !important; min-height:46px !important; margin:0 !important; padding:0 10px !important; color:#202938 !important; font-family:"Inter","SF Pro Display","PingFang SC","Noto Sans CJK SC","Microsoft YaHei UI",sans-serif !important; font-size:27px !important; font-weight:650 !important; letter-spacing:.1em !important; line-height:1 !important; background:transparent !important; transform:none !important; box-shadow:none !important; text-shadow:none !important; transition:color .22s ease !important; }
+.portal-nav__topline .portal-nav__home span:first-child { font:inherit !important; color:inherit !important; letter-spacing:inherit !important; }
+.portal-nav__topline .portal-nav__home:hover,.portal-nav__topline .portal-nav__home:focus-visible { color:var(--accent) !important; background:transparent !important; transform:none !important; box-shadow:none !important; text-shadow:none !important; }
+.portal-nav__topline .portal-nav__home::before,.portal-nav__topline .portal-nav__home::after { content:none !important; display:none !important; }
+.portal-nav.is-collapsed .portal-nav__topline { justify-content:center !important; gap:0 !important; }
+.portal-nav.is-collapsed .portal-nav__topline .portal-nav__home { display:none !important; }
+/* 2026-09-04: balanced placement — slightly left, never pinned to either edge. */
+.portal-nav__topline {
+  width:100% !important;
+  justify-content:space-between !important;
+  align-items:center !important;
+  gap:8px !important;
+  margin:0 2px 4px !important;
+  padding:0 4px 0 8px !important;
+}
+.portal-nav__topline .portal-nav__home {
+  margin:0 !important;
+  padding:0 8px !important;
+}
+.portal-nav__topline .portal-nav__toggle {
+  margin:0 !important;
+}
+.portal-nav.is-collapsed .portal-nav__topline {
+  justify-content:center !important;
+  padding:0 !important;
+}
+/* 2026-09-04: keep the collapse control vertically parallel in both states. */
+.portal-nav__topline {
+  align-items:center !important;
+}
+.portal-nav__topline .portal-nav__toggle,
+.portal-nav.is-collapsed .portal-nav__topline .portal-nav__toggle {
+  align-self:center !important;
+  margin:0 !important;
+}
+/* 2026-09-04: exact parallel control track for expanded/collapsed nav. */
+.portal-nav__topline {
+  position:relative !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:space-between !important;
+  width:100% !important;
+  height:46px !important;
+  min-height:46px !important;
+  margin:0 2px 4px !important;
+  padding:0 4px 0 8px !important;
+  box-sizing:border-box !important;
+}
+.portal-nav__topline .portal-nav__home {
+  align-self:center !important;
+  height:46px !important;
+  min-height:46px !important;
+  display:inline-flex !important;
+  align-items:center !important;
+  margin:0 !important;
+  padding:0 8px !important;
+  font-size:28px !important;
+  line-height:1 !important;
+}
+.portal-nav__topline .portal-nav__toggle,
+.portal-nav.is-collapsed .portal-nav__topline .portal-nav__toggle {
+  align-self:center !important;
+  flex:0 0 32px !important;
+  width:32px !important;
+  height:30px !important;
+  min-height:30px !important;
+  margin:0 !important;
+  transform:none !important;
+}
+.portal-nav.is-collapsed .portal-nav__topline {
+  height:46px !important;
+  min-height:46px !important;
+  margin:0 2px 4px !important;
+  padding:0 !important;
+  justify-content:center !important;
+}
+
+/* ========================================================================
+   RedCraft Home — RED INFINITY · 红海无限 AI 创作平台
+   高端红色系落地页。仅作用于首页 tab，不改顶部栏与导航几何。
+   ======================================================================== */
+.rc-home {
+  --rc-red: #E11D2E;
+  --rc-red-deep: #C4102A;
+  --rc-red-dark: #7C0B18;
+  --rc-red-soft: #FBECEE;
+  --rc-ink: #17181C;
+  --rc-ink-2: #545A66;
+  --rc-ink-3: #9AA0AC;
+  --rc-line: #EDE9E6;
+  --rc-bg: #FBFAF8;
+  color: var(--rc-ink);
+  background: var(--rc-bg);
+  min-height: 100%;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.rc-home * { box-sizing: border-box; }
+
+/* Home 激活时改为普通滚动文档，而非居中卡片 */
+body.portal-home-active .portal-home-panel {
+  display: block !important;
+  place-items: initial !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  background: var(--rc-bg) !important;
+}
+
+/* 顶部细红渐变品牌线 */
+.rc-home::before {
+  content: ""; display: block; height: 3px;
+  background: linear-gradient(90deg, #7C0B18, #C4102A 34%, #E6303B 66%, #F25C3D);
+}
+
+/* ---- 品牌栏（首页内容内，独立于全局顶部栏） ---- */
+.rc-home__bar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 18px clamp(28px, 5vw, 72px);
+  border-bottom: 1px solid var(--rc-line);
+  background: rgba(251, 250, 248, 0.94);
+}
+.rc-brand { display: flex; align-items: center; gap: 12px; }
+.rc-brand__mark {
+  flex: none; width: 40px; height: 40px; border-radius: 11px;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #F14A5A, #C4102A);
+  color: #fff; font-size: 21px; font-weight: 800; line-height: 1;
+  box-shadow: 0 8px 18px rgba(193, 16, 42, 0.26);
+}
+.rc-brand__copy { display: flex; flex-direction: column; line-height: 1.18; }
+.rc-brand__copy strong { font-size: 18px; font-weight: 760; letter-spacing: -0.01em; }
+.rc-brand__copy span { font-size: 12px; color: var(--rc-ink-3); font-weight: 500; margin-top: 2px; }
+
+/* 返回工作台（首页内） */
+body.portal-home-active #portalHomeExitBtn {
+  display: inline-flex !important;
+  align-items: center; justify-content: center;
+  height: 40px; margin: 0 !important; padding: 0 20px;
+  border: 1px solid var(--rc-line); border-radius: 999px;
+  background: #fff; color: var(--rc-ink);
+  font-size: 13px; font-weight: 650; letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color .18s ease, border-color .18s ease, transform .18s ease;
+}
+body.portal-home-active #portalHomeExitBtn:hover {
+  color: var(--rc-red); border-color: var(--rc-red); transform: translateY(-1px);
+}
+
+/* ---- Hero ---- */
+.rc-hero {
+  position: relative;
+  max-width: 1240px; margin: 0 auto;
+  padding: clamp(64px, 9vw, 144px) clamp(28px, 7vw, 96px) clamp(52px, 7vw, 108px);
+}
+.rc-hero::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(920px 460px at 84% -8%, rgba(225, 29, 46, 0.10), transparent 62%),
+    radial-gradient(640px 420px at 6% 112%, rgba(225, 29, 46, 0.06), transparent 60%);
+}
+.rc-hero > * { position: relative; }
+.rc-hero__eyebrow {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.24em;
+  color: var(--rc-red); text-transform: uppercase;
+  margin: 0 0 26px;
+}
+.rc-hero__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--rc-red); box-shadow: 0 0 0 4px rgba(225, 29, 46, 0.12); }
+.rc-hero__title {
+  margin: 0 0 28px;
+  font-size: clamp(50px, 6.6vw, 100px);
+  font-weight: 770; letter-spacing: -0.01em; line-height: 1.02;
+  color: var(--rc-ink);
+}
+.rc-hero__accent {
+  background: linear-gradient(105deg, #E6303B 0%, #C4102A 55%, #A30E20 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.rc-hero__lead {
+  max-width: 560px; margin: 0 0 42px;
+  font-size: clamp(16px, 1.5vw, 19px); line-height: 1.75;
+  color: var(--rc-ink-2);
+}
+.rc-hero__actions { display: flex; flex-wrap: wrap; gap: 14px; }
+
+.rc-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 48px; padding: 0 28px; border-radius: 999px;
+  font-size: 15px; font-weight: 650; letter-spacing: 0.01em;
+  cursor: pointer; border: 1px solid transparent;
+  transition: transform .18s ease, background .18s ease, color .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+.rc-btn--red {
+  background: linear-gradient(135deg, #E6303B, #C4102A); color: #fff;
+  box-shadow: 0 12px 28px rgba(193, 16, 42, 0.30);
+}
+.rc-btn--red:hover { transform: translateY(-2px); box-shadow: 0 16px 36px rgba(193, 16, 42, 0.38); }
+.rc-btn--ghost { background: transparent; color: var(--rc-ink); border-color: var(--rc-line); }
+.rc-btn--ghost:hover { transform: translateY(-2px); color: var(--rc-red); border-color: var(--rc-red); }
+
+/* ---- Section ---- */
+.rc-section {
+  max-width: 1240px; margin: 0 auto;
+  padding: clamp(40px, 5vw, 72px) clamp(28px, 7vw, 96px);
+}
+.rc-section + .rc-section { border-top: 1px solid var(--rc-line); }
+#rc-quick, #rc-more { scroll-margin-top: 78px; }
+.rc-section__head {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 20px;
+  margin-bottom: clamp(28px, 4vw, 48px);
+}
+.rc-kicker {
+  display: block; font-size: 11px; font-weight: 760; letter-spacing: 0.26em;
+  color: var(--rc-red); margin-bottom: 10px;
+}
+.rc-section h2 { font-size: clamp(24px, 3vw, 36px); font-weight: 730; letter-spacing: 0; color: var(--rc-ink); }
+.rc-section__hint { font-size: 14px; color: var(--rc-ink-3); }
+
+/* ---- 卡片网格 ---- */
+.rc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.rc-card {
+  position: relative; display: flex; flex-direction: column; gap: 24px;
+  min-height: 172px; padding: 24px;
+  background: #fff; border: 1px solid var(--rc-line); border-radius: 18px;
+  color: inherit; text-decoration: none; cursor: pointer;
+  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.rc-card:hover { transform: translateY(-4px); border-color: rgba(225, 29, 46, 0.34); box-shadow: 0 18px 40px rgba(23, 24, 28, 0.08); }
+.rc-card__index { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: var(--rc-ink-3); }
+.rc-card__body { display: flex; flex-direction: column; gap: 8px; }
+.rc-card__body strong { font-size: 17px; font-weight: 700; letter-spacing: 0; color: var(--rc-ink); }
+.rc-card__body em { font-style: normal; font-size: 13px; line-height: 1.6; color: var(--rc-ink-3); }
+.rc-card__arrow {
+  position: absolute; right: 22px; bottom: 22px;
+  font-size: 18px; color: var(--rc-ink-3);
+  transition: transform .2s ease, color .2s ease;
+}
+.rc-card:hover .rc-card__arrow { transform: translateX(4px); color: var(--rc-red); }
+
+/* ---- 能力列表 ---- */
+.rc-cap-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.rc-cap { display: flex; gap: 18px; padding: 26px; background: #fff; border: 1px solid var(--rc-line); border-radius: 18px; }
+.rc-cap__mark {
+  flex: none; width: 38px; height: 38px; border-radius: 10px;
+  display: grid; place-items: center;
+  background: var(--rc-red-soft); color: var(--rc-red);
+  font-size: 14px; font-weight: 760;
+}
+.rc-cap strong { display: block; font-size: 16px; font-weight: 700; margin-bottom: 6px; color: var(--rc-ink); }
+.rc-cap p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--rc-ink-3); }
+
+/* ---- Footer ---- */
+.rc-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  max-width: 1240px; margin: 0 auto;
+  padding: 28px clamp(28px, 7vw, 96px) 40px;
+  border-top: 1px solid var(--rc-line);
+}
+.rc-footer__brand { display: flex; flex-direction: column; gap: 2px; }
+.rc-footer__brand strong { font-size: 14px; font-weight: 720; }
+.rc-footer__brand span { font-size: 12px; color: var(--rc-ink-3); }
+.rc-footer__meta { font-size: 12px; color: var(--rc-ink-3); }
+
+/* ---- 响应式 ---- */
+@media (max-width: 900px) {
+  .rc-grid { grid-template-columns: repeat(2, 1fr); }
+  .rc-cap-list { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .rc-grid { grid-template-columns: 1fr; }
+  .rc-section__head { flex-direction: column; align-items: flex-start; }
+  .rc-footer { flex-direction: column; align-items: flex-start; }
+}

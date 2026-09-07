@@ -19,7 +19,17 @@ if not exist "app.py" (
   exit /b 1
 )
 
-call :find_python
+call :load_local_ai_env
+:load_local_ai_env
+if not defined AIPORT_BASE_URL (
+    if exist "%ROOT%config\local_ai.env" (
+        for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%ROOT%config\local_ai.env") do (
+            if /i "%%A"=="AIPORT_BASE_URL" set "AIPORT_BASE_URL=%%B"
+        )
+    )
+)
+exit /b 0
+:find_python
 if defined PYTHON (
   echo Python: %PYTHON%
 ) else (
@@ -54,7 +64,7 @@ set "INFINITE_CANVAS_ENGINE=fastapi"
 set "RAG_ASSISTANT_ENGINE=fastapi"
 
 
-if not defined AIPORT_BASE_URL set "AIPORT_BASE_URL=http://UT-20210713KMWD.local:8801"
+call :load_local_ai_env
 start "AI Portal Server" /B "%PYTHON%" "app.py"
 
 :: Wait for portal to be ready (HTTPS on 9090, HTTP redirect on 9089)

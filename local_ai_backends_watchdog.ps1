@@ -13,6 +13,18 @@ $PollIntervalSeconds = 5
 
 # Keep 127.0.0.1 by default. Set LOCAL_AI_LISTEN=0.0.0.0 only when
 # another server on the LAN needs to reach the AI Port gateway.
+$localAiConfig = Join-Path $PSScriptRoot "config\local_ai.env"
+if (-not $env:LOCAL_AI_LISTEN -and (Test-Path -LiteralPath $localAiConfig)) {
+    foreach ($line in [System.IO.File]::ReadAllLines($localAiConfig)) {
+        $line = $line.Trim()
+        if (-not $line -or $line.StartsWith("#")) { continue }
+        $key, $value = $line -split "=", 2
+        if ($key -eq "LOCAL_AI_LISTEN" -and $value) {
+            $env:LOCAL_AI_LISTEN = $value.Trim().Trim('"')
+            break
+        }
+    }
+}
 $ListenAddress = if ($env:LOCAL_AI_LISTEN) { $env:LOCAL_AI_LISTEN } else { "127.0.0.1" }
 
 $ComfyRoot = "E:\AI Tool\ComfyUI_windows_portable"

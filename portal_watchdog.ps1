@@ -149,7 +149,18 @@ Write-WatchdogLog "using Python: $python"
 $env:INFINITE_CANVAS_ENGINE = "fastapi"
 $env:RAG_ASSISTANT_ENGINE = "fastapi"
 
-if (-not $env:AIPORT_BASE_URL) { $env:AIPORT_BASE_URL = "http://UT-20210713KMWD.local:8801" }
+$localAiConfig = Join-Path $PSScriptRoot "config\local_ai.env"
+if (-not $env:AIPORT_BASE_URL -and (Test-Path -LiteralPath $localAiConfig)) {
+    foreach ($line in [System.IO.File]::ReadAllLines($localAiConfig)) {
+        $line = $line.Trim()
+        if (-not $line -or $line.StartsWith("#")) { continue }
+        $key, $value = $line -split "=", 2
+        if ($key -eq "AIPORT_BASE_URL" -and $value) {
+            $env:AIPORT_BASE_URL = $value.Trim().Trim('"')
+            break
+        }
+    }
+}
 
 $child = $null
 $healthFailures = 0

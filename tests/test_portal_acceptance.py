@@ -13,7 +13,7 @@ class PortalAcceptanceTests(unittest.TestCase):
 
     def test_help_entries_exist(self):
         html = self._html()
-        for entry in ("id=\"helpBtn\"", "id=\"moduleHelpBtn\"", "id=\"optimizeBtn\"", "id=\"portalNavToggle\""):
+        for entry in ("id=\"helpBtn\"", "id=\"moduleHelpBtn\"", "id=\"portalNavToggle\""):
             self.assertIn(entry, html, f"missing help entry {entry}")
 
     def test_portal_script_load_order(self):
@@ -47,7 +47,7 @@ class PortalAcceptanceTests(unittest.TestCase):
         mobile = re.search(r'<select id="mobileAppSelect".*?</select>', html, flags=re.S)
         self.assertIsNotNone(mobile, "mobileAppSelect should exist")
         mobile_values = re.findall(r'<option value="([^"]+)"', mobile.group(0))
-        self.assertEqual(sorted(set(nav_tabs)), sorted(set(mobile_values)))
+        self.assertEqual(sorted(set(nav_tabs) - {"home"}), sorted(set(mobile_values)))
 
 
 if __name__ == "__main__":

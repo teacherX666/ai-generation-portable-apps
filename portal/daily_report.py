@@ -26,6 +26,11 @@ import urllib.error
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+import sys
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared import model_gateway  # noqa: E402
 from typing import Any
 
 
@@ -148,28 +153,25 @@ def _fallback_insight() -> dict:
 
 
 def _deepseek_chat(api_key: str, messages: list[dict], timeout: int = 60, max_tokens: int = 500) -> dict:
-    """Call DeepSeek Chat API with JSON response_format. Returns raw response dict.
-    Raises RuntimeError on non-2xx or network errors."""
-    body = json.dumps({
-        "model": "deepseek-chat",
-        "messages": messages,
-        "temperature": 0.4,
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-    }, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.deepseek.com/v1/chat/completions",
-        data=body,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
+    """统一网关：本地 Qwen 优先，DeepSeek 云端兜底。"""
+    result = model_gateway.call_llm(
+        messages,
+        api_key=api_key,
+        local_first=True,
+        enable_thinking=False,
+        temperature=0.4,
+        max_tokens=max_tokens,
+        timeout=timeout,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"deepseek http {exc.code}: {exc.reason}")
-    except Exception as exc:
-        raise RuntimeError(f"deepseek call failed: {exc}")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "LLM 调用失败"))
+    content = str(result.get("content", "")).strip()
+    # 保持旧调用方契约：返回 OpenAI 风格 choices。
+    return {
+        "choices": [{"message": {"content": content}}],
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+    }
 
 
 def _summary_for_prompt(agg: dict) -> str:
@@ -197,8 +199,6 @@ def _summary_for_prompt(agg: dict) -> str:
 
 def generate_insight(agg: dict, deepseek_key: str) -> dict:
     """Return {trend, highlight, suggestion, _fallback?}. Never raises."""
-    if not deepseek_key:
-        return _fallback_insight()
     try:
         resp = _deepseek_chat(deepseek_key, [
             {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},

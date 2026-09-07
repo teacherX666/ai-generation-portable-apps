@@ -1,7 +1,12 @@
 """DeepSeek 生成封装（替换原版 Claude）。"""
 from __future__ import annotations
+import sys
+from pathlib import Path
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared import model_gateway  # noqa: E402
 
-import httpx
 
 from rag_agent.config import Settings
 
@@ -11,21 +16,17 @@ def chat(
     messages: list[dict],
     max_tokens: int = 2048,
 ) -> str:
-    """非流式生成。messages 为 OpenAI 格式：
-    [{"role": "system"|"user"|"assistant", "content": "..."}]
-    返回纯文本。
-    """
-    resp = httpx.post(
-        f"{settings.deepseek_base_url}/v1/chat/completions",
-        headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
-        json={
-            "model": settings.deepseek_model,
-            "messages": messages,
-            "temperature": 0,
-            "max_tokens": max_tokens,
-        },
+    """强制 DeepSeek：提示词优化和 RAG 问答统一走 DeepSeek，避免本地 Qwen 慢或卡住。"""
+    result = model_gateway.call_llm(
+        messages,
+        api_key=settings.deepseek_api_key,
+        provider="deepseek",
+        local_first=False,
+        enable_thinking=False,
+        temperature=0,
+        max_tokens=max_tokens,
         timeout=180,
     )
-    resp.raise_for_status()
-    data = resp.json()
-    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "LLM 调用失败"))
+    return str(result.get("content", ""))
