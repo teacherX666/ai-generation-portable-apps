@@ -2614,9 +2614,11 @@ class Handler(SimpleHTTPRequestHandler):
         state_dir = STATE_DIR
         csv_path = state_dir / "reports" / f"{date}.csv"
         if not csv_path.exists():
-            # generate on demand
-            events, _ = _daily_report_module.load_events(state_dir, date)
-            csv_path = _daily_report_module.write_csv(state_dir, date, events)
+            # generate on demand。注意：daily_report 当前契约为
+            # load_usage_data → write_csv(state_dir, date, by_user_raw)；
+            # 早前这里调用过不存在的 load_events（半成品重构残留）→ AttributeError 500。
+            by_user_raw, _ = _daily_report_module.load_usage_data(state_dir, date)
+            csv_path = _daily_report_module.write_csv(state_dir, date, by_user_raw)
         data = csv_path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
