@@ -2998,10 +2998,9 @@ function DirectorApp() {
     statusText: "",
     resultText: "",
     images: [],
-    collapsed: false,
+    collapsed: true,
     async init() {
-      // 窄屏（手机/平板竖屏）默认收起导演台：320px 固定侧栏会遮住主内容
-      if (window.innerWidth < 960) this.collapsed = true;
+      // 导演台默认收起（320px 固定侧栏遮主内容）；用户可点折叠按钮手动展开
       document.body.classList.toggle("director-collapsed", this.collapsed);
       document.body.classList.toggle("director-open", !this.collapsed);
       try {
