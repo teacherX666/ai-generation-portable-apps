@@ -1197,6 +1197,43 @@ function SeedanceApp() {
         return;
       }
 
+      // 前后端对齐：选了本地模型（minimax_h3_all_reference）但供应商仍是云端
+      // 时，先把供应商切回 comfyui_local（仅本地在线时；离线走下方兜底拦截）。
+      if (this.localReady) {
+        const modelEl = field('model');
+        const chosenModel = (modelEl && modelEl.value) || this.customModel || '';
+        if (chosenModel === 'minimax_h3_all_reference' && this.provider !== 'comfyui_local') {
+          this.applyProvider('comfyui_local', true);
+          if (this.providers.comfyui_local) this.baseUrl = this.providers.comfyui_local.base_url || this.baseUrl;
+        }
+      }
+
+      // 本地模型未连接兜底：无论草稿/旧缓存把表单弄成什么分裂状态（例如
+      // provider=volcengine 但模型/base_url 还是本地的），一律切回云端并
+      // 拦截提交，绝不把本地 base_url 或本地模型随云端 provider 发出去。
+      if (!this.localReady) {
+        const modelEl = field('model');
+        const chosenModel = (modelEl && modelEl.value) || this.customModel || '';
+        const localIntent = this.provider === 'comfyui_local'
+          || chosenModel === 'minimax_h3_all_reference'
+          || /(^|:\/\/)127\.0\.0\.1(:|$)|\.local:8801/.test(this.baseUrl || '');
+        if (localIntent) {
+          const cloudKey = Object.keys(this.providers).find(k => k !== 'comfyui_local' && this.providers[k]) || 'volcengine';
+          this.applyProvider(cloudKey, true);
+          if (this.providers[cloudKey]) this.baseUrl = this.providers[cloudKey].base_url || this.baseUrl;
+          // v-for 选项重渲染是异步的：等一拍再把模型下拉归位到云端第一个模型。
+          setTimeout(() => {
+            const mf = field('model');
+            const fm = (this.models && this.models[0] && (this.models[0].id || this.models[0])) || '';
+            if (mf && fm) mf.value = fm;
+          }, 0);
+          this.providerHint = '本地模型未连接，已为你切回云端模型，请确认后重新提交。';
+          setOwnerState('submitting', false);
+          setOwnerState('statusText', '本地模型未连接，已切回云端模型，请确认后重新提交');
+          return;
+        }
+      }
+
       const data = new FormData(document.getElementById('sd-form'));
       data.set('provider', this.provider);
       if (Object.keys(this.savedMedia).length) {

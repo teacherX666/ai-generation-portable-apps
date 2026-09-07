@@ -664,7 +664,10 @@
             <label style="margin-top:10px">Prompt <textarea v-model="prompt" name="prompt" rows="3" placeholder="描述你想生成的内容..."></textarea></label>
             <label style="margin-top:8px">模型
               <select v-model="model" @change="onModelChange()">
-                <option v-for="m in portraitModels" :value="m.id">{{ m.label }}</option>
+                <option v-for="m in portraitModels" :value="m.id"
+                        :disabled="!localReady && String(m.id || '').indexOf('local-') === 0">
+                  {{ m.label }}{{ !localReady && String(m.id || '').indexOf('local-') === 0 ? '（本地模型未连接，不可用）' : '' }}
+                </option>
               </select>
             </label>
             <p v-if="!localReady" class="hint" style="margin:4px 0 6px;color:#b45309">未检测到本地 AI Port，当前仅提供云端模型。</p>

@@ -838,6 +838,31 @@ function NanoBananaApp() {
       requestNotifyPermission();
       var selectedProvider = nbField('provider') ? nbField('provider').value : self.provider;
       var selectedModel = nbField('model') ? nbField('model').value : '';
+      // 本地模型未连接兜底：只要想用本地 ComfyUI 而网关不可达，就切回云端并
+      // 拦截提交（草稿/旧缓存可能残留本地 provider/base_url，直接提交会打到
+      // 127.0.0.1:8801 之类空端口）。
+      if (!self.localReady && (selectedProvider === 'comfyui_local'
+          || /(^|:\/\/)127\.0\.0\.1(:|$)|\.local:8801/.test(String(self.baseUrl || '')))) {
+        var cloudKeyN = null;
+        var pKeysN = Object.keys(self.providers || {});
+        for (var pkn = 0; pkn < pKeysN.length; pkn++) {
+          if (pKeysN[pkn] !== 'comfyui_local' && self.providers[pKeysN[pkn]]) { cloudKeyN = pKeysN[pkn]; break; }
+        }
+        cloudKeyN = cloudKeyN || (selectedProvider !== 'comfyui_local' ? selectedProvider : 't8star');
+        self.applyProvider(cloudKeyN, true);
+        if (self.providers[cloudKeyN]) self.baseUrl = self.providers[cloudKeyN].base_url || self.baseUrl;
+        setTimeout(function () {
+          var mfN = nbField('model');
+          var fmN = (self.models && self.models[0] && self.models[0].id) || '';
+          if (mfN && fmN) mfN.value = fmN;
+          var selN = nbField('provider');
+          if (selN && selN.value !== cloudKeyN) selN.value = cloudKeyN;
+        }, 0);
+        self.providerHint = '本地模型未连接，已为你切回云端模型，请确认后重新提交。';
+        setOwnerState('submitting', false);
+        setOwnerState('statusText', '本地模型未连接，已切回云端模型，请确认后重新提交');
+        return;
+      }
       var hasReference = false;
       for (var ri = 1; ri <= 14; ri++) {
         var refInput = nbField('image_' + ri);

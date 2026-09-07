@@ -39,11 +39,15 @@
             <h2>接口</h2>
             <label>供应商
               <select name="provider" v-model="provider" @change="onProviderChange($event.target.value)">
-                <option v-for="(cfg, key) in providers" :value="key">{{ cfg.label || key }}</option>
+                <option v-for="(cfg, key) in providers" :value="key"
+                        :disabled="key === 'comfyui_local' && !localReady">
+                  {{ cfg.label || key }}{{ key === 'comfyui_local' && !localReady ? '（本地模型未连接，不可用）' : '' }}
+                </option>
               </select>
             </label>
+            <p v-if="!localReady" class="hint" style="color:#b45309;margin:2px 0 4px">本地 AI Port 未连接：本地 ComfyUI / MiniMax H3 模型不可用，当前仅提供云端模型。</p>
             <p class="hint">{{ providerHint }}</p>
-            <label>Base URL<input name="base_url" v-model="baseUrl"></label>
+            <label>Base URL<input name="base_url" v-model="baseUrl" :readonly="provider !== 'comfyui_local'" :title="provider !== 'comfyui_local' ? '云端模型地址由服务器锁定，无需修改' : ''"></label>
             <!-- 输出目录选择仅在独立本地模式(直连 :8787)显示。Portal(远程)模式
                  下隐藏:结果统一存服务机 outputs/<用户名>/<日期>/,自定义路径对远程
                  用户无意义(浏览器写不到访问者电脑)且会导致产出散落、无法同步飞书。 -->

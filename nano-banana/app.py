@@ -14,6 +14,7 @@ import re
 import secrets
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -274,6 +275,36 @@ def _ws_preset_path(ws_id: str) -> Path:
 DEFAULT_BASE_URL = "https://ai.t8star.org"
 
 LOCAL_GATEWAY_BASE_URL = os.environ.get("AIPORT_BASE_URL", "http://127.0.0.1:8801").rstrip("/")
+
+
+def _force_ipv4(url: str) -> str:
+    """把 URL 里的主机名解析成第一个 IPv4 地址（本地 AI Port 网关专用）。
+
+    mDNS（.local）名字常先返回不可路由的 IPv6 link-local 地址；Python urllib
+    按顺序逐个连接、每个都烧满超时才轮到 IPv4，导致 1.5s 探活必失败、每次
+    调用慢几秒（curl 有 happy-eyeballs 所以正常）。这里固定走 IPv4。
+    """
+    if not url:
+        return url
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    host = parts.hostname or ""
+    if not host or re.match(r"^\d+\.\d+\.\d+\.\d+$", host) or host.lower() in ("localhost", "::1"):
+        return url
+    try:
+        first = socket.getaddrinfo(
+            host,
+            parts.port or (443 if parts.scheme == "https" else 80),
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+        )[0][4][0]
+    except (socket.gaierror, IndexError):
+        return url
+    netloc = first if parts.port is None else f"{first}:{parts.port}"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
 
 DEFAULT_CONFIG = Path.home() / "ComfyUI/custom_nodes/Comfyui-zhenzhen/Comflyapi.json"
 MAX_SEED = 2147483647
@@ -712,7 +743,7 @@ def providers_for_client(config: dict[str, Any]) -> dict[str, Any]:
     providers = json.loads(json.dumps(config.get("providers") or {}, ensure_ascii=False))
     for provider_cfg in providers.values():
         if provider_cfg.get("api_style") == "comfyui_workflow":
-            provider_cfg["base_url"] = LOCAL_GATEWAY_BASE_URL
+            provider_cfg["base_url"] = _force_ipv4(LOCAL_GATEWAY_BASE_URL)
         if isinstance(provider_cfg, dict) and provider_cfg.get("company_key"):
             provider_cfg["company_key_available"] = bool(
                 os.environ.get("VOLCENGINE_ARK_API_KEY", "").strip()
@@ -724,7 +755,7 @@ def providers_for_client(config: dict[str, Any]) -> dict[str, Any]:
 def local_gateway_available(timeout: float = 1.5) -> bool:
     """Return True when the local AI Port gateway answers on the configured URL."""
     try:
-        with urllib.request.urlopen(LOCAL_GATEWAY_BASE_URL + "/api/modules", timeout=timeout) as resp:
+        with urllib.request.urlopen(_force_ipv4(LOCAL_GATEWAY_BASE_URL) + "/api/modules", timeout=timeout) as resp:
             return resp.status < 500
     except Exception:
         return False
@@ -1928,7 +1959,9 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
     if provider_cfg.get("api_style") == "comfyui_workflow":
         # Local ComfyUI via AI Port. Lock the endpoint to the configured local
         # gateway so a client-supplied base_url can never redirect free work.
-        base_url = LOCAL_GATEWAY_BASE_URL
+        base_url = _force_ipv4(LOCAL_GATEWAY_BASE_URL)
+        if not local_gateway_available():
+            raise RuntimeError("本地 AI Port 未连接，无法使用本地模型。请先启动模型机上的 AI Port/ComfyUI，或改用云端模型。")
         model_kind = str(common["model"]).strip() or "qwen2511"
         files_payload: dict[str, Any] = {}
         for i in range(1, 15):
@@ -2410,7 +2443,13 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
             values = dict(values)
             values["_auto_seed_base"] = secrets.randbelow(MAX_SEED) + 1
         set_job(job_id, status="running", total=count, done=0, results=[], errors=[], started_at=time.time())
-        add_event(job_id, f"Started {count} run(s), concurrency {concurrency}, key {mask_key(values.get('api_key', ''))}")
+        _provider = str(values.get("provider") or "t8star")
+        _model = str(values.get("custom_model") or values.get("model") or "").strip()
+        if _provider == "comfyui_local":
+            _start_desc = f"provider={_provider}, model={_model or '?'}（本地模型，不走云端 key）"
+        else:
+            _start_desc = f"provider={_provider}, model={_model or '?'}, key={mask_key(values.get('api_key', ''))}"
+        add_event(job_id, f"Started {count} run(s), concurrency {concurrency}, {_start_desc}")
         # 已开跑：重启恢复策略从「自动重入队」切换为「标记中断可重试」
         with LOCK:
             _backlog_set_locked(job_id, stage="started")
