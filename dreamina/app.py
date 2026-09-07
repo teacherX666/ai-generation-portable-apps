@@ -1301,6 +1301,17 @@ def parse_cli_json(stdout: str) -> dict[str, Any]:
 # 码，只有英文文案）。命中返回中文说明；未命中返回 None，调用方保留原文
 # （原始 stderr 已进 events 日志，便于排障）。顺序即优先级，先命中先返回。
 _CLI_ERROR_TRANSLATIONS = (
+    # 2026-09 活动日志高频错误补录（顺序即优先级，具体关键词在前）：
+    # "generation failed: pre-TNS/post-TNS check did not pass"（9+2 次）——TNS 是平台内容安全预检/复检
+    ("tns", "内容安全审核未通过（平台预检/复检失败），请调整素材或提示词后重试"),
+    # "upload resource: read file: open: no such file or directory"（7 次）——CLI 上传目录里的素材文件丢失（被清理/移动）
+    ("read file", "本地素材文件缺失（可能已被清理或移动），请重新上传参考素材"),
+    # "video_resolution 1080p requires model_version seedance2.0_vip"——VIP 权限限制
+    ("requires model_version", "当前分辨率需要更高版本（VIP）权限，请降低分辨率或联系管理员"),
+    # "get upload token status 502"——上传通道的网关错误
+    ("502", "平台接口暂时不可用（502），请稍后重试"),
+    # "get upload token ..." 其它状态码：上传通道问题，不是账号凭证问题（勿让通用 "token" 规则误吞）
+    ("upload token", "上传通道暂时不可用，请稍后重试"),
     ("creditpredeductnotenough", "账户点数/余额不足，请管理员充值或切换账号后重试"),
     ("insufficient balance", "账户余额不足，请管理员充值或切换账号后重试"),
     ("not enough credit", "账户余额不足，请管理员充值或切换账号后重试"),

@@ -52,6 +52,11 @@ ARK_ERROR_MATCHERS: Tuple[ArkErrorMatcher, ...] = (
     ("InvalidParameter", "is not an image",
      "上传的文件是视频或音频，但被放到了参考图槽位。请把它放到「参考视频」或「参考音频」槽位。"),
 
+    # 2026-09-04 起出现：方舟侧拉取参考图的公网 URL 失败（链接失效 / 需登录 /
+    # 对方服务器拒绝）。提示用户重新上传而不是换 URL 试错。
+    ("InvalidParameter", "Error while downloading image",
+     "参考图网络地址下载失败（链接失效、需要登录或对方服务器拒绝访问）。请重新上传参考图，或改用可公开访问的图片链接。"),
+
     # 6 hits — 2.0 series' 15-second ceiling. Ark reports the exact cap.
     ("InvalidParameter", "must be less than or equal to 15",
      "Seedance 2.0 系列最长支持 15 秒。如需生成更长的视频，请切到 Seedance 2.5 模型（支持 30 秒）。"),

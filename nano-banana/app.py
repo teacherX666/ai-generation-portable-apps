@@ -36,6 +36,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared import local_gateway  # noqa: E402
 
+# Ark 错误中文翻译表在 portal/ 下共享（与 seedance/volcengine-portrait 同一张表）。
+# nano-banana 走 OpenAI 兼容错误形状，但 code/message 结构与 Ark 视频端点一致，
+# 如 InvalidEndpointOrModel.NotFound——直接复用同一张表。
+_PORTAL_DIR = str(REPO_ROOT / "portal")
+if _PORTAL_DIR not in sys.path:
+    sys.path.insert(0, _PORTAL_DIR)
+from ark_errors import translate_ark_error  # noqa: E402
+
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 STATIC_DIR = ROOT / "static"
 OUTPUT_DIR = _DATA_BASE / "outputs"
@@ -88,6 +96,20 @@ class NetworkError(Exception):
 class TaskCancelled(Exception):
     """任务被用户取消：run_one 在取消后抛出，run_job 识别后不记错误、不计 done。"""
     pass
+
+
+def _translate_nano_error(category: str, message: str) -> str:
+    """常见错误的中文可操作提示。
+
+    nano-banana 是 iframe，portal 的友好错误映射（friendlyErrors）不适用于它，
+    所以在这里给错误串直接补中文建议；无命中返回空串，前端展示原文。
+    """
+    if category == "auth_failed":
+        return "密钥无效或已被禁用，请联系管理员更换"
+    m = re.search(r'"code"\s*:\s*"([^"]+)"', message or "")
+    if m:
+        return translate_ark_error(m.group(1), message) or ""
+    return ""
 
 
 def _job_cancel_requested(job_id: str) -> bool:
@@ -2471,6 +2493,9 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
                 except APIError as exc:
                     # 结构化 API 错误，记录错误类型方便前端展示
                     error_msg = f"[{exc.error_category}] {exc.message}"
+                    zh = _translate_nano_error(exc.error_category, exc.message)
+                    if zh:
+                        error_msg += f"（{zh}）"
                     with LOCK:
                         JOBS[job_id]["errors"].append(error_msg)
                         JOBS[job_id]["done"] += 1
