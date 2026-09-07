@@ -696,6 +696,9 @@
             <h2>3. 我的资产 <button @click="loadAssets()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">刷新</button></h2>
             <p style="font-size:11px;color:#64748b;margin-top:0">包含虚拟人像和已录入的真人素材资产</p>
             <div v-if="assets.length===0" style="color:#64748b;font-size:12px">暂无人像资产，请先上传素材或在火山方舟控制台录入真人素材</div>
+            <div v-if="assets.filter(a=>a.status==='failed').length" style="font-size:12px;color:#dc2626;margin:6px 0">
+              ⚠️ 本组有 {{ assets.filter(a=>a.status==='failed').length }} 个失效资产（已在下方标红，无法选用）。素材状态由方舟侧决定，删除后重新上传可恢复。
+            </div>
             <div v-for="a in assets" class="asset-row">
               <img v-if="a.url" :src="a.url" class="asset-thumb" @error="$event.target.style.display='none'" alt="预览">
               <span v-else class="asset-thumb-placeholder">{{ a.asset_type === 'Video' ? '🎬' : '🖼' }}</span>
@@ -722,7 +725,7 @@
               <select v-model="genAssetId" style="margin-top:4px">
                 <option value="">-- 选择已有资产 --</option>
                 <option v-for="a in assets" :value="a.asset_id" :disabled="a.status !== 'active'">
-                  {{ a.file_name || a.asset_id }} [{{ a.status }}]
+                  {{ a.status === 'failed' ? '❌ ' : (a.status === 'processing' ? '⏳ ' : '') }}{{ a.file_name || a.asset_id }} [{{ a.status }}]
                 </option>
               </select>
             </label>
@@ -733,7 +736,7 @@
                 <option value="">+ 添加附加资产</option>
                 <option v-for="a in assets" :value="a.asset_id"
                         :disabled="a.status !== 'active' || a.asset_id === genAssetId || extraAssetIds.includes(a.asset_id)">
-                  {{ a.file_name || a.asset_id }} [{{ a.status }}]
+                  {{ a.status === 'failed' ? '❌ ' : (a.status === 'processing' ? '⏳ ' : '') }}{{ a.file_name || a.asset_id }} [{{ a.status }}]
                 </option>
               </select>
             </label>
@@ -845,7 +848,8 @@
             <span style="font-size:11px;color:#64748b">{{ j.created_at }}</span>
           </div>
           <div v-if="j.errors && j.errors.length" style="font-size:11px;color:#dc2626;margin-top:4px">{{ friendlyErrors(j.errors) }}</div>
-          <button v-if="j.retryable" @click="retryVpJob(j.job_id)" class="ui-btn ui-btn--sm ui-btn--primary" style="margin-top:6px">重试</button>
+          <!-- retryable=服务重启中断；普通失败任务同样可原样重提（后端 retry 端点复用落盘参数） -->
+          <button v-if="j.retryable || j.status==='failed'" @click="retryVpJob(j.job_id)" class="ui-btn ui-btn--sm ui-btn--primary" style="margin-top:6px">重试</button>
           <div v-for="r in (j.results||[]).filter(x => x.download_url)" class="row" style="align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #f1f5f9">
             <video :src="appPath + r.download_url" controls style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
             <span style="font-size:11px;color:#64748b;flex:1;margin-left:8px">{{ r.filename || 'video' }}</span>

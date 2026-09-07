@@ -515,6 +515,19 @@ def handle_job_cancel(handler, job_id: str):
     json_response(handler, 200, {"ok": True, "status": "cancelled"})
 
 
+def handle_job_retry(handler, job_id: str):
+    """重提一个失败/中断的任务（stdlib Handler 与 fastapi 桥接共用）。
+
+    创建全新 job_id 并重新计费，因此响应携带 X-Job-Id（json_response 自动
+    附带）——portal 统计按新任务登记一次，与取消接口的刻意不计数相反。
+    """
+    try:
+        new_id = retry_virtual_job(job_id)
+        json_response(handler, 201, {"ok": True, "job_id": new_id})
+    except ValueError as exc:
+        json_response(handler, 400, {"ok": False, "error": str(exc)})
+
+
 JOB_PRUNE_GRACE_SECONDS = 600
 _TERMINAL_JOB_STATUSES = ("succeeded", "failed", "completed", "cancelled", "canceled")
 
@@ -660,7 +673,7 @@ def retry_virtual_job(job_id: str) -> str:
             "status": "queued",
             "total": int(job.get("total") or 1), "done": 0,
             "results": [], "errors": [],
-            "events": [{"time": time.strftime("%H:%M:%S"), "message": "从中断任务重试"}],
+            "events": [{"time": time.strftime("%H:%M:%S"), "message": "重试任务"}],
             "username": job.get("username", ""),
             "asset_id": job.get("asset_id", ""),
             "extra_asset_ids": list(job.get("extra_asset_ids") or []),
@@ -2946,14 +2959,9 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        # POST /api/{virtual,real}/jobs/{id}/retry — 按中断任务记录重提一个新任务。
+        # POST /api/{virtual,real}/jobs/{id}/retry — 重提失败/中断任务（新 job_id，重新计费）。
         if (path.startswith("/api/virtual/jobs/") or path.startswith("/api/real/jobs/")) and path.endswith("/retry"):
-            job_id = path.rsplit("/", 2)[-2]
-            try:
-                new_id = retry_virtual_job(job_id)
-                json_response(self, 201, {"ok": True, "job_id": new_id})
-            except ValueError as exc:
-                json_response(self, 400, {"ok": False, "error": str(exc)})
+            handle_job_retry(self, path.rsplit("/", 2)[-2])
             return
         # POST /api/{virtual,real,jobs}/{id}/cancel — 取消排队/运行中的任务。
         # 统一路径 /api/jobs/{id}/cancel 与 seedance 一致，供画布委派使用。

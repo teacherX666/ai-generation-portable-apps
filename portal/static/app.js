@@ -2616,6 +2616,7 @@ function VolcenginePortraitApp() {
       // loop silently — the running task vanished from view with no hint. Now
       // retry with a cap, and say so while retrying.
       let fails = 0;
+      let terminal = '';
       while (true) {
         const job = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}`);
         if (!job || job.ok === false) {
@@ -2640,15 +2641,22 @@ function VolcenginePortraitApp() {
           }
         }
         if (['succeeded', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
+          terminal = job.status;
           // 系统通知：与 Portal 15s 兜底轮询按 jobId 去重
           notifyJobDone(jobId, String(job.status).toLowerCase() === 'canceled' ? 'cancelled' : String(job.status).toLowerCase(), '人像视频', 'volcengine-portrait');
+          // 失败原因留在状态区（用户视线所在），而不是清成「空闲」让错误只沉在历史卡片里
+          if (job.status === 'failed') {
+            const reason = this.friendlyErrors(job.errors);
+            this.statusText = '❌ 任务失败' + (reason ? '：' + reason : '') + '。可在下方「生成历史」点击「重试」原样重提。';
+          }
           break;
         }
         await new Promise(r => setTimeout(r, 3000));
       }
       this._activeVpJobId = null;
       this._activeVpStatus = '';
-      this.statusText = '空闲'; this.loadJobs();
+      if (terminal !== 'failed') this.statusText = '空闲';
+      this.loadJobs();
     },
 
     // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）
