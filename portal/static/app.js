@@ -2108,6 +2108,13 @@ function VolcenginePortraitApp() {
       },
     ],
     submitting: false, events: '', results: [], jobs: [], activityRecords: [],
+    // 新版资产库交互状态
+    zoomAsset: null,          // 放大预览弹窗中的资产（图片/视频通用；关闭时不置 null，避免模板渲染竞态）
+    zoomOpen: false,          // 弹窗开关（与 zoomAsset 分离，zoomAsset 保持非 null 供模板安全读取）
+    fig1Asset: null,          // 图1 缩略卡数据（由 syncFig1Asset 维护；模板不调方法，避免渲染竞态 null）
+    showCreateGroup: false,   // 新建组内联面板
+    showPurge: false,         // 管理员批量清理折叠面板
+    showInfoDetail: false,    // 顶部说明展开
     _activeVpJobId: null,
     _activeVpStatus: '',
     runtimeTick: 0,
@@ -2154,6 +2161,69 @@ function VolcenginePortraitApp() {
       this.restoreDraft();
       setInterval(() => this.saveDraft(), 5000);
       setInterval(() => { this.runtimeTick = (this.runtimeTick + 1) % 1e9; }, 1000);
+      // 拖文件进资产库 = 快捷上传（等价于「选择文件」）
+      const lib = document.getElementById('vp-library');
+      if (lib) {
+        lib.addEventListener('dragover', (e) => e.preventDefault());
+        lib.addEventListener('drop', (e) => this.onAssetDrop(e));
+      }
+    },
+
+    // === 新版资产库交互 ===
+    // 点选资产卡片设为图1（失效/审核中不可选，给明确原因）
+    selectAsset(a) {
+      if (a.status !== 'active') {
+        window.portalToast(
+          a.status === 'failed'
+            ? '该资产已失效，无法选用（可删除后重新上传恢复）'
+            : '该资产仍在审核中，就绪后才能选用',
+          'danger');
+        return;
+      }
+      this.genAssetId = a.asset_id;
+      this.syncFig1Asset();
+    },
+    // ＋ 附加 / ✓ 已加 切换（图2、图3…，顺序即加入顺序）
+    toggleExtraAsset(a) {
+      if (a.status !== 'active') { this.selectAsset(a); return; }
+      const i = this.extraAssetIds.indexOf(a.asset_id);
+      if (i >= 0) this.extraAssetIds.splice(i, 1);
+      else this.extraAssetIds.push(a.asset_id);
+    },
+    // 缩略图点开放大（图片 / 视频通用）。zoomAsset 只增不减：关闭时只翻 zoomOpen，
+    // 避免 petite-vue 在 v-if 卸载时重算内部表达式读到 null。
+    openZoom(a) { this.zoomAsset = a; this.zoomOpen = true; },
+    closeZoom() { this.zoomOpen = false; },
+    // 图1 缩略卡数据：模板不直接调方法（petite-vue 渲染竞态会拿到 null 报错），
+    // 由数据属性 fig1Asset 维护，所有会改变 genAssetId/assets 的入口同步一次。
+    syncFig1Asset() {
+      this.fig1Asset = this.genAssetId
+        ? (this.assets.find(x => x.asset_id === this.genAssetId) || null)
+        : null;
+    },
+    // 「换一个」：清空图1 选择（保留资产库，用户重点即可）
+    clearFig1() {
+      this.genAssetId = '';
+      this.fig1Asset = null;
+    },
+    // 拖文件进资产库 → 填入文件选择器并预填资产名，用户点「上传素材」提交
+    onAssetDrop(ev) {
+      ev.preventDefault();
+      const files = ev.dataTransfer && ev.dataTransfer.files;
+      if (!files || !files.length) return;
+      const el = document.getElementById('vp-file');
+      if (!el) return;
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(files[0]);
+        el.files = dt.files;
+      } catch (e) { return; }
+      if (!this.assetGroupId) {
+        window.portalToast('请先选择或创建人像组，再拖入素材', 'danger');
+        return;
+      }
+      this.onFileSelect();
+      if (!this.assetName) this.assetName = files[0].name.replace(/\.[^.]+$/, '');
     },
 
     // === 表单草稿持久化（v-model 状态字段）===
@@ -2404,11 +2474,15 @@ function VolcenginePortraitApp() {
       // 未选组 → 不查不显示，避免拉到全部资产覆盖已选组的结果
       if (!this.assetGroupId) {
         this.assets = [];
+        this.syncFig1Asset();
         return;
       }
       const url = `${appPath}/api/virtual/assets?group_ids=${encodeURIComponent(this.assetGroupId)}`;
       const res = await vpApi.call(this, url);
-      if (res?.ok) this.assets = (res.assets || []).map(a => ({ ...a, asset_id: a.asset_id || a.id }));
+      if (res?.ok) {
+        this.assets = (res.assets || []).map(a => ({ ...a, asset_id: a.asset_id || a.id }));
+        this.syncFig1Asset();
+      }
     },
 
     async deleteAsset(id) {
@@ -2718,7 +2792,7 @@ function VolcenginePortraitApp() {
       const rec = await vpApi.call(this, `${appPath}/api/activity/${activityId}`);
       const req = rec && rec.request;
       if (!req) { this.statusText = '无法读取该任务参数，请重新填写提交'; return; }
-      if (req.asset_id) this.genAssetId = req.asset_id;
+      if (req.asset_id) { this.genAssetId = req.asset_id; this.syncFig1Asset(); }
       this.extraAssetIds = req.extra_asset_ids || [];
       this.extraFiles = [];
       this.prompt = req.prompt || '';

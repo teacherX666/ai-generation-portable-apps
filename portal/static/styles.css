@@ -2461,3 +2461,49 @@ body.portal-home-active #portalHomeExitBtn:hover {
   .rc-section__head { flex-direction: column; align-items: flex-start; }
   .rc-footer { flex-direction: column; align-items: flex-start; }
 }
+/* ── 人像生成新版布局：资产库网格 / 图1缩略卡 / 放大弹窗 ── */
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; }
+.asset-card {
+  background: #fff; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 6px;
+  cursor: pointer; display: flex; flex-direction: column; gap: 5px; transition: border-color .15s, box-shadow .15s;
+}
+.asset-card:hover { border-color: #93c5fd; }
+.asset-card.is-fig1 { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, .15); }
+.asset-card-thumb {
+  position: relative; height: 76px; border-radius: 7px; overflow: hidden; background: #f1f5f9;
+  display: grid; place-items: center; cursor: zoom-in;
+}
+.asset-card-thumb img, .asset-card-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.asset-card-zoom {
+  position: absolute; right: 4px; bottom: 4px; background: rgba(15, 23, 42, .55); color: #fff;
+  border-radius: 5px; font-size: 11px; line-height: 1; padding: 3px 5px; opacity: 0; transition: opacity .15s;
+}
+.asset-card-thumb:hover .asset-card-zoom { opacity: 1; }
+.asset-thumb-ph { font-size: 22px; color: #94a3b8; }
+.asset-card-name { font-size: 11.5px; font-weight: 600; color: #1e293b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-card-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.asset-card-badge { background: #2563eb; color: #fff; font-size: 10px; font-weight: 700; border-radius: 999px; padding: 1px 7px; }
+.asset-card-actions { display: flex; gap: 4px; align-items: center; }
+.fig1-row { display: flex; gap: 10px; align-items: center; }
+.fig1-thumb {
+  width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0;
+  background: #f1f5f9; flex-shrink: 0; display: grid; place-items: center; cursor: zoom-in;
+}
+.fig1-thumb img, .fig1-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vp-zoom-backdrop {
+  position: fixed; inset: 0; z-index: 1200; background: rgba(15, 23, 42, .72);
+  display: flex; align-items: center; justify-content: center; padding: 28px;
+}
+.vp-zoom-box {
+  background: #fff; border-radius: 12px; max-width: min(920px, 92vw); max-height: 86vh;
+  display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.4);
+}
+.vp-zoom-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #e2e8f0; }
+.vp-zoom-title { font-size: 13px; font-weight: 600; color: #1e293b; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vp-zoom-close { border: 1px solid #cbd5e1; background: #fff; color: #475569; border-radius: 7px; width: 28px; height: 28px; cursor: pointer; font-size: 14px; }
+.vp-zoom-close:hover { background: #f1f5f9; }
+.vp-zoom-body { display: grid; place-items: center; padding: 14px; min-height: 160px; background: #0f172a; }
+.vp-zoom-body img, .vp-zoom-body video { max-width: 100%; max-height: 64vh; display: block; }
+.vp-zoom-empty { color: #94a3b8; font-size: 13px; }
+.vp-zoom-meta { display: flex; gap: 14px; padding: 8px 14px; font-size: 11.5px; color: #64748b; border-top: 1px solid #e2e8f0; }
+.vp-zoom-id { font-family: monospace; }

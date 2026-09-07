@@ -597,157 +597,164 @@
       <div class="ui-page-header">
         <div><h1 class="ui-page-header__title">人像生成</h1><p class="ui-page-header__desc">管理人像组、素材和生成任务。</p></div>
       </div>
-      <section class="card ui-panel ui-admin-page__section ui-alert ui-alert--info">
-        <p class="ui-note ui-note--info">
-          <strong>API 凭证：</strong>由管理员在「统计」页统一配置，所有用户使用同一份火山方舟 Key/AK/SK，无需手动填写。
-        </p>
-      </section>
-
-      <section class="card ui-panel ui-admin-page__section ui-alert ui-alert--info">
-        <p class="ui-note ui-note--info">
-          <strong>真人素材：</strong>真人认证和素材录入请在<a href="https://console.volcengine.com/ark/experience/" target="_blank" rel="noopener" class="ui-link">火山方舟体验中心 → 我的 → 真人人像</a>完成。
-          录入后可直接在下方选择 Asset ID 生成视频。虚拟人像素材可直接在本页面创建组并上传。
-        </p>
+      <section class="card ui-panel ui-admin-page__section" style="padding:10px 16px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <p class="ui-note ui-note--info" style="flex:1;margin:0">
+            <strong>API 凭证：</strong>由管理员在「统计」页统一配置，所有用户使用同一份火山方舟 Key/AK/SK，无需手动填写。
+            <span v-if="showInfoDetail"><strong>真人素材：</strong>真人认证和素材录入请在<a href="https://console.volcengine.com/ark/experience/" target="_blank" rel="noopener" class="ui-link">火山方舟体验中心 → 我的 → 真人人像</a>完成，录入后即可在下方资产库选用。</span>
+          </p>
+          <button @click="showInfoDetail=!showInfoDetail" class="ui-btn ui-btn--sm ui-btn--ghost" style="white-space:nowrap">{{ showInfoDetail ? '收起说明 ▴' : '展开说明 ▾' }}</button>
+        </div>
       </section>
 
       <div class="portrait-grid">
+        <!-- 左列：人像资产库 = 原 1.创建人像组 + 2.上传素材 + 3.我的资产 三合一 -->
         <div>
-          <section class="card">
-            <h2>1. 创建人像组 <span style="font-size:11px;color:#64748b">（虚拟人像）</span></h2>
-            <div class="row">
-              <input v-model="groupName" placeholder="组名称（可选）">
-              <button @click="createGroup()" :disabled="creatingGroup" class="ui-btn ui-btn--primary">{{ creatingGroup ? '创建中...' : '创建人像组' }}</button>
-            </div>
-            <p v-if="groupId" style="color:#22c55e;font-size:12px;margin-top:6px">组 ID: {{ groupId }}</p>
-          </section>
-
-          <section class="card ui-panel ui-danger-zone" v-if="isAdmin">
-            <h2>🧹 批量清理旧素材组 <span style="font-size:11px;color:#92400e">（管理员）</span></h2>
-            <p style="font-size:12px;color:#78350f;margin-bottom:8px">
-              删除 group ID 日期在此之前的所有 AIGC 组（含内部资产）。仅按 ID 规则识别（重命名不影响；不符合 ID 规则的手动组会被跳过）。
-            </p>
-            <div class="row" style="margin-bottom:6px;align-items:center">
-              <label class="ui-date-field" style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:12px;color:#78350f">保留日期
-                <input type="date" v-model="purge.beforeDate" style="min-height:30px;padding:0 8px">
-              </label>
-              <button @click="previewPurge()" :disabled="purge.running || !purge.beforeDate" class="ui-btn ui-btn--sm ui-btn--warning-outline">
-                {{ purge.running && !purge.dryRun && !purge.lastResult ? '扫描中...' : '预览待删' }}
-              </button>
-            </div>
-            <div v-if="purge.errorMsg" style="color:#dc2626;font-size:12px;margin-top:6px">{{ purge.errorMsg }}</div>
-            <div v-if="purge.dryRun" style="margin-top:8px;padding:8px;background:#fff;border:1px solid #fbbf24;border-radius:4px">
-              <div style="font-size:12px;color:#78350f;margin-bottom:6px">
-                扫描到 {{ purge.dryRun.total_scanned }} 个组，将删除
-                <strong>{{ purge.dryRun.matched }}</strong> 个组
-                （跳过 {{ purge.dryRun.skipped_non_matching_id }} 个不符合命名规则的组）：
-              </div>
-              <ul style="max-height:180px;overflow:auto;font-size:11px;color:#334155;margin:0;padding-left:16px">
-                <li v-for="c in purge.dryRun.candidates">
-                  {{ c.date }} · {{ c.name || '(无名)' }} · {{ c.group_id }} · <em>{{ c.asset_count }} 资产</em>
-                </li>
-              </ul>
-              <button @click="executePurge()" :disabled="purge.running" class="ui-btn ui-btn--sm ui-btn--danger"
-                      style="margin-top:8px">
-                {{ purge.running ? '执行中...' : '确认执行' }}
-              </button>
-            </div>
-            <div v-if="purge.lastResult" style="margin-top:8px;padding:8px;background:#dcfce7;border:1px solid #22c55e;border-radius:4px;font-size:12px;color:#166534">
-              ✓ 清理完成：删除了 {{ purge.lastResult.groups_deleted }} 个组，{{ purge.lastResult.assets_deleted }} 个资产。
-              <span v-if="purge.lastResult.errors && purge.lastResult.errors.length" style="color:#dc2626">
-                有 {{ purge.lastResult.errors.length }} 个错误（查看日志）
-              </span>
-            </div>
-          </section>
-
-          <section class="card">
-            <h2>2. 上传素材 <span style="font-size:11px;color:#64748b">（虚拟人像）</span></h2>
-            <div class="row" style="margin-bottom:6px">
-              <input v-model="assetGroupId" @change="onGroupChange()" placeholder="Group ID">
-              <button @click="deleteGroup(assetGroupId)" :disabled="!assetGroupId" class="ui-btn ui-btn--sm ui-btn--danger">删除组</button>
-            </div>
-            <div v-if="groups.length" style="margin-bottom:6px">
-              <select v-model="assetGroupId" @change="onGroupChange()" style="width:100%;font-size:11px">
+          <section class="card" id="vp-library">
+            <h2>人像资产库
+              <button @click="loadAssets()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">↻ 刷新</button>
+            </h2>
+            <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+              <select v-model="assetGroupId" @change="onGroupChange()" style="flex:1;min-width:170px">
                 <option value="">-- 选择已有组 --</option>
-                <option v-for="g in groups" :value="g.group_id">{{ g.name }} ({{ g.group_id }})</option>
+                <option v-for="g in groups" :value="g.group_id">{{ g.name || g.group_id }} ({{ g.group_id }})</option>
               </select>
-              <div v-if="assetGroupId" style="margin-top:4px;display:flex;gap:6px;align-items:center">
-                <span style="font-size:11px;color:#64748b">组名:</span>
-                <input v-if="renamingGroup" v-model="renameGroupName" @keyup.enter="saveGroupRename()" @keyup.escape="renamingGroup=false" style="font-size:11px;padding:4px 6px" :placeholder="groupNameFor(assetGroupId)">
-                <span v-else style="font-size:12px;color:#334155;flex:1">{{ groupNameFor(assetGroupId) }}</span>
-                <button v-if="renamingGroup" @click="saveGroupRename()" :disabled="renamingSaving" class="ui-btn ui-btn--sm ui-btn--primary">{{ renamingSaving ? '...' : '保存' }}</button>
-                <button v-if="renamingGroup" @click="renamingGroup=false" class="ui-btn ui-btn--sm ui-btn--ghost">取消</button>
-                <button v-if="!renamingGroup" @click="startRenameGroup()" class="ui-btn ui-btn--sm ui-btn--ghost">重命名</button>
+              <button @click="showCreateGroup=!showCreateGroup" class="ui-btn ui-btn--primary ui-btn--sm">＋ 新建组</button>
+              <button @click="startRenameGroup()" :disabled="!assetGroupId" class="ui-btn ui-btn--sm ui-btn--ghost">✎ 重命名组</button>
+              <button @click="deleteGroup(assetGroupId)" :disabled="!assetGroupId" class="ui-btn ui-btn--sm ui-btn--danger">🗑 删除组</button>
+              <button @click="document.getElementById('vp-file').click()" class="ui-btn ui-btn--primary ui-btn--sm">⬆ 上传素材</button>
+            </div>
+            <div v-if="showCreateGroup" class="row" style="margin-bottom:8px">
+              <input v-model="groupName" placeholder="组名称（可选）" style="flex:1">
+              <button @click="createGroup()" :disabled="creatingGroup" class="ui-btn ui-btn--sm ui-btn--primary">{{ creatingGroup ? '创建中...' : '创建' }}</button>
+              <button @click="showCreateGroup=false" class="ui-btn ui-btn--sm ui-btn--ghost">取消</button>
+            </div>
+            <p v-if="groupId" style="color:#22c55e;font-size:12px;margin:0 0 8px">组 ID: {{ groupId }}</p>
+            <div v-if="assetGroupId" class="row" style="margin-bottom:8px;align-items:center">
+              <span style="font-size:12px;color:#64748b;flex-shrink:0">组名:</span>
+              <input v-if="renamingGroup" v-model="renameGroupName" @keyup.enter="saveGroupRename()" @keyup.escape="renamingGroup=false" style="flex:1;font-size:12px;padding:4px 6px" :placeholder="groupNameFor(assetGroupId)">
+              <span v-else style="font-size:12px;color:#334155;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ groupNameFor(assetGroupId) }}</span>
+              <div v-if="renamingGroup" style="display:flex;gap:6px;align-items:center">
+                <button @click="saveGroupRename()" :disabled="renamingSaving" class="ui-btn ui-btn--sm ui-btn--primary">{{ renamingSaving ? '...' : '保存' }}</button>
+                <button @click="renamingGroup=false" class="ui-btn ui-btn--sm ui-btn--ghost">取消</button>
               </div>
             </div>
-            <div class="row" style="margin-bottom:4px">
-              <input v-model="assetName" placeholder="资产名（留空用文件名）" style="width:100%;font-size:12px">
+            <!-- 上传面板（选择文件 / 资产名 / 上传；也支持把文件直接拖进资产库） -->
+            <div v-if="uploading || selectedFile || uploadMsg" class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+              <input v-model="assetName" placeholder="资产名（留空用文件名）" style="flex:1;min-width:140px;font-size:12px">
+              <button @click="uploadAsset()" :disabled="uploading" class="ui-btn ui-btn--sm ui-btn--primary">{{ uploading ? '上传中...' : '上传素材' }}</button>
+              <button v-if="!uploading && selectedFile" @click="selectedFile=''; document.getElementById('vp-file').value=''" class="ui-btn ui-btn--sm ui-btn--ghost">取消</button>
             </div>
-            <div class="row">
-              <input type="file" id="vp-file" accept="image/*,video/*" style="display:none" @change="onFileSelect()">
-              <button @click="document.getElementById('vp-file').click()" class="ui-btn ui-btn--secondary">选择文件</button>
-              <button @click="uploadAsset()" :disabled="uploading" class="ui-btn ui-btn--primary">{{ uploading ? '上传中...' : '上传素材' }}</button>
+            <p v-if="selectedFile" style="font-size:12px;color:#94a3b8;margin:0 0 8px">已选: {{ selectedFile }}</p>
+            <p v-if="uploadMsg" :style="{fontSize:'12px',margin:'0 0 8px',color:uploadError?'#ef4444':'#22c55e'}">{{ uploadMsg }}</p>
+            <input type="file" id="vp-file" accept="image/*,video/*" style="display:none" @change="onFileSelect()">
+            <!-- 资产网格 -->
+            <p style="font-size:11px;color:#64748b;margin:0 0 8px">点击卡片设为「图1」；点 ⤢ 放大预览；点「＋ 附加」加入图2、图3…。可把文件拖进本卡片快速上传。</p>
+            <div v-if="assets.length===0" style="color:#64748b;font-size:12px;padding:14px 0">暂无人像资产：选择已有组，或新建组后上传素材；真人素材在火山方舟控制台录入后自动出现。</div>
+            <div v-if="assets.filter(a=>a.status==='failed').length" style="font-size:12px;color:#dc2626;margin:0 0 8px">
+              ⚠️ 本组有 {{ assets.filter(a=>a.status==='failed').length }} 个失效资产（已标红，无法选用）。素材状态由方舟侧决定，删除后重新上传可恢复。
             </div>
-            <p v-if="selectedFile" style="font-size:12px;color:#94a3b8;margin-top:4px">已选: {{ selectedFile }}</p>
-            <p v-if="uploadMsg" :style="{fontSize:'12px',marginTop:'4px',color:uploadError?'#ef4444':'#22c55e'}">{{ uploadMsg }}</p>
+            <div class="asset-grid" v-if="assets.length">
+              <div v-for="a in assets" :key="a.asset_id" class="asset-card" :class="{'is-fig1': a.asset_id===genAssetId}" @click="selectAsset(a)">
+                <div class="asset-card-thumb" @click.stop="openZoom(a)" title="点开放大预览">
+                  <video v-if="a.asset_type==='Video' && a.url" :src="a.url" preload="metadata" muted playsinline></video>
+                  <img v-else-if="a.url" :src="a.url" loading="lazy" @error="$event.target.style.display='none'" alt="资产预览">
+                  <span v-else class="asset-thumb-ph">{{ a.asset_type==='Video' ? '🎬' : '🖼' }}</span>
+                  <span class="asset-card-zoom">⤢</span>
+                </div>
+                <div class="asset-card-name">
+                  <input v-if="renamingAssetId === a.asset_id" v-model="renameAssetName"
+                         @keyup.enter="saveAssetRename(a.asset_id)"
+                         @keyup.escape="renamingAssetId=''"
+                         @click.stop style="font-size:11px;padding:2px 4px;width:100%">
+                  <span v-else :title="a.file_name || '(未命名)'">{{ a.file_name || '(未命名)' }}</span>
+                </div>
+                <div class="asset-card-meta">
+                  <span :class="'tag ' + (a.status==='active' ? 'tag-succeeded' : a.status==='failed' ? 'tag-failed' : 'tag-processing')">{{ a.status==='active' ? '已就绪' : a.status==='failed' ? '失效' : '审核中' }}</span>
+                  <span v-if="a.asset_id===genAssetId" class="asset-card-badge">图1</span>
+                  <span v-else-if="extraAssetIds.includes(a.asset_id)" class="asset-card-badge" style="background:#0ea5e9">图{{ extraAssetIds.indexOf(a.asset_id)+2 }}</span>
+                </div>
+                <div class="asset-card-actions">
+                  <button v-if="a.status==='active' && a.asset_id!==genAssetId" @click.stop="selectAsset(a)" class="ui-btn ui-btn--sm ui-btn--primary" style="min-height:0;padding:0 8px;font-size:11px">设为图1</button>
+                  <button v-if="a.status==='active' && a.asset_id!==genAssetId" @click.stop="toggleExtraAsset(a)" class="ui-btn ui-btn--ghost" style="min-height:0;padding:0 8px;font-size:11px"
+                          :title="extraAssetIds.includes(a.asset_id) ? '移出附加素材' : '加入附加素材（图2、图3…）'">{{ extraAssetIds.includes(a.asset_id) ? '✓ 已加' : '＋ 附加' }}</button>
+                  <button v-if="renamingAssetId !== a.asset_id" @click.stop="startRenameAsset(a)" class="ui-btn ui-btn--ghost" style="min-height:0;padding:0 6px;font-size:11px" title="重命名">✎</button>
+                  <button v-if="renamingAssetId === a.asset_id" @click.stop="saveAssetRename(a.asset_id)" class="ui-btn ui-btn--sm ui-btn--primary" style="min-height:0;padding:0 8px;font-size:11px">保存</button>
+                  <button v-if="renamingAssetId === a.asset_id" @click.stop="renamingAssetId=''" class="ui-btn ui-btn--ghost" style="min-height:0;padding:0 6px;font-size:11px">取消</button>
+                  <button v-if="renamingAssetId !== a.asset_id" @click.stop="deleteAsset(a.asset_id)" class="ui-btn ui-btn--ghost" style="min-height:0;padding:0 6px;font-size:11px;color:#dc2626" title="删除">🗑</button>
+                </div>
+              </div>
+            </div>
+            <!-- 管理员：批量清理（折叠） -->
+            <div v-if="isAdmin">
+              <div class="row" style="margin-top:10px;border-top:1px dashed #e2e8f0;padding-top:8px;align-items:center">
+                <span style="font-size:12px;color:#92400e;flex:1">🧹 批量清理旧素材组（管理员）：删除指定日期之前的 AIGC 组及其内部资产</span>
+                <button @click="showPurge=!showPurge" class="ui-btn ui-btn--sm ui-btn--warning-outline">{{ showPurge ? '收起 ▴' : '展开 ▾' }}</button>
+              </div>
+              <div v-if="showPurge">
+                <div class="row" style="margin:8px 0;align-items:center;gap:8px">
+                  <label class="ui-date-field" style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:12px;color:#78350f">保留日期
+                    <input type="date" v-model="purge.beforeDate" style="min-height:30px;padding:0 8px">
+                  </label>
+                  <button @click="previewPurge()" :disabled="purge.running || !purge.beforeDate" class="ui-btn ui-btn--sm ui-btn--warning-outline">
+                    {{ purge.running && !purge.dryRun && !purge.lastResult ? '扫描中...' : '预览待删' }}
+                  </button>
+                </div>
+                <div v-if="purge.errorMsg" style="color:#dc2626;font-size:12px;margin-top:6px">{{ purge.errorMsg }}</div>
+                <div v-if="purge.dryRun" style="margin-top:8px;padding:8px;background:#fff;border:1px solid #fbbf24;border-radius:4px">
+                  <div style="font-size:12px;color:#78350f;margin-bottom:6px">
+                    扫描到 {{ purge.dryRun.total_scanned }} 个组，将删除
+                    <strong>{{ purge.dryRun.matched }}</strong> 个组
+                    （跳过 {{ purge.dryRun.skipped_non_matching_id }} 个不符合命名规则的组）：
+                  </div>
+                  <ul style="max-height:180px;overflow:auto;font-size:11px;color:#334155;margin:0;padding-left:16px">
+                    <li v-for="c in purge.dryRun.candidates">
+                      {{ c.date }} · {{ c.name || '(无名)' }} · {{ c.group_id }} · <em>{{ c.asset_count }} 资产</em>
+                    </li>
+                  </ul>
+                  <button @click="executePurge()" :disabled="purge.running" class="ui-btn ui-btn--sm ui-btn--danger" style="margin-top:8px">
+                    {{ purge.running ? '执行中...' : '确认执行' }}
+                  </button>
+                </div>
+                <div v-if="purge.lastResult" style="margin-top:8px;padding:8px;background:#dcfce7;border:1px solid #22c55e;border-radius:4px;font-size:12px;color:#166534">
+                  ✓ 清理完成：删除了 {{ purge.lastResult.groups_deleted }} 个组，{{ purge.lastResult.assets_deleted }} 个资产。
+                  <span v-if="purge.lastResult.errors && purge.lastResult.errors.length" style="color:#dc2626">
+                    有 {{ purge.lastResult.errors.length }} 个错误（查看日志）
+                  </span>
+                </div>
+              </div>
+            </div>
           </section>
         </div>
         <div>
           <section class="card">
-            <h2>3. 我的资产 <button @click="loadAssets()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">刷新</button></h2>
-            <p style="font-size:11px;color:#64748b;margin-top:0">包含虚拟人像和已录入的真人素材资产</p>
-            <div v-if="assets.length===0" style="color:#64748b;font-size:12px">暂无人像资产，请先上传素材或在火山方舟控制台录入真人素材</div>
-            <div v-if="assets.filter(a=>a.status==='failed').length" style="font-size:12px;color:#dc2626;margin:6px 0">
-              ⚠️ 本组有 {{ assets.filter(a=>a.status==='failed').length }} 个失效资产（已在下方标红，无法选用）。素材状态由方舟侧决定，删除后重新上传可恢复。
-            </div>
-            <div v-for="a in assets" class="asset-row">
-              <img v-if="a.url" :src="a.url" class="asset-thumb" @error="$event.target.style.display='none'" alt="预览">
-              <span v-else class="asset-thumb-placeholder">{{ a.asset_type === 'Video' ? '🎬' : '🖼' }}</span>
-              <div class="asset-info">
-                <input v-if="renamingAssetId === a.asset_id" v-model="renameAssetName"
-                       @keyup.enter="saveAssetRename(a.asset_id)"
-                       @keyup.escape="renamingAssetId=''"
-                       style="font-size:12px;padding:2px 4px;width:100%">
-                <span v-else class="asset-name">{{ a.file_name || '(未命名)' }}</span>
-                <span class="asset-id">ID: {{ a.asset_id }}</span>
-              </div>
-              <span :class="'tag tag-'+(a.status||'processing')">{{ a.status || 'processing' }}</span>
-              <span style="font-size:11px;color:#94a3b8;white-space:nowrap">{{ (a.created_at||'').slice(0,16) }}</span>
-              <button v-if="renamingAssetId !== a.asset_id" @click="startRenameAsset(a)" class="ui-btn ui-btn--sm ui-btn--ghost">重命名</button>
-              <button v-if="renamingAssetId === a.asset_id" @click="saveAssetRename(a.asset_id)" class="ui-btn ui-btn--sm ui-btn--primary">保存</button>
-              <button v-if="renamingAssetId === a.asset_id" @click="renamingAssetId=''" class="ui-btn ui-btn--sm ui-btn--ghost">取消</button>
-              <button v-if="renamingAssetId !== a.asset_id" @click="deleteAsset(a.asset_id)" class="ui-btn ui-btn--sm ui-btn--danger">删除</button>
-            </div>
-          </section>
-
-          <section class="card">
             <h2>4. 生成视频</h2>
-            <label>选择资产 <span style="font-size:11px;color:#94a3b8">（云端必填，作为图1；本地模式可留空）</span>
-              <select v-model="genAssetId" style="margin-top:4px">
-                <option value="">-- 选择已有资产 --</option>
-                <option v-for="a in assets" :value="a.asset_id" :disabled="a.status !== 'active'">
-                  {{ a.status === 'failed' ? '❌ ' : (a.status === 'processing' ? '⏳ ' : '') }}{{ a.file_name || a.asset_id }} [{{ a.status }}]
-                </option>
-              </select>
+            <label>图1 资产 <span style="font-size:11px;color:#94a3b8">（云端必填；本地模式可留空；点击左侧资产卡片即可选择）</span>
+              <div class="fig1-row" style="margin-top:4px">
+                <div class="fig1-thumb" v-if="fig1Asset" @click.stop="openZoom(fig1Asset)" title="点开放大预览">
+                  <video v-if="fig1Asset.asset_type==='Video' && fig1Asset.url" :src="fig1Asset.url" preload="metadata" muted playsinline></video>
+                  <img v-else-if="fig1Asset.url" :src="fig1Asset.url" @error="$event.target.style.display='none'" alt="图1 预览">
+                  <span v-if="!fig1Asset.url" class="asset-thumb-ph">🖼</span>
+                </div>
+                <div class="fig1-thumb" v-else style="cursor:default;color:#94a3b8;font-size:20px"><span>🖼</span></div>
+                <div style="flex:1;min-width:0">
+                  <div v-if="genAssetId" style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ assetNameFor(genAssetId) }}</div>
+                  <div v-else style="font-size:12px;color:#94a3b8">尚未选择——点击左侧「人像资产库」里的卡片</div>
+                  <div v-if="genAssetId" style="font-size:11px;color:#3b82f6">作为「图1」引用: asset://{{ genAssetId }}</div>
+                </div>
+                <button v-if="genAssetId" @click="clearFig1()" class="ui-btn ui-btn--sm ui-btn--ghost">换一个</button>
+              </div>
             </label>
-            <p v-if="genAssetId" style="font-size:11px;color:#3b82f6;margin-top:2px">将在 Prompt 中作为「图1」引用: asset://{{ genAssetId }}</p>
-
-            <label style="margin-top:10px">附加资产 <span style="font-size:11px;color:#94a3b8">（可选，可多选；会按顺序作为图2、图3、...）</span>
-              <select @change="addExtraAsset($event)" style="margin-top:4px">
-                <option value="">+ 添加附加资产</option>
-                <option v-for="a in assets" :value="a.asset_id"
-                        :disabled="a.status !== 'active' || a.asset_id === genAssetId || extraAssetIds.includes(a.asset_id)">
-                  {{ a.status === 'failed' ? '❌ ' : (a.status === 'processing' ? '⏳ ' : '') }}{{ a.file_name || a.asset_id }} [{{ a.status }}]
-                </option>
-              </select>
+            <label style="margin-top:10px">附加资产 <span style="font-size:11px;color:#94a3b8">（可选；在左侧资产卡片点「＋ 附加」加入，按顺序作为图2、图3、...）</span>
+              <div v-if="extraAssetIds.length" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px">
+                <span v-for="aid in extraAssetIds" :key="aid"
+                      style="background:#dbeafe;border:1px solid #3b82f6;border-radius:12px;padding:2px 8px;font-size:12px;color:#1e40af;display:inline-flex;align-items:center;gap:4px">
+                  {{ assetNameFor(aid) }}
+                  <button @click="removeExtraAsset(aid)" class="ui-btn ui-btn--ghost" style="min-height:0;width:auto;height:auto;padding:0 6px;border:none;background:transparent;color:#1e40af;font-size:16px;line-height:1">×</button>
+                </span>
+              </div>
+              <div v-else style="margin-top:4px;font-size:12px;color:#94a3b8">在左侧资产卡片点「＋ 附加」添加</div>
             </label>
-            <div v-if="extraAssetIds.length" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
-              <span v-for="aid in extraAssetIds" :key="aid"
-                    style="background:#dbeafe;border:1px solid #3b82f6;border-radius:12px;padding:2px 8px;font-size:12px;color:#1e40af;display:inline-flex;align-items:center;gap:4px">
-                {{ assetNameFor(aid) }}
-                <button @click="removeExtraAsset(aid)" class="ui-btn ui-btn--ghost" style="min-height:0;width:auto;height:auto;padding:0 6px;border:none;background:transparent;color:#1e40af;font-size:16px;line-height:1">×</button>
-              </span>
-            </div>
-
             <label style="margin-top:10px">上传参考图 <span style="font-size:11px;color:#94a3b8">（可选，会附加在所有选中资产之后）</span>
               <div class="row" style="margin-top:4px">
                 <input type="file" id="vp-extra-files" accept="image/*,video/*,audio/*" multiple style="display:none" @change="onExtraFilesSelect()">
@@ -813,9 +820,12 @@
               <strong>首帧/首尾帧</strong>也必须比例 adaptive。普通参考生视频填正常秒数即可。
             </p>
             <p v-if="statusText && !submitting && statusText !== '空闲'" class="hint" style="margin-top:6px;color:#b45309">{{ statusText }}</p>
-            <button @click="createJob()" :disabled="submitting" class="ui-btn ui-btn--primary" style="margin-top:8px;width:100%">
-              {{ submitting ? statusText : '开始生成' }}
-            </button>
+            <div class="row" style="margin-top:8px;gap:8px">
+              <button @click="createJob()" :disabled="submitting" class="ui-btn ui-btn--primary" style="flex:1">
+                {{ submitting ? statusText : '开始生成' }}
+              </button>
+              <button v-if="_activeVpJobId" @click="cancelJob()" class="ui-btn ui-btn--danger">✕ 取消任务</button>
+            </div>
             <div v-if="events" style="margin-top:8px;font-size:11px;color:#334155;max-height:150px;overflow-y:auto;background:#f8fafc;padding:6px;border-radius:4px;border:1px solid #e2e8f0" v-html="events"></div>
             <div v-for="r in results" style="margin-top:8px">
               <video v-if="r.url" :src="r.url" controls style="max-height:200px;width:100%;border-radius:6px"></video>
@@ -893,6 +903,25 @@
             </details>
           </div>
         </div>
+      <!-- 资产放大预览弹窗（图片 / 视频通用） -->
+      <div class="vp-zoom-backdrop" v-if="zoomOpen" @click="closeZoom()">
+        <div class="vp-zoom-box" @click.stop>
+          <div class="vp-zoom-head">
+            <span class="vp-zoom-title">{{ (zoomAsset.file_name || '预览') }}</span>
+            <button class="vp-zoom-close" @click="closeZoom()" title="关闭">✕</button>
+          </div>
+          <div class="vp-zoom-body">
+            <video v-if="zoomAsset.asset_type==='Video' && zoomAsset.url" :src="zoomAsset.url" controls autoplay muted playsinline></video>
+            <img v-else-if="zoomAsset.url" :src="zoomAsset.url" alt="资产大图" @error="closeZoom()">
+            <div v-else class="vp-zoom-empty">预览不可用</div>
+          </div>
+          <div class="vp-zoom-meta">
+            <span>{{ zoomAsset.status==='active' ? '已就绪' : zoomAsset.status==='failed' ? '失效' : '审核中' }}</span>
+            <span class="vp-zoom-id">ID: {{ zoomAsset.asset_id }}</span>
+            <span v-if="zoomAsset.asset_type">类型: {{ zoomAsset.asset_type === 'Video' ? '视频' : '图片' }}</span>
+          </div>
+        </div>
+      </div>
       </section>
     </div>
   </div>
