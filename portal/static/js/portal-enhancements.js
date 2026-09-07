@@ -487,6 +487,7 @@
       purpose: '节点式组织参考图、提示词和模型。',
       steps: ['新建画布并添加图片/提示词节点', '把节点连接到模型', '运行生成并查看结果'],
       result: '生成结果回到画布，也可在全局历史中查找。',
+      docUrl: 'https://redcqchina.feishu.cn/docx/AUn7dNuY4oghlNxEkulcK2oJnhb',
     },
     'previz': {
       title: '分镜预演',
