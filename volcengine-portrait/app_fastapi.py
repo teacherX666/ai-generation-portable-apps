@@ -316,6 +316,26 @@ async def virtual_job_get(request: Request, job_id: str):
     return await _bridge_call(request, legacy.handle_virtual_jobs_get, job_id)
 
 
+@app.post("/api/virtual/jobs/{job_id}/cancel")
+async def virtual_job_cancel(request: Request, job_id: str):
+    return await _bridge_call(request, legacy.handle_job_cancel, job_id)
+
+
+@app.post("/api/real/jobs/{job_id}/cancel")
+async def real_job_cancel(request: Request, job_id: str):
+    return await _bridge_call(request, legacy.handle_job_cancel, job_id)
+
+
+@app.post("/api/virtual/jobs/{job_id}/retry")
+async def virtual_job_retry(request: Request, job_id: str):
+    return await _bridge_call(request, legacy.handle_job_retry, job_id)
+
+
+@app.post("/api/real/jobs/{job_id}/retry")
+async def real_job_retry(request: Request, job_id: str):
+    return await _bridge_call(request, legacy.handle_job_retry, job_id)
+
+
 # ------------------------- real portrait (delegates to virtual) -----
 
 
@@ -391,6 +411,18 @@ async def api_jobs(request: Request):
 @app.get("/api/jobs/{job_id}")
 async def api_job(request: Request, job_id: str):
     return await _bridge_call(request, legacy.handle_virtual_jobs_get, job_id)
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def api_job_cancel(request: Request, job_id: str):
+    # 统一路径：无限画布 translate.py 按 /api/jobs/{id}/cancel 委派取消
+    return await _bridge_call(request, legacy.handle_job_cancel, job_id)
+
+
+@app.post("/api/jobs/{job_id}/retry")
+async def api_job_retry(request: Request, job_id: str):
+    # 统一路径：无限画布 translate.py 按 /api/jobs/{id}/retry 委派重试
+    return await _bridge_call(request, legacy.handle_job_retry, job_id)
 
 
 @app.get("/api/activity")

@@ -12,6 +12,12 @@ token 做 live 实测 / 并行探查 / 端到端验证把问题一锤定音，�
 靠猜测反复打补丁、反复让用户重启验证。定位生产问题时，能真实复现就真实复现
 （哪怕产生少量出图费用），不要用推断代替证据。
 
+## 本机专属内容在 CLAUDE.local.md
+
+运行状态快照（端口表、plist 环境变量、数据布局）、排障教训、上游同步记录等
+**易变/本机专属内容在 `CLAUDE.local.md`（gitignored，不进仓库）**。
+协作分支合并不覆盖它；新克隆的机器没有该文件也不影响理解仓库结构。
+
 ## 长任务防卡死：产出优先落盘，别攒在上下文
 
 **症状**：写实施 plan / 长文档 / 多步方案时，会陷入"复述状态→摸信息→再复述"的循环，API
@@ -66,12 +72,20 @@ cd dreamina && python3 app.py    # port 8888
 
 ```
 portal/           → Unified SPA + reverse proxy (port 9090)
-├── app.py        → ThreadingHTTPServer: serves static/, proxies /seedance/*, /nano-banana/*, /dreamina/* to sub-apps, tracks usage stats (by_ip), polls job completion
-├── static/
-│   ├── index.html  → 全部 tab（Seedance / 图像生成 / 飞书 Agent / Dreamina / 人像 / 无限画布 / 密钥库 / 统计）
-│   │                 tab 按钮与面板是硬编码的，加子应用要手工改；面板 id 必须是 "tab-" + data-tab
-│   ├── app.js      → Single IIFE: tab switching, form submission, provider binding, stats rendering
-│   └── styles.css
+├── app.py        → ThreadingHTTPServer: serves static/, proxies /<app>/* to sub-apps,
+│                    tracks usage stats (by_ip), polls job completion, watchdog health loop
+├── apps.json     → 子应用注册表（name / port_env / port_default / mount / 统计指标）
+├── ark_errors.py → Ark 错误中文翻译表（seedance/nano-banana/volcengine-portrait 共享）
+├── error_explainer.py → 规则未命中时的 doubao-seed 模型兜底解释（三级降级）
+├── daily_report.py → 飞书日报（usage.json.by_user → CSV + AI 洞察 + 卡片）
+├── cat_skins/    → 猫咪皮肤系统（概念库/实验服务/皮肤生成）
+├── certs/        → 自签证书（IP 变化自动重生）
+└── static/
+    ├── index.html → 全部 tab；tab 按钮与面板硬编码，加子应用要手工改；面板 id 必须是 "tab-" + data-tab
+    ├── app.js    → 各 tab 的 Vue 组件（生成表单/轮询/历史）
+    ├── styles.css
+    └── js/       → portal-{api,analytics,utils,shell,enhancements,rag-interceptor,module-registry}.js
+                    （导航壳/帮助按钮/模块帮助 MODULE_HELP 配置在 enhancements.js）
 
 seedance/         → Video generation (Seedance 2.0 via T8Star or Volcengine Ark)
 ├── app.py        → Full app: HTTP handler, job runner (ThreadPoolExecutor), file upload/download, archive system
@@ -95,6 +109,9 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 └── tests/        → 后端 unittest + core.js node:test
 ```
 
+> 生产子应用大多经 `*_ENGINE=fastapi` 环境变量跑 uvicorn `app_fastapi.py`（经 `_LegacyBridge`
+> 桥接原 stdlib handle_* 处理器）；具体哪个应用跑哪个引擎见 CLAUDE.local.md 端口表。
+
 ## Key Patterns
 
 **Sub-app structure**: Each sub-app is a single `app.py` with:
@@ -107,9 +124,9 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - `/api/jobs` POST creates jobs, GET returns status
 - Archives stored as `.seedance`/`.nanobanana`/`.dreamina` zip files in `archives/`
 
-**Portal proxy**: `_proxy()` 全程流式转发（`shutil.copyfileobj`，64KB 块），**不缓冲响应体**。任务 id 由子应用通过 **`X-Job-Id` 响应头**上报，Portal 据此登记用量（`portal/app.py:2089-2097`）。登记的三个必要条件：POST 路径命中 `_is_job_request` 白名单、响应状态 200/201、`X-Job-Id` 非空。
+**Portal proxy**: `_proxy()` 全程流式转发（`shutil.copyfileobj`，64KB 块），**不缓冲响应体**。任务 id 由子应用通过 **`X-Job-Id` 响应头**上报，Portal 据此登记用量。登记的三个必要条件：POST 路径命中 `_is_job_request` 白名单、响应状态 200/201、`X-Job-Id` 非空。
 
-> 早期实现是「读完整 body 提取 job_id」，因长任务阻塞代理线程已于 #15 改掉。新增子应用若不发 `X-Job-Id`，统计会**静默不计数**（功能全正常、数字永远是 0）。
+> 早期实现是「读完整 body 提取 job_id」，因长任务阻塞代理线程已改掉。新增子应用若不发 `X-Job-Id`，统计会**静默不计数**（功能全正常、数字永远是 0）。**取消接口刻意不发 X-Job-Id（不计数）；重试接口发（新任务重新计费）。**
 
 **Provider system** (seedance, nano-banana): `providers.json` defines available providers with `base_url`, `models[]`, `defaults{}`. Frontend `bindProviderSwitch()` rebuilds model dropdown and updates URL on provider change.
 
@@ -124,7 +141,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - **Jobs are in-memory** — restarting kills running tasks; coordinate with users before restart
 - **Frontend changes are instant** — Portal serves with `Cache-Control: no-cache, no-store, must-revalidate`, clients get new version on refresh without restart
 - **Backend changes require restart** — which terminates all sub-app processes and running jobs
-- **Sub-app ports are fixed** — seedance:8787, nano-banana:8797, dreamina:8888, portal:9090
+- **CLAUDE.local.md 是 gitignored 的个人文件** — 更新状态快照/教训时改它，不要动共享的 CLAUDE.md（协作分支会提交各自的 CLAUDE.md 改动，合并不覆盖 local 文件）
 
 ## File Conventions
 
@@ -134,201 +151,6 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - `logs/` — startup/debug logs; gitignored
 - `providers.json` — provider/model configuration; committed
 - Each app has exactly one `app.py` (no module splitting)
-
-## 当前状态快照（volatile — 修改前 verify）
-
-**verified 2026-07-03**
-
-- **实际启动方式**：`~/Library/LaunchAgents/com.ai-portal.plist`（launchd 守护，`KeepAlive=true`，`RunAtLoad=true`），**不是**双击 `启动器.command`
-- **重启命令**：`launchctl kickstart -k gui/$(id -u)/com.ai-portal`（改 plist 后必须重载，`launchctl list | grep com.ai-portal` 看状态）
-- **cloudflared 隧道仍在运行**（`com.ai-portal-tunnel.plist`，2026-08-24 用户确认：现承载**其他应用**的流量，不再服务本 Portal）；Portal 本身走局域网 HTTPS。**勿动该 plist 与隧道日志**
-- **访问 URL**：`https://<局域网IP>:9090`（自签证书，首次访问需点「高级 → 继续」；IP 每周变化——cert-watch 线程会自动重生证书并重启，前端横幅会提示新地址）；9089 是 HTTP→HTTPS 跳转
-- **Python 路径**：plist 里是 `/opt/homebrew/bin/python3.12`（2026-08-14 实测确认）；**不要**用系统 `/usr/bin/python3`（3.9），它会让所有代理请求静默超时
-- **改 plist 后必须 `unload` + `load`**：`launchctl kickstart -k` 只重启进程、**不重读 plist**（2026-08-14 实测：加了 `INFINITE_CANVAS_ENGINE` 后 kickstart 无效，子应用回退到 stdlib 引擎）
-- **端口表**：
-
-| App | 生产 | 测试 |
-|-----|------|------|
-| Portal | 9090 | 9190 |
-| Redirect (HTTP→HTTPS) | 9089 | 9189 |
-| Seedance | 8787 | 8788 |
-| Nano Banana | 8797 | 8798 |
-| Dreamina | 8888 | 8890 |
-| Volcengine Portrait | 8891 | 8892 |
-| Infinite Canvas | 8893 | 8894 |
-| Previz（分镜布局） | 8896 | 8897 |
-| Feishu Generation Agent | 8765 | — |
-
-- **证书文件**：`portal/certs/{cert.pem,key.pem,lan_ip.txt}`（`_DATA_BASE=certs 目录`，不是 portal/state/）；LAN IP 变化时 `ensure_certs()` 自动重生（`portal/app.py:363`）+ cert-watch 每 5 分钟确认两次后重生并 `os._exit(0)` 让 launchd 拉起
-- **下载映射持久化**：`state/download_files.json`（token→文件路径）
-- **数据布局（2026-07-22 起）**：各子应用的 `outputs/`、`state/`、`archives/`、`uploads/`、`accounts/` 以及 `portal/state/` 已从软链改为**主仓库内的真实目录**，不再依赖 `ai-generation-portable-apps-backup-2026-07-14-1653/`（该 backup 目录已删除，主干数据打包留档在 `~/backup-trunk-2026-07-22.zip`）。迁移时**弃掉了草稿缓存** `state/workspaces/` 和 `state/media/`（历史参考图需用户重传）以及 `portal/state/logs/`。`activity_log.json` / `usage.json` / `users.json` / `accounts.json` 等主干与统计数据完整保留。
-- **飞书产出搬运**：独立服务 `com.feishu-output-sync`（launchd，**独立于 com.ai-portal**）常驻轮询 `feishu-output-sync/sync.py`，把各子应用 outputs 增量搬进「每人一张多维表格」（组织内可编辑）。日志 `~/Library/Logs/feishu-output-sync.log`；配置 `feishu-output-sync/config.json`（gitignored）。
-- **每日清理**：独立服务 `com.ai-portal-cleanup`（launchd，每日 03:47）跑 `tools/cleanup_daily.py --apply`：outputs 保留 14 天（命中飞书 synced 表指纹→直接删，未命中→回收站；`volcengine-portrait/视频生成合集` 也在 outputs 白名单内）、workspaces 超 30 天未编辑的 media/ 删除（preset.json 保留）、download_files.json 失效 token 剪枝、超大日志截断（agent 日志 >100MB、portal 子应用日志 >50MB）、回收站二次清理（`~/.Trash/ai-portable-cleanup-*` 超 30 天彻底删除，只认精确目录名模式）。**统计数据（usage.json 等）一律不碰**。日志 `~/Library/Logs/ai-portal-cleanup.log`；脚本改动即时生效，plist 改动需 unload+load。
-
-## 无限画布 2026-08-19 上游同步（新增功能）
-
-从 `~/ai-creation-canvas`（上游 fork）同步了 8/14 之后 72 个提交的功能，**translated** 进 `infinite-canvas/`：
-
-- **画布改进**：preset 参数控件（Ark 尺寸 1K..4K + 自定义宽x高，schema 用 `x-ark-size`）、结果派生引用 `job-result.{jobId}.{index}`（翻译层 `_resolve_asset` 解析，前端 deriveResultAssetId 生成）、nanoid 替代 crypto.randomUUID（plain-HTTP 浏览器修复）、提交超时 600s。
-- **Ark 人像素材库**：画布右下角「人像资产库」按钮 → 上传 PNG/JPEG/WebP（10MB 内、**宽高 300-6000px**，方舟硬限制）→ TOS PUT → CreateAsset 进方舟 AIGC 素材库 → 本地副本保留，生成时走本地字节。配置 `infinite-canvas/state/asset-library.json`（gitignored，已从 volcengine-portrait config 派生）；**SK 一律原始值**，勿 base64 解码（控制台复制值恰好是合法 base64，解码 = SignatureDoesNotMatch）。后端模块 `ark_library.py`。
-- **ComfyUI 工作流库**：管理员侧边栏「工作流库」→ 导入/预览/导出/启停工作流；`execution_available` 恒 False（执行切片上游也没交付）。服务配置 `state/comfyui-services.json`（可选）；启用但未配置服务时 409。放行策略：**启用即全员可见**（上游按人授权在 Portal 形态不可用）。模块 `comfy_lib.py`（解析/校验）+ `comfy_api.py`（API）。
-- **TOS 预签名 GET 的坑**：canonical_headers 必须以 `\n` 结尾、模板再补 `\n`（即空行），否则 SignatureDoesNotMatch —— 与 AWS SigV4 不同，与 volcengine-portrait/app.py:246-254 一致。
-- **跳过**：注册/密码管理/凭证池/后台日志等上游服务端功能（Portal 负责身份与统计，见 docs/infinite-canvas/01-前端改造.md 的裁剪原则）。
-- 上游同步点：`c3d5aed` → `b7abf47` 选择性移植（8/28 窗口 6d1d2c6→8c355b3 全量 12+4 项见 docs/infinite-canvas/05-上游同步；9/2 窗口 8c355b3→b7abf47 移植：取消任务（后端委派子应用 POST /api/jobs/{id}/cancel + 前端 CancelJobDialog/节点/托盘按钮）、画布 undo/redo （useCanvasUndo 100 条快照 + 右键菜单快捷键提示）、提交前守卫（translate.py 参数/端口校验中文原因）、可折叠节点侧栏。跳过：三级角色权限、admin 帮助页（Portal 自管身份）、飞书分镜提示词模板（待确认）。前端单测 471 全过；四个生成子应用 + Portal tracker 的取消后端已于 2026-09-02 17:18 随生产重启生效。
-
-## 稳定教训（跨版本长期有效）
-
-### 部署与重启
-
-- 改 `启动器.command` 或 shell 里 `export ENV=...` **不生效**：launchd 不读用户 shell 环境，只读 plist 的 `EnvironmentVariables`
-- `kill` Portal 进程没用：`KeepAlive=true` 会立刻拉起。要 `launchctl unload` 或 `kickstart -k`
-- 「关外网通道」= `launchctl unload com.ai-portal-tunnel.plist`，不是 `pkill cloudflared`（pkill 后 launchd 立刻拉起）
-- 用户手动 `Start All.command` 不杀旧进程，会因 `Errno 48 Address already in use` 静默启动失败继续跑旧代码
-- **重启后必须 verify**：`ps -p <PID> -o command=` 确认 Python 路径、`lsof -iTCP -sTCP:LISTEN -P -n | grep -E "9090|8787|8797|8888|8891"` 确认端口、对比进程启动时间 vs 代码修改时间
-- Portal 是 HTTPS，`curl` 测试必须带 `-k`（Connection reset by peer 不是 bug）
-
-### 前端 iframe 缓存
-
-- 子应用 JS 由 `SimpleHTTPRequestHandler` 直接返回，**不带 Cache-Control**，浏览器按启发式缓存旧 JS 导致修复不生效
-- Portal `_proxy()` 已对 `.html/.js/.css/.mjs` 强制加 `Cache-Control: no-cache, no-store, must-revalidate`
-
-### 子应用内多标签（seedance / nano-banana）
-
-- 顶部有页面级 tab 栏，切 tab = 换 `activeTabId` + 保存当前 draft 到 `<app>.workspace.<id>` + 从 localStorage 恢复目标 draft
-- **tab 栏必须放在 `<main class="app">` 之外**（`<div id="sd-app">`/`<div id="nb-app">` 的直接子元素），`.app` 是两列 CSS Grid（`360px + 1fr`），tab 栏塞进去会抢 sidebar 格子，`#111827` 深背景撑满 360×100vh → 黑块 bug（`677c088` 修）
-- 所有 `api(url, ...)` 请求自动带 `?ws=<activeTabId>`，`window._activeWorkspaceId` 在 init/newTab/switchTab/_forceCloseTab 都要更新；老 `X-Workspace-Id` header 保留兼容
-- `pollJob` 是 tab-scoped：startWsId 快照 → 每次 setState 判断当前 activeTabId 是否变了，切走时写 `_tabStateCache[wsId]`（含 `_latestJob` 快照）；切回来 `loadTargetTabState()` 从 cache 恢复 statusText/eventsText/DOM
-- `tab.running` 由每 5s 一次的 `loadJobs()` 从 `/api/jobs` 拉，按 `workspace_id === t.id && !TERMINAL_STATUSES.has(status)` 聚合；nano-banana 的 `/api/jobs` list handler 是 Task 0 补的
-- `_renderJobToDom(job)` 只写 `#sd-results`/`#nb-results`（结果面板）；events 靠 reactive `eventsText`（seedance 也写 `#sd-events` 是历史行为，nano-banana 不写）
-- **老 localStorage 兼容**：首次 init 找不到 `<app>.tabs` 时用旧 `workspace_id` 键作为默认 tab id，历史 draft 不丢
-- 最后 1 个 tab 不允许关；关有任务的 tab 弹确认 modal（`_closeConfirmTabId`）；modal-overlay 是 `position:fixed;inset:0;z-index:1000`，v-if 一定要正确控制
-
-### 自签 HTTPS 下载
-
-- **`<a href download>` 直接 click 会失败**：浏览器下载管理器把它当独立请求重新校验证书，自签容忍度比页面上下文严格 → Chrome 报「检查互联网连接」
-- **修复模式**：`fetch(url) → resp.blob() → URL.createObjectURL(blob) → <a href="blob:..." download>`（blob: 协议绕过下载管理器）
-- 已修位置：`portal/static/app.js`、`seedance/static/app.js`、`nano-banana/static/app.js` 的 `_blobDownload`
-- 副作用：整个文件读入内存，长视频（几十-上百 MB）需监控
-
-### Portal 下载代理链路
-
-- 链路：iframe `<a download>` → `GET /<app>/api/download/{token}` → Portal `_proxy()` → 子应用 `FILES.get(token)` → `Content-Disposition: attachment` → 文件字节
-- **双层缓冲瓶颈**：`_proxy()` 用 `resp.read()` 读完整个响应体后才转发，子应用 `path.read_bytes()` 也整读；50-200MB 视频会在内存里出现两份
-- 2026-06-18 流式代理尝试失败：`http.server` 不是为流式响应设计的（`send_response`/`send_header` 追加 `_headers_buffer`，`wfile` 在 HTTPS 下是 SSL-wrapped，flush 行为不可控）
-- 三个文件端点区别：`/api/media/*` 和 `/api/preset-media/*` 无 `Content-Disposition` + `Cache-Control: no-store`；`/api/download/*` 有 `attachment` 但**缺** Cache-Control
-
-### Seedance 素材引用（provider=volcengine）
-
-- **image/***：返回 `data:<mime>;base64,<...>` data URL；**不要**改走 `/files`，会被 generation tasks 以 `content[1].image_url.url is empty` 拒
-- **video/*、audio/***：**不能上传本地文件**。Ark Files API `/api/v3/files/{id}/content` 对 Bearer 用户返 404 InvalidAction；`asset://` 需 SigV4 OpenAPI（Bearer key 用不了）
-- 唯一可行：让用户在 JSON API 提交 `media.<field>.url`（公网 https），代码通过 `external_urls`（VALUE_FIELDS 里的 JSON 字符串）透传给 `build_payload`
-- 本地上传（multipart）走视频/音频会触发 `RuntimeError` 提示切 t8star 或自托管 URL
-- t8star 兼容 `/v1/files` 全媒体上传都 work，这条规则只针对 volcengine
-
-### Dreamina 双守卫陷阱
-
-- 有**两层独立 admin 守卫**：后端 `_is_admin(X-Is-Admin)` + 前端 `v-if="isAdmin"`
-- 新端点必须两层都过一遍，否则出现「后端开放但前端不显示」或「前端显示但点了 403」
-- **admin-only 颗粒度到按钮**，不要包整个区块，普通用户要能看到「能做的事」+「不能做的事变灰」
-- 前端所有 `api()` 调用方必须检查 `res?.ok`，不能假设乐观更新成功（否则 UI 显示切换成功但后端没变 → 任务用错账号 → CreditPreDeductNotEnough）
-- 当前放权：列账号/切 active/改调度模式/刷新余额/登录/登出**开放**；添加/删除/重命名/更新 CLI/install-cli 仅 admin；目录相关仅本机
-
-### Dreamina 前端格式双兼容
-
-- Dreamina 有**两套前端**：独立前端（`dreamina/static/app.js`）发 JSON，Portal 前端（`portal/static/app.js`）发 FormData（multipart）
-- Handler 必须双兼容：参照 `handle_preset_save` 检测 Content-Type 分流
-- 字段名也要兼容：Portal FormData 用 `archive_name`，独立前端 JSON 用 `name`
-- seedance/nano-banana 无此问题（两套前端都发 FormData）
-- **生产用户看到的是 Portal 前端**（Portal 原生 Vue 组件，不是 iframe；seedance/nano-banana 才是 iframe）——改 dreamina UI 前先确认改的是 `portal/static/app.js` 还是 `dreamina/static/app.js`。直连 8888 的独立前端正常没人访问，改错位置会「代码改了但用户没反应」
-- **媒体 URL 前缀**：Portal 前端里 dreamina 视频/图片 src 拼成 `/dreamina/outputs/xxx`，走 Portal `_proxy` 转发到 dreamina 8888 的 `serve_file`；独立前端拼 `/outputs/xxx`（走 dreamina 后端直接 dispatch）——两种都过 `serve_file`，Range 支持是必须的（视频 `<video>` 元素需要 Range 拿 metadata 才能画首帧）
-- **`<video>` preload 陷阱**：默认 `preload="none"` = 灰底占位，浏览器不会 fetch metadata；缩略图预览要写 `preload="metadata" muted playsinline`；`<img>` 无此问题
-
-### Seedance 提示词优化
-
-- `POST /api/optimize-prompt` 走 DeepSeek `deepseek-chat` + `seedance/SKILL.md`（229 行）作 system prompt
-- **DeepSeek API Key 硬编码在 `app.py` 顶层常量 `DEEPSEEK_API_KEY`**，不进 `providers.json`（后者通过 `/api/config` 暴露给前端）
-- `SEEDANCE_SKILL` 模块加载时读入内存，启动后不再读文件
-- SKILL.md 末尾追加了「非交互模式」指令禁止 DeepSeek 反问
-- 前端用正则只提取「优化后提示词」段，丢弃附录
-- `.optimizeResult pre` 需显式覆盖全局 `pre { background: #101828 }`，否则黑底黑字
-
-### Volcengine Portrait 子应用要点
-
-- **ProjectName 硬编码 `Seedance2.0`**（所有 Action 无例外），`handle_virtual_groups_post` 移除了从请求体覆盖能力
-- **MJ 前缀过滤有两处独立实现**：`infinite-canvas/ark_library.py` 和 `volcengine-portrait/app.py` 的 `_is_mj_named`（列表不展示 MJ/mj 开头的组和资产）。改过滤规则要两处同步改；2026-09-02 只改了画布侧，人像资产库照样显示 56 个 MJ 组
-- **真人认证是控制台流程，没有 API**：真人和虚拟素材最终都是 `asset://` 引用，Real handler 全部委托给 Virtual handler
-- **Ark Files API `purpose` 只接受 `user_data` 或 `agent`**（`private-avatar` 会 400；旧文档写错了）
-- CreateAsset 需要**公开可访问的 HTTP/HTTPS URL**，Ark v3 上传后返回的 URL 需 Bearer Token → TOS 后端拉不到 → 走 `_upload_to_public_host()` 传 uguu.se
-- **Portal 需 do_DELETE + Access-Control-Allow-Methods: DELETE**（SimpleHTTPRequestHandler 默认不支持 DELETE，返 501 HTML 会让前端解析失败）
-- Windows `cgi.FieldStorage` 必须显式传入 `CONTENT_LENGTH` 到 environ
-- SK 是原始值，**不做 base64 解码**，`_normalize_sk() = return raw_sk`
-
-### 端口冲突（release 打包）
-
-- seedance / nano-banana **release zip 曾共用 8787-8899 窗口**，Windows 用户 seedance 打开命中 nano-banana Tab
-- 加新子应用时**务必**给每个 100 端口独立窗口：.bat 的 `for($p=...;$p -le ...)` 与 app.py 的 `os.environ.get("PORT", "...")` 默认值同一窗口且互不重叠
-- 改完必须**重新打包 release/*.zip**，否则 Windows 用户拿到的还是旧版
-
-### 存档 CRUD（PetiteVue v-model + v-for select 陷阱）
-
-- 删除存档后 `selectedArchive` 不显式重置，浏览器自动选第一个但 Vue 数据仍指向已删除值 → 「读取」发送不存在的名字 → 400
-- 修复模式（4 个函数 × 3 个子应用都改）：`loadArchives()` 校验 selected 是否还在列表；`saveArchive()` 后刷新并显式选中新存档；`loadArchive()` 加空值防御；`deleteArchive()` 加 `confirm()`、删后刷新+重置
-
-### 飞书 Agent 视觉模型与 image 模式规划（2026-08-20 排障）
-
-- 视觉模型配置在 `feishu-generation-agent/.env` 的 `CLAUDE_API_KEY` / `CLAUDE_BASE_URL` / `CLAUDE_MODEL`（ChatAnthropic 走 t8star `.org`）；改后 `launchctl kickstart -k gui/$(id -u)/com.feishu-generation-agent` 重启
-- **image 模式 planner 排序契约**：校验器 `planner.py::_normalize_generated_plan_payload` 要求 `reference_images` 按**文档素材顺序**排列（`@图片N` 编号顺序）；prompt 契约里绝不能写别的排序规则——曾写「按 角色→场景→概念→风格 排列」与校验器矛盾，导致 deepseek 规划连挂 3 次、所有图片需求 run 全失败
-- **image 模式 prompt 缺 token 同理**：`validate_image_prompt` 检查的是模型**原始 prompt**（不是 prompt_slots 拼装版），参考图一多模型必漏写个别 `@图片N` → 在 `_normalize_generated_plan_payload` 里用 `reference_tokens` 同源编号把漏掉的 token 确定性补齐到 prompt 尾部，不靠模型重试（2026-08-20 修）
-- **审批页编辑是热修改**（2026-08-20）：提示词/任务字段改动即时 `PATCH /api/runs/{id}/tasks/{task_id}` 落服务端草稿（`runtime.patch_task`），参考图用途/顺序走既有 references PATCH；浏览器本地草稿只剩任务勾选（`mutate()` 刷新后恢复勾选）。**手工改 prompt 时清空 `prompt_slots`**，否则 `_assemble_prompt_from_slots` 会在下次校验时用槽位拼装覆盖手工内容——这是「改了提示词没生效」的根因
-- **拼装模板的「参考图一」**：`build_image_prompt` 里固定句式「画面风格严格参考图一」指风格参考图整体；风格槽位有多张 token 时必须列全（`image_prompt.py::_style_tokens` 从「的画风」前缀提取），否则需求方读起来像只参考第一张
-- **画面比例 ≠ 交付尺寸**（2026-08-20 需求方反馈）：文档里的 1700\*2500 是交付尺寸（进 size_variants），生成模型只接受离散比例（`plan.py::IMAGE_ASPECT_RATIOS` 9 档，与 seedream 一致）；`nearest_image_aspect_ratio` 把抄错的比例确定性归一到数值最近档（1700:2500 → 2:3）。**交付裁剪是人工开关 `delivery_crop`**（默认 False 原图直出；True 才按 size_variants 居中 cover_crop）——此前一律强制裁到 1700x2500，低分辨率成图被放大后观感像「过度拉伸」
-- **t8star 令牌会被面板禁用**（HTTP 401「该令牌状态不可用」）：排障时逐个 key 实测，别假设 key 还活着。2026-08-20 实测：agent 视觉 key 与 nano-banana `state/secrets.json` 的 key 可用；seedance 预设 key 和 openclaw 两个 `.cn` key 已禁用
-
-### 分镜布局（previz）3D 子应用要点
-
-- **静态目录注入是死代码**：`Handler.directory = str(STATIC_DIR)` 在 `SimpleHTTPRequestHandler.__init__` 里被忽略（directory=None → `os.getcwd()`）；正确做法是 `functools.partial(Handler, directory=str(STATIC_DIR))`。任何 cwd 非 app 目录的启动（含 launchd）都会静默 404 全部静态文件
-- **three r170 只支持 WebGL2**（无 WebGL1 回退，构造 renderer 直接抛）；浏览器探针要测 `webgl2` 且必须在 `new THREE.WebGLRenderer` **之前**执行，否则兜底页不可达
-- **ES module + import map 是零构建约束下的选型**：vendor 是 `build/three.module.js` + `examples/jsm/controls/OrbitControls.js`（后者裸 `import 'three'`，靠 `<script type="importmap">` 解析）；需要 Chrome 89+ / Safari 16.4+
-- **import map 的值必须是 URL（带 `./` 前缀）**：`{"imports":{"three":"vendor/three.module.js"}}` 是裸 specifier，HTML 规范拒绝、Chrome 忽略该条目 → `import 'three'` 解析失败 → **整个模块脚本从未执行**，UI 是静态 HTML 照样显示、按钮全死——curl 和静态检查都发现不了，必须真浏览器跑（`previz/tests/smoke-browser.mjs` 就是为这个加的，playwright 复用 `infinite-canvas/web/node_modules` + 系统 Chrome）
-- **`[hidden]` 会被作者样式覆盖**：`display:flex` 类样式会盖掉 UA 的 `[hidden]{display:none}`，全屏遮罩（modal/错误页）必须补 `[hidden]{display:none !important}` 全局兜底
-- **三个对象的 `add()` 有 removeFromParent 语义**：同一 mesh 不能既挂关节又挂集合组（第二次 add 会把第一次摘掉）
-- **OrbitControls 与对象拖拽冲突**：pointerdown 命中对象时 `controls.enabled=false`，pointerup 恢复
-- **渲染必须按需，禁用常驻 rAF 循环**：空闲 60fps 持续 WebGL 会压满 GPU、把 macOS WindowServer 图形合成进程饿死（主线程 80s 无响应 → 看门狗强杀 = 整机崩溃/注销，2026-08-31 实锤两次）。模式：模块级 `requestRender()`（rAF 合并去重，帧内 controls.update + updateLabels + render），从 setDirty/select/onViewportMove/controls change/loadShotIntoScene/resize 等所有交互路径触发；冒烟测试用 `renderer.info.render.frame` 断言「空闲 2.5s 帧计数静止、拖拽后增长」
-- 前端模块单文件 app.js（ES module，`<script type="module">`）；core.js 是 node 可测纯逻辑（姿势表/景别/画幅常量都在这里）；node 语法检查要复制成 `.mjs` 再 `node --check`（否则按 CommonJS 解析误报）
-
-### 轮询渲染去重（2026-09-02 卡顿修复）
-
-- **「点提交后页面很卡」根因不是提交本身**（实测 POST 145ms、点击→已提交 169ms、零长任务），而是运行期轮询渲染：2.5s 轮询每次整卡 `innerHTML` 重建 + 自动重新加载第一个视频/全部结果图，任务跑多久就反复销毁重建多久
-- **修复模式（seedance/nano-banana/dreamina 三处已修）**：结果区拆成「状态卡」「结果卡」两个容器（`display: contents` 包装，不影响 `.results` 网格与 `grid-column:1/-1`）；状态卡按签名去重重建，结果卡只 `insertAdjacentHTML` 增量追加；容器缺失或 `_renderedJobId` 变化时全量重建（覆盖 submit 清空/切主题）
-- **`innerHTML +=` 会销毁全部旧子元素**（重解析），追加必须用 `insertAdjacentHTML('beforeend', ...)`，否则正在播放的 `<video>` 还是被重拉
-- **事件委托不能挂在 `v-if` 区域内的容器上**：`#sd-results` 在 `v-if="statusText !== '空闲'"` 里，init 时是 null → `if (dlContainer)` 静默跳过 → 运行卡的视频点击/下载按钮一直是死的。委托挂页面常驻元素（`#sd-app`）
-- **自动预览只播第一个结果**（prev.count===0 时 click 索引 0）：每个新结果都自动预览会让 repeat 任务挂 N 条并发视频流——客户端解码 + Portal 整文件缓冲双重压力（实测 5 条流吃服务机 27% CPU）。「页面卡死、刷新恢复」的机制：任务跑得越久流的视频越多 → 页面越卡；刷新时任务已结束 → 切到历史视图（惰性占位）→ 恢复。2026-09-02 修
-- 验证手段：`/tmp/verify-render-dedupe.mjs` 式 playwright 断言（事件刷屏 10 次结果卡 DOM 元素引用不变、新结果只追加、切任务无残留）；页面加载后 `statusText` 是「空闲」时 `#sd-results` 不存在，测试要先设 statusText 再等 v-if 渲染
-
-### 主线程 TLS 握手楔子（2026-09-02 断服根因）
-
-- **症状**：端口在听、子应用全正常，但所有 HTTPS 客户端挂起（TCP 能连、TLS 握手永不完成）；`sample <pid>` 显示 main thread 100% 卡在 `_ssl__SSLSocket_do_handshake_impl` → `sock_read`
-- **根因**：`ctx.wrap_socket(server.socket, server_side=True)` 默认 `do_handshake_on_connect=True`，CPython 的 `SSLSocket.accept()` 会在**主线程**里同步完成每个新连接的握手且**无超时**——一个连上后不发字节的半开连接（扫描器/休眠的浏览器/断网的同事）就把 accept 循环永久楔死
-- **修复**（`portal/app.py`）：wrap 时 `do_handshake_on_connect=False`（握手推迟）+ `Handler.setup()` 里 `conn.settimeout(10)` 后显式 `do_handshake()`，失败静默关闭（readline 读空 → handle_one_request 自行收尾，无 traceback 噪音），成功后 `settimeout(None)` 恢复阻塞语义
-- **验证**：`/tmp/test-tls-wedge.py` 式最小复刻——raw socket 只 connect 不发字节，同时 curl 真 HTTPS 必须照常 200，坏连接 ~10s 被服务器关闭
-- 排查用的 `sample <pid> N` 要抓全量线程栈（`-file`），只 grep 前 12 行会漏掉深层的 ssl 帧
-
-### 人像楔死两连击（2026-09-02 下午断服根因，13:37 引入 → 17:18 修复）
-
-- **症状**：人像每 5-15 分钟楔死一次——所有端点挂起含 /health、TCP 能连；watchdog 每 10+ 分钟杀一次，任务全丢；13:52 起 0 成功（28 条孤儿 running）
-- **根因 1（锁重入自锁死）**：`44898ad` 取消功能在 `_run_virtual_job_impl` 收尾块里 `with JOBS_LOCK:` 内调 `_job_cancel_requested`，而它内部**再次** `with JOBS_LOCK:`——threading.Lock 非重入，同一线程二次 acquire 自锁死并**永久占锁**。任务一完成 worker 就死，随后任何拿 JOBS_LOCK 的请求（含 Portal 统计每 15s 的 `GET /api/jobs/{id}`）全部排队 → 全站冻结。**修复**：锁内直接读 `job.get("cancel_requested")`（seedance 同段即此写法，移植时抄错）
-- **根因 2（结构缺陷）**：`app_fastapi.py` 的 `_bridge_call` 把同步 legacy 处理器直接跑在 asyncio 事件循环线程——一次慢 Ark 调用/重试退避（最多 6 次 × 120s + 63s 退避）或锁等待就冻结整个 uvicorn。**修复**：`run_in_threadpool` 移出事件循环（并发实测 /health 保持 ~1ms）。**教训**：async 端点里跑阻塞代码 = 全站单点故障；FastAPI 同步 `def` 端点自带线程池，`async def` 里必须手动卸载
-- **看门狗盲区**：watchdog 只用 TCP connect 探活——HTTP 层卡死时 connect 依然成功，楔子存活 10+ 分钟直到 backlog 打满。**修复**（`portal/app.py`）：升级为 HTTP GET 探针（**任何响应含 404 都算活**，TCP 通但 HTTP 无响应计 unhealthy），发现时间 → ~45s
-- **诊断钩子**：`app_fastapi.py` 启动时 `faulthandler.register(signal.SIGUSR1, file=logs/fault.log, all_threads=True)`——再楔死时 `kill -USR1 <pid>` 拿全线程 Python 函数栈（无需 root，替代 py-spy）
-- **时间线定位法**：卡死任务起始时间（activity_log）↔ 可疑提交时间（`git log -1 --format=%ci`）↔ 进程启动时间（`ps -o lstart`）三者对齐即可定罪，不用等复现
-
-### 通用调试直觉
-
-- 「重启后仍报旧 bug」→ 先查旧进程是否被杀、端口是否释放、进程启动时间是否晚于代码修改时间
-- 错误日志中的代码**行号和当前代码对不上**，说明在跑旧代码
-- Portal 代理返回但端口 PID 早于 Portal 启动时间 → 孤儿子进程，必须 `kill -9` 清端口
-- 换 IP / 换 LAN 后 HTTPS 拒连 → 删 `portal/certs/cert.pem`+`key.pem`（保留 lan_ip.txt）让 `ensure_certs()` 重生
-- 前端所有 fetch/api 调用检查 `res.ok`，别乐观更新
 
 ## 外部 API 参考
 

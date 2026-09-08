@@ -2,13 +2,13 @@
 chcp 65001 >nul
 setlocal EnableExtensions EnableDelayedExpansion
 
-title AI Generation Portal
+title RedCraft
 
 set "ROOT=%~dp0"
 cd /d "%ROOT%portal" || goto fail
 
 echo ========================================
-echo   AI Generation Portal
+echo   RedCraft
 echo ========================================
 echo.
 

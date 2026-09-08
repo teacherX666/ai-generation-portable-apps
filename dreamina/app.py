@@ -1035,6 +1035,180 @@ def update_activity(activity_id: str | None, **updates: Any):
             return
 
 
+# ─────────────────────────────────────────────────────────────
+# 任务队列持久化（2026-09-04）：更新重启不再丢任务
+# 排队中的任务重启后自动重新入队；运行中的任务标记「服务更新中断」
+# 并给 retryable 标记（复用现有 handle_retry 重试）。重放数据取自
+# activity_log 的 request 字段（参数 + 上传文件相对路径在创建时已落盘）。
+# ─────────────────────────────────────────────────────────────
+BACKLOG_PATH = STATE_DIR / "jobs_backlog.json"
+
+
+def _backlog_load() -> dict[str, Any]:
+    try:
+        if BACKLOG_PATH.exists():
+            data = json.loads(BACKLOG_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _backlog_save(backlog: dict[str, Any]) -> None:
+    try:
+        _atomic_write(BACKLOG_PATH, json.dumps(backlog, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _backlog_set_locked(job_id: str, **fields) -> None:
+    """调用方必须已持有 LOCK（写入文件在锁内，避免与恢复逻辑交错）。"""
+    backlog = _backlog_load()
+    backlog[job_id] = {**(backlog.get(job_id) or {}), **fields}
+    _backlog_save(backlog)
+
+
+def _backlog_remove_locked(job_id: str) -> None:
+    backlog = _backlog_load()
+    if job_id in backlog:
+        backlog.pop(job_id, None)
+        _backlog_save(backlog)
+
+
+def _job_record_from_activity(act: dict[str, Any], job_id: str) -> dict[str, Any]:
+    """从活动记录的 request 重建可执行的任务记录（校验素材文件仍在）。"""
+    req = (act or {}).get("request") or {}
+    if not isinstance(req, dict):
+        raise ValueError("request 数据缺失")
+    params = dict(req.get("params") or {})
+    task_type = str(req.get("task_type") or "")
+    if not task_type:
+        raise ValueError("task_type 缺失")
+    total = int(req.get("total") or 1)
+    concurrency_val = int(req.get("concurrency") or 1)
+    uploaded_paths_rel = req.get("uploaded_paths") or {}
+    uploaded_paths: dict[str, list[Path]] = {}
+    for key, rel_paths in (uploaded_paths_rel.items() if isinstance(uploaded_paths_rel, dict) else []):
+        resolved = [ROOT / str(rel) for rel in (rel_paths or []) if (ROOT / str(rel)).is_file()]
+        if resolved:
+            uploaded_paths[key] = resolved
+    return {
+        "job_id": job_id,
+        "activity_id": str(act.get("id") or ""),
+        "task_type": task_type,
+        "status": "pending",
+        "total": total,
+        "done": 0,
+        "concurrency": concurrency_val,
+        "output_name": params.get("output_name", ""),
+        "output_dir": params.get("output_dir", ""),
+        "client_ip": "",
+        "events": [{"time": time.strftime("%H:%M:%S"), "message": "服务重启后自动恢复入队"}],
+        "results": [], "errors": [],
+        "params": params,
+        "uploaded_paths": {k: [str(p.relative_to(ROOT)) for p in v] for k, v in uploaded_paths.items()},
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "submitted_at": time.time(),
+        "started_at": None, "finished_at": None,
+        "started_epoch": None, "finished_epoch": None,
+        "username": str(act.get("username") or ""),
+        "result": None, "error": None, "retryable": False,
+        "account_id": None,
+    }, uploaded_paths, params
+
+
+def recover_backlog() -> tuple[int, int]:
+    """启动时恢复：queued → 自动重新入队；started → 标记服务更新中断。"""
+    recovered = 0
+    interrupted = 0
+    backlog = _backlog_load()
+    if not backlog:
+        return 0, 0
+    activities = {str(a.get("id")): a for a in read_activity_log()}
+    for job_id, meta in list(backlog.items()):
+        activity_id = str(meta.get("activity_id") or "")
+        try:
+            act = activities.get(activity_id) or {}
+            if meta.get("stage") == "started":
+                # 运行中被重启打断：记录带 params/uploaded_paths，前端可直接用现有重试
+                req = (act.get("request") or {}) if isinstance(act, dict) else {}
+                params = dict((req or {}).get("params") or {})
+                with LOCK:
+                    JOBS[job_id] = {
+                        "job_id": job_id, "activity_id": activity_id,
+                        "task_type": str((req or {}).get("task_type") or ""),
+                        "status": "failed",
+                        "total": int((req or {}).get("total") or 1), "done": 0,
+                        "concurrency": int((req or {}).get("concurrency") or 1),
+                        "output_name": params.get("output_name", ""),
+                        "output_dir": params.get("output_dir", ""),
+                        "client_ip": "", "events": [], "results": [],
+                        "errors": ["服务更新重启，任务中断——请点击「重试」重新提交。"],
+                        "params": params,
+                        "uploaded_paths": (req or {}).get("uploaded_paths") or {},
+                        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "submitted_at": time.time(),
+                        "started_at": None, "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "started_epoch": None, "finished_epoch": time.time(),
+                        "username": str(act.get("username") or meta.get("username") or ""),
+                        "result": None,
+                        "error": "服务更新重启，任务中断——请点击重试",
+                        "retryable": True,
+                        "account_id": None,
+                    }
+                    _backlog_remove_locked(job_id)
+                update_activity(activity_id, status="failed",
+                                error="服务更新重启，任务中断——请点击重试",
+                                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"))
+                interrupted += 1
+                continue
+            # 排队中：重建记录并重新提交执行
+            job, uploaded_paths, params = _job_record_from_activity(act, job_id)
+            selected = select_prepared_account_for_job()
+            if not selected.get("ok"):
+                raise ValueError(selected.get("error") or "无可用即梦账号")
+            env_override = selected.get("env_override")
+            with LOCK:
+                JOBS[job_id] = job
+                JOBS[job_id]["account_id"] = selected.get("account", {}).get("id")
+                _backlog_set_locked(job_id, stage="queued", activity_id=activity_id,
+                                    username=job["username"])
+                _prune_jobs_locked()
+            cfg = load_config()
+            is_video = "video" in job["task_type"] or "frame" in job["task_type"]
+            poll_timeout_s = cfg["poll_video"] if is_video else cfg["poll_image"]
+            cli_timeout = max(120, poll_timeout_s)
+            # build_cli_args 是纯函数（不使用 self），以模块函数形式调用
+            args = Handler.build_cli_args(None, job["task_type"], params, uploaded_paths, cfg)
+            EXECUTOR.submit(execute_task, job_id, job["task_type"], args,
+                            {"timeout": cli_timeout, "env_override": env_override})
+            recovered += 1
+        except Exception as exc:
+            with LOCK:
+                JOBS[job_id] = {
+                    "job_id": job_id, "activity_id": activity_id,
+                    "task_type": "",
+                    "status": "failed",
+                    "total": 1, "done": 0, "concurrency": 1,
+                    "output_name": "", "output_dir": "", "client_ip": "",
+                    "events": [], "results": [],
+                    "errors": ["服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）"],
+                    "params": {}, "uploaded_paths": {},
+                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "submitted_at": time.time(),
+                    "started_at": None, "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "started_epoch": None, "finished_epoch": time.time(),
+                    "username": str(meta.get("username") or ""),
+                    "result": None,
+                    "error": "服务更新重启，任务中断",
+                    "retryable": False,
+                    "account_id": None,
+                }
+                _backlog_remove_locked(job_id)
+            interrupted += 1
+    return recovered, interrupted
+
+
 def activity_summary_for_client(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": item.get("id"),
@@ -1127,6 +1301,17 @@ def parse_cli_json(stdout: str) -> dict[str, Any]:
 # 码，只有英文文案）。命中返回中文说明；未命中返回 None，调用方保留原文
 # （原始 stderr 已进 events 日志，便于排障）。顺序即优先级，先命中先返回。
 _CLI_ERROR_TRANSLATIONS = (
+    # 2026-09 活动日志高频错误补录（顺序即优先级，具体关键词在前）：
+    # "generation failed: pre-TNS/post-TNS check did not pass"（9+2 次）——TNS 是平台内容安全预检/复检
+    ("tns", "内容安全审核未通过（平台预检/复检失败），请调整素材或提示词后重试"),
+    # "upload resource: read file: open: no such file or directory"（7 次）——CLI 上传目录里的素材文件丢失（被清理/移动）
+    ("read file", "本地素材文件缺失（可能已被清理或移动），请重新上传参考素材"),
+    # "video_resolution 1080p requires model_version seedance2.0_vip"——VIP 权限限制
+    ("requires model_version", "当前分辨率需要更高版本（VIP）权限，请降低分辨率或联系管理员"),
+    # "get upload token status 502"——上传通道的网关错误
+    ("502", "平台接口暂时不可用（502），请稍后重试"),
+    # "get upload token ..." 其它状态码：上传通道问题，不是账号凭证问题（勿让通用 "token" 规则误吞）
+    ("upload token", "上传通道暂时不可用，请稍后重试"),
     ("creditpredeductnotenough", "账户点数/余额不足，请管理员充值或切换账号后重试"),
     ("insufficient balance", "账户余额不足，请管理员充值或切换账号后重试"),
     ("not enough credit", "账户余额不足，请管理员充值或切换账号后重试"),
@@ -1172,6 +1357,7 @@ def execute_task(job_id: str, task_type: str, args: list[str], params: dict[str,
                     "time": time.strftime("%H:%M:%S"),
                     "message": f"任务异常: {exc}",
                 })
+            _backlog_remove_locked(job_id)
         report_final_to_portal(job_id, "failed")
         raise
 
@@ -1191,10 +1377,14 @@ def _execute_task_impl(job_id: str, task_type: str, args: list[str], params: dic
         report_final_to_portal(job_id, "cancelled")
         update_activity(job.get("activity_id"), status="cancelled", error="任务已取消。",
                         finished_at=job.get("finished_at"), done=0, total=job.get("total", 1))
+        with LOCK:
+            _backlog_remove_locked(job_id)
         return
     with LOCK:
         job["status"] = "running"
         job["started_epoch"] = time.time()
+        # 已开跑：重启恢复策略从「自动重入队」切换为「标记中断可重试」
+        _backlog_set_locked(job_id, stage="started")
 
     total = job.get("total", 1)
     concurrency = job.get("concurrency", 1)
@@ -1315,6 +1505,7 @@ def _execute_task_impl(job_id: str, task_type: str, args: list[str], params: dic
 
     with LOCK:
         final_job = dict(JOBS[job_id])
+        _backlog_remove_locked(job_id)
     report_final_to_portal(job_id, _final_status_for_callback)
     activity_id = final_job.get("activity_id")
     update_activity(activity_id, **{
@@ -1860,6 +2051,7 @@ class Handler(SimpleHTTPRequestHandler):
                     job["errors"] = ["任务已取消。"]
                 job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 job["finished_epoch"] = time.time()
+                _backlog_remove_locked(job_id)
             report_final_to_portal(job_id, "cancelled")
             json_response(self, 200, {"ok": True, "status": "cancelled"})
             return
@@ -2460,6 +2652,9 @@ class Handler(SimpleHTTPRequestHandler):
 
         with LOCK:
             JOBS[job_id] = job
+            # 队列持久化：重启后据此恢复（queued 自动重入队 / started 标记中断）
+            _backlog_set_locked(job_id, stage="queued", activity_id=activity_id,
+                                username=job.get("username", ""), ws_id="localhost")
             _prune_jobs_locked()
 
         prompt_text = str(fields.get("prompt") or "").strip()
@@ -2642,6 +2837,8 @@ class Handler(SimpleHTTPRequestHandler):
         }
         with LOCK:
             JOBS[new_job_id] = new_job
+            _backlog_set_locked(new_job_id, stage="queued", activity_id=new_activity_id,
+                                username=new_job.get("username", ""), ws_id="localhost")
             _prune_jobs_locked()
         prompt_text = str(fields.get("prompt") or "").strip()
         record_activity({
@@ -3027,6 +3224,14 @@ def main():
 
     cfg = load_config()
     EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=cfg["max_concurrent"])
+
+    # 任务队列恢复：排队任务重新入队、运行中任务标记中断（更新重启不丢任务）
+    try:
+        recovered, interrupted = recover_backlog()
+        if recovered or interrupted:
+            print(f"[recover] 任务恢复：{recovered} 个排队任务重新入队，{interrupted} 个运行中任务标记中断")
+    except Exception as exc:
+        print(f"[recover] 任务恢复失败（不影响启动）: {exc}")
 
     port = int(os.environ.get("PORT", str(cfg.get("port", 8888))))
     host = os.environ.get("HOST") or cfg.get("host", "127.0.0.1")

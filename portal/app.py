@@ -391,7 +391,7 @@ def ensure_certs(cert_dir: Path) -> tuple[Path, Path] | None:
         openssl, "req", "-x509", "-newkey", "rsa:2048",
         "-keyout", str(key_file), "-out", str(cert_file),
         "-days", "365", "-nodes",
-        "-subj", "/CN=AI Generation Portal",
+        "-subj", "/CN=RedCraft",
         "-addext", f"subjectAltName=DNS:localhost,IP:127.0.0.1,IP:{current_ip}"
     ], check=True, capture_output=True)
     ip_file.write_text(current_ip)
@@ -2614,9 +2614,11 @@ class Handler(SimpleHTTPRequestHandler):
         state_dir = STATE_DIR
         csv_path = state_dir / "reports" / f"{date}.csv"
         if not csv_path.exists():
-            # generate on demand
-            events, _ = _daily_report_module.load_events(state_dir, date)
-            csv_path = _daily_report_module.write_csv(state_dir, date, events)
+            # generate on demand。注意：daily_report 当前契约为
+            # load_usage_data → write_csv(state_dir, date, by_user_raw)；
+            # 早前这里调用过不存在的 load_events（半成品重构残留）→ AttributeError 500。
+            by_user_raw, _ = _daily_report_module.load_usage_data(state_dir, date)
+            csv_path = _daily_report_module.write_csv(state_dir, date, by_user_raw)
         data = csv_path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
@@ -3215,11 +3217,11 @@ def main():
             do_OPTIONS = do_GET
 
         redirect_server = ThreadingHTTPServer(("0.0.0.0", REDIRECT_PORT), RedirectHandler)
-        print(f"\n  AI Generation Portal (HTTPS):")
+        print(f"\n  RedCraft (HTTPS):")
         print(f"    Local:   https://127.0.0.1:{PORTAL_PORT}")
         print(f"    LAN:     https://{lan_ip}:{PORTAL_PORT}")
     else:
-        print(f"\n  AI Generation Portal (HTTP):")
+        print(f"\n  RedCraft (HTTP):")
         print(f"    Local:   http://127.0.0.1:{PORTAL_PORT}")
         print(f"    LAN:     http://{lan_ip}:{PORTAL_PORT}")
 

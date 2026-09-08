@@ -230,6 +230,7 @@
                   <video v-else :src="appPath + r.download_url" controls autoplay muted playsinline style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
                   <span style="font-size:11px;color:#697386;flex:1">{{ r.filename || 'video' }}</span>
                   <button @click="_blobDownload(appPath + r.download_url, r.filename || 'video')" style="background:#2563eb;color:#fff;border:1px solid #2563eb;font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer">下载</button>
+                  <button v-if="j.retryable" @click="retryJob(j.job_id || j.id)" style="background:#10b981;color:#fff;border:1px solid #10b981;font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer">重试</button>
                 </div>
               </div>
               <button v-if="jobs.length > jobsLimit" @click="jobsLimit += 20"

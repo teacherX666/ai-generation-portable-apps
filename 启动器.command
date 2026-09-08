@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# AI Generation Portal — macOS 启动器
+# RedCraft — macOS 启动器
 # 双击运行或终端执行: ./启动器.command
 # ============================================================
 set -uo pipefail
@@ -305,7 +305,7 @@ show_menu() {
     clear
     echo ""
     echo -e "${BOLD}${CYAN}╔══════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${CYAN}║   AI Generation Portal 启动器    ║${NC}"
+    echo -e "${BOLD}${CYAN}║   RedCraft 启动器    ║${NC}"
     echo -e "${BOLD}${CYAN}╚══════════════════════════════════╝${NC}"
     echo ""
     echo -e "  $(status_text)"

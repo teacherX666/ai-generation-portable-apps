@@ -31,6 +31,12 @@ function requestNotifyPermission() {
 }
 function notifyJobDone(jobId, status, label) {
   try {
+    // Portal iframe 内：交给父窗口统一弹窗（同源可直调；去重/页面内弹窗
+    // 都在父层处理），独立模式才走本地下方逻辑
+    if (window.parent && window.parent !== window && typeof window.parent.__notifyJobDone === 'function') {
+      window.parent.__notifyJobDone(jobId, status, label, 'seedance');
+      return;
+    }
     if (jobId === undefined || jobId === null || jobId === '') return;
     // 状态归一化：与 Portal 侧 15s 兜底轮询用同一套 token 去重
     const s = String(status).toLowerCase();
@@ -1492,6 +1498,9 @@ function SeedanceApp() {
           + (jobId && (job.results || []).length && TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
              ? '<button type="button" class="cancel-job-btn" onclick="window._app_sd.downloadAll(\'' + escHtml(jobId) + '\')">下载全部 (' + job.results.length + ')</button>'
              : '')
+          + (jobId && job.retryable
+             ? '<button type="button" class="cancel-job-btn" onclick="window._app_sd.retryJob(\'' + escHtml(jobId) + '\')">重试</button>'
+             : '')
           + '</div>'
           + (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '')
           + eventsHtml
@@ -1612,6 +1621,33 @@ function SeedanceApp() {
       const cache = this._tabStateCache[this.activeTabId];
       if (cache) { cache.statusText = '空闲'; cache.eventsText = ''; delete cache._latestJob; }
       this.loadJobs();
+    },
+
+    // 中断任务一键重试：后端按落盘参数重提新任务，前端切到新任务轮询
+    async retryJob(jobId) {
+      const ownerWsId = this.activeTabId;
+      const res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/retry', 'POST', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (!res || !res.ok) {
+        this.statusText = (res && res.error) || '重试失败：网络异常，请稍后重试';
+        return;
+      }
+      const submissionToken = (this._topicSubmissionSeq[ownerWsId] || 0) + 1;
+      this._topicSubmissionSeq[ownerWsId] = submissionToken;
+      const cache = this._tabStateCache[ownerWsId];
+      cache._submissionToken = submissionToken;
+      cache._activeJobId = res.job_id;
+      this.submitting = true;
+      this.statusText = '已重试，任务 ' + res.job_id + ' 在后台运行';
+      const resultsEl = document.getElementById('sd-results');
+      const eventsEl = document.getElementById('sd-events');
+      if (resultsEl) resultsEl.innerHTML = '';
+      if (eventsEl) eventsEl.textContent = '';
+      this.eventsText = '';
+      this.loadJobs();
+      this.pollJob(res.job_id, ownerWsId, submissionToken, {
+        dirHandle: this.dirHandle, autoDownload: this.autoDownload, outputDir: this.outputDir,
+      });
     },
 
     // 一键下载全部：错开 400ms 逐个下载，避免并发打满 Portal 代理缓冲

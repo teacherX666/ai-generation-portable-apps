@@ -70,8 +70,8 @@ function requestNotifyPermission() {
   if (window.__requestNotifyPermission) return window.__requestNotifyPermission();
   try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
 }
-function notifyJobDone(jobId, status, label) {
-  if (window.__notifyJobDone) return window.__notifyJobDone(jobId, status, label);
+function notifyJobDone(jobId, status, label, tab) {
+  if (window.__notifyJobDone) return window.__notifyJobDone(jobId, status, label, tab);
 }
 
 // 友好错误提示（即梦）：把高频失败原因翻译成中文+下一步
@@ -678,10 +678,27 @@ function DreaminaApp() {
             });
             titleEl.appendChild(dlAll);
           }
+          // 服务更新中断的任务一键重试（后端按落盘参数重提新任务）
+          if (job.retryable && titleEl && !titleEl.querySelector('.dm-retry')) {
+            const rb = document.createElement('button');
+            rb.type = 'button';
+            rb.className = 'cancel-job-btn dm-retry';
+            rb.textContent = '重试';
+            rb.addEventListener('click', async () => {
+              const r = await api(`/dreamina/api/jobs/${encodeURIComponent(jobId)}/retry`, 'POST');
+              if (r?.ok && r.job_id) {
+                window.portalToast('已重试，任务 ' + r.job_id + ' 在后台运行');
+                this.pollJob(r.job_id);
+              } else {
+                window.portalToast(r?.error || '重试失败：网络异常', 'danger');
+              }
+            });
+            titleEl.appendChild(rb);
+          }
           stop();
           // 系统通知：状态归一后与 Portal 15s 兜底轮询按 jobId 去重
           const st = String(job.status).toLowerCase();
-          notifyJobDone(jobId, st === 'completed' ? 'succeeded' : (st === 'cancelled' || st === 'canceled') ? 'cancelled' : 'failed', '即梦生成');
+          notifyJobDone(jobId, st === 'completed' ? 'succeeded' : (st === 'cancelled' || st === 'canceled') ? 'cancelled' : 'failed', '即梦生成', 'dreamina');
           if (job.status === 'completed' && this.dirHandle && allFiles.length) {
             await this.saveDreaminaToClient(allFiles);
           } else if (job.status === 'completed' && this.autoDownload && allFiles.length) {
@@ -2091,6 +2108,13 @@ function VolcenginePortraitApp() {
       },
     ],
     submitting: false, events: '', results: [], jobs: [], activityRecords: [],
+    // 新版资产库交互状态
+    zoomAsset: null,          // 放大预览弹窗中的资产（图片/视频通用；关闭时不置 null，避免模板渲染竞态）
+    zoomOpen: false,          // 弹窗开关（与 zoomAsset 分离，zoomAsset 保持非 null 供模板安全读取）
+    fig1Asset: null,          // 图1 缩略卡数据（由 syncFig1Asset 维护；模板不调方法，避免渲染竞态 null）
+    showCreateGroup: false,   // 新建组内联面板
+    showPurge: false,         // 管理员批量清理折叠面板
+    showInfoDetail: false,    // 顶部说明展开
     _activeVpJobId: null,
     _activeVpStatus: '',
     runtimeTick: 0,
@@ -2137,6 +2161,69 @@ function VolcenginePortraitApp() {
       this.restoreDraft();
       setInterval(() => this.saveDraft(), 5000);
       setInterval(() => { this.runtimeTick = (this.runtimeTick + 1) % 1e9; }, 1000);
+      // 拖文件进资产库 = 快捷上传（等价于「选择文件」）
+      const lib = document.getElementById('vp-library');
+      if (lib) {
+        lib.addEventListener('dragover', (e) => e.preventDefault());
+        lib.addEventListener('drop', (e) => this.onAssetDrop(e));
+      }
+    },
+
+    // === 新版资产库交互 ===
+    // 点选资产卡片设为图1（失效/审核中不可选，给明确原因）
+    selectAsset(a) {
+      if (a.status !== 'active') {
+        window.portalToast(
+          a.status === 'failed'
+            ? '该资产已失效，无法选用（可删除后重新上传恢复）'
+            : '该资产仍在审核中，就绪后才能选用',
+          'danger');
+        return;
+      }
+      this.genAssetId = a.asset_id;
+      this.syncFig1Asset();
+    },
+    // ＋ 附加 / ✓ 已加 切换（图2、图3…，顺序即加入顺序）
+    toggleExtraAsset(a) {
+      if (a.status !== 'active') { this.selectAsset(a); return; }
+      const i = this.extraAssetIds.indexOf(a.asset_id);
+      if (i >= 0) this.extraAssetIds.splice(i, 1);
+      else this.extraAssetIds.push(a.asset_id);
+    },
+    // 缩略图点开放大（图片 / 视频通用）。zoomAsset 只增不减：关闭时只翻 zoomOpen，
+    // 避免 petite-vue 在 v-if 卸载时重算内部表达式读到 null。
+    openZoom(a) { this.zoomAsset = a; this.zoomOpen = true; },
+    closeZoom() { this.zoomOpen = false; },
+    // 图1 缩略卡数据：模板不直接调方法（petite-vue 渲染竞态会拿到 null 报错），
+    // 由数据属性 fig1Asset 维护，所有会改变 genAssetId/assets 的入口同步一次。
+    syncFig1Asset() {
+      this.fig1Asset = this.genAssetId
+        ? (this.assets.find(x => x.asset_id === this.genAssetId) || null)
+        : null;
+    },
+    // 「换一个」：清空图1 选择（保留资产库，用户重点即可）
+    clearFig1() {
+      this.genAssetId = '';
+      this.fig1Asset = null;
+    },
+    // 拖文件进资产库 → 填入文件选择器并预填资产名，用户点「上传素材」提交
+    onAssetDrop(ev) {
+      ev.preventDefault();
+      const files = ev.dataTransfer && ev.dataTransfer.files;
+      if (!files || !files.length) return;
+      const el = document.getElementById('vp-file');
+      if (!el) return;
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(files[0]);
+        el.files = dt.files;
+      } catch (e) { return; }
+      if (!this.assetGroupId) {
+        window.portalToast('请先选择或创建人像组，再拖入素材', 'danger');
+        return;
+      }
+      this.onFileSelect();
+      if (!this.assetName) this.assetName = files[0].name.replace(/\.[^.]+$/, '');
     },
 
     // === 表单草稿持久化（v-model 状态字段）===
@@ -2387,11 +2474,15 @@ function VolcenginePortraitApp() {
       // 未选组 → 不查不显示，避免拉到全部资产覆盖已选组的结果
       if (!this.assetGroupId) {
         this.assets = [];
+        this.syncFig1Asset();
         return;
       }
       const url = `${appPath}/api/virtual/assets?group_ids=${encodeURIComponent(this.assetGroupId)}`;
       const res = await vpApi.call(this, url);
-      if (res?.ok) this.assets = (res.assets || []).map(a => ({ ...a, asset_id: a.asset_id || a.id }));
+      if (res?.ok) {
+        this.assets = (res.assets || []).map(a => ({ ...a, asset_id: a.asset_id || a.id }));
+        this.syncFig1Asset();
+      }
     },
 
     async deleteAsset(id) {
@@ -2599,6 +2690,7 @@ function VolcenginePortraitApp() {
       // loop silently — the running task vanished from view with no hint. Now
       // retry with a cap, and say so while retrying.
       let fails = 0;
+      let terminal = '';
       while (true) {
         const job = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}`);
         if (!job || job.ok === false) {
@@ -2623,15 +2715,22 @@ function VolcenginePortraitApp() {
           }
         }
         if (['succeeded', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
+          terminal = job.status;
           // 系统通知：与 Portal 15s 兜底轮询按 jobId 去重
-          notifyJobDone(jobId, String(job.status).toLowerCase() === 'canceled' ? 'cancelled' : String(job.status).toLowerCase(), '人像视频');
+          notifyJobDone(jobId, String(job.status).toLowerCase() === 'canceled' ? 'cancelled' : String(job.status).toLowerCase(), '人像视频', 'volcengine-portrait');
+          // 失败原因留在状态区（用户视线所在），而不是清成「空闲」让错误只沉在历史卡片里
+          if (job.status === 'failed') {
+            const reason = this.friendlyErrors(job.errors);
+            this.statusText = '❌ 任务失败' + (reason ? '：' + reason : '') + '。可在下方「生成历史」点击「重试」原样重提。';
+          }
           break;
         }
         await new Promise(r => setTimeout(r, 3000));
       }
       this._activeVpJobId = null;
       this._activeVpStatus = '';
-      this.statusText = '空闲'; this.loadJobs();
+      if (terminal !== 'failed') this.statusText = '空闲';
+      this.loadJobs();
     },
 
     // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）
@@ -2657,6 +2756,20 @@ function VolcenginePortraitApp() {
       this.loadActivity();
     },
 
+    // 服务更新中断的任务一键重试：后端按落盘参数重提新任务并开新轮询
+    async retryVpJob(jobId) {
+      const res = await vpApi.call(this, `${appPath}/api/virtual/jobs/${encodeURIComponent(jobId)}/retry`, 'POST');
+      if (res?.ok) {
+        this.statusText = '已重试，任务 ' + res.job_id + ' 在后台运行';
+        this._activeVpJobId = res.job_id;
+        this._activeVpStatus = '';
+        this.loadJobs();
+        this.pollJob(res.job_id);
+      } else {
+        this.statusText = '重试失败: ' + (res?.error || '网络异常，请稍后重试');
+      }
+    },
+
     // Persisted activity log (survives sub-app restarts, unlike the in-memory
     // JOBS list). Loaded alongside loadJobs so the history panel stays fresh.
     async loadActivity() {
@@ -2679,7 +2792,7 @@ function VolcenginePortraitApp() {
       const rec = await vpApi.call(this, `${appPath}/api/activity/${activityId}`);
       const req = rec && rec.request;
       if (!req) { this.statusText = '无法读取该任务参数，请重新填写提交'; return; }
-      if (req.asset_id) this.genAssetId = req.asset_id;
+      if (req.asset_id) { this.genAssetId = req.asset_id; this.syncFig1Asset(); }
       this.extraAssetIds = req.extra_asset_ids || [];
       this.extraFiles = [];
       this.prompt = req.prompt || '';
@@ -2967,10 +3080,9 @@ function DirectorApp() {
     statusText: "",
     resultText: "",
     images: [],
-    collapsed: false,
+    collapsed: true,
     async init() {
-      // 窄屏（手机/平板竖屏）默认收起导演台：320px 固定侧栏会遮住主内容
-      if (window.innerWidth < 960) this.collapsed = true;
+      // 导演台默认收起（320px 固定侧栏遮主内容）；用户可点折叠按钮手动展开
       document.body.classList.toggle("director-collapsed", this.collapsed);
       document.body.classList.toggle("director-open", !this.collapsed);
       try {

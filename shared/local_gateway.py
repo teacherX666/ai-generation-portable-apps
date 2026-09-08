@@ -151,7 +151,7 @@ def diagnostic_text(timeout: float = 1.5) -> str:
         f"ready          : {info['ready']}",
     ]
     if info.get("configured_error"):
-        lines.append(f"configured_error: {info["configured_error"]}")
+        lines.append(f"configured_error: {info['configured_error']}")
     if info["error"]:
         lines.append(f"error          : {info['error']}")
     return "\n".join(lines)
