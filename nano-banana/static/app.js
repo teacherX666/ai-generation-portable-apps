@@ -1198,14 +1198,42 @@ function NanoBananaApp() {
         var res = await api(APP_PATH + '/api/jobs');
         if (res && Array.isArray(res.jobs)) {
           self.jobs = res.jobs;
+          // A hard refresh used to reset the form to idle and expose the
+          // activity/history view, while the actual image job kept running.
+          // Rebuild the original lower running-task panel from /api/jobs and
+          // resume its existing poll/cancel flow for every live workspace.
+          var restored = self._restoredPollIds || (self._restoredPollIds = new Set());
+          (self.jobs || []).filter(function (job) {
+            return !TERMINAL_STATUSES.has((job.status || '').toLowerCase());
+          }).forEach(function (job) {
+            var wsId = job.workspace_id || self.activeTabId;
+            var cache = self._tabStateCache[wsId] || (self._tabStateCache[wsId] = {});
+            cache._activeJobId = job.job_id;
+            cache._latestJob = job;
+            cache.statusText = (job.status || 'queued') + ' ' + (job.done || 0) + '/' + (job.total || 0);
+            cache.eventsText = (job.events || []).map(function (e) {
+              return '[' + (e.time || '') + '] ' + (e.message || '');
+            }).join('\n');
+            cache.submitting = true;
+            if (wsId === self.activeTabId) {
+              self.wsTab = 'jobs';
+              self.statusText = cache.statusText;
+              self.eventsText = cache.eventsText;
+              self.submitting = true;
+            }
+            if (!restored.has(job.job_id)) {
+              restored.add(job.job_id);
+              self.pollJob(job.job_id, wsId);
+            }
+          });
         } else if (res && res.error) {
           // Silent on error to avoid spamming the 5s loop
           return;
         }
         if (self.tabs && self.tabs.length) {
-          self.tabs.forEach(function (t) {
-            t.running = (self.jobs || []).some(function (j) {
-              return !TERMINAL_STATUSES.has((j.status || '').toLowerCase()) && j.workspace_id === t.id;
+          self.tabs.forEach(function (tab) {
+            tab.running = (self.jobs || []).some(function (job) {
+              return !TERMINAL_STATUSES.has((job.status || '').toLowerCase()) && job.workspace_id === tab.id;
             });
           });
         }

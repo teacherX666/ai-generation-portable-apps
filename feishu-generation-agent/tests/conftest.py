@@ -269,6 +269,7 @@ async def fake_services(tmp_path: Path):
         chiyun_api_key="fictional-chiyun-key-must-not-persist",
         ark_api_key="fictional-ark-key-must-not-persist",
         max_output_count=4,
+        video_provider="seedance",
         provider_poll_interval_seconds=0,
         provider_poll_max_attempts=4,
     )

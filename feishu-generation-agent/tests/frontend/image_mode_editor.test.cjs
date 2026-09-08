@@ -42,6 +42,12 @@ test("style preset buttons are rendered for image tasks", () => {
   assert.match(appSource, /task-style-presets/);
 });
 
+test("video tasks expose a task-level provider picker", () => {
+  assert.match(appSource, /videoProviderPicker/);
+  assert.match(appSource, /video_provider: control\.value/);
+  assert.match(appSource, /videoProviderPicker\(task\)/);
+});
+
 test("video-only controls stay out of the image branch", () => {
   const branchStart = appSource.indexOf('task.task_type === "image_to_image"');
   assert.ok(branchStart > 0, "找不到图片分支");

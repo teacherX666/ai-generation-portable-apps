@@ -4,6 +4,7 @@ from io import BytesIO
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,31 @@ def _assets(tmp_path: Path) -> list[MediaAsset]:
             mime_type="image/jpeg",
         ),
     ]
+
+
+def test_verified_asset_reader_uses_binary_mode_on_windows(tmp_path: Path) -> None:
+    """Binary inputs containing Ctrl-Z must not be truncated on Windows."""
+    content = b"prefix\x1asuffix" + PNG_BLUE
+    asset = _asset(
+        tmp_path,
+        "asset-binary",
+        content=content,
+        mime_type="image/png",
+    )
+    # This test intentionally exercises the low-level read path rather than
+    # submitting to the remote provider.
+    client = httpx.AsyncClient(trust_env=False)
+    try:
+        generator = SeedanceVideoGenerator(
+            client,
+            base_url="https://ark.fictional.test/api/v3",
+            api_key="fictional-key",
+            model="fictional-model",
+        )
+        assert generator._read_verified_asset(asset, asset.local_path.lstat()) == content
+    finally:
+        import asyncio
+        asyncio.run(client.aclose())
 
 
 @pytest.mark.asyncio
@@ -700,7 +726,7 @@ async def test_submit_rejects_invalid_reference_mapping_before_http(
         ("hash", ErrorCategory.DOCUMENT),
         ("declared_mime", ErrorCategory.VALIDATION),
         ("content_mime", ErrorCategory.DOCUMENT),
-        ("symlink", ErrorCategory.DOCUMENT),
+        pytest.param("symlink", ErrorCategory.DOCUMENT, marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows symlink creation requires elevated privileges")),
     ],
 )
 async def test_submit_rejects_invalid_or_unsafe_input_file(

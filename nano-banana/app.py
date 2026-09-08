@@ -400,7 +400,7 @@ FALLBACK_PROVIDERS = {
     "providers": {
         "comfyui_local": {
             "label": "Local ComfyUI (free)",
-            "base_url": "http://127.0.0.1:8801",
+            "base_url": "http://UT-20210713KMWD.local:8801",
             "api_style": "comfyui_workflow",
             "defaults": {"mode": "img2img", "model": "auto", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 3, "timeout": 2400, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
             "models": [{"id": "auto", "label": "Auto (recommended)"}, {"id": "qwen2511", "label": "Qwen 2511"}, {"id": "flux2_klein_allinone", "label": "Klein"}, {"id": "krea2_three_stage", "label": "Krea T2I"}, {"id": "anime2real_auto", "label": "Anime2Real"}, {"id": "zimage_multifunction", "label": "Z-Image"}, {"id": "klein_true_v3_assets", "label": "Klein Assets"}, {"id": "krea2_style_transfer", "label": "Krea Style"}],

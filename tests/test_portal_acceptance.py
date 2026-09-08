@@ -18,7 +18,7 @@ class PortalAcceptanceTests(unittest.TestCase):
 
     def test_portal_script_load_order(self):
         html = self._html()
-        scripts = re.findall(r'<script\s+src="([^"]+)"', html)
+        scripts = [src.split("?", 1)[0] for src in re.findall(r'<script\s+src="([^"]+)"', html)]
         expected = [
             "/vendor/petite-vue.iife.js",
             "/js/portal-api.js",

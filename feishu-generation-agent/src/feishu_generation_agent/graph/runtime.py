@@ -81,6 +81,13 @@ class GraphRuntime:
             "cancelled",
         }
     )
+    _CANCELLABLE_STATUSES = frozenset(
+        {
+            "created", "running", "resuming",
+            "waiting_provider", "delivering",
+            "waiting_approval", "waiting_review",
+        }
+    )
 
     def __init__(
         self,
@@ -237,6 +244,16 @@ class GraphRuntime:
                 )
             except (TypeError, ValueError):
                 approved_plan = None
+            # Preserve a plan that was already generated before cancellation.
+            if approved_plan is None or not approved_plan.tasks:
+                try:
+                    draft_plan = TaskPlan.model_validate(
+                        source_state.get("draft_plan") or source_state.get("task_plan")
+                    )
+                except (TypeError, ValueError):
+                    draft_plan = None
+                if draft_plan is not None and draft_plan.tasks:
+                    approved_plan = draft_plan
             if approved_plan is None or not approved_plan.tasks:
                 await self.repository.create_run(
                     run_id,
@@ -469,6 +486,56 @@ class GraphRuntime:
             await self.repository.delete_run(run_id)
         self._run_locks.pop(run_id, None)
 
+    async def cancel_run(self, run_id: str) -> None:
+        """Cancel an active run immediately while preserving its plan."""
+        run = await self.repository.get_run(run_id)
+        if run is None:
+            raise RunNotFound("运行不存在")
+        if run["status"] in self._TERMINAL_STATUSES:
+            raise RunConflict("运行已经结束")
+        if run["status"] not in self._CANCELLABLE_STATUSES:
+            raise RunConflict("当前状态不支持取消")
+
+        prefixes = (
+            "approval-run",
+            "approval-resume",
+            "artifact-review-resume",
+            "delivery-retry",
+            "recovery-run",
+        )
+        workers = tuple(
+            task
+            for task in self._background_tasks
+            if not task.done()
+            and any(
+                task.get_name() == f"{prefix}-{run_id}"
+                for prefix in prefixes
+            )
+        )
+        for task in workers:
+            task.cancel()
+
+        # Mark the database first so the cancel request returns immediately and
+        # the UI can stop polling as an active run.  Do not await worker shutdown:
+        # provider HTTP calls may take time to observe asyncio cancellation.
+        await self.repository.append_event(
+            run_id,
+            "runtime_cancel",
+            "completed",
+            "Run cancelled by user",
+        )
+        await self.repository.update_run_status(run_id, "cancelled")
+        try:
+            await asyncio.wait_for(
+                self._graph_aupdate_state(
+                    self._config(run["thread_id"]),
+                    {"status": "cancelled", "cancel_requested": True},
+                    as_node="runtime_cancel",
+                ),
+                timeout=2.0,
+            )
+        except (TimeoutError, Exception):
+            _LOGGER.exception("取消运行时更新 checkpoint 失败: %s", run_id)
     async def _run_to_approval(
         self,
         run_id: str,
@@ -560,7 +627,12 @@ class GraphRuntime:
         operations = await self.repository.list_operations(run_id)
         artifacts = await self.repository.list_artifacts(run_id)
         repository_status = self._safe_status(run.get("status"), "created")
-        if repository_status in {
+        # Terminal repository state wins over an older checkpoint.  This is
+        # important after cancellation: the graph may still point at the
+        # waiting_approval interrupt even though the run is already cancelled.
+        if repository_status in self._TERMINAL_STATUSES:
+            status = repository_status
+        elif repository_status in {
             "created",
             "running",
             "resuming",
@@ -1089,6 +1161,7 @@ class GraphRuntime:
         "size_variants",
         "safe_area",
         "image_provider",
+        "video_provider",
         "duration",
         "resolution",
         "generate_audio",

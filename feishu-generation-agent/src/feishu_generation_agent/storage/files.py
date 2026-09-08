@@ -121,10 +121,11 @@ class FileStore:
     ) -> StoredFile:
         self._validate_segment(run_id)
         self._validate_segment(task_id)
+        task_directory = self._filesystem_segment(task_id)
         return self._save_atomic(
             self._outputs_dir,
             self._outputs_root_fd,
-            ("runs", run_id, "tasks", task_id),
+            ("runs", run_id, "tasks", task_directory),
             filename,
             content,
             declared_content_type,
@@ -209,17 +210,18 @@ class FileStore:
             self._validate_segment(artifact.task_id)
             if artifact.status != "ready":
                 return False
+            task_directory = self._filesystem_segment(artifact.task_id)
             expected_directory = (
                 self._outputs_dir
                 / "runs"
                 / run_id
                 / "tasks"
-                / artifact.task_id
+                / task_directory
             )
             if artifact.local_path.parent != expected_directory:
                 return False
             content = self._read_scoped_output(
-                ("runs", run_id, "tasks", artifact.task_id),
+                ("runs", run_id, "tasks", task_directory),
                 artifact.local_path.name,
             )
             if len(content) != artifact.size:
@@ -585,7 +587,7 @@ class FileStore:
         try:
             descriptor = os.open(
                 filename,
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=directory_fd,
             )
             before = os.fstat(descriptor)
@@ -762,6 +764,33 @@ class FileStore:
         ):
             return "audio/aac", "aac"
         return None
+
+    @staticmethod
+    def _filesystem_segment(value: str) -> str:
+        """Map a logical identifier to a portable Windows path segment.
+
+        Execution-unit IDs intentionally contain ``::output:``.  They are
+        valid logical IDs but ``:`` is illegal in Windows directory names.
+        Keep ordinary IDs readable and hash only values that Windows cannot
+        represent safely.
+        """
+        FileStore._validate_segment(value)
+        if os.name != "nt":
+            return value
+        invalid = '<>:"|?*'
+        stem = value.split(".", 1)[0].upper()
+        reserved = {"CON", "PRN", "AUX", "NUL"} | {
+            f"{prefix}{index}"
+            for prefix in ("COM", "LPT")
+            for index in range(1, 10)
+        }
+        if (
+            any(character in invalid or ord(character) < 32 for character in value)
+            or value.endswith((" ", "."))
+            or stem in reserved
+        ):
+            return f"id-{sha256(value.encode('utf-8')).hexdigest()}"
+        return value
 
     @staticmethod
     def _validate_segment(value: str) -> None:

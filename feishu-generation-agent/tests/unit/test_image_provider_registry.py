@@ -85,38 +85,30 @@ async def test_explicit_provider_routes_to_that_generator(
     assert generator == f"{requested.split('-')[0]}-generator"
 
 
-async def test_falls_back_to_available_provider_when_requested_missing(
-    fake_services,
-):
-    """请求的图片 provider 未配置时，回退到可用 provider，而不是直接失败。"""
+async def test_explicit_missing_image_provider_is_reported(fake_services):
+    """An explicitly unavailable provider must fail instead of silently switching models."""
     services = replace(
         fake_services,
         image_providers={"banana": "banana-generator"},
     )
 
-    provider, generator = await _generator_for_task(
-        "run-1", _image_task(image_provider="seedream"), services
-    )
-
-    assert provider == "banana"
-    assert generator == "banana-generator"
+    with pytest.raises(Exception, match="Selected image provider"):
+        await _generator_for_task(
+            "run-1", _image_task(image_provider="seedream"), services
+        )
 
 
-async def test_ark_only_falls_back_to_seedream(
-    fake_services,
-):
-    """仅配了火山 Seedream（无 Chiyun）时，banana 请求回退到 seedream。"""
+async def test_explicit_missing_cloud_image_provider_is_reported(fake_services):
+    """An explicitly unavailable cloud provider must fail clearly."""
     services = replace(
         fake_services,
         image_providers={"seedream": "seedream-generator"},
     )
 
-    provider, generator = await _generator_for_task(
-        "run-1", _image_task(image_provider="banana"), services
-    )
-
-    assert provider == "seedream"
-    assert generator == "seedream-generator"
+    with pytest.raises(Exception, match="Selected image provider"):
+        await _generator_for_task(
+            "run-1", _image_task(image_provider="banana"), services
+        )
 
 
 async def test_falls_back_to_legacy_image_generator_when_registry_absent(
@@ -149,9 +141,8 @@ async def test_video_task_still_routes_to_seedance(fake_services):
     assert generator is fake_services.video_generator
 
 
-async def test_video_task_routes_to_local_aiport_when_seedance_unavailable(fake_services):
-    """本地部署（settings.video_provider=aiport）时，即使偏好/任务指向 seedance，
-    也要回退到本地 aiport，避免「标签=seedance、生成器=aiport」的身份错配。"""
+async def test_video_task_explicit_seedance_requires_seedance_generator(fake_services):
+    """An explicit Seedance choice must not silently fall back to local video."""
     aiport = "aiport-generator"
     services = replace(
         fake_services,
@@ -159,7 +150,27 @@ async def test_video_task_routes_to_local_aiport_when_seedance_unavailable(fake_
         aiport_video_generator=aiport,
         video_generator=aiport,
         provider_preferences=ProviderPreferences(
-            video_provider="seedance",
+            video_provider="aiport",
+            image_provider="seedream",
+        ),
+    )
+
+    task = _video_task().model_copy(update={"video_provider": "seedance"})
+
+    with pytest.raises(Exception, match="Seedance provider is unavailable"):
+        await _generator_for_task("run-1", task, services)
+
+
+async def test_video_task_explicit_seedance_uses_seedance_generator(fake_services):
+    seedance = "seedance-generator"
+    services = replace(
+        fake_services,
+        settings=fake_services.settings.model_copy(update={"video_provider": "aiport"}),
+        aiport_video_generator="aiport-generator",
+        seedance_video_generator=seedance,
+        video_generator="aiport-generator",
+        provider_preferences=ProviderPreferences(
+            video_provider="aiport",
             image_provider="seedream",
         ),
     )
@@ -168,8 +179,7 @@ async def test_video_task_routes_to_local_aiport_when_seedance_unavailable(fake_
 
     provider, generator = await _generator_for_task("run-1", task, services)
 
-    assert provider == "aiport"
-    assert generator == "aiport-generator"
+    assert (provider, generator) == ("seedance", seedance)
 
 
 async def test_video_task_prefers_local_aiport_when_preference_says_so(fake_services):

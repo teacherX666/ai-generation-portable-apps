@@ -190,6 +190,7 @@
       if (localStorage.getItem('portal_onboarded') === '1') { clearInterval(timer); return; }
       const label = document.getElementById('userLabel');
       if (label && label.textContent) {
+        if (document.body.classList.contains('portal-home-active')) return;
         clearInterval(timer);
         ensureHelpDialog().showModal();
       } else if (tries >= 20) {
@@ -207,57 +208,8 @@
   setTimeout(maybeFirstRunHelp, 600);
 })();
 
-// === Running-task indicators in the left navigation ===
+// === Portal job notification presenter ===
 (function () {
-  const ACTIVE_STATUSES = new Set(['queued', 'pending', 'running', 'querying', 'resuming', 'waiting_provider', 'uploading', 'submitting']);
-  function isActive(status) {
-    return ACTIVE_STATUSES.has(String(status || '').toLowerCase());
-  }
-
-  function ensureBadges() {
-    document.querySelectorAll('.app-tab').forEach((btn) => {
-      if (!btn.querySelector('.portal-nav__badge')) {
-        const badge = document.createElement('span');
-        badge.className = 'portal-nav__badge';
-        badge.hidden = true;
-        badge.textContent = '';
-        btn.appendChild(badge);
-      }
-    });
-  }
-
-  function setBadge(tab, count) {
-    const badge = document.querySelector('.app-tab[data-tab="' + tab + '"] .portal-nav__badge');
-    if (!badge) return;
-    badge.textContent = count > 0 ? String(count) : '';
-    badge.hidden = count <= 0;
-  }
-
-  async function countActive(spec) {
-    try {
-      const res = await api(spec.url);
-      const list = Array.isArray(res) ? res : (res?.jobs || res?.items || []);
-      if (!Array.isArray(list)) return 0;
-      return list.filter((job) => job && isActive(job.status)).length;
-    } catch (e) {
-      return 0;
-    }
-  }
-
-  const specs = [
-    { tab: 'seedance', app: 'seedance', label: '视频生成', url: '/seedance/api/jobs' },
-    { tab: 'nb', app: 'nano-banana', label: '图片生成', url: '/nano-banana/api/jobs' },
-    { tab: 'dreamina', app: 'dreamina', label: '即梦生成', url: '/dreamina/api/jobs' },
-    { tab: 'volcengine-portrait', app: 'volcengine-portrait', label: '人像视频', url: '/volcengine-portrait/api/jobs' },
-  ];
-
-  // === 任务完成系统通知（15s 粒度的兜底检测）===
-  // 子应用自身 2.5s/3s 轮询已先弹通知时，按 jobId 去重跳过（同源
-  // localStorage 共享）。本检测兜底覆盖：iframe 旧缓存、Portal 原生
-  // 面板（即梦/人像）未弹、以及页面在前台但子应用 iframe 未挂载的
-  // 情况。Notification 需要安全上下文：生产 HTTPS（自签证书点过
-  // 「继续访问」后算安全上下文）可用，HTTP 测试环境自动降级为标题闪烁。
-  const _notifySeenStates = {}; // app -> {jobId: status}
   let _notifiedJobs = null;
   function _notifyLoadSeen() {
     if (_notifiedJobs) return _notifiedJobs;
@@ -389,67 +341,234 @@
   // 通知只看自己的任务：终态转场检测按当前登录用户名过滤。
   // 子应用 /api/jobs 返回全量任务（管理员能看到所有人的），不过滤
   // 的话管理员会收到全公司每个任务完成的提醒。
-  let _meUsername = null;
-  async function currentUsername() {
-    if (_meUsername !== null) return _meUsername;
+})();
+
+// === Portal job status controller ===
+(function () {
+  const ACTIVE = new Set(['queued', 'pending', 'running', 'querying', 'resuming', 'waiting_provider', 'uploading', 'submitting']);
+  const SUCCESS = new Set(['succeeded', 'success', 'completed', 'done']);
+  const FAILURE = new Set(['failed', 'fail', 'failure', 'cancelled', 'canceled', 'error']);
+  const SPECS = [
+    { tab: 'feishu-generation-agent', app: 'feishu-generation-agent', label: '飞书创作助手' },
+    { tab: 'seedance', app: 'seedance', label: '视频生成' },
+    { tab: 'nb', app: 'nano-banana', label: '图片生成' },
+    { tab: 'dreamina', app: 'dreamina', label: '即梦创作' },
+    { tab: 'volcengine-portrait', app: 'volcengine-portrait', label: '人像视频' },
+  ];
+  const POLL_MS = 15000;
+  let username = '';
+  let role = '';
+  let state = { seeded: false, seen: {}, unread: {} };
+  let stateKey = '';
+  let identityLoaded = false;
+  const latestActive = {};
+  const latestQueue = {};
+  const acknowledgeTimers = new Map();
+
+  function normalize(status) {
+    const value = String(status || '').toLowerCase();
+    if (ACTIVE.has(value)) return 'active';
+    if (SUCCESS.has(value)) return 'success';
+    if (FAILURE.has(value)) return 'failure';
+    return '';
+  }
+
+  function readList(response) {
+    if (Array.isArray(response)) return response;
+    if (Array.isArray(response?.items)) return response.items;
+    if (Array.isArray(response?.jobs)) return response.jobs;
+    return [];
+  }
+
+  function jobId(job) {
+    const value = job?.id ?? job?.job_id;
+    return value === undefined || value === null ? '' : String(value);
+  }
+
+  function isOwn(job) {
+    return Boolean(username) && String(job?.username || job?.user || '') === username;
+  }
+
+  function loadState() {
+    stateKey = 'aiPortal.jobStatus.v1:' + (username || 'anonymous');
+    try { state = JSON.parse(localStorage.getItem(stateKey) || '{}') || {}; } catch (e) { state = {}; }
+    state.seeded = Boolean(state.seeded);
+    state.seen = state.seen && typeof state.seen === 'object' ? state.seen : {};
+    state.unread = state.unread && typeof state.unread === 'object' ? state.unread : {};
+  }
+
+  function saveState() {
+    try { localStorage.setItem(stateKey, JSON.stringify(state)); } catch (e) {}
+  }
+
+  async function loadIdentity() {
+    if (identityLoaded) return;
     try {
       const me = await api('/api/auth/me');
-      _meUsername = (me && me.username) || '';
-    } catch (e) { _meUsername = ''; }
-    return _meUsername;
+      username = String(me?.username || '');
+      role = String(me?.role || '');
+    } catch (e) {
+      username = '';
+      role = '';
+    }
+    loadState();
+    identityLoaded = true;
   }
 
+  function ensureBadge(spec) {
+    const button = document.querySelector('.app-tab[data-tab="' + spec.tab + '"]');
+    if (!button) return null;
+    let wrap = button.querySelector('.portal-nav__badges');
+    if (!wrap) {
+      wrap = document.createElement('span');
+      wrap.className = 'portal-nav__badges';
+      wrap.setAttribute('aria-hidden', 'true');
+      button.appendChild(wrap);
+    }
+    let badge = wrap.querySelector('.portal-nav__badge--status');
+    if (!badge) {
+      wrap.replaceChildren();
+      badge = document.createElement('span');
+      badge.className = 'portal-nav__badge portal-nav__badge--status';
+      badge.hidden = true;
+      wrap.appendChild(badge);
+    }
+    return badge;
+  }
+
+  function unreadCount(app, kind) {
+    return Object.keys(state.unread?.[app]?.[kind] || {}).length;
+  }
+
+  function render(spec, activeCount, queueItem) {
+    const badge = ensureBadge(spec);
+    if (!badge) return;
+    const failed = unreadCount(spec.app, 'failure');
+    const succeeded = unreadCount(spec.app, 'success');
+    const tone = failed ? 'danger' : succeeded ? 'success' : activeCount ? 'active' : '';
+    badge.className = 'portal-nav__badge portal-nav__badge--status' + (tone ? ' is-' + tone : '');
+    badge.textContent = activeCount ? String(activeCount) : '';
+    badge.hidden = !tone;
+    const title = [];
+    if (activeCount) title.push('运行中：' + activeCount);
+    if (succeeded) title.push('未读成功：' + succeeded);
+    if (failed) title.push('未读失败：' + failed);
+    if (queueItem) title.push('排队第 ' + queueItem.queue_position + ' 位，预计约 ' + queueItem.eta_minutes + ' 分钟');
+    badge.title = title.join('；');
+  }
+
+  function observe(spec, jobs) {
+    const previous = state.seen[spec.app] || {};
+    const next = {};
+    for (const job of jobs) {
+      const id = jobId(job);
+      if (!id) continue;
+      const current = normalize(job.status);
+      next[id] = current;
+      if (!state.seeded || !isOwn(job) || previous[id] !== 'active' || !['success', 'failure'].includes(current)) continue;
+      state.unread[spec.app] = state.unread[spec.app] || {};
+      state.unread[spec.app][current] = state.unread[spec.app][current] || {};
+      state.unread[spec.app][current][id] = Date.now();
+      window.__notifyJobDone?.(id, current === 'success' ? 'succeeded' : 'failed', spec.label, spec.tab);
+    }
+    state.seen[spec.app] = next;
+  }
+
+  function clearTerminal(tab) {
+    const spec = SPECS.find((item) => item.tab === tab);
+    if (!spec || !state.unread[spec.app]) return;
+    delete state.unread[spec.app].success;
+    delete state.unread[spec.app].failure;
+    if (!Object.keys(state.unread[spec.app]).length) delete state.unread[spec.app];
+    saveState();
+  }
+
+  function currentTab() {
+    return document.querySelector('.app-tab.active')?.dataset.tab || '';
+  }
+
+  function hasUnread(spec) {
+    return Boolean(spec) && (unreadCount(spec.app, 'success') > 0 || unreadCount(spec.app, 'failure') > 0);
+  }
+
+  function acknowledgeTab(tab) {
+    const spec = SPECS.find((item) => item.tab === tab);
+    if (!hasUnread(spec)) return;
+    clearTimeout(acknowledgeTimers.get(tab));
+    clearTerminal(tab);
+    render(spec, latestActive[spec.app] || 0, latestQueue[spec.app]);
+  }
+
+  function scheduleAcknowledge(tab) {
+    if (currentTab() !== tab) return;
+    const spec = SPECS.find((item) => item.tab === tab);
+    if (!hasUnread(spec)) return;
+    clearTimeout(acknowledgeTimers.get(tab));
+    acknowledgeTimers.set(tab, setTimeout(() => {
+      if (currentTab() === tab) acknowledgeTab(tab);
+    }, 2000));
+  }
+
+  const interactionTargets = new WeakSet();
+  const interactionFrames = new WeakSet();
+  function bindInteractionTarget(target, tab) {
+    if (!target || interactionTargets.has(target)) return;
+    interactionTargets.add(target);
+    ['pointerdown', 'keydown', 'input', 'change', 'submit'].forEach((eventName) => {
+      target.addEventListener(eventName, () => scheduleAcknowledge(tab), true);
+    });
+  }
+
+  function bindModuleInteractions(spec) {
+    if (!spec?.tab) return;
+    const panel = document.getElementById('tab-' + spec.tab);
+    if (!panel) return;
+    const iframe = panel.querySelector('iframe.portal-iframe');
+    if (!iframe) {
+      bindInteractionTarget(panel, spec.tab);
+      return;
+    }
+    const bindFrame = () => {
+      try { bindInteractionTarget(iframe.contentDocument, spec.tab); } catch (e) {}
+    };
+    if (!interactionFrames.has(iframe)) {
+      interactionFrames.add(iframe);
+      iframe.addEventListener('load', bindFrame);
+    }
+    bindFrame();
+  }
   async function refresh() {
-    ensureBadges();
-    // 拿不到用户名时（/me 失败）宁可不弹，也不要把别人的任务弹给当前用户
-    const me = await currentUsername();
-    await Promise.all(specs.map(async (spec) => {
-      let list = [];
-      try {
-        const res = await api(spec.url);
-        list = Array.isArray(res) ? res : (res?.jobs || res?.items || []);
-      } catch (e) { list = []; }
-      if (!Array.isArray(list)) return;
-      const count = list.filter((job) => job && isActive(job.status)).length;
-      setBadge(spec.tab, count);
-      // 终态转场检测：上一轮 active、这一轮终态 → 弹完成弹窗（仅自己的任务）
-      const prev = _notifySeenStates[spec.app] || {};
-      const next = {};
-      for (const job of list) {
-        if (!job) continue;
-        const id = job.id !== undefined && job.id !== null ? String(job.id) : (job.job_id !== undefined ? String(job.job_id) : '');
-        if (!id) continue;
-        const status = String(job.status || '').toLowerCase();
-        next[id] = status;
-        if (!me) continue; // 身份未知：只跟踪状态，不弹通知
-        const owner = String(job.username || job.user || '');
-        if (owner && owner !== me) continue; // 别人的任务：不弹
-        const prevStatus = prev[id];
-        if (prevStatus !== undefined && isActive(prevStatus) && !isActive(status)) {
-          window.__notifyJobDone(id, status, spec.label, spec.tab);
-        }
-      }
-      _notifySeenStates[spec.app] = next;
-    }));
+    await loadIdentity();
+    const [historyResponse, queueResponse] = await Promise.all([
+      api('/api/platform/history?limit=200&days=30').catch(() => []),
+      api('/api/platform/queue').catch(() => ({ items: [] })),
+    ]);
+    const jobs = readList(historyResponse);
+    const queueItems = Array.isArray(queueResponse?.items) ? queueResponse.items : [];
+    for (const spec of SPECS) {
+      const moduleJobs = jobs.filter((job) => String(job?.app || '') === spec.app);
+      observe(spec, moduleJobs);
+      const visibleJobs = role === 'admin' ? moduleJobs : moduleJobs.filter(isOwn);
+      const activeCount = visibleJobs.filter((job) => normalize(job.status) === 'active').length;
+      const queueItem = queueItems.find((item) => item.app === spec.app);
+      latestActive[spec.app] = activeCount;
+      latestQueue[spec.app] = queueItem;
+      bindModuleInteractions(spec);
+      render(spec, activeCount, queueItem);
+    }
+    state.seeded = true;
+    saveState();
   }
 
-  async function refreshQueueMeta() {
-    try {
-      const res = await api('/api/platform/queue');
-      const items = (res && res.ok && Array.isArray(res.items)) ? res.items : [];
-      specs.forEach((spec) => {
-        const badge = document.querySelector('.app-tab[data-tab="' + spec.tab + '"] .portal-nav__badge');
-        if (!badge) return;
-        const first = items.find((it) => it.app === spec.app);
-        badge.title = first ? '排队第 ' + first.queue_position + ' 位，预计约 ' + first.eta_minutes + ' 分钟' : '';
-      });
-    } catch (e) { /* queue metadata is best-effort */ }
-  }
-
+  document.addEventListener('portal:tabchange', (event) => {
+    const tab = event.detail?.tab || '';
+    acknowledgeTab(tab);
+    bindModuleInteractions(SPECS.find((spec) => spec.tab === tab));
+    refresh();
+  });
+  SPECS.forEach((spec) => { ensureBadge(spec); bindModuleInteractions(spec); });
   refresh();
-  refreshQueueMeta();
-  setInterval(refresh, 15000);
-  setInterval(refreshQueueMeta, 15000);
+  setInterval(refresh, POLL_MS);
 })();
 // === Contextual per-module help ===
 (function () {

@@ -19,14 +19,14 @@ async function api(url, method, body) {
 function escHtml(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''; }
 
 function jobStatusLabel(status) {
-  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消' };
+  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '???' };
   return map[String(status || '').toLowerCase()] || String(status || '未知');
 }
 
 function jobStatusClass(status) {
   const s = String(status || '').toLowerCase();
   if (['succeeded', 'success', 'completed'].includes(s)) return 'is-success';
-  if (['failed', 'failure'].includes(s)) return 'is-failed';
+  if (['failed', 'failure', 'interrupted'].includes(s)) return 'is-failed';
   if (['pending', 'queued'].includes(s)) return 'is-pending';
   if (s === 'querying') return 'is-querying';
   return 'is-running';
@@ -2117,6 +2117,7 @@ function VolcenginePortraitApp() {
     showInfoDetail: false,    // 顶部说明展开
     _activeVpJobId: null,
     _activeVpStatus: '',
+    _vpPollingJobId: null,
     runtimeTick: 0,
     outputDir: '', outputDirInput: '', showOutputDirInput: false,
     savingOutputDir: false, outputDirMsg: '', outputDirOk: true,
@@ -2686,6 +2687,8 @@ function VolcenginePortraitApp() {
     },
 
     async pollJob(jobId) {
+      if (this._vpPollingJobId === jobId) return;
+      this._vpPollingJobId = jobId;
       // Transient failures (network blip / sub-app restart) used to break the
       // loop silently — the running task vanished from view with no hint. Now
       // retry with a cap, and say so while retrying.
@@ -2727,6 +2730,7 @@ function VolcenginePortraitApp() {
         }
         await new Promise(r => setTimeout(r, 3000));
       }
+      if (this._vpPollingJobId === jobId) this._vpPollingJobId = null;
       this._activeVpJobId = null;
       this._activeVpStatus = '';
       if (terminal !== 'failed') this.statusText = '空闲';
@@ -2752,7 +2756,26 @@ function VolcenginePortraitApp() {
 
     async loadJobs() {
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs`);
-      if (res?.ok) this.jobs = res.jobs || [];
+      if (res?.ok) {
+        this.jobs = res.jobs || [];
+        // Refresh-safe recovery: the original lower task/status bar is driven
+        // by _activeVpJobId, not by the history list. Rehydrate the newest
+        // non-terminal job and restart the existing poller so its original
+        // cancel button comes back in the same place after a page refresh.
+        const active = this.jobs
+          .filter(j => !['succeeded', 'failed', 'cancelled', 'canceled', 'completed'].includes(String(j.status || '').toLowerCase()))
+          .sort((a, b) => Number(b.submitted_at || 0) - Number(a.submitted_at || 0))[0];
+        if (active && this._vpPollingJobId !== active.job_id) {
+          this._activeVpJobId = active.job_id;
+          this._activeVpStatus = active.status || '';
+          this.statusText = `${active.status || 'queued'} ${active.done || 0}/${active.total || 0}`;
+          this.events = (active.events || []).map(e => '<div>' + e.time + ' ' + e.message + '</div>').join('');
+          this.results = (active.results || []).filter(r => r.download_url).map(r => ({
+            url: `${appPath}${r.download_url}`, filename: r.filename,
+          }));
+          this.pollJob(active.job_id);
+        }
+      }
       this.loadActivity();
     },
 
@@ -2899,7 +2922,7 @@ function HistoryApp() {
       try { localStorage.setItem('portal_history_downloads', JSON.stringify(this.downloaded)); } catch (e) {}
     },
     openDetail(it) { this.detail = it; this.detailTab = "req"; },
-    // 视频卡片走服务端抽帧缩略图端点；图片直接用原 URL
+    // ?????????????????????? URL
     thumbFor(it) {
       if (!it || !it.thumb_url) return "";
       if (it.kind !== "video") return "/" + it.app + it.thumb_url;

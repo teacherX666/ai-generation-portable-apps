@@ -240,7 +240,7 @@ class BitableResultWriter:
             completed_parts = set()
 
         descriptor = os.open(
-            artifact.local_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            artifact.local_path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         )
         before = os.fstat(descriptor)
         digest = sha256()
@@ -281,7 +281,7 @@ class BitableResultWriter:
         artifact: Artifact, *, collect: bool = True
     ) -> bytes:
         descriptor = os.open(
-            artifact.local_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            artifact.local_path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         )
         before = os.fstat(descriptor)
         digest = sha256()

@@ -201,8 +201,9 @@
   function providerOptions(kind) {
     return (state.providers?.[kind] || []).map((provider) => ({
       value: provider.name,
-      label: `${provider.label}${provider.mode === "local" ? "（免费）" : "（付费）"}`,
+      label: `${provider.label}${provider.reachable === false ? " (unavailable)" : ""}`,
       local: provider.mode === "local",
+      reachable: provider.reachable,
     }));
   }
 
@@ -384,6 +385,7 @@
     const scan = categoryState.scan;
     const tasks = categoryState.tasks;
     const activeCategory = state.bitable.activeCategory;
+    scanBitableButton.disabled = !state.modes.bitable || scan.phase === "loading";
     categoryTabs.forEach((tab) => {
       const isActive = tab.dataset.category === activeCategory;
       tab.classList.toggle("is-active", isActive);
@@ -690,11 +692,12 @@
   }
 
   async function scanBitableTasks() {
-    if (state.busy || !state.modes.bitable) return;
+    if (!state.modes.bitable) return;
     const category = state.bitable.activeCategory;
+    const categoryState = BitableState.activeCategoryState(state.bitable);
+    if (categoryState.scan.phase === "loading") return;
     state.bitable = BitableState.scanStarted(state.bitable, category);
     renderBitableTasks();
-    setBusy(true);
     clearError();
     try {
       const tasks = await api(
@@ -704,11 +707,9 @@
     } catch (error) {
       state.bitable = BitableState.scanFailed(state.bitable, category, error.message);
     } finally {
-      setBusy(false);
       renderBitableTasks();
     }
   }
-
   async function startDirectRun() {
     if (state.busy) return;
     const url = directRunUrl.value.trim();
@@ -927,17 +928,14 @@
     return control;
   }
 
-  const IMAGE_PROVIDERS = [
-    ["aiport", "本地 Qwen（免费）"],
-    ["aiport_klein", "本地 Klein 多模态（免费）"],
-    ["aiport_klein_v3", "本地 Klein 写真换脸（免费）"],
-    ["aiport_anime2real", "本地 动漫转真人（免费）"],
-    ["aiport_zimage", "本地 Z-image 多功能（免费）"],
-    ["aiport_style", "本地 Krea 风格迁移（免费）"],
-    ["banana", "banana（卡通 / 厚涂 / 插画，付费）"],
-    ["seedream", "seedream（中式 / 国风，付费）"],
-    ["gpt-image2", "gpt-image2（写实 / 真人质感，付费）"],
-  ];
+  function imageProviderOptions(task) {
+    const options = providerOptions("image");
+    const selected = task.image_provider || state.providerDefaults?.image_provider;
+    if (selected && !options.some((option) => option.value === selected)) {
+      options.push({ value: selected, label: `${selected} (unavailable)`, local: false });
+    }
+    return options;
+  }
 
   // 画风随剧本变，做成按钮直接追加到提示词末尾，人工审核时一键切换。
   const STYLE_PRESETS = [
@@ -948,18 +946,41 @@
 
   function providerPicker(task) {
     const control = document.createElement("select");
-    const preferred = state.providerDefaults?.image_provider || "banana";
-    IMAGE_PROVIDERS.forEach(([value, label]) => {
-      const option = element("option", "", label);
-      option.value = value;
-      option.selected = (task.image_provider || preferred) === value;
-      control.append(option);
+    const options = imageProviderOptions(task);
+    const preferred = state.providerDefaults?.image_provider || options[0]?.value || "";
+    options.forEach((option) => {
+      const node = element("option", "", option.label);
+      node.value = option.value;
+      node.selected = (task.image_provider || preferred) === option.value;
+      control.append(node);
     });
     control.addEventListener("change", () => {
       updateTask(task.task_id, { image_provider: control.value });
     });
     return control;
   }
+  function videoProviderPicker(task) {
+    const control = document.createElement("select");
+    const options = providerOptions("video");
+    const preferred = state.providerDefaults?.video_provider || "aiport";
+    options.forEach((option) => {
+      const node = element("option", "", option.label);
+      node.value = option.value;
+      node.selected = (task.video_provider || preferred) === option.value;
+      control.append(node);
+    });
+    if (!options.some((option) => option.value === (task.video_provider || preferred))) {
+      const node = element("option", "", `${task.video_provider} (unavailable)`);
+      node.value = task.video_provider || preferred;
+      node.selected = true;
+      control.append(node);
+    }
+    control.addEventListener("change", () => {
+      updateTask(task.task_id, { video_provider: control.value });
+    });
+    return control;
+  }
+
   function renderProviderStatus() {
     const bar = byId("provider-status-bar");
     if (!bar) return;
@@ -1647,6 +1668,7 @@
           updateTask(task.task_id, { resolution: value });
         })),
       );
+      grid.append(field("Video model", videoProviderPicker(task)));
       const audio = document.createElement("select");
       [["true", "开启"], ["false", "关闭"]].forEach(([value, label]) => {
         const option = element("option", "", label);

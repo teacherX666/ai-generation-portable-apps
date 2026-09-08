@@ -5,7 +5,7 @@
   "providers": {
     "comfyui_local": {
       "label": "本地 ComfyUI（免费）",
-      "base_url": "http://127.0.0.1:8801",
+      "base_url": "http://UT-20210713KMWD.local:8801",
       "api_style": "comfyui_workflow",
       "hint": "Free local MiniMax H3.",
       "defaults": {
@@ -16,7 +16,7 @@
         "repeat_count": 1,
         "concurrency": 1,
         "poll_interval": 5,
-        "timeout": 7200,
+        "timeout": 3600,
         "vary_seed": true
       },
       "models": [

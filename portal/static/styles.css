@@ -134,6 +134,17 @@ body { height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
 .tab-panel.iframe-panel { width: 100%; }
 .tab-panel.iframe-panel.active { display: flex; flex: 1 1 auto; flex-direction: column; width: 100%; min-height: 0; overflow: hidden; }
 
+/* Portal tab transitions for homepage/workbench switching. */
+@keyframes portal-tab-enter {
+  from { opacity: 0; transform: translate3d(0, 12px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes portal-tab-enter-from-home {
+  from { opacity: 0; transform: translate3d(0, -10px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+.tab-panel.portal-tab-enter { animation: portal-tab-enter .26s cubic-bezier(.22,.8,.24,1) both; }
+.tab-panel.portal-tab-enter.portal-tab-enter-from-home { animation-name: portal-tab-enter-from-home; }
 /* === App Layout === */
 .app { display: grid; grid-template-columns: 340px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100%; min-height: 0; overflow: hidden; }
 .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 16px; overflow: auto; min-height: 0; height: 100%; }
@@ -2105,162 +2116,98 @@ body.director-collapsed .director-body { display: none !important; }
 /* === 易用性修补：LAN 徽章可复制提示 === */
 .portal-lan { user-select: none; }
 .portal-lan:hover { opacity: 0.85; }
-/* Minimal home entry: added without changing main-repo nav geometry or motion. */
-.portal-nav__topline { display:flex; align-items:center; justify-content:flex-end; gap:8px; margin:0 2px 4px; }
-.portal-nav__home { width:auto; min-width:0; height:30px; min-height:30px; margin:0; padding:0 4px; border:0; border-radius:0; background:transparent; color:var(--text-secondary); font-family:inherit; font-size:15px; font-weight:700; letter-spacing:.08em; cursor:pointer; transition:color .15s ease; }
-.portal-nav__home:hover,.portal-nav__home:focus-visible { background:transparent; color:var(--accent); transform:none; box-shadow:none; text-shadow:none; }
-.portal-nav__home.active,.portal-nav__home[aria-selected="true"] { background:transparent; color:var(--accent); }
-.portal-nav__home span:first-child { font:inherit; letter-spacing:inherit; color:inherit; }
-.portal-nav__home::before,.portal-nav__home::after { content:none; display:none; }
-.portal-nav.is-collapsed .portal-nav__topline { flex-direction:row; justify-content:center; gap:0; }
-.portal-nav.is-collapsed .portal-nav__home { display:none; }
-.portal-home-panel { overflow:auto; padding:clamp(28px,5vw,72px); }
-.portal-home-placeholder { max-width:760px; margin:10vh auto 0; padding:clamp(32px,6vw,72px); border:1px solid var(--border); border-radius:24px; background:linear-gradient(135deg,var(--surface),var(--surface-soft)); box-shadow:var(--shadow-md); text-align:center; }
-.portal-home-placeholder__eyebrow { color:var(--accent); font-size:11px; font-weight:800; letter-spacing:.18em; }
-.portal-home-placeholder h1 { margin:18px 0 10px; font-size:clamp(28px,4vw,46px); }
-.portal-home-placeholder p { max-width:560px; margin:0 auto; color:var(--text-secondary); line-height:1.8; }
-/* 2026-09-04: restore the large home landing surface; preserve the top row only. */
-body.portal-home-active .portal-nav,
-body.portal-home-active .app-body > .portal-nav,
-body.portal-home-active .director-sidebar { display:none !important; }
-body.portal-home-active .app-body { display:block !important; }
-body.portal-home-active .app-body > .ui-portal-content { width:100% !important; height:calc(100vh - var(--portal-header-height, 56px)) !important; padding:0 !important; }
-body.portal-home-active .portal-home-panel { display:grid !important; place-items:center !important; min-height:calc(100vh - var(--portal-header-height, 56px)) !important; padding:40px 7vw !important; overflow:auto !important; background:radial-gradient(circle at 50% 36%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 42%), var(--background) !important; }
-body.portal-home-active .portal-home-placeholder { width:min(980px,100%) !important; margin:0 !important; padding:clamp(44px,9vw,120px) 24px !important; border:0 !important; border-radius:0 !important; background:transparent !important; box-shadow:none !important; text-align:center !important; }
-body.portal-home-active .portal-home-placeholder__eyebrow { font-size:clamp(11px,1vw,14px) !important; letter-spacing:.32em !important; }
-body.portal-home-active .portal-home-placeholder h1 { margin:10px 0 26px !important; font-family:Georgia, "Songti SC", "STSong", "Noto Serif CJK SC", serif !important; font-size:clamp(96px,18vw,280px) !important; font-weight:500 !important; letter-spacing:.06em !important; line-height:.82 !important; color:transparent !important; background:linear-gradient(135deg,var(--text) 8%,var(--accent) 52%,color-mix(in srgb,var(--accent) 48%,var(--text)) 92%) !important; -webkit-background-clip:text !important; background-clip:text !important; filter:drop-shadow(0 18px 40px color-mix(in srgb,var(--accent) 18%,transparent)) !important; transform:scale(1.02) !important; }
-body.portal-home-active .portal-home-placeholder p { max-width:620px !important; font-size:clamp(14px,1.3vw,18px) !important; }
-body.portal-home-active #globalBanner { display:none !important; }
-body.portal-home-active .portal-mobile-switcher { display:none !important; }
-/* Keep the original portal top row visually untouched on the landing page. */
-#portalHomeExitBtn,
-.portal-home-debug-btn { display:none !important; }
-/* 2026-09-04: restore the preferred simple large home label and a usable return path. */
-.portal-nav__topline .portal-nav__home,
-.portal-nav__topline .portal-nav__home.active,
-.portal-nav__topline .portal-nav__home[aria-selected="true"] {
-  width:auto !important; min-width:0 !important; height:46px !important; min-height:46px !important; padding:0 !important; border:0 !important; border-radius:0 !important; background:transparent !important; color:var(--text) !important; font-family:"Microsoft YaHei UI","PingFang SC","Noto Sans CJK SC",sans-serif !important; font-size:32px !important; font-weight:700 !important; letter-spacing:.04em !important; line-height:46px !important; text-shadow:none !important; transform:none !important; box-shadow:none !important; transition:color .18s ease !important;
-}
-.portal-nav__topline .portal-nav__home span:first-child { font:inherit !important; letter-spacing:inherit !important; color:inherit !important; }
-.portal-nav__topline .portal-nav__home:hover,.portal-nav__topline .portal-nav__home:focus-visible { color:var(--accent) !important; background:transparent !important; transform:none !important; box-shadow:none !important; text-shadow:none !important; }
-.portal-nav__topline .portal-nav__home::before,.portal-nav__topline .portal-nav__home::after { content:none !important; display:none !important; }
-.portal-nav.is-collapsed .portal-nav__topline .portal-nav__home { display:none !important; }
-
-/* The existing header return button is the real way back from the landing page. */
-body.portal-home-active #portalHomeExitBtn { display:inline-flex !important; align-items:center !important; width:auto !important; min-height:30px !important; margin:0 0 0 18px !important; padding:0 14px !important; border:1px solid var(--accent) !important; border-radius:999px !important; background:transparent !important; color:var(--accent) !important; font-size:12px !important; font-weight:750 !important; cursor:pointer !important; }
-body.portal-home-active #portalHomeExitBtn:hover { background:var(--accent) !important; color:#fff !important; }
-.portal-home-debug-btn { display:none !important; }
-/* 2026-09-04: requested final home navigation treatment. */
-.portal-nav__topline .portal-nav__home,
-.portal-nav__topline .portal-nav__home.active,
-.portal-nav__topline .portal-nav__home[aria-selected="true"] {
-  width:auto !important; min-width:0 !important; height:46px !important; min-height:46px !important; margin:0 !important; padding:0 !important; border:0 !important; border-radius:0 !important; background:transparent !important; color:#202938 !important; font-family:"Inter","SF Pro Display","PingFang SC","Noto Sans CJK SC","Microsoft YaHei UI",sans-serif !important; font-size:27px !important; font-weight:650 !important; letter-spacing:.1em !important; line-height:1 !important; text-align:left !important; text-shadow:none !important; box-shadow:none !important; transform:none !important; transition:color .22s ease !important;
-}
-.portal-nav__topline .portal-nav__home span:first-child { font-family:inherit !important; font-size:inherit !important; font-weight:inherit !important; letter-spacing:inherit !important; line-height:inherit !important; color:inherit !important; }
-.portal-nav__topline .portal-nav__home:hover,
-.portal-nav__topline .portal-nav__home:focus-visible { background:transparent !important; color:var(--accent) !important; transform:none !important; box-shadow:none !important; text-shadow:none !important; }
-.portal-nav__topline .portal-nav__home.active,
-.portal-nav__topline .portal-nav__home[aria-selected="true"] { background:transparent !important; color:var(--accent) !important; }
-.portal-nav__topline .portal-nav__home::before,
-.portal-nav__topline .portal-nav__home::after { content:none !important; display:none !important; }
-.portal-nav.is-collapsed .portal-nav__topline .portal-nav__home { display:none !important; }
-
-/* Return action belongs to the landing page, not the global top row. */
-#portalHomeExitBtn { display:none !important; }
-body.portal-home-active #portalHomeExitBtn { display:inline-flex !important; align-items:center !important; justify-content:center !important; width:auto !important; min-height:38px !important; margin:30px auto 0 !important; padding:0 22px !important; border:1px solid var(--border-strong) !important; border-radius:999px !important; background:transparent !important; color:var(--text-secondary) !important; font-size:13px !important; font-weight:650 !important; cursor:pointer !important; transition:color .18s ease,border-color .18s ease,background .18s ease !important; }
-body.portal-home-active #portalHomeExitBtn:hover { color:var(--accent) !important; border-color:var(--accent) !important; background:transparent !important; }
-/* 2026-09-04: align expanded home label to the left, keep collapse control right. */
+/* === Portal home navigation === */
 .portal-nav__topline {
-  justify-content: space-between !important;
+  position: relative !important;
+  display: flex !important;
   align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  height: 46px !important;
+  min-height: 46px !important;
+  margin: 0 2px 4px !important;
+  padding: 0 4px 0 8px !important;
+  box-sizing: border-box !important;
+  gap: 8px !important;
 }
-.portal-nav__topline .portal-nav__home {
-  margin-right: auto !important;
+.portal-nav__topline .portal-nav__home,
+.portal-nav__topline .portal-nav__home.active,
+.portal-nav__topline .portal-nav__home[aria-selected="true"] {
+  align-self: center !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 46px !important;
+  min-height: 46px !important;
+  margin: 0 !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: #202938 !important;
+  box-shadow: none !important;
+  font-family: "Inter", "SF Pro Display", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei UI", sans-serif !important;
+  font-size: 28px !important;
+  font-weight: 650 !important;
+  line-height: 1 !important;
+  letter-spacing: .1em !important;
+  text-shadow: none !important;
+  transform: none !important;
+  transition: color .22s ease !important;
+}
+.portal-nav__topline .portal-nav__home span:first-child {
+  color: inherit !important;
+  font: inherit !important;
+  letter-spacing: inherit !important;
+}
+.portal-nav__topline .portal-nav__home:hover,
+.portal-nav__topline .portal-nav__home:focus-visible {
+  color: var(--accent) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+.portal-nav__topline .portal-nav__home::before,
+.portal-nav__topline .portal-nav__home::after { content: none !important; display: none !important; }
+.portal-nav__topline .portal-nav__toggle,
+.portal-nav.is-collapsed .portal-nav__topline .portal-nav__toggle {
+  align-self: center !important;
+  flex: 0 0 32px !important;
+  width: 32px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  margin: 0 !important;
+  transform: none !important;
 }
 .portal-nav.is-collapsed .portal-nav__topline {
   justify-content: center !important;
+  padding: 0 !important;
 }
-/* 2026-09-04: recapture the preferred balanced home-label placement. */
-.portal-nav__topline { justify-content:flex-end !important; align-items:center !important; gap:8px !important; margin:0 2px 4px !important; }
-.portal-nav__topline .portal-nav__home,
-.portal-nav__topline .portal-nav__home.active,
-.portal-nav__topline .portal-nav__home[aria-selected="true"] { width:auto !important; min-width:0 !important; height:46px !important; min-height:46px !important; margin:0 !important; padding:0 10px !important; color:#202938 !important; font-family:"Inter","SF Pro Display","PingFang SC","Noto Sans CJK SC","Microsoft YaHei UI",sans-serif !important; font-size:27px !important; font-weight:650 !important; letter-spacing:.1em !important; line-height:1 !important; background:transparent !important; transform:none !important; box-shadow:none !important; text-shadow:none !important; transition:color .22s ease !important; }
-.portal-nav__topline .portal-nav__home span:first-child { font:inherit !important; color:inherit !important; letter-spacing:inherit !important; }
-.portal-nav__topline .portal-nav__home:hover,.portal-nav__topline .portal-nav__home:focus-visible { color:var(--accent) !important; background:transparent !important; transform:none !important; box-shadow:none !important; text-shadow:none !important; }
-.portal-nav__topline .portal-nav__home::before,.portal-nav__topline .portal-nav__home::after { content:none !important; display:none !important; }
-.portal-nav.is-collapsed .portal-nav__topline { justify-content:center !important; gap:0 !important; }
-.portal-nav.is-collapsed .portal-nav__topline .portal-nav__home { display:none !important; }
-/* 2026-09-04: balanced placement — slightly left, never pinned to either edge. */
-.portal-nav__topline {
-  width:100% !important;
-  justify-content:space-between !important;
-  align-items:center !important;
-  gap:8px !important;
-  margin:0 2px 4px !important;
-  padding:0 4px 0 8px !important;
+.portal-nav.is-collapsed .portal-nav__topline .portal-nav__home { display: none !important; }
+.portal-home-panel { overflow: auto; padding: 0; }
+body.portal-home-active .portal-nav,
+body.portal-home-active .app-body > .portal-nav,
+body.portal-home-active .director-sidebar { display: none !important; }
+body.portal-home-active .app-body { display: block !important; }
+body.portal-home-active .app-body > .ui-portal-content {
+  width: 100% !important;
+  height: calc(100vh - var(--portal-header-height, 56px)) !important;
+  padding: 0 !important;
 }
-.portal-nav__topline .portal-nav__home {
-  margin:0 !important;
-  padding:0 8px !important;
+body.portal-home-active .portal-home-panel {
+  display: block !important;
+  place-items: initial !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  background: var(--rc-bg) !important;
 }
-.portal-nav__topline .portal-nav__toggle {
-  margin:0 !important;
-}
-.portal-nav.is-collapsed .portal-nav__topline {
-  justify-content:center !important;
-  padding:0 !important;
-}
-/* 2026-09-04: keep the collapse control vertically parallel in both states. */
-.portal-nav__topline {
-  align-items:center !important;
-}
-.portal-nav__topline .portal-nav__toggle,
-.portal-nav.is-collapsed .portal-nav__topline .portal-nav__toggle {
-  align-self:center !important;
-  margin:0 !important;
-}
-/* 2026-09-04: exact parallel control track for expanded/collapsed nav. */
-.portal-nav__topline {
-  position:relative !important;
-  display:flex !important;
-  align-items:center !important;
-  justify-content:space-between !important;
-  width:100% !important;
-  height:46px !important;
-  min-height:46px !important;
-  margin:0 2px 4px !important;
-  padding:0 4px 0 8px !important;
-  box-sizing:border-box !important;
-}
-.portal-nav__topline .portal-nav__home {
-  align-self:center !important;
-  height:46px !important;
-  min-height:46px !important;
-  display:inline-flex !important;
-  align-items:center !important;
-  margin:0 !important;
-  padding:0 8px !important;
-  font-size:28px !important;
-  line-height:1 !important;
-}
-.portal-nav__topline .portal-nav__toggle,
-.portal-nav.is-collapsed .portal-nav__topline .portal-nav__toggle {
-  align-self:center !important;
-  flex:0 0 32px !important;
-  width:32px !important;
-  height:30px !important;
-  min-height:30px !important;
-  margin:0 !important;
-  transform:none !important;
-}
-.portal-nav.is-collapsed .portal-nav__topline {
-  height:46px !important;
-  min-height:46px !important;
-  margin:0 2px 4px !important;
-  padding:0 !important;
-  justify-content:center !important;
-}
-
+body.portal-home-active #globalBanner,
+body.portal-home-active .portal-mobile-switcher { display: none !important; }
+#portalHomeExitBtn { display: none; }
+body.portal-home-active #portalHomeExitBtn { display: inline-flex; }
 /* ========================================================================
    RedCraft Home — RED INFINITY · 红海无限 AI 创作平台
    高端红色系落地页。仅作用于首页 tab，不改顶部栏与导航几何。
@@ -2283,18 +2230,6 @@ body.portal-home-active #portalHomeExitBtn:hover { color:var(--accent) !importan
   text-rendering: optimizeLegibility;
 }
 .rc-home * { box-sizing: border-box; }
-
-/* Home 激活时改为普通滚动文档，而非居中卡片 */
-body.portal-home-active .portal-home-panel {
-  display: block !important;
-  place-items: initial !important;
-  min-height: 0 !important;
-  padding: 0 !important;
-  overflow-x: hidden !important;
-  overflow-y: auto !important;
-  background: var(--rc-bg) !important;
-}
-
 /* 顶部细红渐变品牌线 */
 .rc-home::before {
   content: ""; display: block; height: 3px;
@@ -2507,3 +2442,401 @@ body.portal-home-active #portalHomeExitBtn:hover {
 .vp-zoom-empty { color: #94a3b8; font-size: 13px; }
 .vp-zoom-meta { display: flex; gap: 14px; padding: 8px 14px; font-size: 11.5px; color: #64748b; border-top: 1px solid #e2e8f0; }
 .vp-zoom-id { font-family: monospace; }
+
+.rc-home::after {
+  content: ""; position: absolute; z-index: 0; pointer-events: none;
+  top: 0; right: -10%; width: min(720px, 70vw); height: 720px;
+  background: radial-gradient(circle, rgba(225,29,46,.09) 0, rgba(225,29,46,.035) 27%, transparent 68%);
+  transform: translate3d(0,0,0); animation: rc-breathe 12s ease-in-out infinite alternate;
+}
+.rc-orbit {
+  position: absolute; z-index: 1; pointer-events: none; border: 1px solid rgba(225,29,46,.10);
+  border-radius: 50%; transform: rotate(-18deg); transform-origin: center;
+}
+.rc-orbit--one { width: 620px; height: 210px; right: -130px; top: 250px; animation: rc-drift 18s ease-in-out infinite alternate; }
+.rc-orbit--two { width: 450px; height: 150px; right: -40px; top: 285px; border-color: rgba(225,29,46,.07); animation: rc-drift 14s ease-in-out -3s infinite alternate-reverse; }
+.rc-noise {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: .035;
+  background-image: radial-gradient(rgba(23,24,28,.7) .55px, transparent .55px);
+  background-size: 5px 5px; mix-blend-mode: multiply;
+}
+
+.rc-hero { min-height: 560px; overflow: hidden; }
+.rc-hero__visual {
+  position: absolute; z-index: 0; right: clamp(34px, 9vw, 132px); top: 50%;
+  width: clamp(270px, 32vw, 480px); aspect-ratio: 1; transform: translateY(-46%);
+  opacity: .96; pointer-events: none;
+}
+.rc-hero__visual-grid {
+  position: absolute; inset: 16%; border-radius: 50%; opacity: .32;
+  background-image: linear-gradient(rgba(225,29,46,.13) 1px, transparent 1px), linear-gradient(90deg, rgba(225,29,46,.13) 1px, transparent 1px);
+  background-size: 24px 24px; mask-image: radial-gradient(circle, #000 0 50%, transparent 74%);
+  animation: rc-grid-pan 18s linear infinite;
+}
+.rc-hero__visual-ring { position: absolute; border-radius: 50%; border: 1px solid rgba(225,29,46,.20); }
+.rc-hero__visual-ring--outer { inset: 7%; transform: rotate(-25deg) scaleX(.72); animation: rc-spin 26s linear infinite; }
+.rc-hero__visual-ring--inner { inset: 24%; border-color: rgba(225,29,46,.30); transform: rotate(25deg) scaleY(.72); animation: rc-spin-reverse 19s linear infinite; }
+.rc-hero__visual-core {
+  position: absolute; left: 50%; top: 50%; display: grid; place-items: center;
+  width: 90px; height: 90px; transform: translate(-50%, -50%);
+  border-radius: 28px; color: #fff; font-size: 44px; font-weight: 800;
+  background: linear-gradient(145deg, #F04A59, #B20E24);
+  box-shadow: 0 20px 48px rgba(193,16,42,.30), 0 0 0 12px rgba(225,29,46,.06);
+  animation: rc-core-float 5s ease-in-out infinite;
+}
+.rc-hero__visual-orbit { position: absolute; left: 50%; top: 50%; width: 100%; height: 24%; border: 1px solid rgba(225,29,46,.22); border-radius: 50%; }
+.rc-hero__visual-orbit--a { transform: translate(-50%, -50%) rotate(26deg); animation: rc-spin 22s linear infinite; }
+.rc-hero__visual-orbit--b { transform: translate(-50%, -50%) rotate(-57deg) scale(.84); border-color: rgba(225,29,46,.12); animation: rc-spin-reverse 17s linear infinite; }
+.rc-hero > :not(.rc-hero__visual) { z-index: 2; }
+.rc-hero__eyebrow, .rc-hero__title, .rc-hero__lead, .rc-hero__actions { animation: rc-rise .72s cubic-bezier(.22,.8,.24,1) both; }
+.rc-hero__title { animation-delay: .06s; }
+.rc-hero__lead { animation-delay: .13s; }
+.rc-hero__actions { animation-delay: .20s; }
+
+.rc-reveal { animation: rc-rise .72s cubic-bezier(.22,.8,.24,1) both; animation-delay: .08s; }
+.rc-reveal--delay-1 { animation-delay: .14s; }
+.rc-reveal--delay-2 { animation-delay: .20s; }
+.rc-stagger-1 { animation-delay: .06s; }
+.rc-stagger-2 { animation-delay: .11s; }
+.rc-stagger-3 { animation-delay: .16s; }
+.rc-stagger-4 { animation-delay: .21s; }
+.rc-stagger-5 { animation-delay: .26s; }
+.rc-stagger-6 { animation-delay: .31s; }
+.rc-card, .rc-cap { animation-name: rc-rise; animation-duration: .65s; animation-timing-function: cubic-bezier(.22,.8,.24,1); animation-fill-mode: both; }
+
+@keyframes rc-rise { from { opacity: 0; transform: translate3d(0, 18px, 0); } to { opacity: 1; transform: translate3d(0, 0, 0); } }
+@keyframes rc-breathe { from { opacity: .55; transform: translate3d(-24px, -8px, 0) scale(.96); } to { opacity: 1; transform: translate3d(8px, 18px, 0) scale(1.04); } }
+@keyframes rc-drift { from { transform: rotate(-18deg) translate3d(-12px, 0, 0); } to { transform: rotate(-18deg) translate3d(24px, 12px, 0); } }
+@keyframes rc-spin { to { transform: rotate(335deg) scaleX(.72); } }
+@keyframes rc-spin-reverse { to { transform: rotate(-335deg) scaleY(.72); } }
+@keyframes rc-core-float { 0%,100% { transform: translate(-50%, -50%); } 50% { transform: translate(-50%, calc(-50% - 8px)); } }
+@keyframes rc-grid-pan { to { background-position: 24px 24px; } }
+
+@media (max-width: 900px) {
+  .rc-hero { min-height: 610px; }
+  .rc-hero__visual { right: -50px; top: 53%; opacity: .38; transform: translateY(-50%) scale(.88); }
+}
+@media (max-width: 600px) {
+  .rc-hero { min-height: 650px; }
+  .rc-hero__visual { right: -120px; top: 56%; opacity: .27; transform: translateY(-50%) scale(.78); }
+  .rc-hero__title { font-size: clamp(48px, 15vw, 76px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rc-home *, .rc-home *::before, .rc-home *::after {
+    animation-duration: .001ms !important; animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important; transition-duration: .001ms !important;
+  }
+  .rc-hero__visual, .rc-orbit, .rc-home::after { display: none !important; }
+}
+
+
+/* ========================================================================
+   RedCraft Culture Story v1 ? scroll-driven brand narrative
+   ??????????????????????????????????
+   ======================================================================== */
+.rc-story {
+  position: relative; display: grid; grid-template-columns: .82fr 1.18fr;
+  gap: clamp(48px, 8vw, 130px); align-items: start; overflow: hidden;
+  min-height: 760px; padding-top: clamp(72px, 9vw, 132px) !important;
+  padding-bottom: clamp(78px, 9vw, 132px) !important;
+}
+.rc-story__intro { position: sticky; top: 110px; align-self: start; }
+.rc-story__intro h2 { margin: 18px 0 24px; font-size: clamp(32px, 4.1vw, 58px); line-height: 1.08; letter-spacing: -.025em; font-weight: 760; }
+.rc-story__intro h2 span { color: var(--rc-red); }
+.rc-story__intro > p { max-width: 420px; color: var(--rc-ink-2); font-size: 15px; line-height: 1.8; }
+.rc-story__stats { display: flex; flex-wrap: wrap; gap: 30px; margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--rc-line); }
+.rc-story__stats div { display: flex; flex-direction: column; gap: 5px; min-width: 88px; }
+.rc-story__stats strong { color: var(--rc-ink); font-size: 23px; font-weight: 760; letter-spacing: -.02em; }
+.rc-story__stats span { color: var(--rc-ink-3); font-size: 11px; line-height: 1.45; }
+.rc-story__sequence { position: relative; min-height: 650px; padding-left: 56px; }
+.rc-story__rail { position: absolute; left: 0; top: 4px; bottom: 4px; width: 34px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; color: var(--rc-ink-3); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.rc-story__rail-line { position: absolute; left: 50%; top: 18px; bottom: 18px; width: 1px; transform: translateX(-50%); background: linear-gradient(to bottom, var(--rc-red), var(--rc-line) 25%, var(--rc-line) 75%, var(--rc-red)); opacity: .5; }
+.rc-story__rail i { position: relative; display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--rc-line); border-radius: 50%; background: var(--rc-bg); font-style: normal; transition: color .25s ease, border-color .25s ease, background .25s ease, transform .25s ease; }
+.rc-story__rail i.is-active { color: #fff; border-color: var(--rc-red); background: var(--rc-red); transform: scale(1.12); }
+.rc-story__steps { position: relative; z-index: 2; }
+.rc-story__step { min-height: 200px; padding: 0 0 80px; opacity: .24; transform: translate3d(0, 12px, 0); transition: opacity .45s ease, transform .45s ease; }
+.rc-story__step.is-active { opacity: 1; transform: translate3d(0, 0, 0); }
+.rc-story__step-kicker { display: block; margin-bottom: 14px; color: var(--rc-red); font-size: 11px; font-weight: 760; letter-spacing: .18em; }
+.rc-story__step h3 { margin-bottom: 12px; color: var(--rc-ink); font-size: clamp(28px, 3vw, 40px); line-height: 1.1; font-weight: 740; }
+.rc-story__step p { max-width: 390px; color: var(--rc-ink-2); font-size: 14px; line-height: 1.8; }
+.rc-story__stage { position: sticky; top: 240px; height: 250px; margin: -32px 0 0 0; overflow: hidden; border: 1px solid rgba(225,29,46,.16); border-radius: 24px; background: linear-gradient(135deg, #fff, #fbf1f2); box-shadow: 0 20px 50px rgba(23,24,28,.07); }
+.rc-story__stage-grid { position: absolute; inset: 0; opacity: .38; background-image: linear-gradient(rgba(225,29,46,.1) 1px, transparent 1px), linear-gradient(90deg, rgba(225,29,46,.1) 1px, transparent 1px); background-size: 26px 26px; mask-image: radial-gradient(circle at 50% 50%, #000, transparent 74%); animation: rc-grid-pan 20s linear infinite; }
+.rc-story__stage-ring { position: absolute; left: 50%; top: 50%; width: 270px; height: 112px; border: 1px solid rgba(225,29,46,.26); border-radius: 50%; transform: translate(-50%, -50%) rotate(-22deg); }
+.rc-story__stage-ring--a { animation: rc-spin-story 18s linear infinite; }
+.rc-story__stage-ring--b { width: 220px; height: 180px; border-color: rgba(225,29,46,.14); transform: translate(-50%, -50%) rotate(62deg); animation: rc-spin-story-reverse 22s linear infinite; }
+.rc-story__stage-core { position: absolute; left: 50%; top: 50%; width: 92px; height: 92px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; transform: translate(-50%, -50%); border-radius: 24px; color: #fff; background: linear-gradient(145deg,#e84a58,#ae1024); box-shadow: 0 14px 36px rgba(193,16,42,.28); }
+.rc-story__stage-number { font-size: 21px; font-weight: 800; line-height: 1; }
+.rc-story__stage-label { font-size: 8px; line-height: 1.25; text-align: center; letter-spacing: .12em; opacity: .88; }
+.rc-story__stage-caption { position: absolute; left: 20px; bottom: 16px; color: var(--rc-red); font-size: 9px; font-weight: 760; letter-spacing: .2em; }
+@keyframes rc-spin-story { to { transform: translate(-50%, -50%) rotate(338deg); } }
+@keyframes rc-spin-story-reverse { to { transform: translate(-50%, -50%) rotate(-298deg); } }
+@media (max-width: 900px) {
+  .rc-story { grid-template-columns: 1fr; gap: 54px; }
+  .rc-story__intro { position: relative; top: auto; }
+  .rc-story__sequence { min-height: 720px; }
+  .rc-story__stage { top: 150px; }
+}
+@media (max-width: 600px) {
+  .rc-story { padding-top: 58px !important; padding-bottom: 64px !important; }
+  .rc-story__stats { gap: 18px; }
+  .rc-story__sequence { padding-left: 46px; }
+  .rc-story__stage { margin-left: -46px; height: 220px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rc-story__step { opacity: 1; transform: none; }
+  .rc-story__stage-grid, .rc-story__stage-ring { animation: none !important; }
+}
+
+
+/* RedCraft hero signal strip */
+.rc-hero__signal { display: flex; align-items: center; gap: 11px; margin-top: 28px; color: var(--rc-ink-3); font-size: 9px; font-weight: 760; letter-spacing: .18em; }
+.rc-hero__signal i { display: block; width: 4px; height: 4px; border-radius: 50%; background: var(--rc-red); opacity: .7; animation: rc-signal-pulse 2.4s ease-in-out infinite; }
+.rc-hero__signal i:nth-of-type(2) { animation-delay: .35s; }
+.rc-hero__signal i:nth-of-type(3) { animation-delay: .7s; }
+@keyframes rc-signal-pulse { 0%,100% { opacity: .28; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.35); } }
+@media (prefers-reduced-motion: reduce) { .rc-hero__signal i { animation: none !important; opacity: .65; } }
+
+
+/* RedCraft official brand line */
+.rc-story__motto { display: inline-flex; align-items: center; gap: 10px; margin-top: 30px; color: var(--rc-red); font-size: 10px; font-weight: 800; letter-spacing: .22em; }
+.rc-story__motto::before { content: ""; width: 26px; height: 1px; background: var(--rc-red); opacity: .65; }
+
+
+/* RedCraft alignment patch: keep the culture story on the same content rail as the rest of the homepage. */
+.rc-story {
+  width: min(1240px, 100%);
+  margin-left: auto !important;
+  margin-right: auto !important;
+  padding-left: clamp(28px, 7vw, 96px) !important;
+  padding-right: clamp(28px, 7vw, 96px) !important;
+}
+@media (max-width: 600px) {
+  .rc-story { padding-left: 28px !important; padding-right: 28px !important; }
+}
+
+
+/* RedCraft culture title refinement ? editorial, spacious, premium. */
+.rc-story__intro { position: sticky; top: 110px; align-self: start; isolation: isolate; }
+.rc-story__intro::before {
+  content: "TA"; position: absolute; z-index: -1; pointer-events: none;
+  left: -18px; top: -72px; color: var(--rc-red); opacity: .045;
+  font-size: clamp(150px, 17vw, 250px); line-height: .8; font-weight: 850;
+  letter-spacing: -.1em; transform: translateZ(0);
+}
+.rc-story__intro h2 {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  margin: 20px 0 26px; max-width: 100%;
+  font-size: clamp(40px, 4vw, 60px); line-height: 1.2;
+  letter-spacing: .018em; word-spacing: .08em; font-weight: 760;
+  text-wrap: balance;
+}
+.rc-title-line { display: block; white-space: nowrap; }
+.rc-title-line--lead { color: var(--rc-ink); }
+.rc-title-line--accent {
+  position: relative; padding-bottom: 13px;
+  background: linear-gradient(105deg, #ec4c5b 0%, #c4102a 56%, #941022 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.rc-title-line--accent::after {
+  content: ""; position: absolute; left: .08em; right: .02em; bottom: 0;
+  height: 2px; background: linear-gradient(90deg, var(--rc-red), rgba(225,29,46,.08));
+  transform-origin: left center; animation: rc-title-line-in .9s cubic-bezier(.22,.8,.24,1) both;
+}
+.rc-story__intro > p { max-width: 440px; }
+@keyframes rc-title-line-in { from { opacity: 0; transform: scaleX(.25); } to { opacity: 1; transform: scaleX(1); } }
+@media (min-width: 901px) {
+  .rc-story { grid-template-columns: minmax(420px, .9fr) minmax(0, 1.1fr); gap: clamp(54px, 6vw, 88px); }
+}
+@media (max-width: 900px) {
+  .rc-story__intro h2 { font-size: clamp(40px, 9vw, 56px); }
+}
+@media (max-width: 600px) {
+  .rc-story__intro::before { left: -10px; top: -42px; font-size: 130px; }
+  .rc-story__intro h2 { gap: 5px; font-size: clamp(36px, 11vw, 48px); letter-spacing: .01em; }
+  .rc-title-line { white-space: normal; }
+}
+@media (prefers-reduced-motion: reduce) { .rc-title-line--accent::after { animation: none !important; } }
+
+
+/* ========================================================================
+   RedCraft Module Cards v2 ? restrained ghost / motion treatment
+   ?????????????????transform?opacity???????????
+   ======================================================================== */
+.rc-card {
+  isolation: isolate;
+  overflow: hidden;
+  will-change: transform;
+}
+.rc-card::before,
+.rc-card::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  border-radius: inherit;
+}
+/* ?????????????????????? */
+.rc-card::before {
+  z-index: 0;
+  inset: 7px -6px -8px 6px;
+  border: 1px solid rgba(225, 29, 46, .18);
+  background: linear-gradient(135deg, rgba(225,29,46,.11), rgba(225,29,46,.025) 55%, transparent 78%);
+  opacity: .18;
+  transform: translate3d(0, 4px, 0) scale(.985);
+  filter: blur(1px);
+  transition: opacity .28s ease, transform .28s ease;
+}
+/* ?????????? */
+.rc-card::after {
+  z-index: 1;
+  top: -30%; bottom: -30%; left: -45%; width: 24%;
+  background: linear-gradient(105deg, transparent, rgba(255,255,255,.70), transparent);
+  opacity: 0;
+  transform: translate3d(0,0,0) rotate(13deg);
+  transition: opacity .2s ease;
+}
+.rc-card:hover {
+  transform: translate3d(0, -6px, 0);
+  border-color: rgba(225, 29, 46, .42);
+  box-shadow: 0 20px 42px rgba(23, 24, 28, .10), 0 8px 24px rgba(193, 16, 42, .10);
+}
+.rc-card:hover::before {
+  opacity: .78;
+  transform: translate3d(5px, 9px, 0) scale(1.015);
+}
+.rc-card:hover::after {
+  opacity: .8;
+  animation: rc-card-sheen .82s cubic-bezier(.22,.8,.24,1) both;
+}
+.rc-card:focus-visible {
+  border-color: rgba(225, 29, 46, .55);
+  box-shadow: 0 0 0 3px rgba(225,29,46,.14), 0 16px 34px rgba(23,24,28,.08);
+}
+.rc-card__index,
+.rc-card__body,
+.rc-card__arrow { position: relative; z-index: 2; }
+.rc-card__index { transition: color .24s ease, transform .24s ease; }
+.rc-card:hover .rc-card__index { color: var(--rc-red); transform: translateX(2px); }
+.rc-card__body strong { transition: color .24s ease; }
+.rc-card:hover .rc-card__body strong { color: var(--rc-red-deep); }
+.rc-card__arrow { transition: transform .26s ease, color .26s ease; }
+.rc-card:hover .rc-card__arrow { transform: translate3d(5px, -2px, 0); color: var(--rc-red); }
+@keyframes rc-card-sheen {
+  from { transform: translate3d(0,0,0) rotate(13deg); }
+  to { transform: translate3d(650%,0,0) rotate(13deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rc-card, .rc-card::before, .rc-card::after, .rc-card__index, .rc-card__body strong, .rc-card__arrow {
+    transition-duration: .001ms !important;
+    animation: none !important;
+  }
+  .rc-card:hover { transform: none; }
+}
+
+
+/* ========================================================================
+   RedCraft Functional Ghosts v1
+   ?????????????????????????????????
+   ????????????????????????????????
+   ======================================================================== */
+.rc-card__ghost {
+  position: absolute; z-index: 1; right: 18px; top: 18px;
+  width: 116px; height: 88px; pointer-events: none;
+  opacity: .18; color: var(--rc-red);
+  transform: translate3d(0, 2px, 0) scale(.96);
+  transition: opacity .35s ease, transform .35s ease;
+}
+.rc-card__ghost::before,
+.rc-card__ghost::after,
+.rc-card__ghost i,
+.rc-card__ghost b,
+.rc-card__ghost em { content: ""; position: absolute; display: block; box-sizing: border-box; font-style: normal; }
+.rc-card:hover .rc-card__ghost { opacity: .72; transform: translate3d(-2px, -4px, 0) scale(1); }
+
+/* 01 ?????? + ??? + ?? */
+.rc-card__ghost--doc { border: 1px solid currentColor; border-radius: 8px; width: 72px; height: 84px; right: 32px; top: 18px; transform: rotate(7deg); }
+.rc-card__ghost--doc::before { left: 13px; top: 18px; width: 42px; height: 1px; background: currentColor; box-shadow: 0 10px 0 currentColor, 0 20px 0 currentColor; opacity: .75; }
+.rc-card__ghost--doc::after { right: -25px; bottom: 4px; width: 38px; height: 38px; border: 1px solid currentColor; border-radius: 50%; background: var(--surface); opacity: .92; }
+.rc-card__ghost--doc i { right: -13px; bottom: 21px; width: 13px; height: 1px; background: currentColor; transform: rotate(-32deg); }
+.rc-card__ghost--doc b { right: -25px; bottom: 4px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.rc-card--feishu:hover .rc-card__ghost--doc { animation: rc-doc-float 2.4s ease-in-out infinite; }
+
+/* 02 ??????? + ??? + ??? */
+.rc-card__ghost--video { right: 17px; top: 21px; }
+.rc-card__ghost--video::before { left: 10px; top: 7px; width: 62px; height: 45px; border: 1px solid currentColor; border-radius: 9px; }
+.rc-card__ghost--video::after { left: 36px; top: 20px; width: 0; height: 0; border-top: 8px solid transparent; border-bottom: 8px solid transparent; border-left: 12px solid currentColor; opacity: .66; }
+.rc-card__ghost--video i { left: 10px; bottom: 13px; width: 88px; height: 1px; background: currentColor; box-shadow: 0 6px 0 rgba(225,29,46,.45); }
+.rc-card__ghost--video b { left: 24px; bottom: 10px; width: 5px; height: 7px; border: 1px solid currentColor; background: var(--surface); box-shadow: 22px 0 0 -1px var(--surface), 22px 0 0 0 currentColor, 49px 0 0 -1px var(--surface), 49px 0 0 0 currentColor; }
+.rc-card__ghost--video em { right: 2px; top: 12px; width: 1px; height: 36px; background: currentColor; animation: rc-playhead 2.6s ease-in-out infinite; }
+.rc-card--video:hover .rc-card__ghost--video { animation: rc-video-lift 2.8s ease-in-out infinite; }
+
+/* 03 ????? + ???? + ?? */
+.rc-card__ghost--image { right: 16px; top: 18px; width: 112px; height: 86px; }
+.rc-card__ghost--image::before { inset: 9px 12px 8px 7px; border: 1px solid currentColor; border-radius: 10px; transform: rotate(-7deg); }
+.rc-card__ghost--image::after { left: 25px; top: 34px; width: 48px; height: 24px; border-left: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: skew(-25deg); opacity: .7; }
+.rc-card__ghost--image i { left: 29px; top: 24px; width: 10px; height: 10px; border: 1px solid currentColor; border-radius: 50%; }
+.rc-card__ghost--image b { left: 51px; top: 47px; width: 18px; height: 18px; border-radius: 50%; background: currentColor; opacity: .18; box-shadow: 0 0 0 9px rgba(225,29,46,.07), 0 0 0 18px rgba(225,29,46,.04); animation: rc-image-pulse 2.5s ease-in-out infinite; }
+.rc-card--image:hover .rc-card__ghost--image { transform: translate3d(-3px,-5px,0) rotate(2deg) scale(1.02); }
+
+/* 04 ????????? + ?? */
+.rc-card__ghost--portrait { right: 14px; top: 17px; width: 122px; height: 92px; }
+.rc-card__ghost--portrait::before { left: 38px; top: 6px; width: 43px; height: 60px; border: 1px solid currentColor; border-radius: 50% 50% 46% 46%; transform: rotate(-4deg); }
+.rc-card__ghost--portrait::after { left: 51px; top: 27px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; box-shadow: 16px 0 0 currentColor, 8px 17px 0 -1px currentColor; }
+.rc-card__ghost--portrait i { right: 5px; top: 24px; width: 25px; height: 34px; border-top: 1px solid currentColor; border-bottom: 1px solid currentColor; border-radius: 50%; transform: scaleX(.42); box-shadow: 8px 0 0 -1px var(--surface), 8px 0 0 0 currentColor, 16px 0 0 -1px var(--surface), 16px 0 0 0 currentColor; animation: rc-wave 1.8s ease-in-out infinite; }
+.rc-card__ghost--portrait b { left: 27px; bottom: 3px; width: 66px; height: 1px; background: currentColor; box-shadow: 0 -6px 0 rgba(225,29,46,.25), 0 -12px 0 rgba(225,29,46,.15); }
+.rc-card--portrait:hover .rc-card__ghost--portrait { animation: rc-portrait-float 2.6s ease-in-out infinite; }
+
+/* 05 ????? + ?? */
+.rc-card__ghost--canvas { right: 13px; top: 18px; width: 124px; height: 90px; }
+.rc-card__ghost--canvas::before { left: 20px; top: 25px; width: 77px; height: 1px; background: currentColor; transform: rotate(-24deg); box-shadow: 7px 25px 0 currentColor; }
+.rc-card__ghost--canvas::after { left: 28px; top: 21px; width: 1px; height: 48px; background: currentColor; transform: rotate(56deg); opacity: .55; }
+.rc-card__ghost--canvas i, .rc-card__ghost--canvas b, .rc-card__ghost--canvas em { width: 14px; height: 14px; border: 1px solid currentColor; border-radius: 50%; background: var(--surface); }
+.rc-card__ghost--canvas i { left: 12px; top: 14px; }
+.rc-card__ghost--canvas b { right: 16px; top: 28px; }
+.rc-card__ghost--canvas em { left: 40px; bottom: 6px; }
+.rc-card--canvas:hover .rc-card__ghost--canvas { animation: rc-canvas-drift 3s ease-in-out infinite; }
+
+/* 06 ??????? + ?? */
+.rc-card__ghost--dream { right: 12px; top: 14px; width: 118px; height: 94px; }
+.rc-card__ghost--dream::before { left: 28px; top: 11px; width: 54px; height: 54px; border: 1px solid currentColor; border-radius: 50%; box-shadow: 11px 7px 0 -6px var(--surface); transform: rotate(-22deg); }
+.rc-card__ghost--dream::after { left: 77px; top: 20px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; box-shadow: 16px 17px 0 1px currentColor, -10px 34px 0 -1px currentColor, -42px 54px 0 0 currentColor; animation: rc-stars 2.8s ease-in-out infinite; }
+.rc-card__ghost--dream i { left: 14px; bottom: 10px; width: 92px; height: 1px; background: linear-gradient(90deg, transparent, currentColor, transparent); transform: rotate(-12deg); }
+.rc-card__ghost--dream b { left: 44px; top: 31px; width: 20px; height: 20px; border: 1px solid currentColor; transform: rotate(45deg); opacity: .52; }
+.rc-card--dream:hover .rc-card__ghost--dream { animation: rc-dream-float 3.2s ease-in-out infinite; }
+
+@keyframes rc-doc-float { 0%,100% { transform: rotate(7deg) translate3d(0,0,0); } 50% { transform: rotate(7deg) translate3d(2px,-4px,0); } }
+@keyframes rc-video-lift { 0%,100% { transform: translate3d(0,2px,0) scale(.96); } 50% { transform: translate3d(-2px,-3px,0) scale(1); } }
+@keyframes rc-playhead { 0%,100% { transform: translateX(0); opacity: .45; } 50% { transform: translateX(37px); opacity: 1; } }
+@keyframes rc-image-pulse { 0%,100% { transform: scale(.72); opacity: .45; } 50% { transform: scale(1.16); opacity: .9; } }
+@keyframes rc-wave { 0%,100% { transform: scaleX(.42) scaleY(.82); opacity: .45; } 50% { transform: scaleX(.68) scaleY(1); opacity: 1; } }
+@keyframes rc-portrait-float { 0%,100% { transform: translate3d(0,2px,0); } 50% { transform: translate3d(-2px,-3px,0); } }
+@keyframes rc-canvas-drift { 0%,100% { transform: translate3d(0,1px,0); } 50% { transform: translate3d(3px,-3px,0); } }
+@keyframes rc-stars { 0%,100% { opacity: .3; transform: scale(.85); } 50% { opacity: 1; transform: scale(1.15); } }
+@keyframes rc-dream-float { 0%,100% { transform: translate3d(0,2px,0) rotate(0); } 50% { transform: translate3d(-3px,-4px,0) rotate(2deg); } }
+
+@media (max-width: 600px) {
+  .rc-card__ghost { right: 8px; top: 14px; opacity: .12; transform: scale(.78); transform-origin: right top; }
+  .rc-card:hover .rc-card__ghost { opacity: .58; transform: translate3d(-2px,-3px,0) scale(.82); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rc-card__ghost, .rc-card__ghost * { animation: none !important; transition: none !important; }
+}
+
+
+/* RedCraft nav badge v3: one compact badge, number means active jobs; color means own unread result. */
+.portal-nav__badges { position: absolute; top: 9px; right: 8px; z-index: 4; display: inline-flex; pointer-events: none; }
+.portal-nav__badges .portal-nav__badge--status {
+  position: static; display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border: 1px solid transparent; border-radius: 999px;
+  color: #fff; font-size: 10px; font-weight: 800; line-height: 1;
+  box-shadow: 0 2px 8px rgba(15,23,42,.12);
+  transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.portal-nav__badge--status.is-active { background: var(--accent); border-color: var(--accent); }
+.portal-nav__badge--status.is-success { background: #16a34a; border-color: #15803d; }
+.portal-nav__badge--status.is-danger { background: #dc2626; border-color: #b91c1c; }
+.portal-nav__badge--status[hidden] { display: none; }
+.portal-nav.is-collapsed .portal-nav__badges { top: 3px; right: 2px; }
+.portal-nav.is-collapsed .portal-nav__badge--status { width: 17px; min-width: 17px; height: 17px; padding: 0; font-size: 9px; }
+@media (max-width: 680px) { .portal-nav__badges { right: 6px; } }
+@media (prefers-reduced-motion: reduce) { .portal-nav__badge--status { transition: none !important; } }

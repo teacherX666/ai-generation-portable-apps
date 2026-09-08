@@ -74,6 +74,8 @@ class ProviderResultStore:
         )
         if not self.is_valid_provider_task_id(provider_task_id):
             raise ProviderResultStagingError("invalid provider task id")
+        if os.name == "nt":
+            return self._save_windows(items, provider_task_id)
         temporary_name = f".{provider_task_id}.part"
         temporary_created = False
         final_created = False
@@ -165,6 +167,8 @@ class ProviderResultStore:
     def load(self, provider_task_id: str) -> list[StagedProviderResult]:
         if not self.is_valid_provider_task_id(provider_task_id):
             raise ProviderResultStagingError("invalid provider task id")
+        if os.name == "nt":
+            return self._load_windows(provider_task_id)
         root_descriptor = self._open_root()
         try:
             root_identity = self._directory_identity(os.fstat(root_descriptor))
@@ -209,6 +213,14 @@ class ProviderResultStore:
         size: int,
         digest: str,
     ) -> bytes:
+        if os.name == "nt":
+            return self._read_verified_windows(
+                provider_task_id,
+                local_path=local_path,
+                mime_type=mime_type,
+                size=size,
+                digest=digest,
+            )
         matches = [
             item
             for item in self.load(provider_task_id)
@@ -265,12 +277,21 @@ class ProviderResultStore:
         result_descriptor: int,
         provider_task_id: str,
     ) -> list[StagedProviderResult]:
-
-        manifest_bytes = self._read_regular_file(
-            "manifest.json",
-            dir_fd=result_descriptor,
-            max_bytes=_MAX_MANIFEST_BYTES,
+        return self._load_results(
+            provider_task_id,
+            lambda filename, max_bytes: self._read_regular_file(
+                filename,
+                dir_fd=result_descriptor,
+                max_bytes=max_bytes,
+            ),
         )
+
+    def _load_results(
+        self,
+        provider_task_id: str,
+        read_file: Callable[[str, int], bytes],
+    ) -> list[StagedProviderResult]:
+        manifest_bytes = read_file("manifest.json", _MAX_MANIFEST_BYTES)
         try:
             manifest = json.loads(manifest_bytes.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -310,11 +331,7 @@ class ProviderResultStore:
             ):
                 raise ProviderResultStagingError("invalid manifest item")
             local_path = self._root / provider_task_id / filename
-            content = self._read_regular_file(
-                filename,
-                dir_fd=result_descriptor,
-                max_bytes=size,
-            )
+            content = read_file(filename, size)
             if len(content) != size or sha256(content).hexdigest() != digest:
                 raise ProviderResultStagingError("result integrity mismatch")
             staged.append(
@@ -326,6 +343,189 @@ class ProviderResultStore:
                 )
             )
         return staged
+
+    def _save_windows(
+        self,
+        items: list[tuple[bytes, str]],
+        provider_task_id: str,
+    ) -> tuple[str, list[StagedProviderResult]]:
+        root_identity = self._path_identity(self._root, directory=True)
+        self._run_directory_hook("root_opened")
+        self._assert_path_identity(self._root, root_identity, directory=True)
+        temporary = self._root / f".{provider_task_id}.part"
+        final = self._root / provider_task_id
+        if temporary.exists() or final.exists():
+            raise ProviderResultStagingError("result directory already exists")
+        temporary.mkdir()
+        try:
+            temporary_identity = self._path_identity(temporary, directory=True)
+            manifest_items: list[dict[str, Any]] = []
+            for index, (content, mime_type) in enumerate(items):
+                if not isinstance(content, bytes) or not content:
+                    raise ProviderResultStagingError("invalid result content")
+                if len(content) > self._max_item_bytes:
+                    raise ProviderResultStagingError("result exceeds size limit")
+                extension = _MIME_EXTENSIONS.get(mime_type)
+                if extension is None:
+                    raise ProviderResultStagingError("unsupported result mime")
+                filename = f"result-{index:03d}.{extension}"
+                self._write_atomic_path(temporary / filename, content)
+                manifest_items.append(
+                    {
+                        "filename": filename,
+                        "mime_type": mime_type,
+                        "size": len(content),
+                        "sha256": sha256(content).hexdigest(),
+                    }
+                )
+            encoded_manifest = json.dumps(
+                {"version": 1, "results": manifest_items},
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self._write_atomic_path(temporary / "manifest.json", encoded_manifest)
+            self._assert_path_identity(temporary, temporary_identity, directory=True)
+            self._assert_path_identity(self._root, root_identity, directory=True)
+            temporary.replace(final)
+            self._assert_path_identity(self._root, root_identity, directory=True)
+        except BaseException:
+            shutil.rmtree(temporary, ignore_errors=True)
+            shutil.rmtree(final, ignore_errors=True)
+            raise
+        return provider_task_id, self.load(provider_task_id)
+
+    def _load_windows(
+        self, provider_task_id: str
+    ) -> list[StagedProviderResult]:
+        root_identity = self._path_identity(self._root, directory=True)
+        self._run_directory_hook("root_opened")
+        self._assert_path_identity(self._root, root_identity, directory=True)
+        result_dir = self._root / provider_task_id
+        result_identity = self._path_identity(result_dir, directory=True)
+        self._run_directory_hook("result_opened")
+        self._assert_path_identity(self._root, root_identity, directory=True)
+        self._assert_path_identity(result_dir, result_identity, directory=True)
+        staged = self._load_results(
+            provider_task_id,
+            lambda filename, max_bytes: self._read_regular_path(
+                result_dir / filename, max_bytes=max_bytes
+            ),
+        )
+        self._assert_path_identity(result_dir, result_identity, directory=True)
+        self._assert_path_identity(self._root, root_identity, directory=True)
+        return staged
+
+    def _read_verified_windows(
+        self,
+        provider_task_id: str,
+        *,
+        local_path: Path,
+        mime_type: str,
+        size: int,
+        digest: str,
+    ) -> bytes:
+        matches = [
+            item
+            for item in self.load(provider_task_id)
+            if item.local_path == local_path
+            and item.mime_type == mime_type
+            and item.size == size
+            and item.sha256 == digest
+        ]
+        if len(matches) != 1:
+            raise ProviderResultStagingError(
+                "staged result does not match provider result"
+            )
+        root_identity = self._path_identity(self._root, directory=True)
+        result_dir = self._root / provider_task_id
+        result_identity = self._path_identity(result_dir, directory=True)
+        content = self._read_regular_path(matches[0].local_path, max_bytes=size)
+        self._assert_path_identity(result_dir, result_identity, directory=True)
+        self._assert_path_identity(self._root, root_identity, directory=True)
+        if len(content) != size or sha256(content).hexdigest() != digest:
+            raise ProviderResultStagingError("result integrity mismatch")
+        return content
+
+    @staticmethod
+    def _path_identity(path: Path, *, directory: bool) -> tuple[int, int, int, int]:
+        try:
+            value = path.lstat()
+        except OSError as exc:
+            message = "missing result directory" if directory else "staged file unavailable"
+            raise ProviderResultStagingError(message) from exc
+        expected = stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode)
+        if stat.S_ISLNK(value.st_mode) or not expected:
+            raise ProviderResultStagingError(
+                "invalid result directory" if directory else "invalid staged file"
+            )
+        return value.st_dev, value.st_ino, value.st_mode, value.st_mtime_ns
+
+    @classmethod
+    def _assert_path_identity(
+        cls,
+        path: Path,
+        expected: tuple[int, int, int, int],
+        *,
+        directory: bool,
+    ) -> None:
+        if cls._path_identity(path, directory=directory) != expected:
+            raise ProviderResultStagingError(
+                "result directory changed" if directory else "staged file changed"
+            )
+
+    @classmethod
+    def _read_regular_path(cls, path: Path, *, max_bytes: int) -> bytes:
+        before = cls._path_identity(path, directory=False)
+        try:
+            descriptor = os.open(
+                str(path),
+                os.O_RDONLY | getattr(os, "O_BINARY", 0),
+            )
+        except OSError as exc:
+            raise ProviderResultStagingError("staged file unavailable") from exc
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_size > max_bytes:
+                raise ProviderResultStagingError("invalid staged file")
+            content = bytearray()
+            while True:
+                chunk = os.read(descriptor, _READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                if len(content) + len(chunk) > max_bytes:
+                    raise ProviderResultStagingError(
+                        "staged file exceeds size limit"
+                    )
+                content.extend(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        current = cls._path_identity(path, directory=False)
+        opened_identity = (
+            opened.st_dev, opened.st_ino, opened.st_mode, opened.st_mtime_ns
+        )
+        after_identity = (after.st_dev, after.st_ino, after.st_mode, after.st_mtime_ns)
+        if before != opened_identity or opened_identity != after_identity or after_identity != current:
+            raise ProviderResultStagingError("staged file changed while reading")
+        return bytes(content)
+
+    @staticmethod
+    def _write_atomic_path(path: Path, content: bytes) -> None:
+        temporary = path.with_name(f".{path.name}.part")
+        descriptor = os.open(
+            str(temporary),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
+        try:
+            view = memoryview(content)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        temporary.replace(path)
 
     @staticmethod
     def is_valid_provider_task_id(value: object) -> bool:
@@ -341,7 +541,7 @@ class ProviderResultStore:
         dir_fd: int,
         max_bytes: int,
     ) -> bytes:
-        flags = os.O_RDONLY
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         try:

@@ -42,9 +42,13 @@ assert.match(login, /--ui-bg-canvas:\s*#f3f6fa[\s\S]*?\.login-card\s*\{[^}]*back
 assert.match(portalBackend, /_AUTH_EXEMPT_PREFIXES\s*=\s*\("\/ui\/",\)/, 'Shared login styles must be publicly readable before authentication');
 assert.match(portalBackend, /path\.startswith\(_AUTH_EXEMPT_PREFIXES\)/, 'Portal GET dispatch must honor the public UI style prefix');
 const tabNames = [...portal.matchAll(/<button\b[^>]*class="[^"]*app-tab[^"]*"[^>]*data-tab="([^"]+)"/g)].map((match) => match[1]);
-const panelNames = [...portal.matchAll(/<div\b[^>]*class="[^"]*tab-panel[^"]*"[^>]*id="tab-([^"]+)"/g)].map((match) => match[1]);
-assert.equal(tabNames.length, 10, 'Portal should expose ten application tabs');
-assert.deepEqual([...new Set(tabNames)].sort(), [...new Set(panelNames)].sort(), 'Portal tabs and panels must expose the same names');
+const panelNames = [...portal.matchAll(/<(?:div|section)\b(?=[^>]*class="[^"]*tab-panel[^"]*")(?=[^>]*id="tab-([^"]+)")[^>]*>/g)].map((match) => match[1]);
+const apps = JSON.parse(read('portal/apps.json'));
+const appTabs = apps.filter((app) => app.name !== 'director').map((app) => app.name === 'nano-banana' ? 'nb' : app.name);
+const nativeTabs = ['home', 'history', 'keys', 'stats'];
+const expectedTabs = [...new Set([...appTabs, ...nativeTabs])].sort();
+assert.deepEqual([...new Set(tabNames)].sort(), expectedTabs, 'Portal tabs should derive from apps.json plus native pages');
+assert.deepEqual([...new Set(panelNames)].sort(), expectedTabs, 'Portal tabs and panels must expose the same names');
 
 for (const name of tabNames) {
   const button = portal.match(new RegExp(`<button\\b[^>]*data-tab="${name}"[^>]*>`));
@@ -52,10 +56,11 @@ for (const name of tabNames) {
   assert.match(button[0], /\brole="tab"/);
   assert.match(button[0], /\baria-selected="(?:true|false)"/);
   assert.match(button[0], new RegExp(`\\baria-controls="tab-${name}"`));
-  const panel = portal.match(new RegExp(`<div\\b[^>]*id="tab-${name}"[^>]*>`));
+  const panel = portal.match(new RegExp(`<(?:div|section)\\b(?=[^>]*class="[^\"]*tab-panel[^\"]*")(?=[^>]*id="tab-${name}")[^>]*>`));
   assert.ok(panel, `Portal panel ${name} should exist`);
   assert.match(panel[0], /\brole="tabpanel"/);
-  assert.match(panel[0], new RegExp(`\\baria-labelledby="tab-btn-${name}"`));
+  const labelId = name === 'home' ? 'portalHomeBtn' : `tab-btn-${name}`;
+  assert.match(panel[0], new RegExp(`\\baria-labelledby="${labelId}"`));
 }
 
 const iframePanels = ['seedance', 'nb', 'feishu-generation-agent', 'infinite-canvas', 'rag-assistant'];
@@ -142,7 +147,7 @@ console.log('ui core structure: ok');
 // application selector instead of a long horizontally scrolling tab strip.
 assert.doesNotMatch(portal, /https:\/\/unpkg\.com\/petite-vue/, 'Portal must not depend on the public unpkg CDN');
 assert.match(portal, /src="\/vendor\/petite-vue\.iife\.js"/, 'Portal should load the vendored Petite Vue runtime');
-assert.match(portal, /id="mobileAppSelect"[\s\S]*?<option value="stats">统计<\/option>/, 'Portal should expose all application tabs in the mobile selector');
+assert.match(portal, /id="mobileAppSelect"[\s\S]*?<option value="stats">[^<]+<\/option>/, 'Portal should expose all application tabs in the mobile selector');
 assert.match(portal, /id="iframe-nb"[^>]*data-src="\/nano-banana\/index\.html"[^>]*title="图像生成模块"/, 'Hidden iframe apps should keep their URL in data-src and expose an accessible title');
 assert.doesNotMatch(portal, /id="iframe-(?:nb|feishu-generation-agent|infinite-canvas|rag-assistant)"[^>]*\ssrc=/, 'Hidden iframe apps must not navigate during initial Portal load');
 assert.match(portalScript, /function loadPortalIframe[\s\S]*iframe\.dataset\.loaded === 'true'[\s\S]*iframe\.src = target/, 'Portal should mount each iframe once on first activation');

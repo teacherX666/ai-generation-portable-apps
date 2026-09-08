@@ -112,10 +112,10 @@
       '._catLabNote{margin-top:4px;color:var(--muted,#64748b);font-size:11px}' +
       '._catLabClose{width:30px;height:30px;border:0;border-radius:9px;background:transparent;color:var(--muted,#64748b);font-size:20px;cursor:pointer}' +
       '._catLabClose:hover{background:#f1f5f9}' +
-      '._catLabControls{display:grid;grid-template-columns:minmax(180px,1fr) minmax(150px,.7fr) auto;gap:10px;align-items:end}' +
+      '._catLabControls{display:grid;grid-template-columns:minmax(180px,1fr) minmax(150px,.7fr) minmax(128px,auto);gap:10px;align-items:start}' +
       '._catLabField{display:grid;gap:5px;color:var(--muted,#64748b);font-size:10px;font-weight:750}' +
       '._catLabField select,._catLabField input{height:36px;padding:0 10px;border:1px solid var(--border,#d8dee8);border-radius:9px;background:var(--surface,#fff);color:var(--text,#172033);font:inherit;font-size:12px}' +
-      '._catLabGenerate{height:36px;padding:0 16px;border:0;border-radius:9px;background:var(--accent,#2563eb);color:#fff;font-size:12px;font-weight:800;cursor:pointer}' +
+      '._catLabGenerate{box-sizing:border-box;width:100%;height:36px;margin:0;padding:0 12px;border:0;border-radius:9px;background:var(--accent,#2563eb);color:#fff;font:inherit;font-size:12px;font-weight:800;line-height:36px;text-align:center;white-space:nowrap;cursor:pointer}' +
       '._catLabGenerate:disabled{opacity:.55;cursor:wait}' +
       '._catTrendStatus{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding:9px 10px;border-radius:10px;background:#f8fafc;color:#64748b;font-size:10px}' +
       '._catTrendDot{width:7px;height:7px;border-radius:50%;background:#f59e0b}' +
@@ -123,7 +123,7 @@
       '._catTrendRefresh{margin-left:auto;border:0;border-radius:7px;padding:5px 9px;background:#e8eef8;color:#31598f;font-size:10px;font-weight:800;cursor:pointer}' +
       '._catTrendRefresh:disabled{opacity:.55;cursor:wait}' +
       '._catLabResult{display:grid;grid-template-columns:270px minmax(0,1fr);gap:18px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border,#d8dee8)}' +
-      '._catLabCanvas{display:block;width:256px;height:256px;image-rendering:pixelated;border-radius:15px;background-color:#f5f7fb;background-image:linear-gradient(45deg,#e2e8f0 25%,transparent 25%),linear-gradient(-45deg,#e2e8f0 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e2e8f0 75%),linear-gradient(-45deg,transparent 75%,#e2e8f0 75%);background-size:32px 32px;background-position:0 0,0 16px,16px -16px,-16px 0}' +
+      '._catLabCanvas{display:block;width:224px;height:224px;image-rendering:pixelated;border-radius:15px;background-color:#f5f7fb;background-image:linear-gradient(45deg,#e2e8f0 25%,transparent 25%),linear-gradient(-45deg,#e2e8f0 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e2e8f0 75%),linear-gradient(-45deg,transparent 75%,#e2e8f0 75%);background-size:28px 28px;background-position:0 0,0 14px,14px -14px,-14px 0}' +
       '._catLabMeta{display:grid;align-content:start;gap:10px}' +
       '._catLabBadge{justify-self:start;padding:4px 9px;border-radius:999px;background:#e8f7ef;color:#16724a;font-size:10px;font-weight:850}' +
       '._catLabBadge.is-error{background:#feecec;color:#b42318}' +
@@ -199,7 +199,7 @@
     lab.hidden = true;
     lab.setAttribute('role', 'dialog');
     lab.setAttribute('aria-label', '管理员猫咪生成实验室');
-    lab.innerHTML = '<div class="_catLabPanel"><div class="_catLabHead"><div><div class="_catLabTitle">猫咪设计实验室</div><div class="_catLabNote">管理员专用 · 只做预览，不会加入衣柜，也不会消耗每日领取次数</div></div><button class="_catLabClose" type="button" aria-label="关闭实验室">×</button></div><div class="_catLabControls"><label class="_catLabField">稀有度<select class="_catLabType"></select></label><label class="_catLabField">猫名称<input class="_catLabNameInput" placeholder="例如：胖猫" maxlength="10"></label><button class="_catLabGenerate" type="button">生成预览猫</button></div><div class="_catTrendStatus"><span class="_catTrendDot"></span><span class="_catTrendText">热点库状态读取中…</span><button class="_catTrendRefresh" type="button">立即刷新热点</button></div><div class="_catLabResult"><canvas class="_catLabCanvas" width="256" height="256"></canvas><div class="_catLabMeta"><span class="_catLabBadge">等待生成</span><div class="_catLabName">经典黑猫母版</div><div class="_catLabStats"><div class="_catLabStat _catLabSeedOut">Seed：—</div><div class="_catLabStat _catLabOps">坐标操作：—</div><div class="_catLabStat _catLabPersist">写入衣柜：否</div><div class="_catLabStat _catLabChance">消耗机会：否</div></div><pre class="_catLabJson">生成预览后，这里会显示设计基因和像素操作。</pre></div></div></div>';
+    lab.innerHTML = '<div class="_catLabPanel"><div class="_catLabHead"><div><div class="_catLabTitle">猫咪设计实验室</div><div class="_catLabNote">管理员专用 · 只做预览，不会加入衣柜，也不会消耗每日领取次数</div></div><button class="_catLabClose" type="button" aria-label="关闭实验室">×</button></div><div class="_catLabControls"><label class="_catLabField">稀有度<select class="_catLabType"></select></label><label class="_catLabField">猫名称<input class="_catLabNameInput" placeholder="例如：胖猫" maxlength="10"></label><div class="_catLabField _catLabAction"><span>操作</span><button class="_catLabGenerate" type="button">生成预览猫</button></div></div><div class="_catTrendStatus"><span class="_catTrendDot"></span><span class="_catTrendText">热点库状态读取中…</span><button class="_catTrendRefresh" type="button">立即刷新热点</button></div><div class="_catLabResult"><canvas class="_catLabCanvas" width="224" height="224"></canvas><div class="_catLabMeta"><span class="_catLabBadge">等待生成</span><div class="_catLabName">经典黑猫母版</div><div class="_catLabStats"><div class="_catLabStat _catLabSeedOut">Seed：—</div><div class="_catLabStat _catLabOps">坐标操作：—</div><div class="_catLabStat _catLabPersist">写入衣柜：否</div><div class="_catLabStat _catLabChance">消耗机会：否</div></div><pre class="_catLabJson">生成预览后，这里会显示设计基因和像素操作。</pre></div></div></div>';
     document.body.appendChild(lab);
 
     var ctx = canvas.getContext('2d');
@@ -463,9 +463,9 @@
 
     function drawLab() {
       if (!labSkin || lab.hidden) return;
-      labCtx.clearRect(0, 0, 256, 256);
-      var frameNo = Math.floor(Date.now() / 220) % 2;
-      drawSprite(labCtx, labSkin, 0, 0, frameNo, 16);
+      labCtx.clearRect(0, 0, 224, 224);
+      var frameNo = Math.floor(Date.now() / 190) % 2;
+      drawSprite(labCtx, labSkin, 16, 10, frameNo, 12);
     }
     function closeLab() {
       lab.hidden = true;

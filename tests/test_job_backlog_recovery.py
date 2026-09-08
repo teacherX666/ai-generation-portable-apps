@@ -130,3 +130,20 @@ def test_backlog_cleared_on_terminal(tmp_path, monkeypatch):
     with mod.JOBS_LOCK:
         mod._backlog_remove_locked("job-done")
     assert mod._backlog_load() == {}
+
+
+def test_orphan_running_activity_marked_interrupted_without_backlog(tmp_path, monkeypatch):
+    mod = _load_seedance()
+    _isolate_state(mod, tmp_path, monkeypatch)
+    mod.JOBS.clear()
+    _write_activity(mod, "act-orphan", "job-orphan", {"prompt": "hi", "duration": 8})
+
+    recovered, interrupted = mod.recover_backlog()
+
+    assert recovered == 0
+    assert interrupted == 1
+    assert mod.JOBS["job-orphan"]["status"] == "failed"
+    assert mod.JOBS["job-orphan"]["retryable"] is True
+    activity = next(item for item in mod.read_activity_log() if item["id"] == "act-orphan")
+    assert activity["status"] == "failed"
+    assert "????" in activity["error"]

@@ -523,7 +523,7 @@ _LOCAL_MODEL_IDS = {"minimax_h3_all_reference"}
 
 def _force_ipv4(url: str) -> str:
     return local_gateway.force_ipv4(url)
-TERMINAL_STATUSES = {"succeeded", "success", "failed", "fail", "failure", "cancelled", "canceled"}
+TERMINAL_STATUSES = {"succeeded", "success", "failed", "fail", "failure", "cancelled", "canceled", "interrupted"}
 
 # translate_ark_error lives in portal/ark_errors.py so seedance and
 # volcengine-portrait share one table; see the module for the matcher rules.
@@ -655,10 +655,10 @@ FALLBACK_PROVIDERS = {
     "providers": {
         "comfyui_local": {
             "label": "Local ComfyUI (free)",
-            "base_url": "http://127.0.0.1:8801",
+            "base_url": "http://UT-20210713KMWD.local:8801",
             "api_style": "comfyui_workflow",
             "hint": "Local MiniMax H3 via AI Port (free).",
-            "defaults": {"model": "minimax_h3_all_reference", "duration": 8, "resolution": "720p", "ratio": "16:9", "repeat_count": 1, "concurrency": 1, "poll_interval": 5, "timeout": 7200, "vary_seed": True},
+            "defaults": {"model": "minimax_h3_all_reference", "duration": 8, "resolution": "720p", "ratio": "16:9", "repeat_count": 1, "concurrency": 1, "poll_interval": 5, "timeout": 3600, "vary_seed": True},
             "models": [{"id": "minimax_h3_all_reference", "label": "MiniMax H3 (free)", "duration_range": [4, 12], "resolutions": ["480p", "720p"], "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"]}],
         },
         "volcengine": {
@@ -1146,9 +1146,8 @@ def recover_backlog() -> tuple[int, int]:
     recovered = 0
     interrupted = 0
     backlog = _backlog_load()
-    if not backlog:
-        return 0, 0
-    activities = {str(a.get("id")): a for a in read_activity_log()}
+    activity_items = read_activity_log()
+    activities = {str(a.get("id")): a for a in activity_items}
     for job_id, meta in list(backlog.items()):
         activity_id = str(meta.get("activity_id") or "")
         try:
@@ -1212,6 +1211,46 @@ def recover_backlog() -> tuple[int, int]:
                 }
                 _backlog_remove_locked(job_id)
             interrupted += 1
+
+    active_activity_statuses = {"pending", "queued", "submitted", "running", "processing"}
+    backlog_job_ids = {str(job_id) for job_id in backlog}
+    for activity in activity_items:
+        status = str(activity.get("status") or "").lower()
+        job_id = str(activity.get("job_id") or "")
+        if status not in active_activity_statuses or not job_id or job_id in backlog_job_ids:
+            continue
+        with JOBS_LOCK:
+            if job_id in JOBS:
+                continue
+            restore_values = ((activity.get("restore") or {}).get("values") or {})
+            try:
+                duration = max(0, int(str(restore_values.get("duration") or "0") or "0"))
+            except (TypeError, ValueError):
+                duration = 0
+            JOBS[job_id] = {
+                "id": job_id,
+                "status": "failed",
+                "events": [{"time": time.strftime("%H:%M:%S"),
+                            "message": "?????????????????"}],
+                "results": [],
+                "errors": ["?????????????????????????????"],
+                "done": 0,
+                "total": 0,
+                "duration": duration,
+                "username": str(activity.get("username") or ""),
+                "workspace_id": str(activity.get("workspace_id") or "localhost"),
+                "submitted_at": float(activity.get("started_at") or time.time()),
+                "started_at": None,
+                "finished_at": time.time(),
+                "retryable": True,
+            }
+        update_activity(
+            str(activity.get("id") or ""),
+            status="failed",
+            error="?????????????????????????????",
+            finished_at=time.time(),
+        )
+        interrupted += 1
     return recovered, interrupted
 
 
@@ -2316,27 +2355,27 @@ def _run_local_video(job_id: str, index: int, form: cgi.FieldStorage, form_value
         except ValueError:
             pass
 
-    values_payload["timeout"] = int(form_values.get("timeout") or 7200)
+    values_payload["timeout"] = int(form_values.get("timeout") or 3600)
     values_payload["poll_interval"] = max(2, int(form_values.get("poll_interval") or 5))
     values_payload["steps"] = 8
     values_payload["cfg"] = 1.0
     values_payload["h3_prompt_enhancer_enabled"] = enhancer_enabled
     if mode == "ref2v":
-        values_payload["h3_ref_image_size"] = "match"
+        values_payload["h3_ref_image_size"] = "max"
 
     submit = request_json(
         "POST",
         f"{base_url}/api/video_local/jobs/json",
         "",
         {"values": values_payload, "files": files_payload},
-        timeout=int(form_values.get("timeout") or 7200),
+        timeout=int(form_values.get("timeout") or 3600),
     )
     local_job_id = submit.get("job_id")
     if not local_job_id:
         raise RuntimeError("Local ComfyUI did not return a video job id")
 
     poll_interval = max(2, int(form_values.get("poll_interval") or 5))
-    timeout = int(form_values.get("timeout") or 7200)
+    timeout = int(form_values.get("timeout") or 3600)
     start = time.time()
     results: list[dict[str, Any]] = []
     while True:

@@ -6,7 +6,7 @@
   <title>RedCraft 🐟</title>
   <link rel="icon" type="image/png" href="/ui/brand/favicon.png">
   <link rel="stylesheet" href="/ui/portal-ui-core.css">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260908-home-nav-restore1">
 </head>
 <body class="ui-shell">
   <!-- 顶部两条栏包进统一 sticky 容器：整块一起吸顶，切换栏永远紧贴标题栏下方，
@@ -119,7 +119,6 @@
       </div>
     </div>
     <div class="portal-nav__footer">
-      <button id="optimizeBtn" class="portal-help-btn portal-optimize-btn" type="button">优化提示词</button>
       <button id="helpBtn" class="portal-help-btn" type="button">新手指南</button>
       <button id="moduleHelpBtn" class="portal-help-btn" type="button">模块帮助</button>
     </div>
@@ -142,6 +141,9 @@
   </div>
   <section id="tab-home" class="tab-panel portal-home-panel" role="tabpanel" aria-labelledby="portalHomeBtn" hidden>
   <div class="rc-home">
+    <div class="rc-orbit rc-orbit--one" aria-hidden="true"></div>
+    <div class="rc-orbit rc-orbit--two" aria-hidden="true"></div>
+    <div class="rc-noise" aria-hidden="true"></div>
     <header class="rc-home__bar">
       <div class="rc-brand">
         <span class="rc-brand__mark" aria-hidden="true">R</span>
@@ -154,6 +156,14 @@
     </header>
 
     <section class="rc-hero">
+      <div class="rc-hero__visual" aria-hidden="true">
+        <div class="rc-hero__visual-grid"></div>
+        <div class="rc-hero__visual-ring rc-hero__visual-ring--outer"></div>
+        <div class="rc-hero__visual-ring rc-hero__visual-ring--inner"></div>
+        <span class="rc-hero__visual-core">R</span>
+        <span class="rc-hero__visual-orbit rc-hero__visual-orbit--a"></span>
+        <span class="rc-hero__visual-orbit rc-hero__visual-orbit--b"></span>
+      </div>
       <div class="rc-hero__eyebrow"><span class="rc-hero__dot" aria-hidden="true"></span>RED INFINITY · 全球移动游戏</div>
       <h1 class="rc-hero__title">让灵感，<br><span class="rc-hero__accent">跑赢时间</span></h1>
       <p class="rc-hero__lead">一站式 AI 创作平台，整合图像、视频、数字人与创意画布，从概念到成片，在一个工作台内完成。</p>
@@ -161,9 +171,51 @@
         <button class="rc-btn rc-btn--red" type="button" data-scroll="rc-quick">开始创作</button>
         <button class="rc-btn rc-btn--ghost" type="button" data-scroll="rc-more">了解更多</button>
       </div>
+      <div class="rc-hero__signal" aria-hidden="true"><span>IDEA</span><i></i><span>IMAGE</span><i></i><span>VIDEO</span><i></i><span>WORLD</span></div>
     </section>
 
-    <section id="rc-quick" class="rc-section">
+    <section class="rc-story rc-reveal" aria-labelledby="rc-story-title">
+      <div class="rc-story__intro">
+        <span class="rc-kicker">RED INFINITY / CULTURE</span>
+        <h2 id="rc-story-title"><span class="rc-title-line rc-title-line--lead">为 Ta 做更多</span><span class="rc-title-line rc-title-line--accent">更好的游戏</span></h2>
+        <p>从北京出发，面向全球移动游戏市场。RedCraft 把红海无限的全球视野、长期主义与创造力，带进每一次创作。</p>
+        <div class="rc-story__motto">WE CREATE MORE AND BETTER GAMES</div>
+        <div class="rc-story__stats" aria-label="红海无限公开信息">
+          <div><strong>2016</strong><span>公司成立</span></div>
+          <div><strong>160+</strong><span>覆盖国家和地区</span></div>
+          <div><strong>10亿+</strong><span>官网披露：全球下载量</span></div>
+        </div>
+      </div>
+      <div class="rc-story__sequence">
+        <div class="rc-story__rail" aria-hidden="true"><span class="rc-story__rail-line"></span><i data-story-dot="0" class="is-active">01</i><i data-story-dot="1">02</i><i data-story-dot="2">03</i></div>
+        <div class="rc-story__steps">
+          <article class="rc-story__step is-active" data-story-step="0">
+            <span class="rc-story__step-kicker">01 / GLOBAL MINDSET</span>
+            <h3>全球视野</h3>
+            <p>不把创作困在一个市场。理解不同文化，让好的玩法、画面与故事抵达更多玩家。</p>
+          </article>
+          <article class="rc-story__step" data-story-step="1">
+            <span class="rc-story__step-kicker">02 / CRAFTSMANSHIP</span>
+            <h3>长期打磨</h3>
+            <p>从灵感、素材到成片，每一个细节都值得被认真对待；让效率服务于品质，而不是牺牲品质。</p>
+          </article>
+          <article class="rc-story__step" data-story-step="2">
+            <span class="rc-story__step-kicker">03 / CREATE TOGETHER</span>
+            <h3>一起创造</h3>
+            <p>把工具、经验和灵感连接起来，让团队更快形成共识，也让每一次尝试都能留下资产。</p>
+          </article>
+        </div>
+        <div class="rc-story__stage" aria-hidden="true">
+          <div class="rc-story__stage-grid"></div>
+          <div class="rc-story__stage-ring rc-story__stage-ring--a"></div>
+          <div class="rc-story__stage-ring rc-story__stage-ring--b"></div>
+          <div class="rc-story__stage-core"><span class="rc-story__stage-number">01</span><span class="rc-story__stage-label">GLOBAL<br>CREATIVE</span></div>
+          <div class="rc-story__stage-caption">RED INFINITY &#183; REDCRAFT</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="rc-quick" class="rc-section rc-reveal">
       <div class="rc-section__head">
         <div class="rc-section__titlewrap">
           <span class="rc-kicker">QUICK START</span>
@@ -171,33 +223,33 @@
         </div>
         <p class="rc-section__hint">六个创作模块，一处完成</p>
       </div>
-      <div class="rc-grid">
-        <a class="rc-card rc-launch" data-tab="feishu-generation-agent" href="#" role="button">
+      <div class="rc-grid rc-reveal rc-reveal--delay-2">
+        <a class="rc-card rc-card--feishu rc-launch rc-stagger-1" data-tab="feishu-generation-agent" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--doc" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">01</span>
           <span class="rc-card__body"><strong>飞书创作助手</strong><em>从文档拆任务，审批后批量出图出片</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="seedance" href="#" role="button">
+        <a class="rc-card rc-card--video rc-launch rc-stagger-2" data-tab="seedance" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--video" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">02</span>
           <span class="rc-card__body"><strong>视频生成</strong><em>文生视频 · 图生视频 · 首尾帧</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="nb" href="#" role="button">
+        <a class="rc-card rc-card--image rc-launch rc-stagger-3" data-tab="nb" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--image" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">03</span>
           <span class="rc-card__body"><strong>图片生成</strong><em>文生图 · 图生图 · 批量出图</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="volcengine-portrait" href="#" role="button">
+        <a class="rc-card rc-card--portrait rc-launch rc-stagger-4" data-tab="volcengine-portrait" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--portrait" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">04</span>
           <span class="rc-card__body"><strong>人像视频</strong><em>数字人口播 · 虚拟人物视频</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="infinite-canvas" href="#" role="button">
+        <a class="rc-card rc-card--canvas rc-launch rc-stagger-5" data-tab="infinite-canvas" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--canvas" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">05</span>
           <span class="rc-card__body"><strong>创意画布</strong><em>节点式组织参考图、提示词与模型</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="dreamina" href="#" role="button">
+        <a class="rc-card rc-card--dream rc-launch rc-stagger-6" data-tab="dreamina" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--dream" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">06</span>
           <span class="rc-card__body"><strong>即梦创作</strong><em>即梦账号的图片与视频生成</em></span>
           <span class="rc-card__arrow">→</span>
@@ -205,18 +257,18 @@
       </div>
     </section>
 
-    <section id="rc-more" class="rc-section">
+    <section id="rc-more" class="rc-section rc-reveal">
       <div class="rc-section__head">
         <div class="rc-section__titlewrap">
           <span class="rc-kicker">CAPABILITIES</span>
           <h2>一个工作台，完整创作闭环</h2>
         </div>
       </div>
-      <div class="rc-cap-list">
-        <div class="rc-cap"><span class="rc-cap__mark">A</span><div><strong>统一入口</strong><p>所有创作工具集中管理，不切换多个系统。</p></div></div>
-        <div class="rc-cap"><span class="rc-cap__mark">B</span><div><strong>即时状态</strong><p>本地服务与资源状态一目了然，减少等待。</p></div></div>
-        <div class="rc-cap"><span class="rc-cap__mark">C</span><div><strong>记录回放</strong><p>创作记录与历史任务可随时回看和复用。</p></div></div>
-        <div class="rc-cap"><span class="rc-cap__mark">D</span><div><strong>资产沉淀</strong><p>图片、视频与灵感素材沉淀在同一个工作区。</p></div></div>
+      <div class="rc-cap-list rc-reveal rc-reveal--delay-2">
+        <div class="rc-cap rc-stagger-1"><span class="rc-cap__mark">A</span><div><strong>统一入口</strong><p>所有创作工具集中管理，不切换多个系统。</p></div></div>
+        <div class="rc-cap rc-stagger-2"><span class="rc-cap__mark">B</span><div><strong>即时状态</strong><p>本地服务与资源状态一目了然，减少等待。</p></div></div>
+        <div class="rc-cap rc-stagger-3"><span class="rc-cap__mark">C</span><div><strong>记录回放</strong><p>创作记录与历史任务可随时回看和复用。</p></div></div>
+        <div class="rc-cap rc-stagger-4"><span class="rc-cap__mark">D</span><div><strong>资产沉淀</strong><p>图片、视频与灵感素材沉淀在同一个工作区。</p></div></div>
       </div>
     </section>
 
@@ -1347,7 +1399,7 @@
   <script src="/js/portal-analytics.js"></script>
   <script src="/js/portal-utils.js"></script>
   <script src="/js/portal-shell.js"></script>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260908-stall-recovery1"></script>
   <script src="/js/portal-enhancements.js"></script>
   <script src="/js/portal-module-registry.js"></script>
   <script src="/js/portal-rag-interceptor.js"></script>
@@ -1370,5 +1422,52 @@
   });
 })();
 </script>
+<script>
+/* RedCraft Culture Story v2: active chapter follows the scroll container center. */
+(function () {
+  var story = document.querySelector('.rc-story');
+  var steps = Array.prototype.slice.call(document.querySelectorAll('[data-story-step]'));
+  var dots = Array.prototype.slice.call(document.querySelectorAll('[data-story-dot]'));
+  if (!story || !steps.length) return;
+  var number = story.querySelector('.rc-story__stage-number');
+  var label = story.querySelector('.rc-story__stage-label');
+  var labels = [['01', 'GLOBAL\nCREATIVE'], ['02', 'CRAFT\nQUALITY'], ['03', 'CREATE\nTOGETHER']];
+  var active = -1;
+  function activate(index) {
+    if (index === active) return;
+    active = index;
+    steps.forEach(function (step, i) { step.classList.toggle('is-active', i === index); });
+    dots.forEach(function (dot, i) { dot.classList.toggle('is-active', i === index); });
+    story.dataset.story = String(index);
+    if (number) number.textContent = labels[index][0];
+    if (label) label.innerHTML = labels[index][1].replace('\n', '<br>');
+  }
+  function measure() {
+    var root = document.querySelector('.portal-home-panel');
+    var rootRect = root ? root.getBoundingClientRect() : { top: 0, height: window.innerHeight };
+    var targetY = rootRect.top + rootRect.height * 0.44;
+    var nearest = 0;
+    var distance = Infinity;
+    steps.forEach(function (step, i) {
+      var rect = step.getBoundingClientRect();
+      var center = rect.top + rect.height * 0.34;
+      var d = Math.abs(center - targetY);
+      if (d < distance) { distance = d; nearest = i; }
+    });
+    activate(nearest);
+  }
+  var root = document.querySelector('.portal-home-panel');
+  var ticking = false;
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(function () { ticking = false; measure(); });
+  }
+  if (root) root.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', measure, { passive: true });
+  measure();
+})();
+</script>
+
 </body>
 </html>
