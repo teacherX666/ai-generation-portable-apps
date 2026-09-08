@@ -447,7 +447,7 @@ class ProviderResultStore:
         return content
 
     @staticmethod
-    def _path_identity(path: Path, *, directory: bool) -> tuple[int, int, int, int]:
+    def _path_identity(path: Path, *, directory: bool) -> tuple[int, ...]:
         try:
             value = path.lstat()
         except OSError as exc:
@@ -458,13 +458,14 @@ class ProviderResultStore:
             raise ProviderResultStagingError(
                 "invalid result directory" if directory else "invalid staged file"
             )
-        return value.st_dev, value.st_ino, value.st_mode, value.st_mtime_ns
+        identity = (value.st_dev, value.st_ino, value.st_mode)
+        return identity if directory else (*identity, value.st_mtime_ns)
 
     @classmethod
     def _assert_path_identity(
         cls,
         path: Path,
-        expected: tuple[int, int, int, int],
+        expected: tuple[int, ...],
         *,
         directory: bool,
     ) -> None:

@@ -2,6 +2,7 @@ import asyncio
 import base64
 from hashlib import sha256
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -799,6 +800,7 @@ def test_download_accepts_chunks_and_reuses_content_path(tmp_path: Path):
     assert not list((tmp_path / "outputs").rglob("*.part"))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows symlink creation requires elevated privileges")
 def test_output_root_symlink_replacement_cannot_escape_fixed_root(
     tmp_path: Path,
 ) -> None:
@@ -818,6 +820,7 @@ def test_output_root_symlink_replacement_cannot_escape_fixed_root(
     assert not list(outside.rglob("*"))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows symlink creation requires elevated privileges")
 def test_output_task_directory_replacement_is_detected_before_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -861,6 +864,33 @@ def test_chunked_image_download_does_not_read_entire_part_file(
     assert stored.size == len(PNG_1X1)
     assert stored.mime_type == "image/png"
     assert stored.local_path.exists()
+
+
+def test_save_and_verify_output_slot_id_uses_windows_safe_directory(
+    tmp_path: Path,
+) -> None:
+    store = FileStore(
+        tmp_path / "data", tmp_path / "outputs", max_bytes=1024
+    )
+    task_id = "task-video::output:1"
+
+    stored = store.save_download(
+        "run-1", task_id, "result", PNG_1X1, "image/png"
+    )
+    artifact = Artifact(
+        artifact_id="artifact-output-slot",
+        task_id=task_id,
+        kind="image",
+        local_path=stored.local_path,
+        mime_type=stored.mime_type,
+        size=stored.size,
+        sha256=stored.sha256,
+        status="ready",
+    )
+
+    assert stored.local_path.is_file()
+    assert ":" not in stored.local_path.parent.name
+    assert store.verify_artifact("run-1", artifact)
 
 
 @pytest.mark.asyncio
@@ -913,7 +943,7 @@ async def test_materialize_local_result_reopens_staging_safely_and_copies_output
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tamper", ["wrong_id", "changed", "symlink"])
+@pytest.mark.parametrize("tamper", ["wrong_id", "changed", pytest.param("symlink", marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows symlink creation requires elevated privileges"))])
 async def test_materialize_local_result_rejects_wrong_or_tampered_staging(
     tmp_path: Path,
     tamper: str,
@@ -1103,7 +1133,7 @@ def test_verify_artifact_accepts_only_intact_task_scoped_media(
     assert store.verify_artifact("run-1", artifact)
 
 
-@pytest.mark.parametrize("tamper", ["changed", "symlink", "outside"])
+@pytest.mark.parametrize("tamper", ["changed", pytest.param("symlink", marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows symlink creation requires elevated privileges")), "outside"])
 def test_verify_artifact_rejects_corrupt_symlink_or_wrong_scope(
     tmp_path: Path,
     tamper: str,

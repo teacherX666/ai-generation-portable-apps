@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import sys
 import pytest
 
 from feishu_generation_agent.storage.provider_results import (
@@ -8,7 +9,7 @@ from feishu_generation_agent.storage.provider_results import (
 )
 
 
-@pytest.mark.parametrize("target", ["root", "result"])
+@pytest.mark.parametrize("target", [pytest.param("root", marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows symlink creation requires elevated privileges")), pytest.param("result", marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows symlink creation requires elevated privileges"))])
 def test_load_rejects_directory_replacement_after_directory_fd_open(
     tmp_path: Path,
     target: str,
@@ -48,6 +49,7 @@ def test_load_rejects_directory_replacement_after_directory_fd_open(
         store.load(provider_task_id)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows symlink creation requires elevated privileges")
 def test_save_rejects_root_replacement_without_writing_outside(
     tmp_path: Path,
 ) -> None:
