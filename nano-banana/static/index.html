@@ -263,7 +263,7 @@
 
           <!-- Jobs Tab -->
           <div v-show="wsTab==='jobs'">
-            <div class="resultHeader"><h2>结果</h2><span>{{ statusText }}</span></div>
+            <div class="resultHeader"><h2>结果</h2><span>{{ statusText }}</span><button @click="openActiveJobDetail()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">📋 详情</button></div>
             <!-- 静态空状态：首次渲染时被 _renderJobToDom 的 innerHTML='' 清掉即可 -->
             <div class="results" id="nb-results"><p class="hint" id="nb-jobsEmpty">暂无生成记录，提交任务后自动显示进度和结果。</p></div>
             <pre id="nb-events" v-if="eventsText">{{ eventsText }}</pre>

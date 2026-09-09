@@ -204,6 +204,7 @@
                  结果与下载按钮；「← 返回历史」切回历史列表视图。 -->
             <div v-if="statusText !== '空闲'">
               <div class="resultHeader"><h2>{{ statusText.indexOf('上次任务') === 0 ? '上次任务' : '运行中' }}</h2><span>{{ statusText }}</span>
+                <button @click="openActiveJobDetail()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">📋 详情</button>
                 <button v-if="statusText.indexOf('上次任务') === 0" @click="backToHistory()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">← 返回历史</button>
               </div>
               <div class="results" id="sd-results"></div>

@@ -1157,6 +1157,18 @@ function SeedanceApp() {
     },
 
     // === 任务详情弹窗：请求（参数）与返回（事件/结果/错误） ===
+    // 运行中面板的「详情」入口：从当前 tab 的运行态缓存解析活跃任务 id
+    openActiveJobDetail() {
+      const cache = (this._tabStateCache || {})[this.activeTabId];
+      const jid = cache && cache._activeJobId;
+      if (!jid) {
+        if (typeof window.portalToast === 'function') window.portalToast('当前没有运行中的任务', 'info');
+        return;
+      }
+      const rec = (this._activityRecords || []).find(r => r.job_id === jid);
+      this.openJobDetail(jid, rec && rec.id);
+    },
+
     async openJobDetail(jobId, activityId) {
       let job = null;
       try { job = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId)); } catch (e) { job = null; }
@@ -1950,15 +1962,11 @@ function SeedanceApp() {
         if (bar) bar.done();
       } catch (e) {
         if (bar) bar.fail();
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.target = '_blank';
-        a.rel = 'noopener';
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        // 不回退 <a download> 直链：无效 token 会把 404/JSON 错误体存成 .txt 文件；
+        // 明确提示失败原因，让用户知道文件可能已被清理。
+        const _msg = '下载失败：文件可能已被清理或网络异常，请稍后重试';
+        if (typeof window.portalToast === 'function') window.portalToast(_msg, 'danger');
+        else alert(_msg);
       }
     },
 
