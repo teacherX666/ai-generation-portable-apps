@@ -140,7 +140,7 @@ function escHtml(s) {
 }
 
 function jobStatusLabel(status) {
-  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '???' };
+  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '已中断' };
   return map[String(status || '').toLowerCase()] || String(status || '未知');
 }
 
@@ -1044,14 +1044,15 @@ function SeedanceApp() {
         // task panel from /api/jobs and resume its existing poll/cancel flow.
         const restored = this._restoredPollIds || (this._restoredPollIds = new Set());
         (this.jobs || []).filter(job =>
-          !TERMINAL_STATUSES.has((job.status || '').toLowerCase())
+          job && typeof job === 'object' && !TERMINAL_STATUSES.has((job.status || '').toLowerCase())
         ).forEach(job => {
           const wsId = job.workspace_id || this.activeTabId;
+          this._tabStateCache = this._tabStateCache || {};
           const cache = this._tabStateCache[wsId] || (this._tabStateCache[wsId] = {});
           cache._activeJobId = job.job_id;
           cache._latestJob = job;
           cache.statusText = (job.status || 'queued') + ' ' + (job.done || 0) + '/' + (job.total || 0);
-          cache.eventsText = (job.events || []).map(e =>
+          cache.eventsText = (Array.isArray(job.events) ? job.events : []).map(e =>
             '[' + (e.time || '') + '] ' + (e.message || '')
           ).join('\n');
           cache.submitting = true;

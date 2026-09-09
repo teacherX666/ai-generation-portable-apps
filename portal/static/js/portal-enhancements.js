@@ -190,7 +190,7 @@
       if (localStorage.getItem('portal_onboarded') === '1') { clearInterval(timer); return; }
       const label = document.getElementById('userLabel');
       if (label && label.textContent) {
-        if (document.body.classList.contains('portal-home-active')) return;
+        if (document.body.classList.contains('portal-home-active')) { clearInterval(timer); return; }
         clearInterval(timer);
         ensureHelpDialog().showModal();
       } else if (tries >= 20) {
