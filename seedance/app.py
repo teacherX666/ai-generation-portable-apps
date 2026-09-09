@@ -1183,29 +1183,11 @@ def recover_backlog() -> tuple[int, int]:
             values.setdefault("api_key", str((SECRETS or {}).get("volcengine_api_key") or ""))
             ws_id = str(meta.get("ws_id") or "localhost")
             files = _files_from_restore(restore, ws_id)
-            if meta.get("stage") == "started":
-                # 运行中被重启打断：不自动重跑（避免重复计费），标记可重试
-                with JOBS_LOCK:
-                    JOBS[job_id] = {
-                        "id": job_id, "status": "failed",
-                        "events": [{"time": time.strftime("%H:%M:%S"),
-                                    "message": "服务更新重启，任务中断"}],
-                        "results": [], "errors": ["服务更新重启，任务中断——请点击「重试」重新提交。"],
-                        "done": 0, "total": 0,
-                        "duration": max(0, int(str(values.get("duration") or "0") or "0")),
-                        "username": str(meta.get("username") or ""),
-                        "workspace_id": ws_id,
-                        "submitted_at": time.time(), "started_at": None,
-                        "finished_at": time.time(),
-                        "retryable": True,
-                    }
-                    _backlog_remove_locked(job_id)
-                update_activity(activity_id, status="failed",
-                                error="服务更新重启，任务中断——请点击重试",
-                                finished_at=time.time())
-                interrupted += 1
-                continue
-            # 排队中：原 job_id 重新入队，前端 jobs 列表自动重新出现
+            # 排队中/运行中统一语义（2026-09-09 用户确认）：
+            # 重启后原 job_id 重新入队、自动继续跑，活动记录保持 running——
+            # 重启前后用户无感。failed/succeeded 的任务由上方终态守卫保护。
+            # （重新执行会重跑生成，可能重复计费——用户明确选择无感优先。）
+
             with JOBS_LOCK:
                 JOBS[job_id] = {
                     "id": job_id, "status": "queued", "events": [{"time": time.strftime("%H:%M:%S"),
