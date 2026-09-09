@@ -1263,7 +1263,30 @@ def recover_backlog() -> tuple[int, int]:
             finished_at=time.time(),
         )
         interrupted += 1
+    # 孤儿自愈：恢复流程结束后仍处于进行中状态、且内存里没有对应任务的活动记录
+    # （fastapi 引擎此前从不跑恢复、或运行线程异常消失等）统一标记中断，
+    # 避免「永久 running」的幽灵任务继续被前端与统计当作进行中。
+    with JOBS_LOCK:
+        live_ids = set(JOBS.keys())
+    orphaned = 0
+    for act in activity_items:
+        status = str(act.get("status") or "").lower()
+        if status not in {"running", "pending", "queued", "processing", "submitted"}:
+            continue
+        jid = str(act.get("job_id") or "")
+        if jid and jid in live_ids:
+            continue
+        update_activity(
+            str(act.get("id") or ""),
+            status="failed",
+            error="任务因服务重启/异常中断（恢复流程未找到该任务），请点击重试或重新提交",
+            finished_at=time.time(),
+        )
+        orphaned += 1
+    if orphaned:
+        print(f"Orphaned running activities marked interrupted: {orphaned}", flush=True)
     return recovered, interrupted
+
 
 
 def activity_record_for_client(record: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2708,7 +2731,10 @@ def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tupl
         with JOBS_LOCK:
             _backlog_remove_locked(job_id)
     except Exception as exc:
-        set_job(job_id, status="failed", errors=[str(exc)], finished_at=time.time())
+        try:
+            set_job(job_id, status="failed", errors=[str(exc)], finished_at=time.time())
+        except KeyError:
+            print(f"[run_job] JOBS 条目缺失（异常前已被移出？）: {job_id}: {exc}", flush=True)
         with JOBS_LOCK:
             final_job = json.loads(json.dumps(JOBS.get(job_id, {})))
             _backlog_remove_locked(job_id)
