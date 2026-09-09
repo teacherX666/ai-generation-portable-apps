@@ -1336,19 +1336,35 @@ function NanoBananaApp() {
       try { job = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId)); } catch (e) { job = null; }
       // 单任务接口返回的是原始 JOBS 条目（id 为键），列表接口才是 job_id——统一归一化
       if (job && !job.job_id && job.id) job.job_id = job.id;
-      // 内存任务已被剪枝（重启/超出上限）→ 回退到持久化活动记录
-      if ((!job || !job.job_id) && activityId) {
-        try { job = await api(APP_PATH + '/api/activity/' + encodeURIComponent(activityId)); } catch (e) { job = null; }
-        if (job && !job.error) {
-          job.job_id = job.job_id || job.id || jobId;
-          var result = job.result || {};
-          job.results = job.results || result.results || [];
-          job.events = job.events || result.events || [];
-          job.errors = job.errors || result.errors || [];
-          job.params = job.params || (job.request && job.request.values) || {};
-          job.prompt = job.prompt || job.title || '';
-          job.model = job.model || ((job.request && job.request.values && job.request.values.model) || '');
-        }
+      // 参数不在内存任务字典里（存于活动记录 request）——用 job_id 反查活动记录 id
+      if (!activityId && jobId) {
+        (self._activityRecords || []).forEach(function (r) { if (!activityId && r.job_id === jobId) activityId = r.id; });
+      }
+      // 内存任务已被剪枝（重启/超出上限）或参数缺失 → 回退/合并持久化活动记录
+      var liveHasParams = !!(job && ((job.params && Object.keys(job.params).length) || (job.form && Object.keys(job.form).length)));
+      if ((!job || !job.job_id || !liveHasParams) && activityId) {
+        try {
+          var rec = await api(APP_PATH + '/api/activity/' + encodeURIComponent(activityId));
+          if (rec && !rec.error) {
+            if (!job || !job.job_id) {
+              job = rec;
+              job.job_id = job.job_id || job.id || jobId;
+              var result0 = job.result || {};
+              job.results = job.results || result0.results || [];
+              job.events = job.events || result0.events || [];
+              job.errors = job.errors || result0.errors || [];
+            } else {
+              // live 任务存在但参数缺失：只补参数/提示词/模型，其余用 live 的实时数据
+              var result1 = rec.result || {};
+              if (!liveHasParams) job.params = (rec.request && rec.request.values) || {};
+              if (!(job.events && job.events.length)) job.events = result1.events || [];
+              if (!(job.errors && job.errors.length)) job.errors = result1.errors || [];
+            }
+            job.params = job.params || (job.request && job.request.values) || {};
+            job.prompt = job.prompt || job.title || ((job.request && job.request.values && job.request.values.prompt) || '');
+            job.model = job.model || ((job.request && job.request.values && job.request.values.model) || '');
+          }
+        } catch (e2) { /* 活动记录拿不到时保留 live 数据 */ }
       }
       if (!job || !job.job_id) {
         if (typeof window.portalToast === 'function') window.portalToast('任务详情获取失败（任务可能已被清理）', 'danger');
