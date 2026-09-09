@@ -592,6 +592,17 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict[str, Any]:
             counts[source] += 1
         if status in counts:
             counts[status] += 1
+        first_url = ""
+        try:
+            for run in ((item.get("result") or {}).get("results") or []):
+                for im in (run.get("images") or []):
+                    if im.get("download_url"):
+                        first_url = im["download_url"]
+                        break
+                if first_url:
+                    break
+        except Exception:
+            first_url = ""
         summary.append({
             "id": item.get("id"),
             "job_id": item.get("job_id"),
@@ -604,6 +615,7 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict[str, Any]:
             "username": item.get("username", ""),
             "started_at": item.get("started_at"),
             "finished_at": item.get("finished_at"),
+            "first_url": first_url,
         })
     summary.reverse()
     return {"counts": counts, "records": summary}

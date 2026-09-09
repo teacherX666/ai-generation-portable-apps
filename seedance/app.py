@@ -874,6 +874,14 @@ def activity_list(ws_id: str = "localhost", show_all: bool = False, username: st
             counts[source] += 1
         if status in counts:
             counts[status] += 1
+        first_url = ""
+        try:
+            for run in ((item.get("result") or {}).get("results") or []):
+                if run.get("download_url"):
+                    first_url = run["download_url"]
+                    break
+        except Exception:
+            first_url = ""
         summary.append({
             "id": item.get("id"),
             "job_id": item.get("job_id"),
@@ -886,6 +894,7 @@ def activity_list(ws_id: str = "localhost", show_all: bool = False, username: st
             "username": item.get("username", ""),
             "started_at": item.get("started_at"),
             "finished_at": item.get("finished_at"),
+            "first_url": first_url,
         })
     summary.reverse()
     return {"counts": counts, "records": summary}

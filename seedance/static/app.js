@@ -1039,7 +1039,18 @@ function SeedanceApp() {
     renderJobsGrid() {
       const grid = document.getElementById('sd-jobsGrid');
       if (!grid) return;
-      const items = (this.jobs || []).slice(0, this.jobsLimit);
+      // 内存任务 + 持久化活动记录（去重：活动里有而内存里没有的才并入）
+      const liveIds = new Set((this.jobs || []).map(j => j.job_id));
+      const merged = (this.jobs || []).slice();
+      for (const rec of (this._activityRecords || [])) {
+        if (!rec || !rec.job_id || liveIds.has(rec.job_id)) continue;
+        if (merged.length >= this.jobsLimit) break;
+        merged.push(rec);
+      }
+      const items = merged.slice(0, this.jobsLimit);
+      // 有内容时隐藏「暂无生成记录」空状态（idle 分支里的静态提示）
+      const emptyEl = document.getElementById('sd-jobsEmpty');
+      if (emptyEl) emptyEl.style.display = items.length ? 'none' : '';
       const seen = new Set();
       const frag = document.createDocumentFragment();
       for (const j of items) {
@@ -1065,7 +1076,11 @@ function SeedanceApp() {
     },
 
     _buildJobTile(j) {
-      const first = (j.results || []).find(r => r.download_url);
+      // 活动记录（内存 JOBS 剪枝后并入）没有 results 顶层字段：
+      // 产出快照在 result.results 里，提示词在 title / request.values
+      const raw = j.results || (j.result && j.result.results) || [];
+      let first = (raw || []).find(r => r.download_url);
+      if (!first && j.first_url) first = { download_url: j.first_url, filename: 'video' };
       const tile = document.createElement('div');
       tile.className = 'job-tile';
       tile.dataset.jid = j.job_id;
@@ -1106,8 +1121,9 @@ function SeedanceApp() {
 
       const prompt = document.createElement('div');
       prompt.className = 'job-tile-prompt';
-      prompt.textContent = j.prompt || '';
-      prompt.title = j.prompt || '';
+      const promptText = j.prompt || j.title || ((j.request && j.request.values && j.request.values.prompt) || '');
+      prompt.textContent = promptText || '';
+      prompt.title = promptText || '';
       tile.appendChild(prompt);
 
       const foot = document.createElement('div');
@@ -1136,16 +1152,30 @@ function SeedanceApp() {
       foot.appendChild(dt);
       tile.appendChild(foot);
 
-      tile.addEventListener('click', () => this.openJobDetail(j.job_id));
+      tile.addEventListener('click', () => this.openJobDetail(j.job_id, j.id));
       return tile;
     },
 
     // === 任务详情弹窗：请求（参数）与返回（事件/结果/错误） ===
-    async openJobDetail(jobId) {
+    async openJobDetail(jobId, activityId) {
       let job = null;
       try { job = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId)); } catch (e) { job = null; }
       // 单任务接口返回的是原始 JOBS 条目（id 为键），列表接口才是 job_id——统一归一化
       if (job && !job.job_id && job.id) job.job_id = job.id;
+      // 内存任务已被剪枝（重启/超出上限）→ 回退到持久化活动记录
+      if ((!job || !job.job_id) && activityId) {
+        try { job = await api(APP_PATH + '/api/activity/' + encodeURIComponent(activityId)); } catch (e) { job = null; }
+        if (job && !job.error) {
+          job.job_id = job.job_id || job.id || jobId;
+          const result = job.result || {};
+          job.results = job.results || result.results || [];
+          job.events = job.events || result.events || [];
+          job.errors = job.errors || result.errors || [];
+          job.params = job.params || (job.request && job.request.values) || {};
+          job.prompt = job.prompt || job.title || '';
+          job.model = job.model || ((job.request && job.request.values && job.request.values.model) || '');
+        }
+      }
       if (!job || !job.job_id) {
         if (typeof window.portalToast === 'function') window.portalToast('任务详情获取失败（任务可能已被清理）', 'danger');
         else alert('任务详情获取失败（任务可能已被清理）');
@@ -1237,6 +1267,11 @@ function SeedanceApp() {
       const res = await api(APP_PATH + '/api/jobs');
       if (res?.jobs) {
         this.jobs = res.jobs;
+        // 持久化活动记录并入矩阵：内存 JOBS 会随重启/剪枝清空，历史在 activity_log
+        try {
+          const act = await api(APP_PATH + '/api/activity');
+          this._activityRecords = (act && (act.records || act.items)) || [];
+        } catch (e) { this._activityRecords = this._activityRecords || []; }
         this.renderJobsGrid();
         // Refresh normally initializes the form as idle, which used to switch
         // the UI to history despite a live job. Rehydrate the original running

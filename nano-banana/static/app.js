@@ -1197,7 +1197,18 @@ function NanoBananaApp() {
       var self = this;
       var grid = document.getElementById('nb-jobsGrid');
       if (!grid) return;
-      var items = (self.jobs || []).slice(0, 20);
+      // 内存任务 + 持久化活动记录（去重：活动里有而内存里没有的才并入）
+      var liveIds = {};
+      (self.jobs || []).forEach(function (j) { liveIds[j.job_id] = true; });
+      var merged = (self.jobs || []).slice();
+      (self._activityRecords || []).forEach(function (rec) {
+        if (!rec || !rec.job_id || liveIds[rec.job_id]) return;
+        if (merged.length >= 20) return;
+        merged.push(rec);
+      });
+      var items = merged.slice(0, 20);
+      var emptyEl = document.getElementById('nb-jobsEmpty');
+      if (emptyEl) emptyEl.style.display = items.length ? 'none' : '';
       var seen = {};
       var frag = document.createDocumentFragment();
       items.forEach(function (j) {
@@ -1224,11 +1235,14 @@ function NanoBananaApp() {
     _buildJobTile(j) {
       var self = this;
       var first = null;
-      (j.results || []).forEach(function (r) {
+      var rawResults = j.results || (j.result && j.result.results) || [];
+      rawResults.forEach(function (r) {
         if (!first && r.images && r.images.length && r.images[0].download_url) {
           first = r.images[0];
         }
       });
+      // 活动记录（内存剪枝后并入）没有 results：用摘要里的 first_url
+      if (!first && j.first_url) first = { download_url: j.first_url, filename: 'image' };
       var tile = document.createElement('div');
       tile.className = 'job-tile';
       tile.dataset.jid = j.job_id;
@@ -1267,8 +1281,9 @@ function NanoBananaApp() {
 
       var prompt = document.createElement('div');
       prompt.className = 'job-tile-prompt';
-      prompt.textContent = j.prompt || '';
-      prompt.title = j.prompt || '';
+      var promptText = j.prompt || j.title || ((j.request && j.request.values && j.request.values.prompt) || '');
+      prompt.textContent = promptText || '';
+      prompt.title = promptText || '';
       tile.appendChild(prompt);
 
       var foot = document.createElement('div');
@@ -1297,17 +1312,31 @@ function NanoBananaApp() {
       foot.appendChild(dt);
       tile.appendChild(foot);
 
-      tile.addEventListener('click', function () { self.openJobDetail(j.job_id); });
+      tile.addEventListener('click', function () { self.openJobDetail(j.job_id, j.id); });
       return tile;
     },
 
     // === 任务详情弹窗：请求（参数）与返回（事件/结果/错误） ===
-    async openJobDetail(jobId) {
+    async openJobDetail(jobId, activityId) {
       var self = this;
       var job = null;
       try { job = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId)); } catch (e) { job = null; }
       // 单任务接口返回的是原始 JOBS 条目（id 为键），列表接口才是 job_id——统一归一化
       if (job && !job.job_id && job.id) job.job_id = job.id;
+      // 内存任务已被剪枝（重启/超出上限）→ 回退到持久化活动记录
+      if ((!job || !job.job_id) && activityId) {
+        try { job = await api(APP_PATH + '/api/activity/' + encodeURIComponent(activityId)); } catch (e) { job = null; }
+        if (job && !job.error) {
+          job.job_id = job.job_id || job.id || jobId;
+          var result = job.result || {};
+          job.results = job.results || result.results || [];
+          job.events = job.events || result.events || [];
+          job.errors = job.errors || result.errors || [];
+          job.params = job.params || (job.request && job.request.values) || {};
+          job.prompt = job.prompt || job.title || '';
+          job.model = job.model || ((job.request && job.request.values && job.request.values.model) || '');
+        }
+      }
       if (!job || !job.job_id) {
         if (typeof window.portalToast === 'function') window.portalToast('任务详情获取失败（任务可能已被清理）', 'danger');
         else alert('任务详情获取失败（任务可能已被清理）');
@@ -1404,6 +1433,11 @@ function NanoBananaApp() {
         var res = await api(APP_PATH + '/api/jobs');
         if (res && Array.isArray(res.jobs)) {
           self.jobs = res.jobs;
+          // 持久化活动记录并入矩阵：内存 JOBS 会随重启/剪枝清空，历史在 activity_log
+          try {
+            var act = await api(APP_PATH + '/api/activity');
+            self._activityRecords = (act && (act.records || act.items)) || [];
+          } catch (e) { self._activityRecords = self._activityRecords || []; }
           self.renderJobsGrid();
           // A hard refresh used to reset the form to idle and expose the
           // activity/history view, while the actual image job kept running.

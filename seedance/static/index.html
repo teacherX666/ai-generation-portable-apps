@@ -207,12 +207,12 @@
                 <button v-if="statusText.indexOf('上次任务') === 0" @click="backToHistory()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">← 返回历史</button>
               </div>
               <div class="results" id="sd-results"></div>
-              <pre id="sd-events">{{ eventsText }}</pre>
+              <pre id="sd-events" v-if="eventsText">{{ eventsText }}</pre>
             </div>
             <!-- Job history (shown when idle, after polling completes) -->
             <div v-if="statusText === '空闲'">
               <div class="resultHeader"><h2>生成历史 <button @click="loadJobs()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer">刷新</button></h2></div>
-              <div v-if="jobs.length===0" style="color:#697386;font-size:12px;padding:12px 0">暂无生成记录，提交任务后自动显示</div>
+              <div id="sd-jobsEmpty" v-if="jobs.length===0" style="color:#697386;font-size:12px;padding:12px 0">暂无生成记录，提交任务后自动显示</div>
               <!-- 任务矩阵：一个任务一个格子（缩略图 / 状态 / 下载 / 详情） -->
               <div id="sd-jobsGrid" class="job-grid"></div>
               <button v-if="jobs.length > jobsLimit" @click="jobsLimit += 20; renderJobsGrid()"
