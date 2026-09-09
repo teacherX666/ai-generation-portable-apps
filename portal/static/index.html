@@ -926,34 +926,66 @@
 
       <section class="card">
         <h2>生成历史 <button @click="loadJobs()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">刷新</button></h2>
-        <div v-if="jobs.length===0 && extraHistory().length===0" style="color:#64748b;font-size:12px">暂无生成记录</div>
-        <div v-for="j in jobs" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px">
-          <div class="row" style="align-items:center;margin-bottom:2px">
-            <span :class="'tag tag-'+(j.status||'queued')">{{ j.status }}</span>
-            <span style="font-size:12px;flex:1">{{ (j.prompt||'').slice(0,60) }}...</span>
-            <span v-if="j.username" style="font-size:11px;color:#64748b;margin-right:6px">@{{ j.username }}</span>
-            <span v-if="formatRuntime(j)" style="font-size:11px;color:#475569;margin-right:6px">{{ formatRuntime(j) }}</span>
-            <span style="font-size:11px;color:#64748b">{{ j.created_at }}</span>
-          </div>
-          <div v-if="j.errors && j.errors.length" style="font-size:11px;color:#dc2626;margin-top:4px">{{ friendlyErrors(j.errors) }}</div>
-          <!-- retryable=服务重启中断；普通失败任务同样可原样重提（后端 retry 端点复用落盘参数） -->
-          <button v-if="j.retryable || j.status==='failed'" @click="retryVpJob(j.job_id)" class="ui-btn ui-btn--sm ui-btn--primary" style="margin-top:6px">重试</button>
-          <div v-for="r in (j.results||[]).filter(x => x.download_url)" class="row" style="align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #f1f5f9">
-            <video :src="appPath + r.download_url" controls style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
-            <span style="font-size:11px;color:#64748b;flex:1;margin-left:8px">{{ r.filename || 'video' }}</span>
-            <button @click="blobDownload(appPath + r.download_url, r.filename || 'video')" class="ui-btn ui-btn--sm ui-btn--primary">⬇ 下载</button>
-          </div>
-        </div>
-        <div v-if="extraHistory().length" style="margin-top:14px;padding-top:10px;border-top:1px dashed #e2e8f0;font-size:12px;color:#94a3b8">服务重启前的历史任务</div>
-        <div v-for="a in extraHistory()" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px;margin-top:8px">
-          <div class="row" style="align-items:center;margin-bottom:2px">
-            <span :class="'tag tag-'+(a.status||'queued')">{{ a.status }}</span>
-            <span style="font-size:12px;flex:1;margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.title || '' }}</span>
-            <span v-if="a.created_at" style="font-size:11px;color:#64748b;margin-right:6px">{{ a.created_at }}</span>
-            <button v-if="a.status==='failed'" @click="retryActivity(a.id)" class="ui-btn ui-btn--sm ui-btn--primary">重试</button>
+        <div v-if="vpHistory.length===0" style="color:#64748b;font-size:12px">暂无生成记录</div>
+        <!-- 任务矩阵（2026-09-09 对齐 seedance/nano）：一格一任务，整格点开详情，缩略图点开放大 -->
+        <div class="vp-job-grid">
+          <div v-for="j in vpHistory" :key="j.job_id" class="vp-job-tile" :data-status="j.status || ''" @click="openVpJobDetail(j)">
+            <div class="vp-job-tile-media">
+              <video v-if="j.first && j.first.isVideo" :src="appPath + j.first.url" preload="metadata" muted playsinline title="点开预览" @click.stop="openVpJobPreview(j)"></video>
+              <img v-else-if="j.first" :src="appPath + j.first.url" alt="产出预览" title="点开预览" @click.stop="openVpJobPreview(j)">
+              <span v-else class="vp-job-tile-ph">{{ (j.status==='failed' || j.status==='failure') ? '❌' : '⏳' }}</span>
+            </div>
+            <div class="vp-job-tile-meta">
+              <span class="vp-job-tile-badge" :class="j.status || ''">{{ j.status || '?' }}</span>
+              <span class="vp-job-tile-time">{{ (j.created_at || '').slice(5, 16) }}</span>
+            </div>
+            <div class="vp-job-tile-prompt" :title="j.prompt || ''">{{ j.prompt || '' }}</div>
+            <div class="vp-job-tile-foot">
+              <button v-if="j.first" type="button" class="vp-job-tile-btn vp-job-tile-btn--dl" @click.stop="blobDownload(appPath + j.first.url, j.first.filename || 'video')">⬇ 下载</button>
+              <button v-if="j.isLive && (j.retryable || j.status==='failed')" type="button" class="vp-job-tile-btn vp-job-tile-btn--retry" @click.stop="retryVpJob(j.job_id)">重试</button>
+              <button v-else-if="!j.isLive && j.status==='failed'" type="button" class="vp-job-tile-btn vp-job-tile-btn--retry" @click.stop="retryActivity(j.activity_id)">重试</button>
+              <button type="button" class="vp-job-tile-btn vp-job-tile-btn--detail" @click.stop="openVpJobDetail(j)">详情</button>
+            </div>
           </div>
         </div>
       </section>
+
+      <!-- 任务详情弹窗：请求参数 + 返回事件/产出（key 类字段剥离） -->
+      <div class="vp-zoom-backdrop" v-if="vpJobDetail" @click="closeVpJobDetail()">
+        <div class="vp-zoom-box" style="max-width:min(760px,94vw)" @click.stop>
+          <div class="vp-zoom-head">
+            <span class="vp-zoom-title">任务详情 {{ vpJobDetail.job_id || '' }}</span>
+            <button class="vp-zoom-close" @click="closeVpJobDetail()" title="关闭">✕</button>
+          </div>
+          <div class="vp-job-detail-body">
+            <div v-if="vpJobDetail.loading" class="vp-zoom-empty">加载中…</div>
+            <div v-else>
+              <div class="vp-job-detail-status">
+                <span class="vp-job-tile-badge" :class="vpJobDetail.status || ''">{{ vpJobDetail.status || '?' }}</span>
+                <span class="vp-job-detail-prompt">{{ vpJobDetail.prompt || '' }}</span>
+              </div>
+              <details class="vp-job-detail-sec" open>
+                <summary>请求参数</summary>
+                <pre class="vp-job-detail-pre">{{ vpJobDetail.reqText }}</pre>
+              </details>
+              <details class="vp-job-detail-sec" open>
+                <summary>返回事件</summary>
+                <pre class="vp-job-detail-pre">{{ vpJobDetail.evtText }}</pre>
+              </details>
+              <div class="vp-job-detail-sec">
+                <div class="vp-job-detail-summary">产出</div>
+                <div v-if="vpJobDetail.results && vpJobDetail.results.length">
+                  <div v-for="r in vpJobDetail.results" class="vp-job-detail-result">
+                    <span class="vp-job-detail-file">{{ r.filename || 'video' }}</span>
+                    <button type="button" class="vp-job-tile-btn vp-job-tile-btn--dl" @click.stop="blobDownload(appPath + r.download_url, r.filename || 'video')">⬇ 下载</button>
+                  </div>
+                </div>
+                <div v-else class="vp-zoom-empty" style="padding:6px 0">无产出</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <section class="card" style="margin-top:12px">
         <h2>

@@ -711,41 +711,49 @@ def retry_virtual_job(job_id: str) -> str:
 
 
 def recover_backlog() -> tuple[int, int]:
-    """启动时恢复：queued → 自动重新入队；started → 标记服务更新中断。"""
+    """启动时恢复（2026-09-09 对齐 seedance/nano 无感语义）：
+    queued/started → 原 job_id 重新入队自动继续跑，活动记录保持 running；
+    failed/succeeded/cancelled → 终态守卫只清 backlog 条目，绝不翻改；
+    参数已无法找回且记录已滚出日志 → 静默丢弃，不造无主失败任务。"""
     recovered = 0
     interrupted = 0
+    dropped = 0
+    stale_cleared = 0
     backlog = _backlog_load()
     if not backlog:
         return 0, 0
+    activities = {str(a.get("id")): a for a in read_activity_log()}
     for job_id, meta in list(backlog.items()):
         spec = dict(meta.get("spec") or {})
+        activity_id = str(meta.get("activity_id") or "")
+        act = activities.get(activity_id) or {}
         try:
-            if meta.get("stage") == "started":
-                # 运行中被重启打断：不自动重跑（避免重复计费），标记可重试；
-                # backlog 保留 stage=interrupted，重试端点可从中找回参数
+            # 终态守卫：活动记录已收尾（成功/失败/取消）说明任务早已走完完成
+            # 路径、只是 backlog 条目没清掉——只清条目，绝不做中断改写。
+            act_status = str(act.get("status") or "").lower()
+            if act and act_status in {"succeeded", "success", "completed", "failed", "failure", "cancelled", "canceled"}:
                 with JOBS_LOCK:
-                    JOBS[job_id] = dict(spec)
-                    JOBS[job_id].update({
-                        "job_id": job_id, "status": "failed",
-                        "errors": ["服务更新重启，任务中断——请点击「重试」重新提交。"],
-                        "events": list(spec.get("events") or []) + [
-                            {"time": time.strftime("%H:%M:%S"), "message": "服务更新重启，任务中断"}],
-                        "finished_at": time.time(),
-                        "retryable": True,
-                        "api_key": None,
-                    })
-                    _backlog_set_locked(job_id, stage="interrupted")
-                update_activity(meta.get("activity_id"), status="failed",
-                                error="服务更新重启，任务中断——请点击重试")
-                interrupted += 1
+                    _backlog_remove_locked(job_id)
+                stale_cleared += 1
                 continue
-            if not spec or not spec.get("prompt"):
-                raise ValueError("spec 缺失")
+            if not spec or not spec.get("prompt") or not spec.get("asset_id"):
+                raise ValueError("spec 缺失或残缺")
+            # 活动记录已滚出日志：任务年代久远、原状态未知，重跑=重复计费。
+            # 与 seedance/nano 一致直接丢弃（无感语义只管重启瞬间还在跑的任务，
+            # 那些任务的记录必然还在日志里）。
+            if not act:
+                with JOBS_LOCK:
+                    _backlog_remove_locked(job_id)
+                dropped += 1
+                continue
+            # 排队中/运行中统一 resume：原 job_id 重新入队、自动继续跑，
+            # 活动记录保持 running——重启前后用户无感。
             with JOBS_LOCK:
                 JOBS[job_id] = dict(spec)
                 JOBS[job_id].update({
                     "job_id": job_id, "status": "queued", "done": 0,
-                    "events": [{"time": time.strftime("%H:%M:%S"), "message": "服务重启后自动恢复入队"}],
+                    "events": list(spec.get("events") or []) + [
+                        {"time": time.strftime("%H:%M:%S"), "message": "服务重启后自动恢复入队"}],
                     "finished_at": None, "started_at": None,
                     "retryable": False, "api_key": None,
                 })
@@ -754,6 +762,13 @@ def recover_backlog() -> tuple[int, int]:
             _executor.submit(run_virtual_job, job_id)
             recovered += 1
         except Exception as exc:
+            # 数据残缺无法重放：活动记录还在 → 标记中断；记录已滚出日志
+            # → 直接丢弃，绝不造无主失败条目污染任务列表
+            with JOBS_LOCK:
+                _backlog_remove_locked(job_id)
+            if not act:
+                dropped += 1
+                continue
             with JOBS_LOCK:
                 JOBS[job_id] = dict(spec)
                 JOBS[job_id].update({
@@ -761,8 +776,36 @@ def recover_backlog() -> tuple[int, int]:
                     "errors": ["服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）"],
                     "finished_at": time.time(), "retryable": False, "api_key": None,
                 })
-                _backlog_remove_locked(job_id)
+            update_activity(activity_id, status="failed",
+                            error="服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）",
+                            finished_at=time.time())
             interrupted += 1
+    # 孤儿自愈：恢复流程结束后仍处于进行中状态、且内存里没有对应任务的活动记录
+    # （fastapi 引擎此前从不跑恢复、或运行线程异常消失等）统一标记中断，
+    # 避免「永久 running」的幽灵任务继续被前端与统计当作进行中。
+    with JOBS_LOCK:
+        live_ids = set(JOBS.keys())
+    orphaned = 0
+    for act in activities.values():
+        status = str(act.get("status") or "").lower()
+        if status not in {"running", "pending", "queued", "processing", "submitted"}:
+            continue
+        jid = str(act.get("job_id") or "")
+        if jid and jid in live_ids:
+            continue
+        update_activity(
+            str(act.get("id") or ""),
+            status="failed",
+            error="任务因服务重启/异常中断（恢复流程未找到该任务），请点击重试或重新提交",
+            finished_at=time.time(),
+        )
+        orphaned += 1
+    if orphaned:
+        print(f"Orphaned running activities marked interrupted: {orphaned}", flush=True)
+    if dropped:
+        print(f"Stale backlog entries dropped (activity rolled out): {dropped}", flush=True)
+    if stale_cleared:
+        print(f"Backlog entries cleared for already-final records: {stale_cleared}", flush=True)
     return recovered, interrupted
     if not activity_id:
         return
@@ -791,6 +834,17 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict:
             counts[source] += 1
         if status in counts:
             counts[status] += 1
+        # 矩阵缩略图：产出快照在 result.results 里（首条即封面）
+        first_url = ""
+        first_filename = ""
+        try:
+            for run in ((item.get("result") or {}).get("results") or []):
+                if run.get("download_url"):
+                    first_url = run["download_url"]
+                    first_filename = run.get("filename") or first_filename
+                    break
+        except Exception:
+            first_url = ""
         summary.append({
             "id": item.get("id"),
             "job_id": item.get("job_id"),
@@ -801,6 +855,8 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict:
             "title": item.get("title"),
             "request_kind": item.get("request_kind"),
             "username": item.get("username", ""),
+            "first_url": first_url,
+            "first_filename": first_filename,
         })
     summary.reverse()
     return {"counts": counts, "records": summary}

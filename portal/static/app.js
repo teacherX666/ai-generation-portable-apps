@@ -2103,6 +2103,8 @@ function VolcenginePortraitApp() {
       },
     ],
     submitting: false, events: '', results: [], jobs: [], activityRecords: [],
+    vpHistory: [],            // 矩阵渲染数据：内存任务 + 持久化活动记录合并（dedupe by job_id）
+    vpJobDetail: null,        // 任务详情弹窗数据（请求参数 / 返回事件 / 产出）
     // 新版资产库交互状态
     zoomAsset: null,          // 放大预览弹窗中的资产（图片/视频通用；关闭时不置 null，避免模板渲染竞态）
     zoomOpen: false,          // 弹窗开关（与 zoomAsset 分离，zoomAsset 保持非 null 供模板安全读取）
@@ -2793,6 +2795,7 @@ function VolcenginePortraitApp() {
     async loadActivity() {
       const res = await vpApi.call(this, `${appPath}/api/activity`);
       this.activityRecords = (res && res.records) || [];
+      this._syncVpHistory();
     },
 
     // History items that only live in the persisted activity log — i.e. jobs
@@ -2800,6 +2803,109 @@ function VolcenginePortraitApp() {
     extraHistory() {
       const liveIds = new Set((this.jobs || []).map(j => j.job_id));
       return (this.activityRecords || []).filter(a => a.job_id && !liveIds.has(a.job_id));
+    },
+
+    // === 矩阵渲染数据（2026-09-09 对齐 seedance/nano 任务矩阵） ===
+    // 模板不直接调方法（petite-vue 渲染竞态教训），由数据属性 vpHistory 维护；
+    // loadJobs / loadActivity 每次刷新都重算一次。内存任务优先，活动记录补缺
+    // （重启后内存剪枝的任务从持久化记录并入，缩略图来自后端 first_url）。
+    _syncVpHistory() {
+      const liveIds = new Set((this.jobs || []).map(j => j.job_id));
+      const items = [];
+      for (const j of (this.jobs || [])) {
+        const first = ((j.results || []).filter(r => r.download_url))[0];
+        items.push({
+          job_id: j.job_id,
+          status: j.status || 'queued',
+          prompt: j.prompt || '',
+          created_at: j.created_at || '',
+          retryable: !!j.retryable,
+          isLive: true,
+          first: first ? { url: first.download_url, filename: first.filename || 'video', isVideo: true } : null,
+        });
+      }
+      for (const a of (this.activityRecords || [])) {
+        if (!a.job_id || liveIds.has(a.job_id)) continue;
+        const url = a.first_url;
+        items.push({
+          job_id: a.job_id,
+          activity_id: a.id,
+          status: a.status || 'queued',
+          prompt: a.title || '',
+          created_at: a.created_at || '',
+          retryable: false,
+          isLive: false,
+          first: url ? { url: url, filename: a.first_filename || 'video', isVideo: true } : null,
+        });
+      }
+      // 新任务在上（活动记录 summary 已是倒序；live jobs 按后端排序）
+      this.vpHistory = items;
+    },
+
+    // 整格点击 → 详情弹窗：live 单任务 + 持久化活动记录合并展示
+    async openVpJobDetail(j) {
+      this.vpJobDetail = {
+        job_id: j.job_id, activity_id: j.activity_id || '',
+        status: j.status || '', prompt: j.prompt || '', loading: true,
+        reqText: '', evtText: '', results: [],
+      };
+      const jobId = j.job_id;
+      let live = null, rec = null;
+      try {
+        const r = await vpApi.call(this, `${appPath}/api/virtual/jobs/${encodeURIComponent(jobId)}`);
+        if (r && !r.error) live = r;
+      } catch (e) { /* 内存任务已剪枝 → 只展示活动记录 */ }
+      try {
+        const r = this.vpJobDetail && this.vpJobDetail.activity_id
+          ? await vpApi.call(this, `${appPath}/api/activity/${encodeURIComponent(this.vpJobDetail.activity_id)}`)
+          : null;
+        if (r && !r.error) rec = r;
+      } catch (e) { /* 活动记录缺失时只展示 live */ }
+      if (!this.vpJobDetail) return;
+      const d = this.vpJobDetail;
+      // 请求参数：live 任务字段优先；内存剪枝后回退活动记录 request（无 key 类字段）
+      const req = (rec && rec.request) || {};
+      const params = live
+        ? {
+            model: live.model || req.model || '',
+            duration: live.requested_duration ?? live.duration ?? req.duration ?? '',
+            resolution: live.resolution || req.resolution || '',
+            ratio: live.ratio || req.ratio || '',
+            asset_id: live.asset_id || req.asset_id || '',
+            extra_asset_ids: (live.extra_asset_ids && live.extra_asset_ids.length)
+              ? live.extra_asset_ids : (req.extra_asset_ids || []),
+            repeat_count: live.total || req.repeat_count || 1,
+          }
+        : req;
+      d.reqText = JSON.stringify(params, null, 2);
+      // 返回事件：live events 优先；活动记录 result.errors 兜底
+      const evtLines = [];
+      for (const e of ((live && live.events) || [])) evtLines.push(`${e.time || ''} ${e.message || ''}`);
+      if (!evtLines.length) {
+        const errs = (rec && rec.result && rec.result.errors) || [];
+        for (const e of errs) evtLines.push(String(e));
+      }
+      d.evtText = evtLines.join('\n') || '（无事件）';
+      // 产出：live results 优先，活动记录 result.results 兜底
+      d.results = ((live && live.results) || (rec && rec.result && rec.result.results) || [])
+        .filter(r => r.download_url);
+      d.status = (live && live.status) || d.status;
+      d.prompt = (live && live.prompt) || d.prompt || ((rec && rec.title) || '');
+      d.loading = false;
+    },
+    closeVpJobDetail() { this.vpJobDetail = null; },
+
+    // 缩略图点开 → 放大预览（复用资产放大弹窗；人像产出均为视频）
+    openVpJobPreview(j) {
+      const f = j.first;
+      if (!f) return;
+      this.openZoom({
+        file_name: f.filename || 'video',
+        asset_type: 'Video',
+        url: `${appPath}${f.url}`,
+        status: 'active',
+        asset_id: j.job_id,
+      });
     },
 
     // Retry a failed task from the persisted history: restore its params into

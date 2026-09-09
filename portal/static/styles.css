@@ -2446,6 +2446,56 @@ body.portal-home-active #portalHomeExitBtn:hover {
 .vp-zoom-meta { display: flex; gap: 14px; padding: 8px 14px; font-size: 11.5px; color: #64748b; border-top: 1px solid #e2e8f0; }
 .vp-zoom-id { font-family: monospace; }
 
+/* ── 人像模块：任务矩阵（对齐 seedance/nano job-grid，2026-09-09） ── */
+.vp-job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.vp-job-tile {
+  border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; overflow: hidden;
+  display: flex; flex-direction: column; cursor: pointer; transition: border-color .15s, box-shadow .15s;
+}
+.vp-job-tile:hover { border-color: #2563eb; box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+.vp-job-tile-media { position: relative; height: 96px; background: #f1f5f9; display: grid; place-items: center; overflow: hidden; }
+.vp-job-tile-media video, .vp-job-tile-media img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+.vp-job-tile-ph { font-size: 26px; color: #94a3b8; }
+.vp-job-tile-meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px 0; flex-wrap: wrap; }
+.vp-job-tile-badge {
+  font-size: 10px; font-weight: 600; color: #fff; background: #64748b;
+  padding: 1px 7px; border-radius: 999px; letter-spacing: .2px; text-transform: capitalize;
+}
+.vp-job-tile-badge.succeeded, .vp-job-tile-badge.success, .vp-job-tile-badge.completed { background: #16a34a; }
+.vp-job-tile-badge.failed, .vp-job-tile-badge.failure { background: #dc2626; }
+.vp-job-tile-badge.queued, .vp-job-tile-badge.pending, .vp-job-tile-badge.running, .vp-job-tile-badge.querying { background: #2563eb; }
+.vp-job-tile-badge.interrupted { background: #d97706; }
+.vp-job-tile-badge.cancelled, .vp-job-tile-badge.canceled { background: #94a3b8; }
+.vp-job-tile-time { font-size: 10.5px; color: #687386; margin-left: auto; }
+.vp-job-tile-prompt {
+  font-size: 11.5px; color: #334155; line-height: 1.45; padding: 4px 8px;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  min-height: 37px;
+}
+.vp-job-tile-foot { display: flex; gap: 6px; padding: 6px 8px 8px; flex-wrap: wrap; margin-top: auto; }
+.vp-job-tile-btn {
+  font-size: 10.5px; color: #475569; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 6px; padding: 3px 9px; cursor: pointer; line-height: 1.4;
+}
+.vp-job-tile-btn:hover { color: #2563eb; background: #eef5ff; border-color: #2563eb; }
+.vp-job-tile-btn--dl { color: #1d4ed8; border-color: #bfd4f8; background: #eaf1fe; }
+.vp-job-tile-btn--retry { color: #15803d; border-color: #bbf7d0; background: #e8f7ee; }
+
+/* 详情弹窗内容区 */
+.vp-job-detail-body { max-height: 66vh; overflow-y: auto; padding: 12px 14px; font-size: 12.5px; color: #334155; }
+.vp-job-detail-status { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.vp-job-detail-prompt { color: #475569; line-height: 1.5; }
+.vp-job-detail-sec { border-top: 1px dashed #e2e8f0; padding: 8px 0; }
+.vp-job-detail-sec summary { cursor: pointer; font-weight: 600; color: #1e293b; font-size: 12px; }
+.vp-job-detail-summary { font-weight: 600; color: #1e293b; font-size: 12px; }
+.vp-job-detail-pre {
+  margin: 6px 0 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+  padding: 8px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+  max-height: 220px; overflow-y: auto; color: #334155;
+}
+.vp-job-detail-result { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.vp-job-detail-file { flex: 1; color: #64748b; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ── 即梦模块：分段控制器 + 矩阵历史网格 + 放大弹窗操作区 ── */
 .dm-seg-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 
