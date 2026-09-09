@@ -2498,7 +2498,12 @@ def _asset_type_for(asset_id, cache=None):
 
 def _asset_content_item(asset_id, cache=None):
     """Build one content[] entry for an asset:// reference, routed to the
-    image_url / video_url / audio_url field that matches the asset's type."""
+    image_url / video_url / audio_url field that matches the asset's type.
+
+    引用契约（2026-09-09 与运营确认，改资产库时勿动）：
+    资产库内容一律走 asset://；视频资产必须 asset://（url 会被 Ark 拒），
+    图片资产 asset:// 与 url 均可，本项目统一 asset://。
+    """
     atype = _asset_type_for(asset_id, cache=cache).lower()
     url = f"asset://{asset_id}"
     if atype == "video":
