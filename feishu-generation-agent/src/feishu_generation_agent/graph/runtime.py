@@ -244,16 +244,21 @@ class GraphRuntime:
                 )
             except (TypeError, ValueError):
                 approved_plan = None
-            # Preserve a plan that was already generated before cancellation.
+            # Preserve a plan that was already generated before the source run
+            # was cancelled/failed——only in terminated states. A source run still
+            # waiting_approval keeps the original semantics: cloning it means
+            # "重新生成计划"（fresh analysis, rerun_source event）.
             if approved_plan is None or not approved_plan.tasks:
-                try:
-                    draft_plan = TaskPlan.model_validate(
-                        source_state.get("draft_plan") or source_state.get("task_plan")
-                    )
-                except (TypeError, ValueError):
-                    draft_plan = None
-                if draft_plan is not None and draft_plan.tasks:
-                    approved_plan = draft_plan
+                source_status = str(source.get("status") or "").lower()
+                if source_status in {"cancelled", "canceled", "failed", "error"}:
+                    try:
+                        draft_plan = TaskPlan.model_validate(
+                            source_state.get("draft_plan") or source_state.get("task_plan")
+                        )
+                    except (TypeError, ValueError):
+                        draft_plan = None
+                    if draft_plan is not None and draft_plan.tasks:
+                        approved_plan = draft_plan
             if approved_plan is None or not approved_plan.tasks:
                 await self.repository.create_run(
                     run_id,

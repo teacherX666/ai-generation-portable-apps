@@ -66,9 +66,12 @@ def _portrait_upload_content(asset: MediaAsset) -> bytes:
                     "真人参考图格式不支持自动放大"
                 )
 
-            if scale != 1.0:
-                target_size = (ceil(width * scale), ceil(height * scale))
-                image = image.resize(target_size, Image.Resampling.LANCZOS)
+            if scale == 1.0:
+                # 尺寸已合规：原样透传原始字节。重编码会改变质量与元数据，
+                # 对已合规的 PNG/JPEG/WEBP 毫无必要。
+                return content
+            target_size = (ceil(width * scale), ceil(height * scale))
+            image = image.resize(target_size, Image.Resampling.LANCZOS)
 
             output = BytesIO()
             if image.mode in ("RGBA", "LA") or (

@@ -99,3 +99,4 @@ infinite-canvas/web/tsconfig.tsbuildinfo
 .firecrawl/
 .codex/
 CLAUDE.local.md
+config/local_ai.env

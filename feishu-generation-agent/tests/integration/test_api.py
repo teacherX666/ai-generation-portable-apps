@@ -1602,7 +1602,8 @@ async def test_run_view_recomputes_real_plan_and_audit_validation_issues(
         state["task_plan"] = copy.deepcopy(state["draft_plan"])
         state["audit_report"] = {
             "issues": [
-                "镜头动作缺少可执行细节",
+                "技术阻断：镜头动作缺少可执行细节",
+                "技术阻断：镜头动作缺少可执行细节",
                 "镜头动作缺少可执行细节",
             ],
             "corrections_required": True,
@@ -1612,10 +1613,13 @@ async def test_run_view_recomputes_real_plan_and_audit_validation_issues(
         response = await client.get(f"/api/runs/{run_id}")
         validation_issues = response.json()["approval"]["validation_issues"]
 
+        # 7c4978b 起审批校验只上浮「技术阻断/人工处理」类审计问题，
+        # 普通建议性审计问题不上浮（此断言同时锁定该行为）。
         assert validation_issues == [
             "tasks[0].source_block_ids: unknown block_id 'missing-block'",
-            "audit: 镜头动作缺少可执行细节",
+            "audit: 技术阻断：镜头动作缺少可执行细节",
         ]
+        assert "audit: 镜头动作缺少可执行细节" not in response.text
         assert "任意旧原文绝不能回传" not in response.text
 
 
