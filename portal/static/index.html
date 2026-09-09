@@ -567,9 +567,16 @@
       </aside>
       <section class="workspace ui-main">
         <div class="panel ui-panel">
-          <div class="sub-tabs">
-            <button type="button" class="sub-tab" :class="{ isActive: wsTab==='jobs' }" @click="wsTab='jobs'">任务</button>
-            <button type="button" class="sub-tab" :class="{ isActive: wsTab==='history' }" @click="wsTab='history'; loadHistory()">历史</button>
+          <div class="dm-seg-bar">
+            <div class="ui-segment" role="tablist" aria-label="任务与历史切换">
+              <button type="button" class="ui-segment__button" :class="{'is-active': wsTab==='jobs'}" @click="wsTab='jobs'">任务</button>
+              <button type="button" class="ui-segment__button" :class="{'is-active': wsTab==='history'}" @click="wsTab='history'; loadHistory()">历史</button>
+            </div>
+            <div class="ui-segment" v-show="wsTab==='history'" role="group" aria-label="类型筛选" style="min-height:28px">
+              <button type="button" class="ui-segment__button" :class="{'is-active': historyFilter==='all'}" @click="historyFilter='all'; historyLimit=8; loadHistory()">全部</button>
+              <button type="button" class="ui-segment__button" :class="{'is-active': historyFilter==='image'}" @click="historyFilter='image'; historyLimit=8; loadHistory()">图片</button>
+              <button type="button" class="ui-segment__button" :class="{'is-active': historyFilter==='video'}" @click="historyFilter='video'; historyLimit=8; loadHistory()">视频</button>
+            </div>
           </div>
           <div v-show="wsTab==='jobs'">
             <div class="resultHeader"><h2>任务</h2><span class="running-count">{{ runningCount ? runningCount + ' 进行中' : '' }}</span></div>
@@ -578,16 +585,35 @@
           <div v-show="wsTab==='history'">
             <div class="resultHeader">
               <h2>历史记录</h2>
-              <div class="filter-bar">
-                <button type="button" class="filter-btn" :class="{ active: historyFilter==='all' }" @click="historyFilter='all'; historyLimit=8; loadHistory()">全部</button>
-                <button type="button" class="filter-btn" :class="{ active: historyFilter==='image' }" @click="historyFilter='image'; historyLimit=8; loadHistory()">图片</button>
-                <button type="button" class="filter-btn" :class="{ active: historyFilter==='video' }" @click="historyFilter='video'; historyLimit=8; loadHistory()">视频</button>
-              </div>
+              <span class="running-count" style="font-size:11px">点击卡片放大预览</span>
             </div>
-            <div id="dm-historyList"></div>
+            <div id="dm-historyList" class="dm-history-grid"></div>
           </div>
         </div>
       </section>
+      <!-- 历史结果放大预览弹窗（图片 / 视频通用） -->
+      <div class="vp-zoom-backdrop" v-if="dmZoom.open" @click="closeDmZoom()">
+        <div class="vp-zoom-box" style="max-width:min(860px,92vw)" @click.stop>
+          <div class="vp-zoom-head">
+            <span class="vp-zoom-title">{{ dmZoom.title }}</span>
+            <button class="vp-zoom-close" @click="closeDmZoom()" title="关闭">✕</button>
+          </div>
+          <div class="vp-zoom-body" style="min-height:200px">
+            <video v-if="dmZoom.isVideo" :src="dmZoom.url" controls autoplay muted playsinline></video>
+            <img v-else-if="dmZoom.url" :src="dmZoom.url" alt="结果大图">
+            <div v-else class="vp-zoom-empty">{{ dmZoom.status === 'failed' ? '该任务生成失败，无产出预览' : '无产出预览' }}</div>
+          </div>
+          <div class="dm-zoom-foot">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span v-if="dmZoom.status" :class="'status-badge ' + dmZoom.status">{{ dmZoom.status }}</span>
+              <span v-if="dmZoom.meta" style="font-size:11px;color:#64748b">{{ dmZoom.meta }}</span>
+            </div>
+            <div v-if="dmZoom.prompt" style="font-size:12px;color:#475569;margin-top:6px;max-height:110px;overflow:auto;white-space:pre-wrap">{{ dmZoom.prompt }}</div>
+            <div id="dm-zoom-actions" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+            <div id="dm-zoom-logs"></div>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
 

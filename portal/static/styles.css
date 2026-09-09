@@ -2510,3 +2510,32 @@ body.portal-home-active #portalHomeExitBtn:hover {
 .vp-zoom-empty { color: #94a3b8; font-size: 13px; }
 .vp-zoom-meta { display: flex; gap: 14px; padding: 8px 14px; font-size: 11.5px; color: #64748b; border-top: 1px solid #e2e8f0; }
 .vp-zoom-id { font-family: monospace; }
+
+/* ── 即梦模块：分段控制器 + 矩阵历史网格 + 放大弹窗操作区 ── */
+.dm-seg-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+
+.dm-history-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.dm-hist-tile {
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface);
+  cursor: pointer; transition: border-color .15s, box-shadow .15s;
+}
+.dm-hist-tile:hover { border-color: var(--accent); box-shadow: var(--shadow-md); }
+.dm-tile-media { position: relative; height: 110px; background: #edf2f8; display: grid; place-items: center; overflow: hidden; }
+.dm-tile-media img, .dm-tile-media video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dm-tile-zoom {
+  position: absolute; right: 4px; bottom: 4px; background: rgba(15, 23, 42, .55); color: #fff;
+  border-radius: 5px; font-size: 11px; line-height: 1; padding: 3px 5px; opacity: 0; transition: opacity .15s;
+}
+.dm-hist-tile:hover .dm-tile-zoom { opacity: 1; }
+.dm-tile-badge {
+  position: absolute; left: 6px; top: 6px; font-size: 10px; font-weight: 700;
+  border-radius: 999px; padding: 2px 8px; color: #fff; background: #64748b;
+}
+.dm-tile-badge.completed, .dm-tile-badge.succeeded { background: #16a34a; }
+.dm-tile-badge.failed { background: #dc2626; }
+.dm-tile-badge.running, .dm-tile-badge.querying, .dm-tile-badge.pending { background: #2563eb; }
+.dm-tile-placeholder { font-size: 26px; color: #94a3b8; }
+.dm-tile-info { padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+.dm-tile-meta { font-size: 11px; color: var(--muted); }
+.dm-tile-prompt { font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-zoom-foot { padding: 10px 14px; border-top: 1px solid var(--border); }
