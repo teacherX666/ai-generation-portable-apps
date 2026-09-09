@@ -1066,6 +1066,7 @@ def recover_backlog() -> tuple[int, int]:
     recovered = 0
     interrupted = 0
     dropped = 0
+    stale_cleared = 0
     backlog = _backlog_load()
     if not backlog:
         return 0, 0
@@ -1074,6 +1075,15 @@ def recover_backlog() -> tuple[int, int]:
         activity_id = str(meta.get("activity_id") or "")
         try:
             act = activities.get(activity_id) or {}
+            # 终态守卫：活动记录已收尾（成功/失败/取消）说明任务早已走完完成
+            # 路径、只是 backlog 条目没清掉——只清条目，绝不做中断改写
+            # （否则会把成功任务在重启时翻成失败，2026-09-09 用户实锤）。
+            act_status = str(act.get("status") or "").lower()
+            if act and act_status in {"succeeded", "success", "completed", "failed", "failure", "cancelled", "canceled"}:
+                with JOBS_LOCK:
+                    _backlog_remove_locked(job_id)
+                stale_cleared += 1
+                continue
             restore = act.get("restore") or {}
             if not isinstance(restore, dict) or "values" not in restore:
                 raise ValueError("restore 数据缺失")
@@ -1163,6 +1173,8 @@ def recover_backlog() -> tuple[int, int]:
         print(f"Orphaned running activities marked interrupted: {orphaned}", flush=True)
     if dropped:
         print(f"Stale backlog entries dropped (activity rolled out): {dropped}", flush=True)
+    if stale_cleared:
+        print(f"Backlog entries cleared for already-final records: {stale_cleared}", flush=True)
     return recovered, interrupted
 
 
