@@ -93,8 +93,8 @@ class Settings(BaseSettings):
     seedance_model: str = "doubao-seedance-2-0-260128"
     # 本地 AI Port 网关（127.0.0.1:8801）桥接 ComfyUI 本地模型。
     # video_provider=aiport 时视频走本地 minimax H3，不再强制 ark_api_key。
-    video_provider: Literal["seedance", "aiport"] = "seedance"
-    aiport_base_url: str = "http://127.0.0.1:8801"
+    video_provider: Literal["seedance", "aiport"] = "aiport"
+    aiport_base_url: str = "http://UT-20210713KMWD.local:8801"
     aiport_image_model: str = "qwen2511"
     aiport_image_enabled: bool = False
     aiport_video_model: str = "minimax_h3_all_reference"

@@ -478,7 +478,12 @@ def create_app(
             "vision": configured("claude_api_key", "claude_model"),
             "image_generation": configured("chiyun_api_key", "chiyun_model")
             or configured("ark_api_key", "seedream_model"),
-            "video_generation": configured("ark_api_key", "seedance_model"),
+            "video_generation": (
+                configured("ark_api_key", "seedance_model")
+                or await _probe_aiport(
+                    getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
+                )
+            ),
         }
         capabilities = {
             name: {
@@ -493,15 +498,17 @@ def create_app(
         local_reachable = await _probe_aiport(
             getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
         )
+        checks["video_generation"] = (
+            checks["video_generation"]
+            or local_reachable
+        )
         providers: dict[str, list[dict[str, Any]]] = {"image": [], "video": []}
         if local_image:
+            # Expose only the two supported image models in the Feishu UI.
+            # Other local workflows remain available to their dedicated tools,
+            # but are not selectable for this task editor.
             local_labels = {
-                "aiport": "本地 Qwen 图生图",
-                "aiport_klein": "本地 Klein 多模态",
-                "aiport_klein_v3": "本地 Klein 写真换脸",
-                "aiport_anime2real": "本地 动漫转真人",
-                "aiport_zimage": "本地 Z-image 多功能",
-                "aiport_style": "本地 Krea 风格迁移",
+                "aiport": "\u672c\u5730 Qwen \u56fe\u751f\u56fe",
             }
             for name, label in local_labels.items():
                 providers["image"].append(
@@ -513,13 +520,6 @@ def create_app(
                         "reachable": local_reachable,
                     }
                 )
-        if configured("chiyun_api_key", "chiyun_model"):
-            providers["image"].append(
-                {"name": "banana", "label": "Banana 卡通", "mode": "cloud", "configured": True}
-            )
-            providers["image"].append(
-                {"name": "gpt-image2", "label": "GPT-Image 写实", "mode": "cloud", "configured": True}
-            )
         if configured("ark_api_key", "seedream_model"):
             providers["image"].append(
                 {"name": "seedream", "label": "Seedream 国风", "mode": "cloud", "configured": True}
@@ -1297,6 +1297,20 @@ def create_app(
             raise_runtime_error(exc)
         return {"run_id": run_id, "status": "accepted"}
 
+    @app.post(
+        "/api/runs/{run_id}/cancel",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                await active.cancel_run(run_id)
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"run_id": run_id, "status": "cancelled"}
     @app.delete("/api/runs/{run_id}")
     async def delete_run(run_id: str, request: Request) -> dict[str, str]:
         active_bitable = getattr(request.app.state, "bitable_service", None)

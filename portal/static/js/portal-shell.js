@@ -70,10 +70,25 @@
     if (iframe) loadPortalIframe(iframe);
   }
 
+  let hasActivatedPortalTab = false;
+
+  function animatePortalPanel(panel, fromHome) {
+    if (!panel || !hasActivatedPortalTab || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    panel.classList.remove('portal-tab-enter', 'portal-tab-enter-from-home');
+    void panel.offsetWidth;
+    panel.classList.add('portal-tab-enter');
+    if (fromHome) panel.classList.add('portal-tab-enter-from-home');
+    panel.addEventListener('animationend', () => {
+      panel.classList.remove('portal-tab-enter', 'portal-tab-enter-from-home');
+    }, { once: true });
+  }
+
   function activatePortalTab(btn, { focus = false, persist = true } = {}) {
     if (!btn) return;
     const panel = document.getElementById('tab-' + btn.dataset.tab);
     if (!panel) return;
+    const previousPanel = document.querySelector('.tab-panel.active');
+    const wasHome = document.body.classList.contains('portal-home-active');
     document.querySelectorAll('.app-tab').forEach(t => {
       const active = t === btn;
       t.classList.toggle('active', active);
@@ -90,11 +105,24 @@
     if (btn.dataset.tab !== 'home' && persist) { try { localStorage.setItem('portal_last_non_home_tab', btn.dataset.tab); } catch (e) {} }
     const isHome = btn.dataset.tab === 'home';
     document.body.classList.toggle('portal-home-active', isHome);
+    if (previousPanel !== panel) animatePortalPanel(panel, wasHome && !isHome);
+    hasActivatedPortalTab = true;
     const homeExit = document.getElementById('portalHomeExitBtn');
     if (homeExit) homeExit.hidden = !isHome;
     loadIframeForPanel(panel);
     if (persist) { try { localStorage.setItem('portal_active_tab', btn.dataset.tab); } catch (e) {} }
     if (focus) btn.focus();
+    if (previousPanel !== panel) {
+      document.dispatchEvent(new CustomEvent('portal:tabchange', {
+        detail: {
+          tab: btn.dataset.tab,
+          previousTab: previousPanel?.id?.replace(/^tab-/, '') || '',
+          isHome,
+          wasHome,
+          initial: !persist,
+        },
+      }));
+    }
   }
 
   function syncPortalHeaderHeight() {
@@ -135,8 +163,6 @@
 
   const portalTabButtons = Array.from(document.querySelectorAll('.app-tab'));
   const mobileAppSelect = document.getElementById('mobileAppSelect');
-  const portalHomeBtn = document.getElementById('portalHomeBtn');
-  if (portalHomeBtn) portalHomeBtn.addEventListener('click', () => activatePortalTab(portalHomeBtn));
   const portalHomeExitBtn = document.getElementById('portalHomeExitBtn');
   if (portalHomeExitBtn) portalHomeExitBtn.addEventListener('click', () => {
     let name = 'feishu-generation-agent';

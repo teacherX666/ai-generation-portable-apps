@@ -9,7 +9,7 @@ const IN_PORTAL = window.location.pathname.startsWith('/seedance/');
 const APP_PATH = IN_PORTAL ? '/seedance' : '';
 
 // Lowercased job.status values considered terminal (used to gate poll loops and running-indicator recomputation).
-const TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'failure', 'cancelled', 'canceled']);
+const TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'failure', 'cancelled', 'canceled', 'interrupted']);
 
 // ============================================================
 // 任务完成系统通知（浏览器 Notification + 标题闪烁，按 jobId 去重）
@@ -140,14 +140,14 @@ function escHtml(s) {
 }
 
 function jobStatusLabel(status) {
-  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消' };
+  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '???' };
   return map[String(status || '').toLowerCase()] || String(status || '未知');
 }
 
 function jobStatusClass(status) {
   const s = String(status || '').toLowerCase();
   if (['succeeded', 'success', 'completed'].includes(s)) return 'is-success';
-  if (['failed', 'failure'].includes(s)) return 'is-failed';
+  if (['failed', 'failure', 'interrupted'].includes(s)) return 'is-failed';
   if (['pending', 'queued'].includes(s)) return 'is-pending';
   if (s === 'querying') return 'is-querying';
   return 'is-running';
@@ -1039,15 +1039,41 @@ function SeedanceApp() {
       const res = await api(APP_PATH + '/api/jobs');
       if (res?.jobs) {
         this.jobs = res.jobs;
+        // Refresh normally initializes the form as idle, which used to switch
+        // the UI to history despite a live job. Rehydrate the original running
+        // task panel from /api/jobs and resume its existing poll/cancel flow.
+        const restored = this._restoredPollIds || (this._restoredPollIds = new Set());
+        (this.jobs || []).filter(job =>
+          !TERMINAL_STATUSES.has((job.status || '').toLowerCase())
+        ).forEach(job => {
+          const wsId = job.workspace_id || this.activeTabId;
+          const cache = this._tabStateCache[wsId] || (this._tabStateCache[wsId] = {});
+          cache._activeJobId = job.job_id;
+          cache._latestJob = job;
+          cache.statusText = (job.status || 'queued') + ' ' + (job.done || 0) + '/' + (job.total || 0);
+          cache.eventsText = (job.events || []).map(e =>
+            '[' + (e.time || '') + '] ' + (e.message || '')
+          ).join('\n');
+          cache.submitting = true;
+          if (wsId === this.activeTabId) {
+            this.statusText = cache.statusText;
+            this.eventsText = cache.eventsText;
+            this.submitting = true;
+          }
+          if (!restored.has(job.job_id)) {
+            restored.add(job.job_id);
+            this.pollJob(job.job_id, wsId);
+          }
+        });
       } else {
-        console.warn('[Seedance] loadJobs 返回异常:', res);
+        console.warn('[Seedance] loadJobs failed:', res);
       }
       // Recompute per-tab running flag off the freshly loaded jobs. Drives the
       // green-dot indicator on every tab, not just the one that submitted.
       if (this.tabs && this.tabs.length) {
-        this.tabs.forEach(t => {
-          t.running = (this.jobs || []).some(j =>
-            !TERMINAL_STATUSES.has((j.status || '').toLowerCase()) && j.workspace_id === t.id
+        this.tabs.forEach(tab => {
+          tab.running = (this.jobs || []).some(job =>
+            !TERMINAL_STATUSES.has((job.status || '').toLowerCase()) && job.workspace_id === tab.id
           );
         });
       }

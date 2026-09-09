@@ -13,7 +13,7 @@ _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parent
 CONFIG_PATH = REPO_ROOT / "config" / "local_ai.env"
 ENV_NAME = "AIPORT_BASE_URL"
-DEFAULT_URL = "http://127.0.0.1:8801"
+DEFAULT_URL = "http://UT-20210713KMWD.local:8801"
 HEALTH_PATH = "/api/modules"
 
 _source = "environment" if os.environ.get(ENV_NAME) else "default"
@@ -60,7 +60,14 @@ def load_config() -> None:
 
 def raw_configured_url() -> str:
     load_config()
-    return (os.environ.get(ENV_NAME) or DEFAULT_URL).strip().rstrip("/")
+    value = (os.environ.get(ENV_NAME) or DEFAULT_URL).strip().rstrip("/")
+    try:
+        parts = urllib.parse.urlsplit(value)
+        if (parts.hostname or "").lower() in {"127.0.0.1", "localhost", "::1"} and (parts.port or 80) == 8801:
+            return DEFAULT_URL.rstrip("/")
+    except ValueError:
+        pass
+    return value
 
 
 def configured_url() -> str:
@@ -110,7 +117,8 @@ def resolved_url() -> str:
 def probe(timeout: float = 1.5) -> tuple[bool, str]:
     url = f"{resolved_url()}{HEALTH_PATH}"
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(url, timeout=timeout) as response:
             return response.status < 500, ""
     except Exception as exc:
         return False, str(exc)
@@ -151,7 +159,7 @@ def diagnostic_text(timeout: float = 1.5) -> str:
         f"ready          : {info['ready']}",
     ]
     if info.get("configured_error"):
-        lines.append(f"configured_error: {info['configured_error']}")
+        lines.append(("configured_error: " + str(info["configured_error"])))
     if info["error"]:
         lines.append(f"error          : {info['error']}")
     return "\n".join(lines)

@@ -365,8 +365,8 @@ _PHONE_TRIGGER_PHRASES = (
 )
 _PHONE_SATISFIED_PHRASES = (
     "手机不要漏出屏幕", "不要漏出屏幕", "不要露出屏幕", "禁止漏出屏幕",
-    "屏幕不要露", "屏幕不可见", "手机屏幕不可见", "屏幕完全隐藏", "屏幕完全朝向自己",
-    "屏幕朝向自己", "手机背面", "手机背面图片", "手机背面特写", "背面朝向镜头",
+    "屏幕不要露", "屏幕不可见", "屏幕完全不可见", "手机屏幕不可见", "手机屏幕完全不可见", "屏幕完全隐藏", "屏幕完全朝向自己",
+    "屏幕朝向自己", "不要让屏幕露出来", "不要让屏幕露出", "屏幕隐藏", "隐藏屏幕", "手机背面", "手机背面图片", "手机背面特写", "背面朝向镜头",
     "禁止露出手机屏幕", "禁止漏出手机屏幕",
 )
 _PHONE_EXPLICIT_OVERRIDE_PHRASES = (
@@ -428,6 +428,82 @@ def _rule_match(prompt: str, doc, title: str) -> tuple[bool, float]:
 
     return False, 0.0
 
+
+
+def _parse_json_object(text: str) -> dict | None:
+    """从模型输出中提取 JSON，兼容代码围栏和少量前后说明。"""
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        match = re.search(r"\\{.*\\}", raw, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            value = json.loads(match.group(0))
+            return value if isinstance(value, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+
+def _semantic_verify_rules(prompt: str, candidates: list[tuple[float, object, str]]) -> list[dict] | None:
+    """批量判断候选规则；None 表示裁决失败，空列表表示确认没有违规。"""
+    if not candidates:
+        return []
+    rules = [
+        {
+            "id": index,
+            "title": str(raw_title),
+            "content": (doc.page_content or "").strip()[:4000],
+            "similarity": round(float(similarity), 4),
+        }
+        for index, (similarity, doc, raw_title) in enumerate(candidates)
+    ]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是生成提示词规则判定器，只做判断，不改写提示词。\\n"
+                "每条规则只能判断为 violation（明确违反）、satisfied（已明确满足）、"
+                "irrelevant（无关）或 uncertain（无法确定）。\\n"
+                "规则通常是禁止某种内容。用户明确写了不要、无、避免、背面、隐藏、遮挡等限制时，优先判为 satisfied。"
+                "不能因为主题相似就判违反，只有用户明确要求生成被禁止内容时才判 violation。\\n"
+                '只返回 JSON，不要 markdown：{"results":[{"id":0,"status":"violation","reason":"简短原因"}]}'
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps({"prompt": prompt, "rules": rules}, ensure_ascii=False),
+        },
+    ]
+    try:
+        result = _parse_json_object(chat(settings, messages, max_tokens=1200))
+        if result is None or not isinstance(result.get("results"), list):
+            return None
+        verified: list[dict] = []
+        for item in result["results"]:
+            if not isinstance(item, dict) or item.get("status") != "violation":
+                continue
+            try:
+                index = int(item.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < len(candidates):
+                similarity, doc, raw_title = candidates[index]
+                verified.append({
+                    "title": raw_title,
+                    "content": doc.page_content.strip(),
+                    "score": similarity,
+                    "source": "semantic",
+                    "reason": str(item.get("reason") or "提示词明确触发了该规则").strip(),
+                })
+        return verified
+    except Exception:
+        logger.exception("semantic generation rule verification failed")
+        return None
 
 def _generation_kb_docs():
     now = time.time()
@@ -498,20 +574,24 @@ def _preflight_generation_prompt(prompt: str, optimize: bool = False) -> dict:
             candidates.sort(key=lambda item: item[0], reverse=True)
             candidates = candidates[:GENERATION_RAG_SEMANTIC_TOP_K]
 
-            for similarity, doc, raw_title in candidates:
-                title = _clean_title(raw_title)
-                matched, _ = _generic_rule_match(prompt, doc, title)
-                if not matched:
-                    continue
-                matches.append(
-                    {
-                        "title": raw_title,
-                        "content": doc.page_content.strip(),
-                        "score": similarity,
-                        "source": "semantic",
-                    }
-                )
-
+            semantic_matches = _semantic_verify_rules(prompt, candidates)
+            if semantic_matches is not None:
+                matches.extend(semantic_matches)
+            else:
+                # 语义裁决服务不可用时，保留确定性降级逻辑，避免阻塞生成流程。
+                for similarity, doc, raw_title in candidates:
+                    title = _clean_title(raw_title)
+                    matched, _ = _generic_rule_match(prompt, doc, title)
+                    if not matched:
+                        continue
+                    matches.append(
+                        {
+                            "title": raw_title,
+                            "content": doc.page_content.strip(),
+                            "score": similarity,
+                            "source": "semantic-fallback",
+                        }
+                    )
         if not matches:
             return {"ok": True, "detected": False, "matches": [], "updated_prompt": prompt}
 

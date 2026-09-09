@@ -121,10 +121,11 @@ class FileStore:
     ) -> StoredFile:
         self._validate_segment(run_id)
         self._validate_segment(task_id)
+        task_directory = self._filesystem_segment(task_id)
         return self._save_atomic(
             self._outputs_dir,
             self._outputs_root_fd,
-            ("runs", run_id, "tasks", task_id),
+            ("runs", run_id, "tasks", task_directory),
             filename,
             content,
             declared_content_type,
@@ -209,17 +210,18 @@ class FileStore:
             self._validate_segment(artifact.task_id)
             if artifact.status != "ready":
                 return False
+            task_directory = self._filesystem_segment(artifact.task_id)
             expected_directory = (
                 self._outputs_dir
                 / "runs"
                 / run_id
                 / "tasks"
-                / artifact.task_id
+                / task_directory
             )
             if artifact.local_path.parent != expected_directory:
                 return False
             content = self._read_scoped_output(
-                ("runs", run_id, "tasks", artifact.task_id),
+                ("runs", run_id, "tasks", task_directory),
                 artifact.local_path.name,
             )
             if len(content) != artifact.size:
@@ -261,6 +263,8 @@ class FileStore:
         filename: str,
     ) -> bytes:
         self._validate_segment(filename)
+        if os.name == "nt":
+            return self._read_scoped_output_windows(directory_segments, filename)
         directory_flags = os.O_RDONLY | os.O_DIRECTORY
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         descriptors: list[tuple[int, int | None, str | None]] = []
@@ -330,6 +334,73 @@ class FileStore:
         finally:
             for descriptor, _, _ in reversed(descriptors):
                 os.close(descriptor)
+
+    def _read_scoped_output_windows(
+        self,
+        directory_segments: tuple[str, ...],
+        filename: str,
+    ) -> bytes:
+        current = self._outputs_dir
+        directory_identities: list[tuple[Path, tuple[int, int, int]]] = []
+        for segment in directory_segments:
+            self._validate_segment(segment)
+            current = current / segment
+            try:
+                metadata = current.lstat()
+            except OSError as exc:
+                raise OSError("artifact directory unavailable") from exc
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise OSError("artifact directory is unsafe")
+            directory_identities.append(
+                (current, (metadata.st_dev, metadata.st_ino, metadata.st_mode))
+            )
+        path = current / filename
+        try:
+            descriptor = os.open(
+                str(path),
+                os.O_RDONLY | getattr(os, "O_BINARY", 0),
+            )
+        except OSError as exc:
+            raise OSError("artifact unavailable") from exc
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("artifact is not a regular file")
+            content = bytearray()
+            while len(content) <= self._max_bytes:
+                chunk = os.read(
+                    descriptor,
+                    min(64 * 1024, self._max_bytes + 1 - len(content)),
+                )
+                if not chunk:
+                    break
+                content.extend(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        current_file = path.lstat()
+        if (
+            stat.S_ISLNK(current_file.st_mode)
+            or len(content) > self._max_bytes
+            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            != (
+                current_file.st_dev,
+                current_file.st_ino,
+                current_file.st_size,
+                current_file.st_mtime_ns,
+            )
+        ):
+            raise OSError("artifact changed during verification")
+        for directory, expected in directory_identities:
+            metadata = directory.lstat()
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino, metadata.st_mode) != expected
+            ):
+                raise OSError("artifact directory changed during verification")
+        return bytes(content)
 
     def _decode_base64(self, encoded: str) -> bytes:
         if not isinstance(encoded, str) or not encoded:
@@ -436,7 +507,9 @@ class FileStore:
     ) -> StoredFile:
         directory = root.joinpath(*directory_segments)
         if os.name == "nt":
-            directory.mkdir(parents=True, exist_ok=True)
+            directory, directory_chain = self._open_or_create_windows_directories(
+                root, directory_segments
+            )
             part_path = directory / f".{uuid4().hex}.part"
             part_fd: int | None = None
             try:
@@ -483,6 +556,7 @@ class FileStore:
                         part_path.replace(final_path)
                 else:
                     part_path.replace(final_path)
+                self._verify_directory_chain(root, directory_chain)
                 return StoredFile(
                     display_name=display_name,
                     local_path=final_path,
@@ -493,6 +567,9 @@ class FileStore:
                     height=verified.height,
                 )
             except BaseException:
+                if part_fd is not None:
+                    os.close(part_fd)
+                    part_fd = None
                 try:
                     part_path.unlink(missing_ok=True)
                 except OSError:
@@ -585,7 +662,7 @@ class FileStore:
         try:
             descriptor = os.open(
                 filename,
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=directory_fd,
             )
             before = os.fstat(descriptor)
@@ -698,10 +775,48 @@ class FileStore:
             raise
 
     @staticmethod
+    def _open_or_create_windows_directories(
+        root: Path,
+        segments: tuple[str, ...],
+    ) -> tuple[Path, list[tuple[Path, tuple[int, int, int]]]]:
+        current = root
+        chain: list[tuple[Path, tuple[int, int, int]]] = []
+        root_metadata = current.lstat()
+        if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+            raise OSError("storage root is unsafe")
+        for segment in segments:
+            FileStore._validate_segment(segment)
+            current = current / segment
+            try:
+                current.mkdir()
+            except FileExistsError:
+                pass
+            metadata = current.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise OSError("storage directory is unsafe")
+            chain.append(
+                (
+                    current,
+                    (metadata.st_dev, metadata.st_ino, metadata.st_mode),
+                )
+            )
+        return current, chain
+
+    @staticmethod
     def _verify_directory_chain(
         root: Path,
         descriptors: list[tuple[int, int | None, str | None]],
     ) -> None:
+        if os.name == "nt":
+            root_metadata = root.lstat()
+            if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+                raise OSError("storage directory changed during write")
+            for path, expected in descriptors:
+                metadata = path.lstat()
+                identity = (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode) or identity != expected:
+                    raise OSError("storage directory changed during write")
+            return
         for descriptor, parent_fd, segment in reversed(descriptors):
             opened = os.fstat(descriptor)
             current = (
@@ -762,6 +877,33 @@ class FileStore:
         ):
             return "audio/aac", "aac"
         return None
+
+    @staticmethod
+    def _filesystem_segment(value: str) -> str:
+        """Map a logical identifier to a portable Windows path segment.
+
+        Execution-unit IDs intentionally contain ``::output:``.  They are
+        valid logical IDs but ``:`` is illegal in Windows directory names.
+        Keep ordinary IDs readable and hash only values that Windows cannot
+        represent safely.
+        """
+        FileStore._validate_segment(value)
+        if os.name != "nt":
+            return value
+        invalid = '<>:"|?*'
+        stem = value.split(".", 1)[0].upper()
+        reserved = {"CON", "PRN", "AUX", "NUL"} | {
+            f"{prefix}{index}"
+            for prefix in ("COM", "LPT")
+            for index in range(1, 10)
+        }
+        if (
+            any(character in invalid or ord(character) < 32 for character in value)
+            or value.endswith((" ", "."))
+            or stem in reserved
+        ):
+            return f"id-{sha256(value.encode('utf-8')).hexdigest()}"
+        return value
 
     @staticmethod
     def _validate_segment(value: str) -> None:

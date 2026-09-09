@@ -1012,7 +1012,7 @@ class UsageTracker:
         # 调用，threading.Lock 不可重入，同锁会死锁。
         self._history_lock = threading.Lock()
         self._data = self._load()
-        self._pending_jobs: list[dict] = []
+        self._pending_jobs: list[dict] = self._restore_pending_jobs()
         # Debounced persistence: hot paths (record/register_job/inc_daily_jobs/
         # finalize_job/_add_user_stat) used to json.dumps + double-write the whole
         # usage.json to disk *while holding self._lock*, on EVERY proxied request
@@ -1233,6 +1233,36 @@ class UsageTracker:
             return json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {}
+
+    def _restore_pending_jobs(self) -> list[dict]:
+        """Resume polling non-terminal history records after a Portal restart."""
+        restored: list[dict] = []
+        for record in self._load_history().values():
+            if not isinstance(record, dict):
+                continue
+            status = str(record.get("status") or "").lower()
+            app = str(record.get("app") or "")
+            job_id = str(record.get("job_id") or "")
+            if status not in {"pending", "queued", "submitted", "running", "processing"}:
+                continue
+            if not app or app not in APPS or not job_id:
+                continue
+            params = record.get("params") if isinstance(record.get("params"), dict) else {}
+            try:
+                duration_per_item = max(0, int(params.get("duration") or 0))
+            except (TypeError, ValueError):
+                duration_per_item = 0
+            submitted_at = float(record.get("submitted_at") or time.time())
+            restored.append({
+                "app": app,
+                "job_id": job_id,
+                "username": str(record.get("username") or ""),
+                "job_type": "video" if record.get("kind") == "video" else "image",
+                "duration_per_item": duration_per_item,
+                "submitted_at": submitted_at,
+                "date": time.strftime("%Y-%m-%d", time.localtime(submitted_at)),
+            })
+        return restored
 
     def history_records(self) -> dict:
         """任务级历史记录（区别于统计页按天 get_history）。"""

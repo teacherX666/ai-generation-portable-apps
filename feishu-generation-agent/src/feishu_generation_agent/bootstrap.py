@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import os
 
 import httpx
 from langchain_anthropic import ChatAnthropic
@@ -126,9 +127,13 @@ def _nonempty(value: Any) -> str | None:
 
 
 def runtime_is_configured(settings: Settings) -> bool:
+    video_ready = (
+        capability_is_configured(settings, "generation")
+        or settings.video_provider == "aiport"
+    )
     return (
         capability_is_configured(settings, "core")
-        and capability_is_configured(settings, "generation")
+        and video_ready
         and (
             capability_is_configured(settings, "bitable")
             or capability_is_configured(settings, "production_bitable")
@@ -296,9 +301,13 @@ async def _open_application_services(
     *,
     enable_bitable: bool,
 ) -> AsyncIterator[ApplicationServices]:
+    # This agent connects directly to local/China-reachable services. A Windows
+    # system proxy such as socks4:// is not supported by httpx and makes
+    # ChatOpenAI/ChatAnthropic/FeishuClient fail at startup with
+    # "Unknown scheme for proxy URL". Disable system-proxy fallback via no_proxy=*.
+    os.environ.setdefault("no_proxy", "*")
+    os.environ.setdefault("NO_PROXY", "*")
     settings.require(*CAPABILITY_FIELDS["core"])
-    if settings.video_provider != "aiport":
-        settings.require(*CAPABILITY_FIELDS["generation"])
     bitable_configured = enable_bitable and capability_is_configured(
         settings, "bitable"
     )
@@ -520,16 +529,18 @@ async def _open_application_services(
             provider_name="aiport",
             max_result_bytes=settings.max_download_bytes,
         )
-        if settings.video_provider == "aiport":
-            video_generator = aiport_video_generator
-        else:
-            video_generator = SeedanceVideoGenerator(
+        seedance_video_generator = None
+        if capability_is_configured(settings, "generation"):
+            seedance_video_generator = SeedanceVideoGenerator(
                 provider_http,
                 base_url=settings.ark_base_url,
                 api_key=settings.ark_api_key,
                 model=settings.seedance_model,
                 public_media_host=animation_media_host,
             )
+        # Keep a compatibility default for older callers; task routing uses the
+        # explicitly selected provider and the two independent instances above.
+        video_generator = seedance_video_generator or aiport_video_generator
         provider_preferences = await provider_preference_store.get()
         services = GraphServices(
             document_source=FeishuDocumentSource(
@@ -572,6 +583,7 @@ async def _open_application_services(
             )
             or None,
             video_generator=video_generator,
+            seedance_video_generator=seedance_video_generator,
             aiport_video_generator=aiport_video_generator,
             portrait_video_generator=portrait_generator,
             production_task_store=production_store if production_bitable_configured else None,

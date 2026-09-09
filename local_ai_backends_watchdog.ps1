@@ -25,7 +25,7 @@ if (-not $env:LOCAL_AI_LISTEN -and (Test-Path -LiteralPath $localAiConfig)) {
         }
     }
 }
-$ListenAddress = if ($env:LOCAL_AI_LISTEN) { $env:LOCAL_AI_LISTEN } else { "127.0.0.1" }
+$ListenAddress = if ($env:LOCAL_AI_LISTEN) { $env:LOCAL_AI_LISTEN } else { "0.0.0.0" }
 
 $ComfyRoot = "E:\AI Tool\ComfyUI_windows_portable"
 $ComfyPython = Join-Path $ComfyRoot "python_embeded\python.exe"
