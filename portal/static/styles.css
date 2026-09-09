@@ -652,7 +652,10 @@ button:disabled,
 
 /* Volcengine Portrait — Blue/White Theme */
 .portrait-container { max-width: 100%; }
-.portrait-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.portrait-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }
+/* 资产库卡片撑满左列高度：与右列生成视频等高，下方不再留白空隙 */
+#vp-library { height: 100%; display: flex; flex-direction: column; }
+#vp-generate { height: 100%; display: flex; flex-direction: column; }
 @media (max-width: 900px) { .portrait-grid { grid-template-columns: 1fr; } }
 .portrait-grid .card.full-width { grid-column: 1 / -1; }
 .portrait-tabs-bar { display: flex; gap: 6px; margin-bottom: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px; }
