@@ -1242,7 +1242,7 @@ function NanoBananaApp() {
         }
       });
       // 活动记录（内存剪枝后并入）没有 results：用摘要里的 first_url
-      if (!first && j.first_url) first = { download_url: j.first_url, filename: 'image' };
+      if (!first && j.first_url) first = { download_url: j.first_url, filename: j.first_filename || 'image' };
       var tile = document.createElement('div');
       tile.className = 'job-tile';
       tile.dataset.jid = j.job_id;
@@ -2224,7 +2224,9 @@ document.addEventListener('DOMContentLoaded', function () {
               txt.textContent = '已下载 ' + fmt(received) + ' MB';
             }
           }
-          return new Blob(chunks);
+          // 保留响应 Content-Type：Blob 默认 text/plain 会让无扩展名文件
+          // 被 Chrome 补成 .txt（下载 4MB 原图却存成 txt 的根因）
+          return new Blob(chunks, { type: resp.headers.get('Content-Type') || 'application/octet-stream' });
         },
         done: function () {
           row.classList.add('done');

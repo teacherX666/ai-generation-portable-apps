@@ -1080,7 +1080,7 @@ function SeedanceApp() {
       // 产出快照在 result.results 里，提示词在 title / request.values
       const raw = j.results || (j.result && j.result.results) || [];
       let first = (raw || []).find(r => r.download_url);
-      if (!first && j.first_url) first = { download_url: j.first_url, filename: 'video' };
+      if (!first && j.first_url) first = { download_url: j.first_url, filename: j.first_filename || 'video' };
       const tile = document.createElement('div');
       tile.className = 'job-tile';
       tile.dataset.jid = j.job_id;
@@ -2394,7 +2394,9 @@ PetiteVue.createApp({ SeedanceApp }).mount();
               txt.textContent = '已下载 ' + fmt(received) + ' MB';
             }
           }
-          return new Blob(chunks);
+          // 保留响应 Content-Type：Blob 默认 text/plain 会让无扩展名文件
+          // 被 Chrome 补成 .txt（下载 4MB 原图却存成 txt 的根因）
+          return new Blob(chunks, { type: resp.headers.get('Content-Type') || 'application/octet-stream' });
         },
         done: function () {
           row.classList.add('done');

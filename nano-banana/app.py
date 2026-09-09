@@ -593,11 +593,13 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict[str, Any]:
         if status in counts:
             counts[status] += 1
         first_url = ""
+        first_filename = ""
         try:
             for run in ((item.get("result") or {}).get("results") or []):
                 for im in (run.get("images") or []):
                     if im.get("download_url"):
                         first_url = im["download_url"]
+                        first_filename = im.get("filename") or first_filename
                         break
                 if first_url:
                     break
@@ -616,6 +618,7 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict[str, Any]:
             "started_at": item.get("started_at"),
             "finished_at": item.get("finished_at"),
             "first_url": first_url,
+            "first_filename": first_filename,
         })
     summary.reverse()
     return {"counts": counts, "records": summary}
