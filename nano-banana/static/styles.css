@@ -820,3 +820,72 @@ html, body { height: 100%; overflow: hidden; }
 }
 .cancel-job-btn:hover { background: #fef3c7; }
 
+
+/* ── 任务矩阵（历史列表矩阵化：一个任务一个格子） ── */
+.job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.job-tile {
+  border: 1px solid var(--border, #e2e8f0); border-radius: 10px; overflow: hidden;
+  background: var(--surface, #fff); cursor: pointer; display: flex; flex-direction: column;
+  transition: border-color .15s, box-shadow .15s;
+}
+.job-tile:hover { border-color: var(--accent, #2563eb); box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,.08)); }
+.job-tile-media { position: relative; height: 96px; background: #edf2f8; display: grid; place-items: center; overflow: hidden; }
+.job-tile-media video, .job-tile-media img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+.job-tile-ph { font-size: 26px; color: #94a3b8; }
+.job-tile-meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px 0; flex-wrap: wrap; }
+.job-tile-badge {
+  font-size: 10px; font-weight: 700; border-radius: 999px; padding: 1px 8px; color: #fff; background: #64748b;
+}
+.job-tile-badge.succeeded, .job-tile-badge.success, .job-tile-badge.completed { background: #16a34a; }
+.job-tile-badge.failed, .job-tile-badge.failure { background: #dc2626; }
+.job-tile-badge.queued, .job-tile-badge.pending, .job-tile-badge.running, .job-tile-badge.querying { background: #2563eb; }
+.job-tile-badge.interrupted { background: #d97706; }
+.job-tile-time { font-size: 10.5px; color: var(--muted, #687386); margin-left: auto; }
+.job-tile-prompt {
+  font-size: 11.5px; color: var(--text, #172033); padding: 4px 8px; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.job-tile-foot { display: flex; gap: 6px; padding: 6px 8px 8px; flex-wrap: wrap; }
+.job-tile-btn {
+  flex: 1; border: 1px solid var(--border-strong, #c3ccd9); background: var(--surface, #fff);
+  color: var(--text-secondary, #475569); font-size: 11px; font-weight: 600;
+  border-radius: 6px; padding: 4px 8px; cursor: pointer; white-space: nowrap;
+}
+.job-tile-btn:hover { color: var(--accent, #2563eb); background: var(--accent-soft, #eef5ff); border-color: var(--accent, #2563eb); }
+.job-tile-btn--dl { color: #1d4ed8; border-color: #bfd4f8; background: #eaf1fe; }
+.job-tile-btn--retry { color: #15803d; border-color: #bbf7d0; background: #e8f7ee; }
+
+/* ── 任务详情弹窗（请求 / 返回） ── */
+.job-detail-backdrop {
+  position: fixed; inset: 0; z-index: 1200; background: rgba(15, 23, 42, .72);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.job-detail-backdrop[hidden] { display: none !important; }
+.job-detail-box {
+  background: #fff; border-radius: 12px; max-width: min(760px, 94vw); max-height: 86vh;
+  width: 100%; display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,.4);
+}
+.job-detail-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #e2e8f0; }
+.job-detail-title { font-size: 13px; font-weight: 700; color: #1e293b; flex: 1; }
+.job-detail-close { border: 1px solid #cbd5e1; background: #fff; color: #475569; border-radius: 7px; width: 28px; height: 28px; cursor: pointer; }
+.job-detail-close:hover { background: #f1f5f9; }
+.job-detail-body { padding: 12px 14px; overflow-y: auto; }
+.job-detail-ids { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.job-detail-mono { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #64748b; }
+.job-detail-errors {
+  background: #fdeaea; border: 1px solid #fecaca; color: #b91c1c;
+  border-radius: 8px; padding: 8px 10px; font-size: 12px; white-space: pre-wrap;
+  word-break: break-all; margin-bottom: 10px;
+}
+.job-detail-section { margin-bottom: 10px; }
+.job-detail-section h4 { margin: 0 0 4px; font-size: 12px; font-weight: 700; color: #334155; }
+.job-detail-pre {
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px;
+  font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #334155;
+  white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto; margin: 0;
+}
+.job-detail-results { display: flex; flex-direction: column; gap: 6px; }
+.job-detail-result { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.job-detail-result span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #475569; }
+.job-detail-result .job-tile-btn { flex: none; }

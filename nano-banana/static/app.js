@@ -1192,12 +1192,219 @@ function NanoBananaApp() {
       if (eventsEl) eventsEl.textContent = '';
     },
 
+    // === 任务矩阵：历史任务一个格子（缩略图 / 状态 / 下载 / 详情） ===
+    renderJobsGrid() {
+      var self = this;
+      var grid = document.getElementById('nb-jobsGrid');
+      if (!grid) return;
+      var items = (self.jobs || []).slice(0, 20);
+      var seen = {};
+      var frag = document.createDocumentFragment();
+      items.forEach(function (j) {
+        seen[j.job_id] = true;
+        var tile = grid.querySelector('[data-jid="' + CSS.escape(j.job_id) + '"]');
+        if (!tile) {
+          tile = self._buildJobTile(j);
+          frag.appendChild(tile);
+        } else {
+          var badge = tile.querySelector('.job-tile-badge');
+          if (badge && badge.textContent !== (j.status || '?')) {
+            badge.textContent = j.status || '?';
+            badge.className = 'job-tile-badge ' + (j.status || '');
+          }
+          tile.dataset.status = j.status || '';
+        }
+      });
+      if (frag.childNodes.length) grid.prepend(frag);
+      Array.prototype.slice.call(grid.children).forEach(function (el) {
+        if (!seen[el.dataset.jid]) el.remove();
+      });
+    },
+
+    _buildJobTile(j) {
+      var self = this;
+      var first = null;
+      (j.results || []).forEach(function (r) {
+        if (!first && r.images && r.images.length && r.images[0].download_url) {
+          first = r.images[0];
+        }
+      });
+      var tile = document.createElement('div');
+      tile.className = 'job-tile';
+      tile.dataset.jid = j.job_id;
+      tile.dataset.status = j.status || '';
+
+      var media = document.createElement('div');
+      media.className = 'job-tile-media';
+      if (first) {
+        var url = APP_PATH + first.download_url;
+        var img = document.createElement('img');
+        img.src = url;
+        img.loading = 'lazy';
+        img.alt = '结果预览';
+        img.title = '点开预览';
+        img.addEventListener('click', function (e) { e.stopPropagation(); openPreview('image', url); });
+        media.appendChild(img);
+      } else {
+        var ph = document.createElement('span');
+        ph.className = 'job-tile-ph';
+        ph.textContent = (j.status === 'failed' || j.status === 'failure') ? '❌' : '⏳';
+        media.appendChild(ph);
+      }
+      tile.appendChild(media);
+
+      var meta = document.createElement('div');
+      meta.className = 'job-tile-meta';
+      var badge = document.createElement('span');
+      badge.className = 'job-tile-badge ' + (j.status || '');
+      badge.textContent = j.status || '?';
+      meta.appendChild(badge);
+      var time = document.createElement('span');
+      time.className = 'job-tile-time';
+      time.textContent = (j.created_at || '').slice(5, 16);
+      meta.appendChild(time);
+      tile.appendChild(meta);
+
+      var prompt = document.createElement('div');
+      prompt.className = 'job-tile-prompt';
+      prompt.textContent = j.prompt || '';
+      prompt.title = j.prompt || '';
+      tile.appendChild(prompt);
+
+      var foot = document.createElement('div');
+      foot.className = 'job-tile-foot';
+      if (first) {
+        var dl = document.createElement('button');
+        dl.type = 'button';
+        dl.className = 'job-tile-btn job-tile-btn--dl';
+        dl.textContent = '⬇ 下载';
+        dl.addEventListener('click', function (e) { e.stopPropagation(); self._blobDownload(APP_PATH + first.download_url, first.filename || 'image'); });
+        foot.appendChild(dl);
+      }
+      if (j.retryable) {
+        var rt = document.createElement('button');
+        rt.type = 'button';
+        rt.className = 'job-tile-btn job-tile-btn--retry';
+        rt.textContent = '重试';
+        rt.addEventListener('click', function (e) { e.stopPropagation(); self.retryJob(j.job_id || j.id); });
+        foot.appendChild(rt);
+      }
+      var dt = document.createElement('button');
+      dt.type = 'button';
+      dt.className = 'job-tile-btn job-tile-btn--detail';
+      dt.textContent = '详情';
+      dt.addEventListener('click', function (e) { e.stopPropagation(); self.openJobDetail(j.job_id); });
+      foot.appendChild(dt);
+      tile.appendChild(foot);
+
+      tile.addEventListener('click', function () { self.openJobDetail(j.job_id); });
+      return tile;
+    },
+
+    // === 任务详情弹窗：请求（参数）与返回（事件/结果/错误） ===
+    async openJobDetail(jobId) {
+      var self = this;
+      var job = null;
+      try { job = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId)); } catch (e) { job = null; }
+      // 单任务接口返回的是原始 JOBS 条目（id 为键），列表接口才是 job_id——统一归一化
+      if (job && !job.job_id && job.id) job.job_id = job.id;
+      if (!job || !job.job_id) {
+        if (typeof window.portalToast === 'function') window.portalToast('任务详情获取失败（任务可能已被清理）', 'danger');
+        else alert('任务详情获取失败（任务可能已被清理）');
+        return;
+      }
+      self._renderJobDetail(job);
+    },
+    _renderJobDetail(job) {
+      var self = this;
+      var overlay = document.getElementById('nb-job-detail');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'nb-job-detail';
+        overlay.className = 'job-detail-backdrop';
+        overlay.hidden = true;
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) self.closeJobDetail(); });
+        overlay.innerHTML =
+          '<div class="job-detail-box">' +
+          '  <div class="job-detail-head">' +
+          '    <span class="job-detail-title">任务详情</span>' +
+          '    <button type="button" class="job-detail-close" title="关闭">✕</button>' +
+          '  </div>' +
+          '  <div class="job-detail-body"></div>' +
+          '</div>';
+        overlay.querySelector('.job-detail-close').addEventListener('click', function () { self.closeJobDetail(); });
+        document.body.appendChild(overlay);
+      }
+      var body = overlay.querySelector('.job-detail-body');
+      body.innerHTML = '';
+      var add = function (cls, html) { var d = document.createElement('div'); d.className = cls; d.innerHTML = html; body.appendChild(d); return d; };
+
+      add('job-detail-ids',
+        '<span class="job-detail-status status-badge ' + escHtml(job.status || '') + '">' + escHtml(job.status || '?') + '</span>' +
+        '<span class="job-detail-mono">' + escHtml(job.job_id || '') + '</span>' +
+        '<span class="job-detail-mono">' + escHtml(job.created_at || '') + '</span>');
+      const errText = (Array.isArray(job.errors) && job.errors.length)
+  ? job.errors.join('\n')
+  : (job.error ? String(job.error) : '');
+      if (errText) {
+        add('job-detail-errors', escHtml(errText));
+      }
+
+      var params = {};
+      var src = job.params || job.form || {};
+      for (var k in src) params[k] = src[k];
+      for (var k2 in params) {
+        if (/key|secret|token|password/i.test(k2)) delete params[k2];
+      }
+      if (!params.prompt) params.prompt = job.prompt || '';
+      if (!params.model) params.model = job.model || '';
+      add('job-detail-section', '<h4>请求（提交参数）</h4><pre class="job-detail-pre">' + escHtml(JSON.stringify(params, null, 2)) + '</pre>');
+
+      var events = Array.isArray(job.events) ? job.events : [];
+      var eventsText = events.length
+        ? events.map(function (e) { return '[' + (e.time || '') + '] ' + (e.message || ''); }).join('\n')
+        : '（无事件记录）';
+      add('job-detail-section', '<h4>返回（执行过程）</h4><pre class="job-detail-pre">' + escHtml(eventsText) + '</pre>');
+
+      var flat = [];
+      (Array.isArray(job.results) ? job.results : []).forEach(function (r) {
+        (r.images || []).forEach(function (im) { flat.push(im); });
+      });
+      if (flat.length) {
+        var sec = add('job-detail-section', '<h4>返回（产出）</h4>');
+        var rows = document.createElement('div');
+        rows.className = 'job-detail-results';
+        flat.forEach(function (im) {
+          if (!im.download_url) return;
+          var row = document.createElement('div');
+          row.className = 'job-detail-result';
+          var name = document.createElement('span');
+          name.textContent = im.filename || 'image';
+          row.appendChild(name);
+          var dl = document.createElement('button');
+          dl.type = 'button';
+          dl.className = 'job-tile-btn job-tile-btn--dl';
+          dl.textContent = '⬇ 下载';
+          dl.addEventListener('click', function () { self._blobDownload(APP_PATH + im.download_url, im.filename || 'image'); });
+          row.appendChild(dl);
+          rows.appendChild(row);
+        });
+        sec.appendChild(rows);
+      }
+      overlay.hidden = false;
+    },
+    closeJobDetail() {
+      var overlay = document.getElementById('nb-job-detail');
+      if (overlay) overlay.hidden = true;
+    },
+
     async loadJobs() {
       var self = this;
       try {
         var res = await api(APP_PATH + '/api/jobs');
         if (res && Array.isArray(res.jobs)) {
           self.jobs = res.jobs;
+          self.renderJobsGrid();
           // A hard refresh used to reset the form to idle and expose the
           // activity/history view, while the actual image job kept running.
           // Rebuild the original lower running-task panel from /api/jobs and

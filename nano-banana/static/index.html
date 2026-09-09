@@ -267,6 +267,8 @@
             <!-- 静态空状态：首次渲染时被 _renderJobToDom 的 innerHTML='' 清掉即可 -->
             <div class="results" id="nb-results"><p class="hint">暂无生成记录，提交任务后自动显示进度和结果。</p></div>
             <pre id="nb-events">{{ eventsText }}</pre>
+            <!-- 任务矩阵：一个任务一个格子（缩略图 / 状态 / 下载 / 详情） -->
+            <div id="nb-jobsGrid" class="job-grid" style="margin-top:10px"></div>
           </div>
 
           <!-- Activity Tab -->
@@ -314,7 +316,7 @@
     </div>
 
     <!-- Preview Dialog (standalone only; Portal has its own) -->
-    <dialog id="previewDialog" class="previewDialog" v-if="isStandalone" @click="onPreviewDialogClick">
+    <dialog id="previewDialog" class="previewDialog" @click="onPreviewDialogClick">
       <button id="closePreviewBtn" type="button" aria-label="关闭" @click="closePreview">×</button>
       <div id="previewDialogBody"></div>
     </dialog>
