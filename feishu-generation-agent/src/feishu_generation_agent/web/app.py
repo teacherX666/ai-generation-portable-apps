@@ -1115,11 +1115,19 @@ def create_app(
             created_at = str(row.get("created_at") or "")
             updated_at = str(row.get("updated_at") or "")
             status_value = str(row.get("status") or "")
-            portal_status = (
-                "done" if status_value in {"succeeded", "completed_with_errors"}
-                else "failed" if status_value in {"failed", "cancelled", "delivery_failed"}
-                else "running"
-            )
+            # Portal uses this to decide the "运行中" nav badge and the history
+            # status chip.  waiting_approval / waiting_review mean the run is
+            # paused on a human decision, not actively generating — they used
+            # to collapse into "running", so stale approvals made the Portal
+            # sidebar show "6 个运行中" while nothing was being generated.
+            if status_value in {"succeeded", "completed_with_errors"}:
+                portal_status = "done"
+            elif status_value in {"failed", "cancelled", "delivery_failed", "timed_out"}:
+                portal_status = "failed"
+            elif status_value in {"waiting_approval", "waiting_review"}:
+                portal_status = status_value
+            else:
+                portal_status = "running"
             # 读取成片，供 Portal 历史记录展示产出预览（缩略图 + 下载清单）。
             artifacts: list[Any] = []
             if portal_status == "done":

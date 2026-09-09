@@ -1166,6 +1166,7 @@ body.director-collapsed .director-body { display: none !important; }
 .pill.failed { color: #c9403a; background: rgba(201,64,58,.12); }
 .pill.running { color: #2f7fc0; background: rgba(47,127,192,.13); }
 .pill.queued, .pill.pending { color: #b07d1e; background: rgba(176,125,30,.14); }
+.pill.waiting_approval, .pill.waiting_review { color: #b07d1e; background: rgba(176,125,30,.14); }
 .hist-empty { color: #8b98ab; text-align: center; padding: 48px 0; font-size: 13px; }
 .hist-more { display: block; margin: 14px auto 0; padding: 6px 18px; font-size: 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; }
 .hist-modal-mask {
