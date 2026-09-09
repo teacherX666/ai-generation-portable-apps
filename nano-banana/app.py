@@ -1065,6 +1065,7 @@ def recover_backlog() -> tuple[int, int]:
     """启动时恢复：queued → 自动重新入队；started → 标记服务更新中断。"""
     recovered = 0
     interrupted = 0
+    dropped = 0
     backlog = _backlog_load()
     if not backlog:
         return 0, 0
@@ -1114,6 +1115,13 @@ def recover_backlog() -> tuple[int, int]:
             threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True).start()
             recovered += 1
         except Exception as exc:
+            # 数据残缺无法重放：活动记录还在 → 标记中断；记录已被 100 条上限
+            # 滚出日志 → 直接丢弃，绝不造无主失败条目污染任务列表
+            with LOCK:
+                _backlog_remove_locked(job_id)
+            if not act:
+                dropped += 1
+                continue
             with LOCK:
                 JOBS[job_id] = {
                     "id": job_id, "status": "failed",
@@ -1124,7 +1132,12 @@ def recover_backlog() -> tuple[int, int]:
                     "workspace_id": str(meta.get("ws_id") or "localhost"),
                     "submitted_at": time.time(), "started_at": None, "finished_at": time.time(),
                 }
-                _backlog_remove_locked(job_id)
+            update_activity(
+                activity_id,
+                status="failed",
+                error="服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）",
+                finished_at=time.time(),
+            )
             interrupted += 1
     # 孤儿自愈：恢复流程结束后仍处于进行中状态、且内存里没有对应任务的活动记录
     # （fastapi 引擎此前从不跑恢复、或运行线程异常消失等）统一标记中断，
@@ -1148,6 +1161,8 @@ def recover_backlog() -> tuple[int, int]:
         orphaned += 1
     if orphaned:
         print(f"Orphaned running activities marked interrupted: {orphaned}", flush=True)
+    if dropped:
+        print(f"Stale backlog entries dropped (activity rolled out): {dropped}", flush=True)
     return recovered, interrupted
 
 
