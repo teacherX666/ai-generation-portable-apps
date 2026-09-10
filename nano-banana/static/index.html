@@ -11,9 +11,9 @@
   <div id="nb-app" v-scope="NanoBananaApp()" @vue:mounted="init()">
 
     <!-- Standalone page chrome (hidden in Portal proxy) -->
-    <template v-if="isStandalone">
+    <div v-if="isStandalone" style="display:contents">
       <h1>图像生成模块 <span class="app-status-dot" :class="appStatus"></span></h1>
-    </template>
+    </div>
 
     <div class="app-tabs" v-if="tabs.length">
       <div v-for="t in tabs" :key="t.id"
@@ -265,10 +265,10 @@
           <div class="workspace-nav-grid">
             <button type="button" class="sub-tab workspace-nav-btn" :class="{ isActive: wsTab === 'jobs' }" @click="wsTab='jobs'">任务</button>
             <button type="button" class="sub-tab workspace-nav-btn" :class="{ isActive: wsTab === 'activity' }" @click="wsTab='activity'; loadActivity()">活动</button>
-            <template v-if="wsTab === 'activity' && activityDetail">
+            <div v-if="wsTab === 'activity' && activityDetail" style="display:contents">
               <button type="button" class="ui-btn ui-btn--secondary workspace-nav-btn" @click="activityDetail=null">← 返回列表</button>
               <button type="button" class="btn-small ui-btn ui-btn--primary workspace-nav-btn" @click="restoreActivity()">恢复参数</button>
-            </template>
+            </div>
           </div>
 
           <!-- Jobs Tab：运行中 + 历史合并为同一列表，点击记录查看详情 -->
