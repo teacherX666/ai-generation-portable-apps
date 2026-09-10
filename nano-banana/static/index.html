@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>图像生成模块</title>
-  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix6-split">
-  <link rel="stylesheet" href="styles.css?v=20260910-fix6-split">
+  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix7-datadriven">
+  <link rel="stylesheet" href="styles.css?v=20260910-fix7-datadriven">
 </head>
 <body class="ui-page">
   <div id="nb-app" v-scope="NanoBananaApp()" @vue:mounted="init()">
@@ -100,7 +100,7 @@
                 </select>
               </label>
               <label>尺寸
-                <select name="image_size">
+                <select name="image_size" :value="imageSize">
                   <option v-for="size in imageSizeOptions" :value="size">{{ size }}</option>
                 </select>
               </label>
@@ -347,7 +347,7 @@
 
   <script src="vendor/petite-vue.iife.js"></script>
   <script src="model-capabilities.js"></script>
-  <script src="app.js?v=20260910-fix6-split"></script>
+  <script src="app.js?v=20260910-fix7-datadriven"></script>
   <script src="effects.js"></script>
 </body>
 </html>
