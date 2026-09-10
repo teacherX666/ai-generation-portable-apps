@@ -249,7 +249,7 @@
       </div>
       <div class="action-buttons">
         <button id="rerun-button" type="button" class="secondary" disabled hidden>重新运行</button>
-        <button id="retry-delivery-button" type="button" class="primary" hidden>重新写入结果表</button>
+        <button id="retry-delivery-button" type="button" class="primary" hidden>导出到结果表</button>
         <button id="reject-button" type="button" class="secondary" hidden>退回修改计划</button>
         <button id="approve-button" type="button" class="primary" hidden>批准并开始生成</button>
         <button id="cancel-button" type="button" class="danger" hidden>取消本次任务</button>
@@ -282,6 +282,7 @@
           <label for="advanced-image-provider">默认图片模型</label>
           <select id="advanced-image-provider"></select>
         </div>
+        <p class="planner-prompt-note">这里设置新任务默认模型；每个任务下方的 Video model / 出图模型才是该任务实际使用的模型。</p>
         <p id="advanced-settings-feedback" class="planner-prompt-feedback" aria-live="polite"></p>
         <div class="planner-prompt-actions">
           <button id="advanced-settings-save" type="button" class="primary">保存模型偏好</button>
@@ -327,7 +328,7 @@
     <script src="static/reference-upload-state.js" defer></script>
     <script src="static/api-paths.js" defer></script>
     <script src="static/planner-prompt-state.js" defer></script>
-    <script src="static/app.js?v=20260909-2" defer></script>
+    <script src="static/app.js?v=20260910-1" defer></script>
     <script src="static/effects.js" defer></script>
   </body>
 </html>

@@ -46,7 +46,6 @@ from feishu_generation_agent.domain.errors import (
 )
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
-    ArtifactReviewDecision,
     AuditReport,
     GenerationTask,
     TaskPlan,
@@ -124,8 +123,6 @@ _NODE_SUMMARIES = {
     "check_source_revision": "Source revision check",
     "execute_selected_tasks": "Approved task execution",
     "verify_and_download_artifacts": "Artifact verification",
-    "review_artifacts": "Artifact review",
-    "deliver_to_feishu": "Feishu delivery",
 }
 
 _PENDING_PROVIDER_STATUSES = frozenset(
@@ -2311,156 +2308,3 @@ async def verify_and_download_artifacts(
     return await _run_node(
         state, "verify_and_download_artifacts", services, operation
     )
-
-
-def _artifact_review_payload(state: AgentState) -> dict[str, Any]:
-    payload = {
-        "action": "review_artifacts",
-        "run_id": state.get("run_id"),
-        "thread_id": state.get("thread_id"),
-        "status": "waiting_review",
-        "artifacts": state.get("artifacts", []),
-    }
-    json.dumps(payload, ensure_ascii=False)
-    return payload
-
-
-def _parse_artifact_review(value: Any) -> ArtifactReviewDecision:
-    if not isinstance(value, dict):
-        raise _validation_error("成片确认请求格式无效：期望 JSON 对象")
-    allowed_keys = {"action", "feedback"}
-    extra_keys = set(value) - allowed_keys
-    if extra_keys:
-        raise _validation_error(
-            "成片确认请求包含未知字段："
-            + "、".join(sorted(str(key) for key in extra_keys))
-        )
-    try:
-        decision = ArtifactReviewDecision.model_validate(value)
-    except ValidationError as exc:
-        compact = "; ".join(
-            ".".join(str(part) for part in item["loc"]) + ": " + str(item["msg"])
-            for item in exc.errors(include_url=False, include_input=False)[:6]
-        )
-        raise _validation_error(f"成片确认载荷无效：{compact}") from None
-
-    if decision.action == "adjust":
-        if not isinstance(decision.feedback, str) or not decision.feedback.strip():
-            raise _validation_error("退回调整时必须填写调整意见")
-    elif decision.feedback is not None:
-        raise _validation_error("确认或取消时不能携带调整意见")
-    return decision
-
-
-async def review_artifacts(
-    state: AgentState,
-    config: RunnableConfig,
-    *,
-    services: GraphServices,
-) -> Command:
-    _ensure_thread_id(state, config)
-    resume_value = interrupt(_artifact_review_payload(state))
-
-    async def operation() -> Command:
-        decision = _parse_artifact_review(resume_value)
-        decision_json = _json_model(decision)
-        if decision.action == "confirm":
-            return Command(
-                update={
-                    "artifact_review_decision": decision_json,
-                    "artifact_review_feedback": None,
-                    "status": "review_confirmed",
-                },
-                goto="deliver_to_feishu",
-            )
-        if decision.action == "adjust":
-            # 清空本 run 已落库的产物与提交操作记录，避免重新规划后复用旧成片
-            # 或因为旧提交指纹不一致被判为 submission_uncertain。
-            run_id = state.get("run_id")
-            if isinstance(run_id, str) and run_id:
-                await services.repository.delete_run_operations(run_id)
-                await services.repository.delete_run_artifacts(run_id)
-            return Command(
-                update={
-                    "artifact_review_decision": decision_json,
-                    "artifact_review_feedback": decision.feedback.strip(),
-                    "planner_feedback": decision.feedback.strip(),
-                    "approval_decision": None,
-                    "approval_revision": None,
-                    "approved_tasks": [],
-                    "approved_plan": None,
-                    "execution_records": [],
-                    "artifacts": [],
-                    "delivery_record": None,
-                    "status": "running",
-                },
-                goto="plan_requirements",
-            )
-        return Command(
-            update={
-                "artifact_review_decision": decision_json,
-                "artifact_review_feedback": None,
-                "status": "cancelled",
-            },
-            goto=END,
-        )
-
-    return await _run_node(state, "review_artifacts", services, operation)
-
-
-async def deliver_to_feishu(
-    state: AgentState,
-    config: RunnableConfig,
-    *,
-    services: GraphServices,
-) -> AgentState:
-    """Best-effort Feishu export after generation has already succeeded."""
-    _ensure_thread_id(state, config)
-    run_id = state.get("run_id")
-    if not isinstance(run_id, str) or not run_id:
-        raise _validation_error()
-    summary = _NODE_SUMMARIES["deliver_to_feishu"]
-    artifacts = [
-        Artifact.model_validate(item) for item in state.get("artifacts", [])
-    ]
-    try:
-        document = NormalizedDocument.model_validate(
-            state.get("normalized_document")
-        )
-        plan = approved_plan_from_state(
-            state,
-            max_output_count=services.settings.max_output_count,
-        )
-        if services.delivery_writer is None:
-            raise RuntimeError("飞书结果表交付服务未配置")
-        await services.repository.append_event(
-            run_id, "deliver_to_feishu", "started", f"{summary} started"
-        )
-        record = await services.delivery_writer.deliver(
-            run_id, document, plan, artifacts
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        failure = _safe_error(exc)
-        await services.repository.append_event(
-            run_id,
-            "deliver_to_feishu",
-            "failed",
-            f"{summary} failed ({failure.detail.category.value})",
-        )
-        # The generated artifacts were already verified. Export failure is
-        # diagnostic only and must not downgrade the successful run.
-        return {
-            "status": "succeeded" if artifacts else "failed",
-            "delivery_record": None,
-            "last_error": _json_model(failure.detail),
-        }
-    await services.repository.append_event(
-        run_id, "deliver_to_feishu", "completed", f"{summary} completed"
-    )
-    return {
-        "delivery_record": _json_model(record),
-        "status": "succeeded" if artifacts else "failed",
-        "last_error": None,
-    }

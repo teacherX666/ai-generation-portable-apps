@@ -380,8 +380,12 @@ class ProductionBitableService:
         )
         if binding is None:
             raise RunNotFound("多维表格运行不存在")
-        if binding.status is not TableTaskStatus.WRITEBACK_FAILED:
-            raise RunConflict("只有交付失败的运行可以重试交付")
+        if binding.status not in {
+            TableTaskStatus.COMPLETED,
+            TableTaskStatus.FAILED,
+            TableTaskStatus.WRITEBACK_FAILED,
+        }:
+            raise RunConflict("只有已生成完成的运行可以导出结果表")
         with self._runtime_owner_scope(owner_user_id):
             await self._runtime.retry_delivery(run_id)
         await self._store.set_status(

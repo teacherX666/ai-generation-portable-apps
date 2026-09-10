@@ -218,9 +218,13 @@ class BitableMvpService:
         binding = await self._store.get_by_run(run_id)
         if (
             binding is None
-            or binding.status is not TableTaskStatus.WRITEBACK_FAILED
+            or binding.status not in {
+                TableTaskStatus.COMPLETED,
+                TableTaskStatus.FAILED,
+                TableTaskStatus.WRITEBACK_FAILED,
+            }
         ):
-            raise RunConflict("只有交付失败的运行可以重试交付")
+            raise RunConflict("只有已生成完成的运行可以导出结果表")
         await self._runtime.retry_delivery(run_id)
         await self._store.set_status(run_id, TableTaskStatus.WRITING_BACK)
 

@@ -407,8 +407,13 @@ class GraphRuntime:
             await asyncio.sleep(0.01)
 
     async def retry_delivery(self, run_id: str) -> None:
+        """Export a finished run's artifacts to the result table on demand.
+
+        Generation success is already terminal. This is a best-effort,
+        user-triggered export and must never downgrade a successful run.
+        """
         if self.delivery_writer is None:
-            raise RunConflict("交付重试未配置")
+            raise RunConflict("导出结果表未配置")
         lock = self._run_locks.setdefault(run_id, asyncio.Lock())
         if lock.locked():
             raise RunConflict("运行正在处理中，请稍后重试")
@@ -416,41 +421,62 @@ class GraphRuntime:
             run = await self.repository.get_run(run_id)
             if run is None:
                 raise RunNotFound("运行不存在")
-            if run["status"] != "delivery_failed":
-                raise RunConflict("只有交付失败的运行可以重试交付")
+            if run["status"] not in {
+                "succeeded", "completed_with_errors", "delivery_failed",
+            }:
+                raise RunConflict("只有已生成完成的运行可以导出结果表")
             if not await self._checkpoint_has_valid_planning_prompt(
                 run["thread_id"]
             ):
                 await self._fail_missing_planning_prompt(run_id)
                 raise RunValidationError("运行缺少有效提示词快照")
+            artifacts = await self.repository.list_artifacts(run_id)
+            if not artifacts:
+                raise RunConflict("没有可导出的成片")
+            previous_status = run["status"]
             await self.repository.update_run_status(run_id, "delivering")
             self._start_background(
-                self._retry_delivery_worker(run_id, run["thread_id"]),
+                self._retry_delivery_worker(
+                    run_id, run["thread_id"], previous_status
+                ),
                 name=f"delivery-retry-{run_id}",
             )
 
-    async def _retry_delivery_worker(self, run_id: str, thread_id: str) -> None:
+    async def _retry_delivery_worker(
+        self, run_id: str, thread_id: str, previous_status: str
+    ) -> None:
         lock = self._run_locks.setdefault(run_id, asyncio.Lock())
         async with lock:
-            await self._retry_delivery_locked(run_id, thread_id)
+            await self._retry_delivery_locked(
+                run_id, thread_id, previous_status
+            )
 
     async def _retry_delivery_locked(
-        self, run_id: str, thread_id: str
+        self, run_id: str, thread_id: str, previous_status: str = "succeeded"
     ) -> None:
         try:
             if not await self._checkpoint_has_valid_planning_prompt(thread_id):
                 await self._fail_missing_planning_prompt(run_id)
                 return
             if self.delivery_writer is None:
-                raise RunConflict("交付重试未配置")
-            record = await self.delivery_writer.retry_delivery(run_id)
+                raise RunConflict("导出结果表未配置")
+            snapshot = await self.graph.aget_state(self._config(thread_id))
+            state = dict(snapshot.values or {})
+            document = NormalizedDocument.model_validate(
+                state.get("normalized_document")
+            )
+            plan = approved_plan_from_state(
+                state, max_output_count=self.settings.max_output_count
+            )
             artifacts = await self.repository.list_artifacts(run_id)
-            final_status = "succeeded" if artifacts else "failed"
+            record = await self.delivery_writer.deliver(
+                run_id, document, plan, artifacts
+            )
             await self._graph_aupdate_state(
                 self._config(thread_id),
                 {
                     "delivery_record": record.model_dump(mode="json"),
-                    "status": final_status,
+                    "status": "succeeded",
                     "last_error": None,
                 },
                 as_node="deliver_to_feishu",
@@ -459,9 +485,9 @@ class GraphRuntime:
                 run_id,
                 "deliver_to_feishu",
                 "completed",
-                "Feishu delivery retry completed",
+                "Feishu result-table export completed",
             )
-            await self.repository.update_run_status(run_id, final_status)
+            await self.repository.update_run_status(run_id, "succeeded")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -469,10 +495,11 @@ class GraphRuntime:
                 run_id,
                 "deliver_to_feishu",
                 "failed",
-                "Feishu delivery retry failed",
+                "Feishu result-table export failed",
             )
-            await self.repository.update_run_status(run_id, "delivery_failed")
-
+            # Export is optional: a failed export must not downgrade the
+            # already-successful generation run.
+            await self.repository.update_run_status(run_id, previous_status)
     async def delete_run(self, run_id: str) -> None:
         lock = self._run_locks.setdefault(run_id, asyncio.Lock())
         if lock.locked():

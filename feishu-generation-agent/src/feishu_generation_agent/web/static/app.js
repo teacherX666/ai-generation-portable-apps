@@ -108,6 +108,9 @@
   const CANCELLABLE_RUN_STATUSES = new Set([
     "created", "running", "resuming", "waiting_provider", "delivering",
   ]);
+  const EXPORTABLE_RUN_STATUSES = new Set([
+    "succeeded", "completed_with_errors", "delivery_failed",
+  ]);
   const RUN_STATUS_UI = {
     planning: { label: "正在生成计划", tone: "running", action: "系统正在读取文档并拆解任务，请稍候。" },
     running: { label: "正在执行", tone: "running", action: "任务正在处理中，页面会自动更新进度。" },
@@ -116,7 +119,7 @@
     waiting_provider: { label: "正在生成内容", tone: "running", action: "生成服务正在工作，可以留在此页等待自动更新。" },
     waiting_review: { label: "成片与结果", tone: "attention", action: "查看生成素材，确认满意后导出到结果表。" },
     delivering: { label: "正在写入结果表", tone: "running", action: "内容已生成，正在回写飞书，请不要重复提交。" },
-    succeeded: { label: "成片与结果", tone: "success", action: "素材已导出到结果表，仍可在这里继续查看。" },
+    succeeded: { label: "生成完成", tone: "success", action: "视频已生成完成，可点击下方「导出到结果表」回写飞书。" },
     completed_with_errors: { label: "部分完成", tone: "warning", action: "部分内容生成失败，可查看错误后重新运行。" },
     delivery_failed: { label: "写入结果表失败", tone: "danger", action: "生成内容已保留，请重新写入结果表，不需要重新生成。" },
     failed: { label: "执行失败", tone: "danger", action: "查看页面中的失败原因，修正后可重新运行。" },
@@ -852,7 +855,7 @@
     rejectButton.disabled = state.busy || !canReview;
     cancelButton.disabled = state.busy || (!canReview && !canCancelRun);
     approveButton.disabled = state.busy || !ReviewState.canApprove(state.review);
-    retryDeliveryButton.disabled = state.busy || state.view?.status !== "delivery_failed";
+    retryDeliveryButton.disabled = state.busy || !EXPORTABLE_RUN_STATUSES.has(state.view?.status);
     const retryableAssetIssues = (state.view?.approval?.ingest_issue_records || [])
       .filter((record) => record.severity === "asset" && record.code === "media_download_failed");
     retryFailedAssetsButton.disabled = state.busy || !canReview || retryableAssetIssues.length === 0;
@@ -865,7 +868,7 @@
       || state.runMode !== "bitable"
       || !RERUNNABLE_RUN_STATUSES.has(state.view?.status);
     rerunButton.hidden = state.runMode !== "bitable" || !RERUNNABLE_RUN_STATUSES.has(status);
-    retryDeliveryButton.hidden = status !== "delivery_failed";
+    retryDeliveryButton.hidden = !EXPORTABLE_RUN_STATUSES.has(status);
     rejectButton.hidden = !canReview;
     approveButton.hidden = !canReview;
     cancelButton.hidden = !(canReview || canCancelRun);
@@ -1012,7 +1015,7 @@
     const realPersonText = defaults.video_provider === "aiport"
       ? "真人类视频：本地 MiniMax H3"
       : "真人类视频：火山方舟真人模型";
-    bar.textContent = `生成来源 · ${videoText} · ${imageText} · ${realPersonText}`;
+    bar.textContent = `默认生成来源 · ${videoText} · ${imageText} · ${realPersonText}`;
     bar.hidden = false;
   }
 
@@ -1748,7 +1751,7 @@
       ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
       : view.status === "delivery_failed"
         ? "素材已生成但结果表写入失败，可继续查看素材并在底部重新写入。"
-        : "本次生成素材已保留，可继续查看；导出结果可通过上方结果表入口打开。";
+        : "视频已生成完成，可继续查看；如需回写飞书，请点击下方「导出到结果表」。";
     artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
     artifactReviewActions.hidden = !canReviewArtifacts;
     artifactList.replaceChildren(...artifacts.map((artifact) => {
