@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Seedance</title>
-  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix5-vifvshow">
-  <link rel="stylesheet" href="styles.css?v=20260910-fix5-vifvshow">
+  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix6-split">
+  <link rel="stylesheet" href="styles.css?v=20260910-fix6-split">
   <script src="vendor/petite-vue.iife.js"></script>
 </head>
 <body class="ui-page">
@@ -260,7 +260,7 @@
                 <div v-if="!activityRecords.length" style="color:#697386;font-size:12px">暂无活动记录</div>
               </div>
             </div>
-            <div v-show="activityDetail" class="act-detail" style="display:none">
+            <div v-if="activityDetail" class="act-detail">
               <div class="act-detail-meta">
                 <span :class="activityDetail.status">{{ activityDetail.status }}</span> · {{ activityDetail.created_at }}
               </div>
@@ -311,7 +311,7 @@
   </dialog>
 
   <script src="model-capabilities.js"></script>
-  <script src="app.js?v=20260910-fix5-vifvshow"></script>
+  <script src="app.js?v=20260910-fix6-split"></script>
   <script src="effects.js"></script>
 </body>
 </html>
