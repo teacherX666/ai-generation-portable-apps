@@ -120,6 +120,7 @@ def _validate_job_params(model, duration, resolution, ratio, repeat_count):
     allowed_resolutions = _MODEL_RESOLUTIONS.get(str(model), _ALLOWED_RESOLUTIONS)
     if str(resolution) not in allowed_resolutions:
         raise ValueError("分辨率 " + str(resolution) + " 不支持，可用：" + " / ".join(sorted(allowed_resolutions)))
+    if str(ratio) not in _ALLOWED_RATIOS:
         raise ValueError("比例 " + str(ratio) + " 不支持，可用：" + " / ".join(sorted(_ALLOWED_RATIOS)))
     if not 1 <= repeat_count <= 4:
         raise ValueError("生成数量必须为 1~4")
