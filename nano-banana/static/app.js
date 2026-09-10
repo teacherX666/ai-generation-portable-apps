@@ -1483,6 +1483,11 @@ function NanoBananaApp() {
     closeJobDetail() {
       var overlay = document.getElementById('nb-job-detail');
       if (overlay) overlay.hidden = true;
+      this.selectedJobId = null;
+      this.selectedJobLabel = '';
+      this.eventsText = '';
+      this._renderedJobId = null;
+      this._clearTopicResultDom();
     },
 
     async loadJobs() {
@@ -1562,14 +1567,6 @@ function NanoBananaApp() {
         this.eventsText = '';
         this._clearTopicResultDom();
       }
-    },
-
-    closeJobDetail() {
-      this.selectedJobId = null;
-      this.selectedJobLabel = '';
-      this.eventsText = '';
-      this._renderedJobId = null;
-      this._clearTopicResultDom();
     },
 
     _upsertJob(job) {

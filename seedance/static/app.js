@@ -1500,6 +1500,11 @@ function SeedanceApp() {
     closeJobDetail() {
       const overlay = document.getElementById('sd-job-detail');
       if (overlay) overlay.hidden = true;
+      this.selectedJobId = null;
+      this.selectedJobLabel = '';
+      this.eventsText = '';
+      this._renderedJobId = null;
+      this._clearTopicResultDom();
     },
 
     async loadJobs() {
@@ -1567,14 +1572,6 @@ function SeedanceApp() {
         this.eventsText = '';
         this._clearTopicResultDom();
       }
-    },
-
-    closeJobDetail() {
-      this.selectedJobId = null;
-      this.selectedJobLabel = '';
-      this.eventsText = '';
-      this._renderedJobId = null;
-      this._clearTopicResultDom();
     },
 
     _upsertJob(job) {
