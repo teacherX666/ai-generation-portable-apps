@@ -103,6 +103,9 @@ _SEEDANCE_PLANNING_CONTRACT = """【Seedance 多模态提示词契约】
 图片、视频、音频按实际提交顺序分别从 1 编号，并在 prompt 中使用 @图片N、@视频N、@音频N。每个被引用素材都必须写成“@图片N 中的具体主体/场景”“@视频N 中的具体动作/运镜”或“@音频N 中的具体音色/声音”；禁止输出内部 asset_id。
 复杂多分镜任务使用“总体设定与素材绑定 → 镜头 1/镜头 2/镜头 3 → 风格与约束”的结构。每个镜头必须直接写出本镜头采用的素材 token，不得只在开头或末尾罗列素材；每个素材必须至少用于一个实际镜头。禁止绝对秒数。
 提示词必须保留需求指定风格，并包含必要的画质、稳定、不变形、无水印和无 Logo 约束；多人或非写实场景按需求增加主体一致性、避免分身和风格锚定。
+每个 image_to_video 任务的 prompt 都必须让表演比普通自然表演更外显：情绪和表情更夸张，关键情绪必须有清晰面部与肢体反应；如果文档明确要求克制、自然或不夸张，则以文档限制为准。
+每个 image_to_video 任务的 prompt 都必须加入物理与动作逻辑约束：人物和物体不悬浮、不穿模、重心稳定，动作符合身体结构与因果顺序，镜头运动和物体速度合理。
+如果视频参考语义中存在 camera_movement 或 editing_style，必须把其中的运镜方式或剪辑节奏用中文写入对应任务的 prompt，并说明它约束哪些镜头；不得只当成画面风格参考。
 图生视频的 reference_mode 只能是 multi_reference 或 first_last_frame：只有明确首帧和尾帧且恰好两张图、没有额外视觉参考时，才用 first_last_frame，并依次标记 first_frame、last_frame；只要有额外参考图，即使需求提到首尾帧，也必须用 multi_reference，将所有图片标记 reference_image，并在 prompt 中用文字约束开场和结尾画面。
 video_provider is runtime policy: omit it or set null. output_count must default to 1; only a human may change candidate count in approval.
 """
@@ -1157,6 +1160,11 @@ class DeepSeekPlanner:
                     "为每个素材写具体中文语义；多分镜使用镜头 1/2/3，"
                     "每个镜头直接绑定相关素材，禁止绝对秒数，并补齐画质、"
                     "稳定、无水印和无 Logo 约束。"
+                ),
+                (
+                    "视频参考语义中的 camera_movement / editing_style summary "
+                    "必须写入对应 image_to_video 任务的 prompt，明确描述运镜和剪辑节奏；"
+                    "没有视频参考时也要写出每个镜头的运镜与动作逻辑。"
                 ),
                 (
                     "分镜合并规则：同一分镜表的多行必须合并为一个视频任务，"

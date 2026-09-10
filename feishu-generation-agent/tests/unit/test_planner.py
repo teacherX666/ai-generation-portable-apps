@@ -33,7 +33,7 @@ def test_planner_system_prompt_prime_hash_is_frozen() -> None:
     prime = planner_system_prompt()
 
     assert hashlib.sha256(prime.encode("utf-8")).hexdigest() == (
-        "1283c1dc93fe915049faaf2018c0c0832122287d80b192ad5f3cc1edeb8b216b"
+        "0203423ce5ed46df5c966f6c7539b57c7bee7e164ea599097a2713a2e87dadb3"
     )
 
 

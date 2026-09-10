@@ -243,6 +243,7 @@
     try {
       const payload = await api("/api/provider-preferences");
       state.providerPreferences = payload;
+      state.providerDefaults = payload;
       renderAdvancedSettings();
       renderProviderStatus();
     } catch (error) {
@@ -275,10 +276,12 @@
         }),
       });
       state.providerPreferences = payload;
+      state.providerDefaults = payload;
       advancedSettingsFeedback.textContent = "模型偏好已保存";
       advancedSettingsFeedback.className = "planner-prompt-feedback is-success";
       renderAdvancedSettings();
       renderProviderStatus();
+      if (state.view) render(ReviewState.draftView(state.review));
       setTimeout(closeAdvancedSettings, 700);
     } catch (error) {
       advancedSettingsFeedback.textContent = error.message || "保存失败";
