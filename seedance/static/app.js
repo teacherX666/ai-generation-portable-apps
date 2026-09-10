@@ -1098,6 +1098,15 @@ function SeedanceApp() {
         v.playsInline = true;
         v.title = '点开预览';
         v.addEventListener('click', (e) => { e.stopPropagation(); openPreview('video', url); });
+        // 产出文件可能已被 14 天清理策略删除：加载失败换过期占位
+        v.addEventListener('error', () => {
+          v.remove();
+          const ph = document.createElement('span');
+          ph.className = 'job-tile-ph';
+          ph.textContent = '🗑';
+          ph.title = '产出文件已过期（保留 14 天后自动清理）';
+          media.appendChild(ph);
+        });
         media.appendChild(v);
       } else {
         const ph = document.createElement('span');

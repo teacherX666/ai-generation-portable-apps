@@ -1258,6 +1258,15 @@ function NanoBananaApp() {
         img.alt = '结果预览';
         img.title = '点开预览';
         img.addEventListener('click', function (e) { e.stopPropagation(); openPreview('image', url); });
+        // 产出文件可能已被 14 天清理策略删除：加载失败换过期占位
+        img.addEventListener('error', function () {
+          img.remove();
+          var ph2 = document.createElement('span');
+          ph2.className = 'job-tile-ph';
+          ph2.textContent = '🗑';
+          ph2.title = '产出文件已过期（保留 14 天后自动清理）';
+          media.appendChild(ph2);
+        });
         media.appendChild(img);
       } else {
         var ph = document.createElement('span');

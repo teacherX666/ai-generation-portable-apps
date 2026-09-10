@@ -19,6 +19,7 @@ import urllib.request
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_openai import OpenAIEmbeddings
 from pydantic import BaseModel
@@ -152,6 +153,13 @@ def _validate_images(body: dict) -> tuple[list[str] | None, str | None]:
             return None, "单张截图不能超过 5MB"
         out.append(s)
     return out, None
+
+
+# 静态资源：index.html 引用的 ui/portal-ui-core.css（含 styles/tokens 子文件）
+# 此前从未挂载——CSS 请求全部 404 且以 JSON 响应（MIME 不匹配被浏览器拒绝），
+# 报错助手 UI 样式一直是坏的（2026-09-10 巡检实锤）。
+if (STATIC_DIR / "ui").exists():
+    app.mount("/ui", StaticFiles(directory=str(STATIC_DIR / "ui")), name="rag-ui")
 
 
 @app.get("/")

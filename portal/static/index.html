@@ -342,10 +342,10 @@
         <div class="hist-grid" v-if="items.length">
           <div class="hist-card" v-for="it in items" :key="it.app + ':' + it.job_id" @click="openDetail(it)">
             <div class="hist-media" :class="it.kind">
-              <img v-if="it.kind==='image' && it.thumb_url" :src="'/' + it.app + it.thumb_url" loading="lazy">
+              <img v-if="it.kind==='image' && it.thumb_url" :src="'/' + it.app + it.thumb_url" loading="lazy" @error="histMediaError(it, $event)">
               <template v-else-if="it.kind==='video' && it.thumb_url">
                 <!-- 服务端抽帧缩略图盖在 <video> 上；抽帧失败时隐藏 img 露出 video 首帧 -->
-                <video :src="'/' + it.app + it.thumb_url" preload="metadata" muted playsinline></video>
+                <video :src="'/' + it.app + it.thumb_url" preload="metadata" muted playsinline @error="histMediaError(it, $event)"></video>
                 <img class="hist-thumb-frame" :src="thumbFor(it)" loading="lazy" @error="$event.target.style.display='none'">
               </template>
               <div v-else class="hist-media-empty">{{ it.kind==='agent' ? '飞书任务 Agent' : (it.status==='failed' ? '无产出' : (it.status==='done' ? '无预览' : '生成中')) }}</div>
@@ -371,8 +371,8 @@
     <div class="hist-modal-mask" v-if="detail" @click.self="detail=null">
       <div class="hist-modal">
         <div class="hist-modal-media">
-          <img v-if="detail.kind==='image' && detail.thumb_url" :src="'/' + detail.app + detail.thumb_url">
-          <video v-else-if="detail.kind==='video' && detail.thumb_url" :src="'/' + detail.app + detail.thumb_url" controls preload="metadata"></video>
+          <img v-if="detail.kind==='image' && detail.thumb_url" :src="'/' + detail.app + detail.thumb_url" @error="histMediaError(detail, $event)">
+          <video v-else-if="detail.kind==='video' && detail.thumb_url" :src="'/' + detail.app + detail.thumb_url" controls preload="metadata" @error="histMediaError(detail, $event)"></video>
           <div v-else class="hist-media-empty">无产出预览</div>
           <button type="button" class="hist-dl-main" v-if="detail.thumb_url" @click="downloadItem({url: detail.thumb_url, kind: detail.kind}, 0)">下载</button>
         </div>
@@ -932,8 +932,9 @@
         <div class="vp-job-grid">
           <div v-for="j in vpPageItems" :key="j.job_id" class="vp-job-tile" :data-status="j.status || ''" @click="openVpJobDetail(j)">
             <div class="vp-job-tile-media">
-              <video v-if="j.first && j.first.isVideo" :src="appPath + j.first.url" preload="metadata" muted playsinline title="点开预览" @click.stop="openVpJobPreview(j)"></video>
-              <img v-else-if="j.first" :src="appPath + j.first.url" alt="产出预览" title="点开预览" @click.stop="openVpJobPreview(j)">
+              <video v-if="j.first && !j.first.broken && j.first.isVideo" :src="appPath + j.first.url" preload="metadata" muted playsinline title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)"></video>
+              <img v-else-if="j.first && !j.first.broken" :src="appPath + j.first.url" alt="产出预览" title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)">
+              <span v-else-if="j.expired" class="vp-job-tile-ph" title="产出文件已过期（保留 14 天后自动清理）">🗑</span>
               <span v-else class="vp-job-tile-ph">{{ (j.status==='failed' || j.status==='failure') ? '❌' : '⏳' }}</span>
             </div>
             <div class="vp-job-tile-meta">
@@ -942,7 +943,7 @@
             </div>
             <div class="vp-job-tile-prompt" :title="j.prompt || ''">{{ j.prompt || '' }}</div>
             <div class="vp-job-tile-foot">
-              <button v-if="j.first" type="button" class="vp-job-tile-btn vp-job-tile-btn--dl" @click.stop="blobDownload(appPath + j.first.url, j.first.filename || 'video')">⬇ 下载</button>
+              <button v-if="j.first && !j.first.broken" type="button" class="vp-job-tile-btn vp-job-tile-btn--dl" @click.stop="blobDownload(appPath + j.first.url, j.first.filename || 'video')">⬇ 下载</button>
               <button v-if="j.isLive && (j.retryable || j.status==='failed')" type="button" class="vp-job-tile-btn vp-job-tile-btn--retry" @click.stop="retryVpJob(j.job_id)">重试</button>
               <button v-else-if="!j.isLive && j.status==='failed'" type="button" class="vp-job-tile-btn vp-job-tile-btn--retry" @click.stop="retryActivity(j.activity_id)">重试</button>
               <button type="button" class="vp-job-tile-btn vp-job-tile-btn--detail" @click.stop="openVpJobDetail(j)">详情</button>

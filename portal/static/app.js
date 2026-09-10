@@ -382,7 +382,19 @@ function DreaminaApp() {
           this.setupMode = null;
           this.loggedIn = true;
           this.appStatus = 'ready';
-          if (res.credit) this.credit = String(res.credit).slice(0, 40);
+          // credit 可能是 CLI 返回的对象（{points:..} 等）——直接 String() 会显示
+          // [object Object]（2026-09-10 巡检实锤）。对象时提取常见字段拼可读文案。
+          if (res.credit != null) {
+            const c = res.credit;
+            if (typeof c === 'object') {
+              const parts = ['points', 'credit', 'total', 'balance', 'amount', 'free']
+                .map(k => (c[k] != null && c[k] !== '') ? `${k} ${c[k]}` : '')
+                .filter(Boolean);
+              this.credit = parts.join(' · ') || JSON.stringify(c).slice(0, 40);
+            } else {
+              this.credit = String(c).slice(0, 40);
+            }
+          }
           this.loadJobs();
           this.loadHistory();
           this.loadArchives();
@@ -891,6 +903,16 @@ function DreaminaApp() {
 
       const media = document.createElement('div');
       media.className = 'dm-tile-media';
+      // 产出文件可能已被 14 天清理策略删除：加载失败时换过期占位并禁用放大预览
+      const markExpired = (el) => {
+        el.remove();
+        tile.dataset.expired = '1';
+        const ph = document.createElement('span');
+        ph.className = 'dm-tile-placeholder';
+        ph.textContent = '🗑 已过期';
+        ph.title = '产出文件已过期（保留 14 天后自动清理）';
+        media.insertBefore(ph, media.firstChild);
+      };
       if (thumb) {
         if (isVid) {
           const v = document.createElement('video');
@@ -898,12 +920,14 @@ function DreaminaApp() {
           v.preload = 'metadata';
           v.muted = true;
           v.playsInline = true;
+          v.addEventListener('error', () => markExpired(v));
           media.appendChild(v);
         } else {
           const img = document.createElement('img');
           img.src = thumb;
           img.loading = 'lazy';
           img.alt = '结果预览';
+          img.addEventListener('error', () => markExpired(img));
           media.appendChild(img);
         }
         const zoomHint = document.createElement('span');
@@ -936,7 +960,13 @@ function DreaminaApp() {
       }
       tile.appendChild(info);
 
-      tile.addEventListener('click', () => this.openDmZoom(item, thumb, isVid));
+      tile.addEventListener('click', () => {
+        if (tile.dataset.expired) {
+          if (typeof window.portalToast === 'function') window.portalToast('产出文件已过期（保留 14 天后自动清理）', 'info');
+          return;
+        }
+        this.openDmZoom(item, thumb, isVid);
+      });
       return tile;
     },
 
@@ -2921,7 +2951,7 @@ function VolcenginePortraitApp() {
     // 缩略图点开 → 放大预览（复用资产放大弹窗；人像产出均为视频）
     openVpJobPreview(j) {
       const f = j.first;
-      if (!f) return;
+      if (!f || f.broken) return;
       this.openZoom({
         file_name: f.filename || 'video',
         asset_type: 'Video',
@@ -2929,6 +2959,13 @@ function VolcenginePortraitApp() {
         status: 'active',
         asset_id: j.job_id,
       });
+    },
+    // 媒体 404（产出文件已被 14 天清理策略删除）→ 缩略图换占位、下载按钮消失。
+    // 注意不能把 j.first 置 null：petite-vue 的 :src effect 与 v-if effect 调度
+    // 无顺序保证，置 null 会触发「reading 'url' of null」模板求值崩溃——用 broken 标志。
+    onVpMediaError(e, j) {
+      if (j.first) j.first.broken = true;
+      j.expired = true;
     },
 
     // Retry a failed task from the persisted history: restore its params into
@@ -2980,6 +3017,11 @@ function HistoryApp() {
     isAdmin: false, userList: [], userFilter: "", appList: [], appFilter: "", favorites: {}, favOnly: false, downloaded: {}, downloadedOnly: false,
     kind: "all", status: "all", days: 30, q: "",
     detail: null, detailTab: "req",
+    // 产出文件可能已被 14 天清理策略删除：媒体 404 时清掉 thumb_url，
+    // 卡片/弹窗自动落到「无预览」占位分支，下载按钮一并消失
+    histMediaError(it, e) {
+      if (it) it.thumb_url = '';
+    },
     get totalPages() {
       return Math.max(1, Math.ceil(this.total / this.pageSize));
     },
