@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     bot_scan_page_size: int = Field(default=10, ge=1, le=50)
     coordinator_poll_interval_seconds: float = Field(default=1.0, ge=0.05)
     # RAG prompt optimization service (rag-assistant /api/rag/preflight).
-    # Empty disables automatic prompt optimization.
+    # Set to an empty string to disable automatic prompt optimization.
     rag_preflight_url: str = "http://127.0.0.1:8900"
 
     @field_validator("asset_base_url")
