@@ -9,7 +9,24 @@ const IN_PORTAL = window.location.pathname.startsWith('/seedance/');
 const APP_PATH = IN_PORTAL ? '/seedance' : '';
 
 // Lowercased job.status values considered terminal (used to gate poll loops and running-indicator recomputation).
-const TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'failure', 'cancelled', 'canceled']);
+const TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'failure', 'cancelled', 'canceled', 'interrupted']);
+
+// The backend accepts cancellation for every non-terminal job state. Keep the
+// UI aligned with that contract in both the live card and history list.
+function isCancellableJob(jobOrStatus) {
+  const status = typeof jobOrStatus === 'string' ? jobOrStatus : jobOrStatus?.status;
+  const normalized = String(status || '').toLowerCase();
+  return Boolean(normalized) && !TERMINAL_STATUSES.has(normalized);
+}
+
+function confirmSafe(message, options) {
+  try {
+    const p = (window.parent && window.parent !== window) ? window.parent : window;
+    if (typeof p.portalConfirm === 'function') return p.portalConfirm(message, options || {});
+  } catch (e) {}
+  return Promise.resolve(window.confirm(message));
+}
+
 
 // ============================================================
 // 任务完成系统通知（浏览器 Notification + 标题闪烁，按 jobId 去重）
@@ -140,14 +157,14 @@ function escHtml(s) {
 }
 
 function jobStatusLabel(status) {
-  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消' };
+  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '???' };
   return map[String(status || '').toLowerCase()] || String(status || '未知');
 }
 
 function jobStatusClass(status) {
   const s = String(status || '').toLowerCase();
   if (['succeeded', 'success', 'completed'].includes(s)) return 'is-success';
-  if (['failed', 'failure'].includes(s)) return 'is-failed';
+  if (['failed', 'failure', 'interrupted'].includes(s)) return 'is-failed';
   if (['pending', 'queued'].includes(s)) return 'is-pending';
   if (s === 'querying') return 'is-querying';
   return 'is-running';
@@ -506,6 +523,7 @@ function SeedanceApp() {
   }
 
   return {
+    isCancellableJob,
     // --- Reactive State ---
     inPortal: IN_PORTAL,
     appPath: APP_PATH,
@@ -514,20 +532,30 @@ function SeedanceApp() {
     provider: 'volcengine',
     localReady: true,
     _activeProvider: 'volcengine',
+    _defaultProvider: 'volcengine',
     models: [],
     baseUrl: '',
+    model: '',
     providerHint: '',
+    modelCaps: null,
+    modelHint: '',
     keyHint: '',
     outputDir: '',
     dirHandle: null,
     autoDownload: false,
     submitting: false,
+    submittingRequest: false,
     statusText: '空闲',
     eventsText: '',
     runtimeTick: 0,
     archives: [],
-    selectedArchive: '',
+    selectedArchive: '默认方案',
     archiveHint: '',
+    currentSchemeName: '默认方案',
+    isDirty: false,
+    schemeNameInput: '',
+    _dirtyDialogOpen: false,
+    _dirtyPending: null,
     optimizing: false,
     optimizedPrompt: '',
     optimizeError: '',
@@ -536,6 +564,8 @@ function SeedanceApp() {
     activityRecords: [],
     jobs: [],
     jobsLimit: 20,
+    selectedJobId: null,
+    selectedJobLabel: '',
     activityCounts: null,
     activityDetail: null,
 
@@ -571,6 +601,7 @@ function SeedanceApp() {
     _closeConfirmTabId: null,   // tab id that opened the close-confirm modal
     _tabStateCache: {},         // { wsId: {statusText, eventsText, submitting, baseUrl, provider, models, workspaceName} }
     _topicSubmissionSeq: {},    // { wsId: latest submit sequence }
+    _draftLoaded: false,        // set once a workspace draft has been restored (blocks config default clobbering)
 
     // Internal (non-reactive but accessible)
     _workspaceId: effectiveWorkspaceId,
@@ -586,7 +617,6 @@ function SeedanceApp() {
       this.buildUploadSlots();
       this.wireDrops();
       try { await this.loadConfig(); } catch (e) { console.warn('loadConfig failed:', e); }
-      try { await this.loadArchives(); } catch (e) { console.warn('loadArchives failed:', e); }
 
       // --- Tab bar restoration (Task 2) ---
       const raw = localStorage.getItem('seedance.tabs');
@@ -606,15 +636,24 @@ function SeedanceApp() {
       }
       window._activeWorkspaceId = this.activeTabId;
 
+      try { await this.loadArchives(); } catch (e) { console.warn('loadArchives failed:', e); }
+
       this.loadPreset();
       try { await this.loadJobs(); } catch (e) { console.warn('loadJobs failed:', e); }
       setInterval(() => { this.runtimeTick = (this.runtimeTick + 1) % 1e9; }, 1000);
 
-      // Auto-save workspace on any form change
-      const form = document.getElementById('sd-form');
-      if (form) {
-        form.addEventListener('input', () => this.scheduleWorkspaceSave());
-        form.addEventListener('change', () => this.scheduleWorkspaceSave());
+      // Auto-save workspace on any form control change (incl. prompt textarea,
+      // which lives outside <form id="sd-form"> and is linked via form="sd-form").
+      const sdRoot = document.getElementById('sd-app');
+      if (sdRoot) {
+        const autoSave = (e) => {
+          const t = e.target;
+          if (!t || !t.name) return;
+          this.isDirty = true;
+          this.scheduleWorkspaceSave();
+        };
+        sdRoot.addEventListener('input', autoSave);
+        sdRoot.addEventListener('change', autoSave);
       }
 
       const modelEl = field('model');
@@ -692,6 +731,7 @@ function SeedanceApp() {
         if (!this.localReady && defaultP === 'comfyui_local') {
           defaultP = 'volcengine';
         }
+        this._defaultProvider = defaultP;
         this.applyProvider(defaultP);
       } else {
         this.providers = FALLBACK_PROVIDERS;
@@ -743,6 +783,7 @@ function SeedanceApp() {
       const providerSel = field('provider');
       if (providerSel) {
         setTimeout(() => {
+          if (this._draftLoaded) return;
           if ([...providerSel.options].some((o) => o.value === providerKey)) providerSel.value = providerKey;
         }, 0);
       }
@@ -756,6 +797,7 @@ function SeedanceApp() {
 
       // Apply provider defaults after a tick to let DOM render
       setTimeout(() => {
+        if (this._draftLoaded) return;
         const defaults = cfg.defaults || {};
         for (const [k, v] of Object.entries(defaults)) {
           const el = field(k);
@@ -780,12 +822,22 @@ function SeedanceApp() {
     applyModelLimits() {
       const modelEl = field('model');
       if (!modelEl) return;
-      const cfg = (this.models || []).find(m => m.id === modelEl.value);
-      if (!cfg) return;
+      const provider = this.provider || 'volcengine';
+      const caps = (window.ModelCapabilities && window.ModelCapabilities.capabilitiesFor)
+        ? window.ModelCapabilities.capabilitiesFor(this.providers, provider, modelEl.value)
+        : null;
+      this.modelCaps = caps;
+      if (!caps) { this.modelHint = ''; return; }
+      // Only sync the reactive model when the DOM value maps to a real model;
+      // otherwise a stale/empty select (during applyPreset's pre-flush phase)
+      // would clobber the just-restored value.
+      this.model = modelEl.value;
+      const hints = [];
 
       const durationEl = field('duration');
-      if (durationEl && Array.isArray(cfg.duration_range)) {
-        const [lo, hi] = cfg.duration_range;
+      if (durationEl && caps.duration) {
+        const lo = Number(caps.duration.min);
+        const hi = Number(caps.duration.max);
         // Keep min at -1 regardless of the model's positive range: -1 is a
         // sentinel meaning "let Ark pick" and is legal (in fact required) for
         // video edit / extend tasks on every model.
@@ -794,12 +846,14 @@ function SeedanceApp() {
         const current = parseInt(durationEl.value, 10);
         // -1 is the sentinel and must survive a model switch untouched; only a
         // real out-of-range number gets clamped.
-        if (!Number.isNaN(current) && current !== -1) {
-          durationEl.value = String(Math.min(hi, Math.max(lo, current)));
+        if (!Number.isNaN(current) && current !== -1 && (current < lo || current > hi)) {
+          const clamped = String(Math.min(hi, Math.max(lo, current)));
+          hints.push('时长 ' + current + ' 不支持，已切换为 ' + clamped);
+          durationEl.value = clamped;
         }
       }
 
-      for (const [name, allowed] of [['resolution', cfg.resolutions], ['ratio', cfg.ratios]]) {
+      for (const [name, allowed] of [['resolution', caps.resolution], ['ratio', caps.ratio]]) {
         const el = field(name);
         if (!el || !Array.isArray(allowed) || !allowed.length) continue;
         const previous = el.value;
@@ -810,8 +864,12 @@ function SeedanceApp() {
           option.textContent = value;
           el.appendChild(option);
         }
-        el.value = allowed.includes(previous) ? previous : allowed[0];
+        const keep = allowed.includes(previous) ? previous : allowed[0];
+        if (previous && previous !== keep) hints.push(name === 'resolution' ? ('分辨率 ' + previous + ' 不支持，已切换为 ' + keep) : ('比例 ' + previous + ' 不支持，已切换为 ' + keep));
+        el.value = keep;
       }
+
+      this.modelHint = hints.join('；');
     },
 
     // Called when the user picks a different task type. Ark 2.5 imposes:
@@ -862,86 +920,238 @@ function SeedanceApp() {
 
     // ============================================================
     // ARCHIVES
-    // ============================================================
+
     async loadArchives() {
       const ownerWsId = this.activeTabId;
       const res = await api(APP_PATH + '/api/archives', 'GET', null, ownerWsId);
       if (this.activeTabId !== ownerWsId) return;
       if (res) this.archives = res.archives || [];
-      if (this.selectedArchive && !this.archives.some(a => a.name === this.selectedArchive)) {
-        this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
-      }
+      this._normalizeSchemeSelection();
     },
 
-    async saveArchive() {
+    _normalizeSchemeSelection() {
+      const list = this.archives || [];
+      const exists = (name) => name === '默认方案' || list.some(a => a.name === name);
+      if (!exists(this.currentSchemeName)) this.currentSchemeName = '默认方案';
+      if (!exists(this.selectedArchive)) this.selectedArchive = '默认方案';
+    },
+
+    nextSchemeName() {
+      const used = {};
+      (this.archives || []).forEach(a => { used[a.name] = true; });
+      let n = 1;
+      while (used['方案' + n]) n++;
+      return '方案' + n;
+    },
+
+    async _saveScheme(name) {
       const ownerWsId = this.activeTabId;
-      this.archiveHint = '保存中...';
+      const caps = this.modelCaps;
+      if (caps) {
+        const resolutionEl = field('resolution');
+        const ratioEl = field('ratio');
+        const durationEl = field('duration');
+        const resolution = resolutionEl ? resolutionEl.value : '';
+        const ratio = ratioEl ? ratioEl.value : '';
+        const duration = parseInt(durationEl && durationEl.value ? durationEl.value : '', 10);
+        const problems = [];
+        if (Array.isArray(caps.resolution) && caps.resolution.length && !caps.resolution.includes(resolution)) {
+          problems.push('分辨率 ' + resolution + ' 不支持，可用：' + caps.resolution.join(' / '));
+        }
+        if (Array.isArray(caps.ratio) && caps.ratio.length && !caps.ratio.includes(ratio)) {
+          problems.push('比例 ' + ratio + ' 不支持，可用：' + caps.ratio.join(' / '));
+        }
+        if (caps.duration && !Number.isNaN(duration) && duration !== -1) {
+          if (duration < Number(caps.duration.min) || duration > Number(caps.duration.max)) {
+            problems.push('时长仅支持 ' + Number(caps.duration.min) + '-' + Number(caps.duration.max) + ' 秒');
+          }
+        }
+        if (problems.length) {
+          setOwnerState('submitting', false);
+          setOwnerState('statusText', problems.join('?'));
+          return;
+        }
+      }
       const data = new FormData(document.getElementById('sd-form'));
       if (Object.keys(this.savedMedia).length) {
         data.set('saved_media', JSON.stringify(this.savedMedia));
       }
-      const res = await api(APP_PATH + '/api/preset', 'POST', data, ownerWsId);
-      if (this.activeTabId !== ownerWsId) return;
-      if (res) {
-        this.archiveHint = res.archive ? '已保存：' + res.archive : (res.error || '保存失败');
-        if (res.media) this.savedMedia = res.media;
-        await this.loadArchives();
-        if (this.activeTabId !== ownerWsId) return;
-        this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
+      data.set('archive_name', name);
+      const res = await api(APP_PATH + '/api/archive/save', 'POST', data, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return false;
+      if (!res || res.ok === false) {
+        this.archiveHint = '保存失败：' + ((res && res.error) || '网络异常');
+        return false;
+      }
+      if (res.media) this.savedMedia = res.media;
+      window._currentSavedMedia = this.savedMedia;
+      const savedName = res.archive || name;
+      await this.loadArchives();
+      if (this.activeTabId !== ownerWsId) return false;
+      this.selectedArchive = savedName;
+      this.currentSchemeName = savedName;
+      this.isDirty = false;
+      this.schemeNameInput = '';
+      this.archiveHint = '已保存方案：' + savedName;
+      this.saveWorkspaceDraft();
+      return true;
+    },
+
+    async saveCurrentScheme() {
+      const name = (this.schemeNameInput || '').trim() || this.nextSchemeName();
+      await this._saveScheme(name);
+    },
+
+    async onSchemeSelect() {
+      const name = this.selectedArchive;
+      if (!name || name === this.currentSchemeName) return;
+      if (!(await this._ensureNotDirty('加载方案'))) {
+        this.selectedArchive = this.currentSchemeName;
+        return;
+      }
+      if (name === '默认方案') {
+        this.resetToFactoryDefaults();
       } else {
-        this.archiveHint = '保存失败';
+        await this.loadScheme(name);
       }
     },
 
-    async loadArchive() {
-      if (!this.selectedArchive) {
-        this.archiveHint = '请选择一个存档';
-        return;
-      }
-      const name = this.selectedArchive;
-      if (!this.archives.some(a => a.name === name)) {
-        this.archiveHint = '读取失败：存档「' + name + '」已被删除，请重新选择';
-        this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
-        return;
-      }
+    async loadScheme(name) {
+      if (!name || name === '默认方案') { this.resetToFactoryDefaults(); return; }
       const ownerWsId = this.activeTabId;
       const data = new FormData();
       data.set('archive_name', name);
       const res = await api(APP_PATH + '/api/archive/load', 'POST', data, ownerWsId);
       if (this.activeTabId !== ownerWsId) return;
-      if (!res) {
-        this.archiveHint = '读取失败';
-        return;
-      }
-      this.applyPreset(res);
-      const archiveInput = field('archive_name');
-      if (archiveInput) archiveInput.value = name;
-      this.archiveHint = '已读取存档：' + name;
+      if (!res || !res.values) { this.archiveHint = '读取失败'; return; }
+      await this.applyPreset(res);
+      this.currentSchemeName = name;
+      this.isDirty = false;
+      this.selectedArchive = name;
+      this.saveWorkspaceDraft();
+      this.archiveHint = '已加载方案：' + name;
     },
 
-    async deleteArchive() {
-      if (!this.selectedArchive) {
-        this.archiveHint = '请选择一个存档';
-        return;
-      }
+    async updateScheme() {
       const name = this.selectedArchive;
-      if (!confirm('确定删除存档「' + name + '」？此操作不可恢复。')) return;
+      if (!name || name === '默认方案') { this.archiveHint = '默认方案为只读，不可更新'; return; }
+      await this._saveScheme(name);
+    },
+
+    async renameScheme() {
+      const name = this.selectedArchive;
+      if (!name || name === '默认方案') { this.archiveHint = '默认方案为只读，不可重命名'; return; }
+      const newName = (prompt('请输入新的方案名', name) || '').trim();
+      if (!newName || newName === name) return;
       const ownerWsId = this.activeTabId;
-      const data = new FormData();
-      data.set('archive_name', name);
+      const data = new FormData(); data.set('archive_name', name); data.set('new_name', newName);
+      const res = await api(APP_PATH + '/api/archive/rename', 'POST', data, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (!res || res.ok === false) { this.archiveHint = '重命名失败：' + ((res && res.error) || '网络异常'); return; }
+      const renamed = res.archive || name;
+      await this.loadArchives();
+      if (this.activeTabId !== ownerWsId) return;
+      if (this.currentSchemeName === name) this.currentSchemeName = renamed;
+      this.selectedArchive = renamed;
+      this.archiveHint = '已重命名：' + renamed;
+      this.saveWorkspaceDraft();
+    },
+
+    async deleteScheme() {
+      const name = this.selectedArchive;
+      if (!name) return;
+      if (name === '默认方案') { this.archiveHint = '默认方案为只读，不可删除'; return; }
+      if (!await confirmSafe('确定删除方案「' + name + '」？此操作不可恢复。')) return;
+      const ownerWsId = this.activeTabId;
+      const data = new FormData(); data.set('archive_name', name);
       const res = await api(APP_PATH + '/api/archive/delete', 'POST', data, ownerWsId);
       if (this.activeTabId !== ownerWsId) return;
       if (!res || res.ok === false) {
-        this.archiveHint = '删除失败：' + (res && res.error ? res.error : '存档可能已被删除或不存在');
+        this.archiveHint = '删除失败：' + ((res && res.error) || '网络异常');
         return;
       }
-      this.selectedArchive = '';
       await this.loadArchives();
       if (this.activeTabId !== ownerWsId) return;
-      this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
+      if (this.currentSchemeName === name) {
+        this.currentSchemeName = '默认方案';
+        this.selectedArchive = '默认方案';
+      }
       this.archiveHint = '已删除：' + name;
+      this.saveWorkspaceDraft();
     },
 
+    resetToFactoryDefaults() {
+      try { localStorage.removeItem('seedance.workspace.' + this.activeTabId); } catch (e) {}
+
+      const promptEl = document.querySelector('textarea[name="prompt"][form="sd-form"]');
+      const keepPrompt = promptEl ? promptEl.value : '';
+      const form = document.getElementById('sd-form');
+      if (form) form.reset();
+      if (promptEl) promptEl.value = keepPrompt;
+
+      clearAllMediaPreviews();
+      this.savedMedia = {};
+      window._currentSavedMedia = this.savedMedia;
+
+      this.outputDir = '';
+      this.dirHandle = null;
+      this.autoDownload = false;
+      this.customModel = '';
+      this.taskMode = 'reference';
+      this._prevTaskMode = 'reference';
+      this._taskModeMemory = {
+        reference: { ratio: '16:9', duration: 12 },
+        extend:    { ratio: 'adaptive', duration: 5 },
+        edit:      { ratio: 'adaptive', duration: -1 },
+      };
+
+      this._draftLoaded = false;
+      this.applyProvider(this._defaultProvider);
+
+      this.currentSchemeName = '默认方案';
+      this.isDirty = false;
+      this.selectedArchive = '默认方案';
+      this.schemeNameInput = '';
+      this.archiveHint = '已恢复默认方案';
+
+      const self = this;
+      setTimeout(() => { self.saveWorkspaceDraft(); }, 120);
+    },
+
+    _ensureNotDirty(actionLabel) {
+      const self = this;
+      if (!this.isDirty) return Promise.resolve(true);
+      return new Promise(function (resolve) {
+        self._dirtyPending = { actionLabel: actionLabel || '切换', resolve: resolve };
+        self._dirtyDialogOpen = true;
+      });
+    },
+
+    async _dirtySaveAndContinue() {
+      const pending = this._dirtyPending;
+      this._dirtyDialogOpen = false;
+      this._dirtyPending = null;
+      if (!pending) return;
+      const resolve = pending.resolve;
+      if (this.currentSchemeName === '默认方案') { resolve(true); return; }
+      const ok = await this._saveScheme(this.currentSchemeName);
+      resolve(!!ok);
+    },
+
+    _dirtyDiscardAndContinue() {
+      const pending = this._dirtyPending;
+      this._dirtyDialogOpen = false;
+      this._dirtyPending = null;
+      this.isDirty = false;
+      if (pending) pending.resolve(true);
+    },
+
+    _dirtyCancel() {
+      const pending = this._dirtyPending;
+      this._dirtyDialogOpen = false;
+      this._dirtyPending = null;
+      if (pending) pending.resolve(false);
+    },
     // Prompt Optimizer
     async optimizePrompt() {
       const promptEl = document.querySelector('textarea[name="prompt"][form="sd-form"]');
@@ -1004,15 +1214,6 @@ function SeedanceApp() {
       this.optimizeError = '';
     },
 
-    async clearPreset() {
-      const ownerWsId = this.activeTabId;
-      const res = await api(APP_PATH + '/api/preset/clear', 'POST', null, ownerWsId);
-      if (this.activeTabId !== ownerWsId) return;
-      if (!res) return;
-      this.savedMedia = {};
-      clearAllMediaPreviews();
-      this.archiveHint = '已清空保存配置';
-    },
 
     // ============================================================
     // ACTIVITY
@@ -1039,17 +1240,70 @@ function SeedanceApp() {
       const res = await api(APP_PATH + '/api/jobs');
       if (res?.jobs) {
         this.jobs = res.jobs;
+        // Refresh normally initializes the form as idle, which used to switch
+        // the UI to history despite a live job. Rehydrate the original running
+        // task panel from /api/jobs and resume its existing poll/cancel flow.
+        const restored = this._restoredPollIds || (this._restoredPollIds = {});
+        (this.jobs || []).filter(job =>
+          !TERMINAL_STATUSES.has((job.status || '').toLowerCase())
+        ).forEach(job => {
+          const wsId = job.workspace_id || this.activeTabId;
+          const cache = this._tabStateCache[wsId] || (this._tabStateCache[wsId] = {});
+          cache._latestJob = job;
+          const jid = job.job_id || job.id;
+          if (!restored[jid]) {
+            restored[jid] = true;
+            this.pollJob(jid, wsId);
+          }
+        });
       } else {
-        console.warn('[Seedance] loadJobs 返回异常:', res);
+        console.warn('[Seedance] loadJobs failed:', res);
       }
       // Recompute per-tab running flag off the freshly loaded jobs. Drives the
       // green-dot indicator on every tab, not just the one that submitted.
       if (this.tabs && this.tabs.length) {
-        this.tabs.forEach(t => {
-          t.running = (this.jobs || []).some(j =>
-            !TERMINAL_STATUSES.has((j.status || '').toLowerCase()) && j.workspace_id === t.id
+        this.tabs.forEach(tab => {
+          tab.running = (this.jobs || []).some(job =>
+            !TERMINAL_STATUSES.has((job.status || '').toLowerCase()) && job.workspace_id === tab.id
           );
         });
+      }
+    },
+
+    selectJob(jobId) {
+      const cache = this._tabStateCache[this.activeTabId] || {};
+      const job = (this.jobs || []).find(j => (j.job_id || j.id) === jobId)
+        || ((cache._latestJob && ((cache._latestJob.job_id || cache._latestJob.id) === jobId)) ? cache._latestJob : null);
+      this.selectedJobId = jobId;
+      this.selectedJobLabel = job ? ((job.status || 'queued') + ' · ' + String(job.prompt || '').slice(0, 40)) : '任务详情';
+      this._renderedJobId = null;
+      if (job) {
+        this.eventsText = (job.events || []).map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n');
+        this._renderJobToDom(job, jobId);
+      } else {
+        this.eventsText = '';
+        this._clearTopicResultDom();
+      }
+    },
+
+    closeJobDetail() {
+      this.selectedJobId = null;
+      this.selectedJobLabel = '';
+      this.eventsText = '';
+      this._renderedJobId = null;
+      this._clearTopicResultDom();
+    },
+
+    _upsertJob(job) {
+      try {
+        const id = job.job_id || job.id;
+        const list = (this.jobs || []).slice();
+        const idx = list.findIndex(j => (j.job_id || j.id) === id);
+        if (idx >= 0) list.splice(idx, 1, job);
+        else list.unshift(job);
+        this.jobs = list;
+      } catch (e) {
+        this.jobs = [job, ...(this.jobs || []).filter(x => (x.job_id || x.id) !== id)];
       }
     },
 
@@ -1068,6 +1322,16 @@ function SeedanceApp() {
         return '耗时 ' + (sec >= 60 ? Math.floor(sec / 60) + '分' + (sec % 60) + '秒' : sec + '秒');
       }
       return '';
+    },
+
+    formatAttemptTime(ts) {
+      if (!ts) return '';
+      const n = Number(ts);
+      if (!Number.isFinite(n) || n <= 0) return '';
+      const ms = n < 1e12 ? n * 1000 : n;
+      const d = new Date(ms);
+      const p = (x) => String(x).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
     },
 
     async showDetail(id) {
@@ -1174,7 +1438,7 @@ function SeedanceApp() {
         cache[name] = value;
         if (this.activeTabId === ownerWorkspaceId) this[name] = value;
       };
-      if (this.submitting) return;
+      if (this.submittingRequest) return;
       // reference 模式同时覆盖纯文生视频和参考生视频，素材全部可选；仅延长/编辑必须提供视频。
       const modelEl = field('model');
       const chosenModel = (modelEl && modelEl.value) || this.customModel || '';
@@ -1206,6 +1470,7 @@ function SeedanceApp() {
       cache._activeJobId = null;
       delete cache._latestJob;
       setOwnerState('submitting', true);
+      setOwnerState('submittingRequest', true);
       setOwnerState('statusText', '提交中');
       const resultsEl = document.getElementById('sd-results');
       const eventsEl = document.getElementById('sd-events');
@@ -1214,6 +1479,9 @@ function SeedanceApp() {
         if (eventsEl) eventsEl.textContent = '';
       }
       setOwnerState('eventsText', '');
+      setOwnerState('selectedJobId', null);
+      setOwnerState('selectedJobLabel', '');
+      this._renderedJobId = null;
 
 
       // 方舟要求参考视频 4–30 秒；本地 H3 的 ref2v 仅校验素材是否存在，不限时长。
@@ -1222,6 +1490,7 @@ function SeedanceApp() {
           await validateReferenceVideoDurations();
         } catch (err) {
           setOwnerState('submitting', false);
+          setOwnerState('submittingRequest', false);
           setOwnerState('statusText', err.message || '参考视频时长不合规');
           return;
         }
@@ -1259,6 +1528,7 @@ function SeedanceApp() {
           }, 0);
           this.providerHint = '本地模型未连接，已为你切回云端模型，请确认后重新提交。';
           setOwnerState('submitting', false);
+          setOwnerState('submittingRequest', false);
           setOwnerState('statusText', '本地模型未连接，已切回云端模型，请确认后重新提交');
           return;
         }
@@ -1277,107 +1547,57 @@ function SeedanceApp() {
         setOwnerState('submitting', false);
         setOwnerState('statusText', '提交失败：网络异常，请重试');
         return;
+      } finally {
+        setOwnerState('submittingRequest', false);
       }
       if (!res || res.error) {
         setOwnerState('submitting', false);
         setOwnerState('statusText', res?.error || '提交失败');
         return;
       }
-      if (!ownerExists() || ownerCache()._submissionToken !== submissionToken) return;
-      ownerCache()._activeJobId = res.job_id;
-      // submitting 保持 true 直到任务终态：防止第二次提交 bump token 后
-      // 上一个任务的轮询静默失效（用户误以为第一个任务死了）。想同时
-      // 跑多个任务请开新主题标签页。
+      if (!ownerExists()) return;
+      this._restoredPollIds = this._restoredPollIds || {};
+      this._restoredPollIds[res.job_id] = true;
       setOwnerState('statusText', '已提交，任务 ' + res.job_id + ' 在后台运行');
       this.loadJobs();
-      this.pollJob(res.job_id, ownerWorkspaceId, submissionToken, delivery);
+      this.pollJob(res.job_id, ownerWorkspaceId, delivery);
     },
 
-    async pollJob(jobId, ownerWorkspaceId, submissionToken, delivery) {
+    async pollJob(jobId, ownerWorkspaceId, delivery) {
       const ownerWsId = ownerWorkspaceId || this.activeTabId;
       const ownerExists = () => this.tabs.some(t => t.id === ownerWsId);
-      const cache = () => {
-        if (!ownerExists()) return null;
-        return (this._tabStateCache[ownerWsId] = this._tabStateCache[ownerWsId] || {});
-      };
-      const isCurrent = () => {
-        const state = cache();
-        if (!state) return false;
-        if (submissionToken !== undefined && state._submissionToken !== submissionToken) return false;
-        return !state._activeJobId || state._activeJobId === jobId;
-      };
-      const isActive = () => isCurrent() && this.activeTabId === ownerWsId;
-      const setState = (name, value) => {
-        if (!isCurrent()) return;
-        const state = cache();
-        state[name] = value;
-        if (isActive()) this[name] = value;
-      };
-      const setStatus = (t) => setState('statusText', t);
-      const setEvents = (t) => setState('eventsText', t);
-      const setSubmitting = (v) => setState('submitting', v);
-      const setLatestJob = (job) => { if (isCurrent()) cache()._latestJob = job; };
+      const isActiveTab = () => this.activeTabId === ownerWsId;
+      const cache = () => (this._tabStateCache[ownerWsId] = this._tabStateCache[ownerWsId] || {});
 
-      // Transient-failure tolerance. A single failed poll (proxy timeout, wifi
-      // blip, sub-app 5xx) used to `break` and permanently abandon the watcher,
-      // leaving a finished result invisible until manual resubmit. Now we retry
-      // with backoff and only give up after MAX_FAILS consecutive failures
-      // (~2min at the 10s backoff cap). A 404 ('gone' — sub-app restarted and
-      // cleared JOBS) exits cleanly instead of looping forever on "unknown".
       const MAX_FAILS = 15;
       let consecutiveFails = 0;
-      // 退出时保留的终态文案：非空则不再回「空闲」，避免失败提示
-      // 转瞬即逝（此前 break 后紧跟 setStatus('空闲') 会把错误抹掉）。
-      let finalStatus = null;
 
       while (true) {
-        if (!isCurrent()) break;
+        if (!ownerExists()) break;
         const r = await pollJobOnce(APP_PATH + '/api/jobs/' + jobId, ownerWsId);
-        if (!isCurrent()) break;
-        if (r.kind === 'gone') {
-          // Job no longer exists server-side (restart). Refresh the jobs list so
-          // any completed result recorded in activity can still surface there.
-          finalStatus = '任务已失效(服务可能重启过)，请查看活动记录或重新提交';
-          break;
-        }
+        if (!ownerExists()) break;
+        if (r.kind === 'gone') break;
         if (r.kind === 'error') {
           consecutiveFails++;
-          if (consecutiveFails >= MAX_FAILS) {
-            finalStatus = '网络不稳定，已停止刷新 · 稍后可重新提交';
-            break;
-          }
-          // Exponential backoff capped at 10s, starting from the 2.5s cadence.
+          if (consecutiveFails >= MAX_FAILS) break;
           const wait = Math.min(10000, 2500 * Math.pow(1.5, consecutiveFails - 1));
           await new Promise(res => setTimeout(res, wait));
           continue;
         }
         consecutiveFails = 0;
         const job = r.job;
-        // Jobs created before the backend started persisting workspace_id have
-        // no owner to compare against. Treating that as a mismatch would hide
-        // every result until the sub-app restarts, since the frontend picks up
-        // new JS on refresh while the backend keeps running old code.
-        if (job.workspace_id && job.workspace_id !== ownerWsId) {
-          setStatus('主题隔离校验失败，已阻止错误结果显示');
-          setSubmitting(false);
-          return;
-        }
-        setStatus((job.status || 'unknown') + ' ' + (job.done || 0) + '/' + (job.total || 0));
-        setEvents((job.events || []).map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n'));
-        setLatestJob(job);
+        if (job.workspace_id && job.workspace_id !== ownerWsId) break;
 
-        if (isActive()) {
+        cache()._latestJob = job;
+        if (isActiveTab()) this._upsertJob(job);
+
+        if (isActiveTab() && this.selectedJobId === jobId) {
+          this.eventsText = (job.events || []).map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n');
           this._renderJobToDom(job, jobId);
         }
 
         if (TERMINAL_STATUSES.has((job.status || '').toLowerCase())) {
-          // 系统通知：确认终态后立即弹（去重后与 Portal 侧 15s 兜底轮询不重复）
           notifyJobDone(jobId, job.status, '视频生成');
-          // Preserved terminal-status behavior from original pollJob:
-          //   - job.status === 'succeeded' + dirHandle → saveToClient
-          //   - job.status === 'succeeded' + autoDownload → triggerDownloads
-          // Delivery settings are captured at submit time. Reading this.* here
-          // would use whichever topic happens to be active when the task ends.
           let deliveryNote = '';
           if (job.status === 'succeeded' && delivery?.dirHandle) {
             const saved = await this.saveToClient(job, delivery.dirHandle);
@@ -1386,26 +1606,20 @@ function SeedanceApp() {
             const downloaded = this.triggerDownloads(job);
             if (downloaded) deliveryNote = ' · 已下载 ' + downloaded + ' 个文件';
           }
-          // 终态摘要常驻状态栏（不再秒变「空闲」把错误提示抹掉），
-          // 结果卡保留可下载，下一轮提交时 submit 会清空重建。
-          const s = String(job.status || '').toLowerCase();
-          if (['succeeded', 'success', 'completed'].includes(s)) {
-            finalStatus = '上次任务：已完成' + ((job.results || []).length ? '（' + job.results.length + ' 个结果）' : '') + deliveryNote;
-          } else if (s === 'failed' || s === 'failure') {
-            finalStatus = '上次任务：失败 · ' + String(friendlyJobErrorHint(job) || '未记录原因').slice(0, 80);
-          } else {
-            finalStatus = '上次任务：已取消';
+          if (isActiveTab() && this.selectedJobId === jobId) {
+            const s = String(job.status || '').toLowerCase();
+            if (['succeeded', 'success', 'completed'].includes(s)) {
+              this.selectedJobLabel = '已完成' + ((job.results || []).length ? '（' + job.results.length + ' 个结果）' : '') + deliveryNote;
+            } else if (s === 'failed' || s === 'failure') {
+              this.selectedJobLabel = '失败 · ' + String(friendlyJobErrorHint(job) || '未记录原因').slice(0, 80);
+            } else {
+              this.selectedJobLabel = '已取消';
+            }
           }
           break;
         }
         await new Promise(r => setTimeout(r, 2500));
       }
-      // Clear status + submitting on ALL exit paths (terminal AND null-break).
-      // finalStatus 非空时保留终态文案（gone / 网络中断 / 成功 / 失败），
-      // 仅「非终态提前退出」（如切 tab 后 token 失配）回到空闲。
-      setStatus(finalStatus || '空闲');
-      setSubmitting(false);
-      // Original pollJob always refreshed the jobs list on exit — keep that.
       this.loadJobs();
     },
 
@@ -1413,23 +1627,22 @@ function SeedanceApp() {
     // 排队中直接取消；运行中弹确认（已计费提示）。后端无取消 API 时
     // 走「取消标志 + 轮询点退出 + 结果丢弃」兜底；409 = 任务已结束。
     async cancelJob(jobId, status) {
-      const ownerWsId = this.activeTabId;
-      if (status === 'running') {
-        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
-      }
-      const res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/cancel', 'POST', null, ownerWsId);
-      if (this.activeTabId !== ownerWsId) return;
-      if (!res) {
-        this.statusText = '取消失败：网络异常，请重试';
+      this.statusText = '正在取消任务...';
+      let res;
+      try {
+        res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/cancel', 'POST', null, this.activeTabId);
+      } catch (e) {
+        this.statusText = '取消失败：' + (e && e.message ? e.message : e);
         return;
       }
-      if (!res.ok) {
-        this.statusText = res.error || '取消失败';
-        return;
+      if (res && res.ok) {
+        this.statusText = '任务已取消，输入和参数已保留。';
+        const j = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
+        if (j) this._upsertJob(Object.assign({}, j, { status: 'cancelled' }));
+      } else {
+        this.statusText = (res && res.error) || '取消失败：网络异常，请重试';
       }
-      this.statusText = '任务已取消，输入和参数已保留。';
     },
-
     // Extracted from pollJob so that both live polling (from pollJob) and
     // tab-switch rehydration (from loadTargetTabState) can rebuild the DOM
     // from a job snapshot. Structure must match the original pollJob output
@@ -1492,7 +1705,7 @@ function SeedanceApp() {
           '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">'
           + '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--' + jobStatusBadgeTone(job.status) + '">'
           + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0)
-          + (jobId && !TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
+          + (jobId && isCancellableJob(job)
              ? '<button type="button" class="cancel-job-btn" onclick="window._app_sd.cancelJob(\'' + escHtml(jobId) + '\',\'' + escHtml(job.status || 'queued') + '\')">取消任务</button>'
              : '')
           + (jobId && (job.results || []).length && TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
@@ -1632,20 +1845,17 @@ function SeedanceApp() {
         this.statusText = (res && res.error) || '重试失败：网络异常，请稍后重试';
         return;
       }
-      const submissionToken = (this._topicSubmissionSeq[ownerWsId] || 0) + 1;
-      this._topicSubmissionSeq[ownerWsId] = submissionToken;
-      const cache = this._tabStateCache[ownerWsId];
-      cache._submissionToken = submissionToken;
-      cache._activeJobId = res.job_id;
       this.submitting = true;
       this.statusText = '已重试，任务 ' + res.job_id + ' 在后台运行';
-      const resultsEl = document.getElementById('sd-results');
-      const eventsEl = document.getElementById('sd-events');
-      if (resultsEl) resultsEl.innerHTML = '';
-      if (eventsEl) eventsEl.textContent = '';
+      this.selectedJobId = res.job_id;
+      this.selectedJobLabel = '已重试，任务 ' + res.job_id + ' 在后台运行';
+      this._renderedJobId = null;
       this.eventsText = '';
+      this._clearTopicResultDom();
+      this._restoredPollIds = this._restoredPollIds || {};
+      this._restoredPollIds[res.job_id] = true;
       this.loadJobs();
-      this.pollJob(res.job_id, ownerWsId, submissionToken, {
+      this.pollJob(res.job_id, ownerWsId, {
         dirHandle: this.dirHandle, autoDownload: this.autoDownload, outputDir: this.outputDir,
       });
     },
@@ -1734,9 +1944,10 @@ function SeedanceApp() {
     // APPLY PRESET (archive load / activity restore / config load)
     // ============================================================
     applyPreset(preset) {
-      if (!preset) return;
+      if (!preset) return Promise.resolve();
       clearAllMediaPreviews();
       const values = preset.values || {};
+      const deferred = {};   // model-dependent selects restored after options flush
 
       for (const [name, value] of Object.entries(values)) {
         // API key is server-managed; never restore from saved draft.
@@ -1749,10 +1960,22 @@ function SeedanceApp() {
         if (name === 'base_url') { this.baseUrl = value; continue; }
         if (name === 'output_dir') { this.outputDir = value; continue; }
         if (name === 'custom_model') { this.customModel = value; continue; }
-        if (name === 'web_search') { this.webSearch = ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase()); continue; }
-        if (name === 'poll_interval') { this.pollInterval = Number(value) || 10; continue; }
-        if (name === 'timeout') { this.timeout = Number(value) || 3600; continue; }
+        if (name === 'web_search') { this.webSearch = ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase()); }
+        if (name === 'poll_interval') { this.pollInterval = Number(value) || 10; }
+        if (name === 'timeout') { this.timeout = Number(value) || 3600; }
         if (name === 'workspace_name') { this.workspaceName = value || '默认主题'; continue; }
+
+        // model / resolution / ratio are <select>s whose options are rendered by
+        // PetiteVue (model) or rebuilt by applyModelLimits (resolution/ratio).
+        // Writing their DOM value synchronously here fails when the options have
+        // not yet flushed to the newly selected provider/model: the assignment is
+        // silently dropped, then applyModelLimits falls back to allowed[0] and
+        // overwrites the saved resolution (e.g. 4k -> 480p). Defer these to a
+        // single post-render callback below. `model` still needs its reactive
+        // value set now so saveWorkspaceDraft() pins the right model.
+        if (name === 'model') { this.model = value; deferred.model = value; continue; }
+        if (name === 'resolution') { deferred.resolution = value; continue; }
+        if (name === 'ratio') { deferred.ratio = value; continue; }
 
         // For other fields, set DOM directly
         const el = field(name);
@@ -1779,16 +2002,45 @@ function SeedanceApp() {
         this.savedMedia = {};
       }
 
-      // Re-narrow duration/resolution/ratio to the restored model's limits.
-      // The loop above writes the model <select> with `el.value = ...`, which
-      // does NOT fire a 'change' event, so the listener wired in init() never
-      // runs on restore. Without this call the duration input keeps the static
-      // max="15" from index.html, and the number-stepper refuses to reach 30
-      // even when Seedance 2.5 (duration_range [4,30]) is selected.
-      this.applyModelLimits();
-
       const mediaCount = Object.keys(this.savedMedia).length;
       if (mediaCount) this.archiveHint = '已读取保存配置：' + mediaCount + ' 个素材';
+
+      // Restore model-dependent <select>s once PetiteVue has flushed the v-for
+      // options (and after any provider/model switch above). resolution/ratio
+      // options may have been narrowed by a previous applyModelLimits() run for a
+      // different provider/model, so we (1) set the model, (2) force the saved
+      // resolution/ratio onto the selects (appending the option if it is missing
+      // from the narrowed list), and only then (3) narrow/clamp via
+      // applyModelLimits() so a valid saved value survives unchanged.
+      const self = this;
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          const mEl = field('model');
+          if (mEl && deferred.model != null && [...mEl.options].some(o => o.value === deferred.model)) {
+            mEl.value = deferred.model;
+          }
+          const setSelect = (name, val) => {
+            if (val == null || val === '') return;
+            const el = field(name);
+            if (!el) return;
+            const want = String(val);
+            if (![...el.options].some(o => o.value === want)) {
+              const opt = document.createElement('option');
+              opt.value = want;
+              opt.textContent = want;
+              el.appendChild(opt);
+            }
+            el.value = want;
+          };
+          setSelect('resolution', deferred.resolution);
+          setSelect('ratio', deferred.ratio);
+          // Now narrow to the restored model; previous values are the saved ones,
+          // so applyModelLimits keeps them when valid and only clamps when the
+          // selected model genuinely doesn't support them.
+          self.applyModelLimits();
+          resolve();
+        }, 0);
+      });
     },
 
     // ============================================================
@@ -1800,11 +2052,22 @@ function SeedanceApp() {
     },
 
     async saveWorkspaceDraft() {
+      const values = collectFormValues();
+      // collectFormValues() reads the DOM, but when this runs synchronously
+      // right after applyPreset()/applyProvider() the v-model + v-for re-render
+      // have not flushed yet, so the DOM still holds the previous provider /
+      // base_url / model. Pin the authoritative reactive state so a refresh
+      // never resurrects a stale provider (e.g. local instead of cloud).
+      values.provider = this.provider;
+      values.base_url = this.baseUrl;
+      if (this.model) values.model = this.model;
       const payload = {
         name: this.workspaceName.trim() || '默认主题',
-        values: collectFormValues(),
+        values: values,
         media: mediaSnapshot(this.savedMedia),
         saved_at: Date.now(),
+        currentSchemeName: this.currentSchemeName,
+        selectedArchive: this.selectedArchive,
       };
       // Key must track activeTabId so each tab's draft stays isolated.
       // Using a fixed key computed at init caused all tabs to overwrite one another.
@@ -1831,6 +2094,11 @@ function SeedanceApp() {
         const draft = JSON.parse(raw);
         if (draft.name) this.workspaceName = draft.name;
         this.applyPreset({ values: draft.values || {}, media: draft.media || {} });
+        this.currentSchemeName = draft.currentSchemeName || '默认方案';
+        this.selectedArchive = draft.selectedArchive || draft.currentSchemeName || '默认方案';
+        this._normalizeSchemeSelection();
+        this._draftLoaded = true;
+        setTimeout(() => { this._draftLoaded = false; }, 250);
         this.workspaceHint = '已读取主题草稿：' + this.workspaceName;
         return true;
       } catch (e) {
@@ -1840,6 +2108,15 @@ function SeedanceApp() {
 
     loadPreset() {
       const ownerWorkspaceId = this.activeTabId;
+      let factoryReset = false;
+      try { factoryReset = sessionStorage.getItem('seedance.factoryReset') === '1'; } catch (e) {}
+      if (factoryReset) {
+        try { sessionStorage.removeItem('seedance.factoryReset'); } catch (e) {}
+        this.currentSchemeName = '默认方案';
+        this.isDirty = false;
+        this.selectedArchive = '默认方案';
+        return;
+      }
       // Try workspace draft first
       if (this.loadWorkspaceDraft()) return;
 
@@ -1872,13 +2149,17 @@ function SeedanceApp() {
       }));
     },
 
-    newTab() {
+    async newTab() {
+      if (!(await this._ensureNotDirty('新建任务'))) return;
       this.saveCurrentTabState();
       const id = 'ws-' + Date.now() + '-' + Math.random().toString(16).slice(2, 7);
       this.tabs.push({ id, name: '未命名主题', running: false });
       this.activeTabId = id;
       window._activeWorkspaceId = id;
       this.workspaceName = '';
+      this.currentSchemeName = '默认方案';
+      this.isDirty = false;
+      this.schemeNameInput = '';
       this.savedMedia = {};
       this.outputDir = '';
       this.dirHandle = null;
@@ -1892,6 +2173,9 @@ function SeedanceApp() {
       this.statusText = '空闲';
       this.eventsText = '';
       this.submitting = false;
+      this.selectedJobId = null;
+      this.selectedJobLabel = '';
+      this.submittingRequest = false;
       this.taskMode = 'reference';
       this._prevTaskMode = 'reference';
       this._taskModeMemory = {
@@ -1904,8 +2188,9 @@ function SeedanceApp() {
       setTimeout(() => this._scrollActiveTabIntoView(), 0);
     },
 
-    switchTab(id) {
+    async switchTab(id) {
       if (id === this.activeTabId || this.editingTabId) return;
+      if (!(await this._ensureNotDirty('切换任务'))) return;
       this.saveCurrentTabState();
       this.activeTabId = id;
       window._activeWorkspaceId = id;
@@ -1959,6 +2244,8 @@ function SeedanceApp() {
         statusText: this.statusText,
         eventsText: this.eventsText,
         submitting: this.submitting,
+        selectedJobId: this.selectedJobId,
+        selectedJobLabel: this.selectedJobLabel,
         baseUrl: this.baseUrl,
         provider: this.provider,
         models: this.models ? JSON.parse(JSON.stringify(this.models)) : [],
@@ -1969,6 +2256,8 @@ function SeedanceApp() {
         taskMode: this.taskMode,
         _prevTaskMode: this._prevTaskMode,
         _taskModeMemory: JSON.parse(JSON.stringify(this._taskModeMemory)),
+        currentSchemeName: this.currentSchemeName,
+        isDirty: this.isDirty,
       };
     },
 
@@ -1978,6 +2267,8 @@ function SeedanceApp() {
       this.statusText = cache.statusText || '空闲';
       this.eventsText = cache.eventsText || '';
       this.submitting = cache.submitting || false;
+      this.selectedJobId = cache.selectedJobId || null;
+      this.selectedJobLabel = cache.selectedJobLabel || '';
       if (cache.baseUrl !== undefined) this.baseUrl = cache.baseUrl;
       if (cache.provider !== undefined) {
         let savedProvider = cache.provider;
@@ -1998,6 +2289,9 @@ function SeedanceApp() {
       this.outputDir = cache.outputDir !== undefined ? cache.outputDir : '';
       this.dirHandle = cache.dirHandle || null;
       this.autoDownload = cache.autoDownload || false;
+      this.currentSchemeName = cache.currentSchemeName || '默认方案';
+      this.isDirty = !!cache.isDirty;
+      this.schemeNameInput = '';
       // Task-type mode is per-tab: the提示 <p class="hint" v-if="taskMode..."> and
       // the ratio/duration memory would otherwise leak across topics.
       this.taskMode = cache.taskMode || 'reference';
@@ -2023,8 +2317,15 @@ function SeedanceApp() {
       // into the DOM. Otherwise clear any stale DOM left by the previous tab.
       // The cache key already proves ownership, so a snapshot predating backend
       // workspace_id persistence is still this tab's own result.
-      if (cache._latestJob && (!cache._latestJob.workspace_id || cache._latestJob.workspace_id === wsId)) {
-        this._renderJobToDom(cache._latestJob, cache._activeJobId);
+      if (this.selectedJobId) {
+        const job = (this.jobs || []).find(j => (j.job_id || j.id) === this.selectedJobId)
+          || ((cache._latestJob && ((cache._latestJob.job_id || cache._latestJob.id) === this.selectedJobId)) ? cache._latestJob : null);
+        if (job) {
+          this.eventsText = (job.events || []).map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n');
+          this._renderJobToDom(job, this.selectedJobId);
+        } else {
+          this._clearTopicResultDom();
+        }
       } else {
         delete cache._latestJob;
         this._clearTopicResultDom();

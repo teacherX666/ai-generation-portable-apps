@@ -210,7 +210,7 @@ class FeishuDeliveryWriter:
     ) -> bytes:
         descriptor = os.open(
             artifact.local_path,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         try:
             before = os.fstat(descriptor)
@@ -262,7 +262,7 @@ class FeishuDeliveryWriter:
         block_count = 0
         descriptor = os.open(
             artifact.local_path,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         before = os.fstat(descriptor)
         digest = sha256()

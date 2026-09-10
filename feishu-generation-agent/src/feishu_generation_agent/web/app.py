@@ -209,6 +209,42 @@ def _iso_timestamp(value: str) -> float:
         return 0.0
 
 
+def _feishu_run_model_label(settings: Settings, kind: str, providers: list[str]) -> str:
+    image_models = {
+        "banana": settings.banana_model,
+        "gpt-image2": settings.gpt_image_model,
+        "seedream": settings.seedream_model,
+        "chiyun": settings.chiyun_model or settings.banana_model,
+        "aiport": settings.aiport_image_model,
+        "aiport_klein": "flux2_klein_allinone",
+        "aiport_klein_v3": "klein_true_v3_assets",
+        "aiport_anime2real": "anime2real_auto",
+        "aiport_zimage": "zimage_multifunction",
+        "aiport_style": "krea2_style_transfer",
+    }
+    video_models = {
+        "seedance": settings.seedance_model,
+        "aiport": settings.aiport_video_model,
+        "volcengine_portrait": settings.seedance_model,
+    }
+    labels: list[str] = []
+    for provider in providers:
+        provider = str(provider or "").strip()
+        if not provider:
+            continue
+        if kind == "video":
+            label = video_models.get(provider)
+        elif kind == "image":
+            label = image_models.get(provider)
+        else:
+            label = video_models.get(provider) or image_models.get(provider)
+        if not label:
+            label = provider
+        if label and label not in labels:
+            labels.append(label)
+    return ", ".join(labels)
+
+
 async def _probe_aiport(base_url: str) -> bool:
     """探活本地 AI Port 网关（127.0.0.1:8801）。TCP 连上即视为在线。"""
     try:
@@ -478,7 +514,12 @@ def create_app(
             "vision": configured("claude_api_key", "claude_model"),
             "image_generation": configured("chiyun_api_key", "chiyun_model")
             or configured("ark_api_key", "seedream_model"),
-            "video_generation": configured("ark_api_key", "seedance_model"),
+            "video_generation": (
+                configured("ark_api_key", "seedance_model")
+                or await _probe_aiport(
+                    getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
+                )
+            ),
         }
         capabilities = {
             name: {
@@ -493,15 +534,17 @@ def create_app(
         local_reachable = await _probe_aiport(
             getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
         )
+        checks["video_generation"] = (
+            checks["video_generation"]
+            or local_reachable
+        )
         providers: dict[str, list[dict[str, Any]]] = {"image": [], "video": []}
         if local_image:
+            # Expose only the two supported image models in the Feishu UI.
+            # Other local workflows remain available to their dedicated tools,
+            # but are not selectable for this task editor.
             local_labels = {
-                "aiport": "本地 Qwen 图生图",
-                "aiport_klein": "本地 Klein 多模态",
-                "aiport_klein_v3": "本地 Klein 写真换脸",
-                "aiport_anime2real": "本地 动漫转真人",
-                "aiport_zimage": "本地 Z-image 多功能",
-                "aiport_style": "本地 Krea 风格迁移",
+                "aiport": "\u672c\u5730 Qwen \u56fe\u751f\u56fe",
             }
             for name, label in local_labels.items():
                 providers["image"].append(
@@ -513,13 +556,6 @@ def create_app(
                         "reachable": local_reachable,
                     }
                 )
-        if configured("chiyun_api_key", "chiyun_model"):
-            providers["image"].append(
-                {"name": "banana", "label": "Banana 卡通", "mode": "cloud", "configured": True}
-            )
-            providers["image"].append(
-                {"name": "gpt-image2", "label": "GPT-Image 写实", "mode": "cloud", "configured": True}
-            )
         if configured("ark_api_key", "seedream_model"):
             providers["image"].append(
                 {"name": "seedream", "label": "Seedream 国风", "mode": "cloud", "configured": True}
@@ -1115,11 +1151,19 @@ def create_app(
             created_at = str(row.get("created_at") or "")
             updated_at = str(row.get("updated_at") or "")
             status_value = str(row.get("status") or "")
-            portal_status = (
-                "done" if status_value in {"succeeded", "completed_with_errors"}
-                else "failed" if status_value in {"failed", "cancelled", "delivery_failed"}
-                else "running"
-            )
+            # Portal uses this to decide the "运行中" nav badge and the history
+            # status chip.  waiting_approval / waiting_review mean the run is
+            # paused on a human decision, not actively generating — they used
+            # to collapse into "running", so stale approvals made the Portal
+            # sidebar show "6 个运行中" while nothing was being generated.
+            if status_value in {"succeeded", "completed_with_errors"}:
+                portal_status = "done"
+            elif status_value in {"failed", "cancelled", "delivery_failed", "timed_out"}:
+                portal_status = "failed"
+            elif status_value in {"waiting_approval", "waiting_review"}:
+                portal_status = status_value
+            else:
+                portal_status = "running"
             # 读取成片，供 Portal 历史记录展示产出预览（缩略图 + 下载清单）。
             artifacts: list[Any] = []
             if portal_status == "done":
@@ -1147,13 +1191,24 @@ def create_app(
                 item_kind = "image"
             else:
                 item_kind = "agent"
+            providers = []
+            try:
+                operations = await active.repository.list_operations(run_id)
+                providers = [
+                    str(operation.get("provider") or "").strip()
+                    for operation in operations
+                    if operation.get("provider")
+                ]
+            except Exception:
+                providers = []
+            model_label = _feishu_run_model_label(active.settings, item_kind, providers)
             items.append({
                 "app": "feishu-generation-agent",
                 "job_id": run_id,
                 "username": identity.username,
                 "kind": item_kind,
                 "prompt": "飞书任务 Agent 生成任务",
-                "model": "",
+                "model": model_label,
                 "params": {"source_url": str(row.get("source_url") or "")},
                 "status": portal_status,
                 "submitted_at": _iso_timestamp(created_at),
@@ -1297,6 +1352,20 @@ def create_app(
             raise_runtime_error(exc)
         return {"run_id": run_id, "status": "accepted"}
 
+    @app.post(
+        "/api/runs/{run_id}/cancel",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                await active.cancel_run(run_id)
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"run_id": run_id, "status": "cancelled"}
     @app.delete("/api/runs/{run_id}")
     async def delete_run(run_id: str, request: Request) -> dict[str, str]:
         active_bitable = getattr(request.app.state, "bitable_service", None)

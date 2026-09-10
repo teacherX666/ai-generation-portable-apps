@@ -7,32 +7,10 @@ title RedCraft
 set "ROOT=%~dp0"
 cd /d "%ROOT%portal" || goto fail
 
-echo ========================================
-echo   RedCraft
-echo ========================================
-echo.
-
-if not exist "app.py" (
-  echo ERROR: portal\app.py not found.
-  echo Run this launcher from the project root folder.
-  pause
-  exit /b 1
-)
-
 call :load_local_ai_env
-:load_local_ai_env
-if not defined AIPORT_BASE_URL (
-    if exist "%ROOT%config\local_ai.env" (
-        for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%ROOT%config\local_ai.env") do (
-            if /i "%%A"=="AIPORT_BASE_URL" set "AIPORT_BASE_URL=%%B"
-        )
-    )
-)
-exit /b 0
-:find_python
-if defined PYTHON (
-  echo Python: %PYTHON%
-) else (
+if not defined AIPORT_BASE_URL set "AIPORT_BASE_URL=http://UT-20210713KMWD.local:8801"
+call :find_python
+if not defined PYTHON (
   echo ERROR: Python 3.9-3.12 not found.
   echo Install Python from https://www.python.org/downloads/
   echo Make sure to check "Add Python to PATH" during installation.
@@ -48,6 +26,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo ========================================
+echo   RedCraft
+echo ========================================
 echo.
 echo Starting sub-apps and portal on port 9090...
 echo Keep this window open. Closing it will stop all services.
@@ -55,7 +36,6 @@ echo.
 
 :: 子应用引擎开关：infinite-canvas / rag-assistant 只有 FastAPI 实现（app.py 是占位 stub），
 :: 必须设 *_ENGINE=fastapi，否则 portal 会退回 stdlib app.py 并崩溃重启。
-:: 与 macOS 的 Start All.command（71-76 行）和 launchd plist 保持一致。
 set "SEEDANCE_ENGINE=fastapi"
 set "NANO_BANANA_ENGINE=fastapi"
 set "DREAMINA_ENGINE=fastapi"
@@ -63,8 +43,6 @@ set "VOLCENGINE_PORTRAIT_ENGINE=fastapi"
 set "INFINITE_CANVAS_ENGINE=fastapi"
 set "RAG_ASSISTANT_ENGINE=fastapi"
 
-
-call :load_local_ai_env
 start "AI Portal Server" /B "%PYTHON%" "app.py"
 
 :: Wait for portal to be ready (HTTPS on 9090, HTTP redirect on 9089)
@@ -72,13 +50,11 @@ set "PORTAL_URL=https://127.0.0.1:9090"
 set "PORTAL_FALLBACK=http://127.0.0.1:9089"
 echo Waiting for portal to start...
 for /l %%I in (1,1,60) do (
-  :: Try HTTPS first
   powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 '%PORTAL_URL%/api/platform/status'; if ($r.StatusCode -eq 200) { exit 0 } } catch { }" >nul 2>nul
   if not errorlevel 1 (
     echo Portal ready.
     goto :opened
   )
-  :: Try HTTP redirect port
   powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 '%PORTAL_FALLBACK%/api/platform/status'; if ($r.StatusCode -eq 200 -or $r.StatusCode -eq 301) { exit 0 } } catch { }" >nul 2>nul
   if not errorlevel 1 (
     echo Portal ready ^(HTTP redirect port^).
@@ -87,6 +63,7 @@ for /l %%I in (1,1,60) do (
   )
   timeout /t 1 >nul
 )
+echo WARNING: Portal did not become ready within 60 seconds.
 
 :opened
 start "" "%PORTAL_URL%"
@@ -98,7 +75,18 @@ echo Press Ctrl+C or close this window to stop all services.
 timeout /t 3600 >nul
 goto keep_alive
 
+:load_local_ai_env
+if not defined AIPORT_BASE_URL (
+  if exist "%ROOT%config\local_ai.env" (
+    for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%ROOT%config\local_ai.env") do (
+      if /i "%%A"=="AIPORT_BASE_URL" set "AIPORT_BASE_URL=%%B"
+    )
+  )
+)
+exit /b 0
+
 :find_python
+if defined PYTHON exit /b 0
 for %%C in ("py -3" "python" "python3") do (
   for /f "usebackq delims=" %%P in (`%%~C -c "import sys; print(sys.executable)" 2^>nul`) do (
     set "PYTHON=%%P"

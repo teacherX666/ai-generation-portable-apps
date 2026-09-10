@@ -345,6 +345,29 @@ async def test_portal_history_is_independent_and_owner_scoped(tmp_path: Path) ->
     assert direct.status_code == 403
 
 
+async def test_portal_history_keeps_waiting_approval_out_of_running(
+    tmp_path: Path,
+) -> None:
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph
+        await repository.create_run(
+            "run-wait", "thread-wait", "https://acme.feishu.cn/docx/wait",
+            owner_user_id="user-a",
+        )
+        await repository.update_run_status(
+            "run-wait", "waiting_approval", owner_user_id="user-a",
+        )
+
+        user_a = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+
+    assert user_a.status_code == 200
+    item = user_a.json()["items"][0]
+    # A run paused on a human decision is not "running": it must not feed the
+    # Portal sidebar's "运行中" badge.
+    assert item["job_id"] == "run-wait"
+    assert item["status"] == "waiting_approval"
+
+
 async def test_portal_history_exposes_artifact_preview(tmp_path: Path) -> None:
     async with _environment(tmp_path) as (client, runtime, graph, repository):
         del runtime, graph

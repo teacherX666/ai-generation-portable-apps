@@ -102,6 +102,12 @@
   const RERUNNABLE_RUN_STATUSES = new Set([
     "succeeded", "completed_with_errors", "failed", "cancelled",
   ]);
+  // Active (non-terminal) run states that can be force-cancelled via
+  // POST /api/runs/{run_id}/cancel. waiting_approval / waiting_review keep
+  // their own decision buttons, so they are intentionally excluded here.
+  const CANCELLABLE_RUN_STATUSES = new Set([
+    "created", "running", "resuming", "waiting_provider", "delivering",
+  ]);
   const RUN_STATUS_UI = {
     planning: { label: "正在生成计划", tone: "running", action: "系统正在读取文档并拆解任务，请稍候。" },
     running: { label: "正在执行", tone: "running", action: "任务正在处理中，页面会自动更新进度。" },
@@ -201,8 +207,9 @@
   function providerOptions(kind) {
     return (state.providers?.[kind] || []).map((provider) => ({
       value: provider.name,
-      label: `${provider.label}${provider.mode === "local" ? "（免费）" : "（付费）"}`,
+      label: `${provider.label}${provider.reachable === false ? " (unavailable)" : ""}`,
       local: provider.mode === "local",
+      reachable: provider.reachable,
     }));
   }
 
@@ -384,6 +391,7 @@
     const scan = categoryState.scan;
     const tasks = categoryState.tasks;
     const activeCategory = state.bitable.activeCategory;
+    scanBitableButton.disabled = !state.modes.bitable || scan.phase === "loading";
     categoryTabs.forEach((tab) => {
       const isActive = tab.dataset.category === activeCategory;
       tab.classList.toggle("is-active", isActive);
@@ -690,11 +698,12 @@
   }
 
   async function scanBitableTasks() {
-    if (state.busy || !state.modes.bitable) return;
+    if (!state.modes.bitable) return;
     const category = state.bitable.activeCategory;
+    const categoryState = BitableState.activeCategoryState(state.bitable);
+    if (categoryState.scan.phase === "loading") return;
     state.bitable = BitableState.scanStarted(state.bitable, category);
     renderBitableTasks();
-    setBusy(true);
     clearError();
     try {
       const tasks = await api(
@@ -704,11 +713,9 @@
     } catch (error) {
       state.bitable = BitableState.scanFailed(state.bitable, category, error.message);
     } finally {
-      setBusy(false);
       renderBitableTasks();
     }
   }
-
   async function startDirectRun() {
     if (state.busy) return;
     const url = directRunUrl.value.trim();
@@ -838,8 +845,9 @@
     const status = state.view?.status;
     const statusInfo = statusUi(status);
     const conflict = ReviewState.conflictMessage(state.review);
+    const canCancelRun = CANCELLABLE_RUN_STATUSES.has(status);
     rejectButton.disabled = state.busy || !canReview;
-    cancelButton.disabled = state.busy || !canReview;
+    cancelButton.disabled = state.busy || (!canReview && !canCancelRun);
     approveButton.disabled = state.busy || !ReviewState.canApprove(state.review);
     retryDeliveryButton.disabled = state.busy || state.view?.status !== "delivery_failed";
     const retryableAssetIssues = (state.view?.approval?.ingest_issue_records || [])
@@ -857,7 +865,9 @@
     retryDeliveryButton.hidden = status !== "delivery_failed";
     rejectButton.hidden = !canReview;
     approveButton.hidden = !canReview;
-    cancelButton.hidden = !canReview;
+    cancelButton.hidden = !(canReview || canCancelRun);
+    cancelButton.textContent = (canCancelRun && !canReview)
+      ? "取消运行" : "取消本次任务";
     actionTitle.textContent = statusInfo.label;
     byId("reject-feedback").disabled = state.busy || !canReview;
     taskList.querySelectorAll("input, textarea, select, button").forEach((control) => {
@@ -927,17 +937,14 @@
     return control;
   }
 
-  const IMAGE_PROVIDERS = [
-    ["aiport", "本地 Qwen（免费）"],
-    ["aiport_klein", "本地 Klein 多模态（免费）"],
-    ["aiport_klein_v3", "本地 Klein 写真换脸（免费）"],
-    ["aiport_anime2real", "本地 动漫转真人（免费）"],
-    ["aiport_zimage", "本地 Z-image 多功能（免费）"],
-    ["aiport_style", "本地 Krea 风格迁移（免费）"],
-    ["banana", "banana（卡通 / 厚涂 / 插画，付费）"],
-    ["seedream", "seedream（中式 / 国风，付费）"],
-    ["gpt-image2", "gpt-image2（写实 / 真人质感，付费）"],
-  ];
+  function imageProviderOptions(task) {
+    const options = providerOptions("image");
+    const selected = task.image_provider || state.providerDefaults?.image_provider;
+    if (selected && !options.some((option) => option.value === selected)) {
+      options.push({ value: selected, label: `${selected} (unavailable)`, local: false });
+    }
+    return options;
+  }
 
   // 画风随剧本变，做成按钮直接追加到提示词末尾，人工审核时一键切换。
   const STYLE_PRESETS = [
@@ -948,18 +955,41 @@
 
   function providerPicker(task) {
     const control = document.createElement("select");
-    const preferred = state.providerDefaults?.image_provider || "banana";
-    IMAGE_PROVIDERS.forEach(([value, label]) => {
-      const option = element("option", "", label);
-      option.value = value;
-      option.selected = (task.image_provider || preferred) === value;
-      control.append(option);
+    const options = imageProviderOptions(task);
+    const preferred = state.providerDefaults?.image_provider || options[0]?.value || "";
+    options.forEach((option) => {
+      const node = element("option", "", option.label);
+      node.value = option.value;
+      node.selected = (task.image_provider || preferred) === option.value;
+      control.append(node);
     });
     control.addEventListener("change", () => {
       updateTask(task.task_id, { image_provider: control.value });
     });
     return control;
   }
+  function videoProviderPicker(task) {
+    const control = document.createElement("select");
+    const options = providerOptions("video");
+    const preferred = state.providerDefaults?.video_provider || "aiport";
+    options.forEach((option) => {
+      const node = element("option", "", option.label);
+      node.value = option.value;
+      node.selected = (task.video_provider || preferred) === option.value;
+      control.append(node);
+    });
+    if (!options.some((option) => option.value === (task.video_provider || preferred))) {
+      const node = element("option", "", `${task.video_provider} (unavailable)`);
+      node.value = task.video_provider || preferred;
+      node.selected = true;
+      control.append(node);
+    }
+    control.addEventListener("change", () => {
+      updateTask(task.task_id, { video_provider: control.value });
+    });
+    return control;
+  }
+
   function renderProviderStatus() {
     const bar = byId("provider-status-bar");
     if (!bar) return;
@@ -1647,6 +1677,7 @@
           updateTask(task.task_id, { resolution: value });
         })),
       );
+      grid.append(field("Video model", videoProviderPicker(task)));
       const audio = document.createElement("select");
       [["true", "开启"], ["false", "关闭"]].forEach(([value, label]) => {
         const option = element("option", "", label);
@@ -1787,9 +1818,12 @@
       aiport: "本地模型",
     };
     const executionErrors = (view.execution_records || [])
-      .filter((record) => record?.error?.message)
+      .filter((record) => record?.error?.message || record?.status === "timed_out")
       .map((record) => {
         const provider = providerNames[record.provider] || record.provider || "生成服务";
+        if (record.status === "timed_out" && !record.error?.message) {
+          return `${provider}：生成服务等待超时，请稍后重新运行`;
+        }
         const code = record.error.code ? `（${record.error.code}）` : "";
         return `${provider}：${record.error.message}${code}`;
       });
@@ -2036,8 +2070,28 @@
     }
   }
 
+  async function cancelActiveRun() {
+    if (!state.runId || state.busy) return;
+    setBusy(true);
+    clearError();
+    try {
+      await api(`/api/runs/${state.runId}/cancel`, { method: "POST" });
+      await poll(true);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   byId("reject-button").addEventListener("click", () => submitDecision("reject"));
-  byId("cancel-button").addEventListener("click", () => submitDecision("cancel"));
+  byId("cancel-button").addEventListener("click", () => {
+    if (CANCELLABLE_RUN_STATUSES.has(state.view?.status)) {
+      cancelActiveRun();
+    } else {
+      submitDecision("cancel");
+    }
+  });
   byId("approve-button").addEventListener("click", () => submitDecision("approve"));
   confirmArtifactsButton.addEventListener("click", () => submitArtifactReview("confirm"));
   adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));

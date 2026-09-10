@@ -1130,12 +1130,43 @@ class CatSkinGenerator:
             and cell.get("base_part") not in {"tail", "tail_root", "leg", "paw"}
         ]
 
+    def _sanitize_pattern_operations(
+        self,
+        operations: list[tuple[int, int, str]],
+        concept: dict,
+        limit: int,
+    ) -> list[tuple[int, int, str]]:
+        """Keep head markings readable instead of allowing a solid forehead blob."""
+        semantic_profile = str(concept.get("semantic_profile") or "")
+        head_limit = 2 if semantic_profile == "hot_meme_blue_cat" else 4
+        head_cells: set[tuple[int, int]] = set()
+        result: list[tuple[int, int, str]] = []
+        seen: set[tuple[int, int]] = set()
+        for x, y, code in operations:
+            point = (x, y)
+            if point in seen or len(result) >= limit:
+                continue
+            if y <= 4 and x >= 8:
+                if len(head_cells) >= head_limit:
+                    continue
+                candidate = head_cells | {point}
+                if any(
+                    {(hx, hy), (hx + 1, hy), (hx, hy + 1), (hx + 1, hy + 1)} <= candidate
+                    for hx, hy in candidate
+                ):
+                    continue
+                head_cells.add(point)
+            seen.add(point)
+            result.append((x, y, code))
+        return result
+
     def _procedural_concept_paint(self, concept: dict, rarity: str, rng: random.Random) -> list[list[object]]:
         """Template-safe emergency markings when AI is absent or returns no usable operations."""
         pool = self._pattern_coordinate_pool()
         rng.shuffle(pool)
         amount = {"common": 5, "rare": 8, "epic": 12, "legendary": 16}[rarity]
-        return [[x, y, "S"] for x, y in pool[:amount]]
+        operations = self._sanitize_pattern_operations([(x, y, 'S') for x, y in pool], concept, amount)
+        return [[x, y, code] for x, y, code in operations]
 
     @staticmethod
     def _normalize_operations(value: object) -> list[tuple[int, int, str]]:
@@ -1230,6 +1261,7 @@ class CatSkinGenerator:
                 paint.append((x, y, code))
             if len(paint) >= paint_limit:
                 break
+        paint = self._sanitize_pattern_operations(paint, concept, paint_limit)
         if not paint:
             paint = [tuple(item) for item in self._procedural_concept_paint(concept, rarity, rng)]
 
@@ -1606,6 +1638,7 @@ class CatSkinGenerator:
 
 
 class CatSkinManager:
+    STATE_VERSION = 2
     def __init__(self, state_path: Path, classic_path: Path, generator: CatSkinGenerator, today_fn: Callable[[], date] | None = None, task_completed_fn: Callable[[dict, str], bool] | None = None):
         self.state_path = state_path
         self.classic = _read_json(classic_path)
@@ -1620,15 +1653,37 @@ class CatSkinManager:
     def _load(self) -> dict:
         try:
             data = _read_json(self.state_path)
-            return data if isinstance(data.get("users"), dict) else {"users": {}}
         except Exception:
-            return {"users": {}}
+            data = {}
+        if not isinstance(data, dict) or not isinstance(data.get("users"), dict):
+            data = {"users": {}}
+        data["schema_version"] = self.STATE_VERSION
+        users = {}
+        for user_id, raw_state in data["users"].items():
+            raw_state = raw_state if isinstance(raw_state, dict) else {}
+            try:
+                open_count = max(0, min(2, int(raw_state.get("open_count") or 0)))
+            except (TypeError, ValueError):
+                open_count = 0
+            skins = raw_state.get("skins")
+            users[str(user_id)] = {
+                **raw_state,
+                "equipped_skin_id": str(raw_state.get("equipped_skin_id") or "classic-black"),
+                "last_open_date": str(raw_state.get("last_open_date") or ""),
+                "open_date": str(raw_state.get("open_date") or ""),
+                "open_count": open_count,
+                "skins": [skin for skin in skins if isinstance(skin, dict)] if isinstance(skins, list) else [],
+            }
+        data["users"] = users
+        return data
 
     def _save(self, data: dict) -> None:
+        data["schema_version"] = self.STATE_VERSION
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
         os.replace(tmp, self.state_path)
+
 
     def _default_skin(self) -> dict:
         skin = json.loads(json.dumps(self.classic))

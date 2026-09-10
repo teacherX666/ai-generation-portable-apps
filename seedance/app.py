@@ -459,6 +459,15 @@ def _decode_username(handler) -> str:
         return raw
 
 
+def _config_scope(handler) -> str:
+    """Config/archive/media scope: follow the logged-in account (X-Username),
+    falling back to the per-browser workspace id for standalone/local use."""
+    user = _decode_username(handler)
+    if user:
+        return "u_" + _sanitize_username(user)
+    return _workspace_id(handler)
+
+
 APP_NAME = "seedance"
 PORTAL_INTERNAL_TOKEN = os.environ.get("PORTAL_INTERNAL_TOKEN", "")
 PORTAL_PORT_FOR_CALLBACK = int(os.environ.get("PORTAL_PORT", "9090"))
@@ -523,7 +532,7 @@ _LOCAL_MODEL_IDS = {"minimax_h3_all_reference"}
 
 def _force_ipv4(url: str) -> str:
     return local_gateway.force_ipv4(url)
-TERMINAL_STATUSES = {"succeeded", "success", "failed", "fail", "failure", "cancelled", "canceled"}
+TERMINAL_STATUSES = {"succeeded", "success", "failed", "fail", "failure", "cancelled", "canceled", "interrupted"}
 
 # translate_ark_error lives in portal/ark_errors.py so seedance and
 # volcengine-portrait share one table; see the module for the matcher rules.
@@ -655,10 +664,10 @@ FALLBACK_PROVIDERS = {
     "providers": {
         "comfyui_local": {
             "label": "Local ComfyUI (free)",
-            "base_url": "http://127.0.0.1:8801",
+            "base_url": "http://UT-20210713KMWD.local:8801",
             "api_style": "comfyui_workflow",
             "hint": "Local MiniMax H3 via AI Port (free).",
-            "defaults": {"model": "minimax_h3_all_reference", "duration": 8, "resolution": "720p", "ratio": "16:9", "repeat_count": 1, "concurrency": 1, "poll_interval": 5, "timeout": 7200, "vary_seed": True},
+            "defaults": {"model": "minimax_h3_all_reference", "duration": 8, "resolution": "720p", "ratio": "16:9", "repeat_count": 1, "concurrency": 1, "poll_interval": 5, "timeout": 3600, "vary_seed": True},
             "models": [{"id": "minimax_h3_all_reference", "label": "MiniMax H3 (free)", "duration_range": [4, 12], "resolutions": ["480p", "720p"], "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"]}],
         },
         "volcengine": {
@@ -774,6 +783,61 @@ def provider_defaults(config: dict[str, Any], provider: str, model: str = "") ->
     return defaults
 
 
+def model_capabilities(config: dict[str, Any], provider: str, model: str) -> dict[str, Any]:
+    providers = config.get("providers") or {}
+    provider_cfg = providers.get(provider) or {}
+    models = provider_cfg.get("models") if isinstance(provider_cfg.get("models"), list) else []
+    selected: dict[str, Any] = {}
+    for item in models:
+        if isinstance(item, dict) and item.get("id") == model:
+            selected = item
+            break
+    cap = selected.get("capabilities") if isinstance(selected.get("capabilities"), dict) else {}
+    duration = cap.get("duration") or selected.get("duration_range") or provider_cfg.get("duration_range")
+    resolution = cap.get("resolution") or selected.get("resolutions") or provider_cfg.get("resolutions")
+    ratio = cap.get("ratio") or selected.get("ratios") or provider_cfg.get("ratios")
+    if isinstance(duration, dict):
+        duration_range = [duration.get("min", 1), duration.get("max", 15)]
+    elif isinstance(duration, (list, tuple)) and len(duration) == 2:
+        duration_range = [int(duration[0]), int(duration[1])]
+    else:
+        duration_range = None
+    return {
+        "duration_range": duration_range,
+        "resolution": list(resolution) if isinstance(resolution, (list, tuple)) else None,
+        "ratio": list(ratio) if isinstance(ratio, (list, tuple)) else None,
+    }
+
+
+def validate_model_capabilities(values: dict[str, Any], files: dict[str, tuple[str, bytes]]) -> None:
+    del files
+    config, _ = load_provider_config()
+    provider = str(values.get("provider") or "volcengine")
+    model = str(values.get("custom_model") or values.get("model") or "").strip()
+    caps = model_capabilities(config, provider, model)
+    if not caps:
+        return
+    problems: list[str] = []
+    resolution = str(values.get("resolution") or "").strip()
+    ratio = str(values.get("ratio") or "").strip()
+    if caps.get("resolution") and resolution not in ("", "auto", "adaptive") and resolution not in caps["resolution"]:
+        problems.append("分辨率 " + resolution + " 不支持，可用：" + " / ".join(caps["resolution"]))
+    if caps.get("ratio") and ratio not in ("", "auto", "adaptive") and ratio not in caps["ratio"]:
+        problems.append("比例 " + ratio + " 不支持，可用：" + " / ".join(caps["ratio"]))
+    raw_duration = str(values.get("duration") or "").strip()
+    if caps.get("duration_range") and raw_duration:
+        try:
+            duration = int(raw_duration)
+        except ValueError:
+            duration = 0
+        if duration != -1:
+            lo, hi = caps["duration_range"]
+            if duration < int(lo) or duration > int(hi):
+                problems.append("时长仅支持 " + str(lo) + "-" + str(hi) + " 秒")
+    if problems:
+        raise ValueError("；".join(problems))
+
+
 def now_text() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -886,6 +950,7 @@ def activity_list(ws_id: str = "localhost", show_all: bool = False, username: st
             "username": item.get("username", ""),
             "started_at": item.get("started_at"),
             "finished_at": item.get("finished_at"),
+            "attempt_count": len(item.get("attempts") or []),
         })
     summary.reverse()
     return {"counts": counts, "records": summary}
@@ -1124,21 +1189,100 @@ def find_activity_by_job_id(job_id: str) -> dict[str, Any] | None:
     return None
 
 
+def _resolve_root_activity(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Follow ``retry_of`` back to the single top-level activity record.
+
+    New retries stay on one root record (attempts are nested inside it), but
+    records created before this change may still carry a ``retry_of`` chain.
+    """
+    seen: set[str] = set()
+    items = read_activity_log()
+    while record is not None:
+        rid = str(record.get("id") or "")
+        if rid in seen:
+            break
+        seen.add(rid)
+        parent_job_id = record.get("retry_of")
+        if not parent_job_id:
+            return record
+        parent = None
+        for item in reversed(items):
+            if str(item.get("job_id")) == str(parent_job_id):
+                parent = item
+                break
+        if parent is None:
+            return record
+        record = parent
+    return record
+
+
+def _build_attempt_entry(record: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot the current (soon-to-be previous) attempt for the history list."""
+    job_id = str(record.get("job_id") or "")
+    with JOBS_LOCK:
+        live = JOBS.get(job_id) or {}
+    status = str(live.get("status") or record.get("status") or "failed")
+    errors = live.get("errors") or []
+    result = live if live else record.get("result")
+    finished_at = live.get("finished_at") or record.get("finished_at")
+    error = errors[0] if errors else record.get("error")
+    attempt: dict[str, Any] = {
+        "job_id": job_id,
+        "status": status,
+        "finished_at": finished_at,
+    }
+    if error is not None:
+        attempt["error"] = error
+    if result is not None:
+        attempt["result"] = result
+    return attempt
+
+
 def retry_job(job_id: str) -> str:
-    """按 activity_log 的 restore 数据重新提交一个任务（新 job_id）。
-    素材与参数重建自落盘数据；api_key 沿用服务端配置（与原恢复参数一致）。"""
+    """Re-submit a task from the on-disk restore data (new job_id).
+
+    The retry is folded into the same top-level activity record as the
+    original submission: the record's ``job_id`` moves to the newest attempt
+    and the previous attempt is appended to ``attempts``. This keeps the
+    activity page to one row per task instead of one row per retry.
+    """
     act = find_activity_by_job_id(job_id)
     restore = (act or {}).get("restore") or {}
     if not isinstance(restore, dict) or "values" not in restore:
         raise ValueError("该任务的参数已无法找回（记录可能已被清理），请手动重新填写")
+    root = _resolve_root_activity(act)
+    root_id = str((root or act or {}).get("id") or "")
+    previous_attempt = _build_attempt_entry(act or {})
     values = dict(restore.get("values") or {})
     # restore 有意剥离 api_key：重放时回填服务端统一配置（与原提交逻辑一致）
     values.setdefault("api_key", str((SECRETS or {}).get("volcengine_api_key") or ""))
     ws_id = str((act or {}).get("workspace_id") or "localhost")
     files = _files_from_restore(restore, ws_id)
     username = str((act or {}).get("username") or "")
-    return create_job(values, files, source="retry", request_kind="retry",
-                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username)
+    new_job_id = create_job(
+        values, files, source="retry", request_kind="retry",
+        request_data={"retried_from": job_id}, ws_id=ws_id, username=username,
+        activity_id=root_id, record=False,
+    )
+    if root_id:
+        attempts = list((root or {}).get("attempts") or [])
+        attempts.append(previous_attempt)
+        # Persist the new attempt's restore against the root record so the
+        # next retry replays the latest inputs (not the original submission).
+        fresh_restore = copy_files_to_restore(values, files, new_job_id, ws_id)
+        update_activity(
+            root_id,
+            job_id=new_job_id,
+            source="retry",
+            request_kind="retry",
+            status="running",
+            started_at=time.time(),
+            retry_of=job_id,
+            attempts=attempts,
+            restore=fresh_restore,
+        )
+    return new_job_id
+
 
 
 def recover_backlog() -> tuple[int, int]:
@@ -1146,9 +1290,8 @@ def recover_backlog() -> tuple[int, int]:
     recovered = 0
     interrupted = 0
     backlog = _backlog_load()
-    if not backlog:
-        return 0, 0
-    activities = {str(a.get("id")): a for a in read_activity_log()}
+    activity_items = read_activity_log()
+    activities = {str(a.get("id")): a for a in activity_items}
     for job_id, meta in list(backlog.items()):
         activity_id = str(meta.get("activity_id") or "")
         try:
@@ -1212,6 +1355,46 @@ def recover_backlog() -> tuple[int, int]:
                 }
                 _backlog_remove_locked(job_id)
             interrupted += 1
+
+    active_activity_statuses = {"pending", "queued", "submitted", "running", "processing"}
+    backlog_job_ids = {str(job_id) for job_id in backlog}
+    for activity in activity_items:
+        status = str(activity.get("status") or "").lower()
+        job_id = str(activity.get("job_id") or "")
+        if status not in active_activity_statuses or not job_id or job_id in backlog_job_ids:
+            continue
+        with JOBS_LOCK:
+            if job_id in JOBS:
+                continue
+            restore_values = ((activity.get("restore") or {}).get("values") or {})
+            try:
+                duration = max(0, int(str(restore_values.get("duration") or "0") or "0"))
+            except (TypeError, ValueError):
+                duration = 0
+            JOBS[job_id] = {
+                "id": job_id,
+                "status": "failed",
+                "events": [{"time": time.strftime("%H:%M:%S"),
+                            "message": "?????????????????"}],
+                "results": [],
+                "errors": ["?????????????????????????????"],
+                "done": 0,
+                "total": 0,
+                "duration": duration,
+                "username": str(activity.get("username") or ""),
+                "workspace_id": str(activity.get("workspace_id") or "localhost"),
+                "submitted_at": float(activity.get("started_at") or time.time()),
+                "started_at": None,
+                "finished_at": time.time(),
+                "retryable": True,
+            }
+        update_activity(
+            str(activity.get("id") or ""),
+            status="failed",
+            error="?????????????????????????????",
+            finished_at=time.time(),
+        )
+        interrupted += 1
     return recovered, interrupted
 
 
@@ -1262,7 +1445,7 @@ def archive_path(name: str, ws_id: str = "localhost") -> Path:
 
 
 def list_archives(handler: SimpleHTTPRequestHandler | None = None) -> list[dict[str, Any]]:
-    ws = _workspace_id(handler) if handler else "localhost"
+    ws = _config_scope(handler) if handler else "localhost"
     dir_path = _ws_dir(ws) / "archives"
     dir_path.mkdir(parents=True, exist_ok=True)
     items = []
@@ -1344,7 +1527,7 @@ def save_archive_file(name: str, preset: dict[str, Any], ws_id: str = "localhost
     # Strip secrets before persisting
     safe_preset = dict(preset)
     safe_preset["values"] = {k: v for k, v in safe_preset.get("values", {}).items()
-                             if k not in ("api_key", "api_key_override")}
+                             if k not in ("api_key", "api_key_override", "prompt")}
     ws_media = _ws_media_dir(ws_id)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("preset.json", json.dumps(safe_preset, ensure_ascii=False, indent=2))
@@ -1357,7 +1540,7 @@ def save_archive_file(name: str, preset: dict[str, Any], ws_id: str = "localhost
 
 
 def load_archive_file(name: str, handler: SimpleHTTPRequestHandler | None = None) -> dict[str, Any]:
-    ws = _workspace_id(handler) if handler else "localhost"
+    ws = _config_scope(handler) if handler else "localhost"
     path = archive_path(name, ws)
     migrated = False
     if not path.exists():
@@ -2168,9 +2351,11 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     return values, files
 
 
-def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], source: str, request_kind: str, request_data: dict[str, Any], ws_id: str = "localhost", username: str = "") -> str:
+def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], source: str, request_kind: str, request_data: dict[str, Any], ws_id: str = "localhost", username: str = "", activity_id: str | None = None, record: bool = True) -> str:
+    validate_model_capabilities(values, files)
     job_id = uuid.uuid4().hex
-    activity_id = uuid.uuid4().hex
+    if activity_id is None:
+        activity_id = uuid.uuid4().hex
     try:
         per_item_duration = int(values.get("duration") or 0)
     except (TypeError, ValueError):
@@ -2196,20 +2381,21 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
                             ws_id=ws_id, username=username)
         _prune_jobs_locked()
     response = job_id_response(job_id)
-    record_activity({
-        "id": activity_id,
-        "job_id": job_id,
-        "source": source,
-        "request_kind": request_kind,
-        "status": "running",
-        "title": str(values.get("prompt") or "")[:80] or "Seedance task",
-        "request": request_data,
-        "response": response,
-        "workspace_id": ws_id,
-        "username": username,
-        "started_at": time.time(),
-        "restore": copy_files_to_restore(values, files, activity_id, ws_id),
-    }, ws_id)
+    if record:
+        record_activity({
+            "id": activity_id,
+            "job_id": job_id,
+            "source": source,
+            "request_kind": request_kind,
+            "status": "running",
+            "title": str(values.get("prompt") or "")[:80] or "Seedance task",
+            "request": request_data,
+            "response": response,
+            "workspace_id": ws_id,
+            "username": username,
+            "started_at": time.time(),
+            "restore": copy_files_to_restore(values, files, activity_id, ws_id),
+        }, ws_id)
     thread = threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True)
     thread.start()
     return job_id
@@ -2316,33 +2502,37 @@ def _run_local_video(job_id: str, index: int, form: cgi.FieldStorage, form_value
         except ValueError:
             pass
 
-    values_payload["timeout"] = int(form_values.get("timeout") or 7200)
+    values_payload["timeout"] = int(form_values.get("timeout") or 3600)
     values_payload["poll_interval"] = max(2, int(form_values.get("poll_interval") or 5))
     values_payload["steps"] = 8
     values_payload["cfg"] = 1.0
     values_payload["h3_prompt_enhancer_enabled"] = enhancer_enabled
     if mode == "ref2v":
-        values_payload["h3_ref_image_size"] = "match"
+        values_payload["h3_ref_image_size"] = "max"
 
     submit = request_json(
         "POST",
         f"{base_url}/api/video_local/jobs/json",
         "",
         {"values": values_payload, "files": files_payload},
-        timeout=int(form_values.get("timeout") or 7200),
+        timeout=int(form_values.get("timeout") or 3600),
     )
     local_job_id = submit.get("job_id")
     if not local_job_id:
         raise RuntimeError("Local ComfyUI did not return a video job id")
+    with JOBS_LOCK:
+        JOBS[job_id].setdefault("local_job_ids", []).append(local_job_id)
 
     poll_interval = max(2, int(form_values.get("poll_interval") or 5))
-    timeout = int(form_values.get("timeout") or 7200)
+    timeout = int(form_values.get("timeout") or 3600)
     start = time.time()
     results: list[dict[str, Any]] = []
     while True:
         if time.time() - start > timeout:
             raise RuntimeError(f"Local ComfyUI video job {local_job_id} timed out")
         time.sleep(poll_interval)
+        if _job_cancel_requested(job_id):
+            raise TaskCancelled("任务已取消。")
         status = request_json("GET", f"{base_url}/api/video_local/jobs/{local_job_id}", "", timeout=60)
         state = str(status.get("status") or "").strip().lower()
         add_event(job_id, f"Run {index}: local video {state or 'unknown'}")
@@ -2436,6 +2626,12 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
     if not task_id:
         raise RuntimeError(f"No task id returned: {create_result}")
     add_event(job_id, f"Run {index}: task {task_id}")
+    with JOBS_LOCK:
+        JOBS[job_id].setdefault("provider_tasks", []).append({
+            "task_id": task_id,
+            "base_url": base_url,
+            "api_key": api_key,
+        })
 
     status_url = f"{create_url}/{task_id}"
     start = time.time()
@@ -2560,6 +2756,8 @@ def run_one_with_fallback(job_id: str, index: int, form_values: dict[str, Any], 
         return run_one(job_id, index, form_values, form_files, ws_id)
     try:
         return run_one(job_id, index, form_values, form_files, ws_id)
+    except TaskCancelled:
+        raise
     except Exception as exc:
         if form_files:
             raise RuntimeError(
@@ -2736,7 +2934,7 @@ class Handler(SimpleHTTPRequestHandler):
             json_response(self, 200, request_template())
             return
         if self.path == "/api/preset":
-            json_response(self, 200, preset_for_client(_workspace_id(self)))
+            json_response(self, 200, preset_for_client(_config_scope(self)))
             return
         if self.path == "/api/archives":
             json_response(self, 200, {"archives": list_archives(self)})
@@ -2802,7 +3000,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self.path.startswith("/api/preset-media/"):
             field = self.path.rsplit("/", 1)[-1]
-            ws = _workspace_id(self)
+            ws = _config_scope(self)
             preset = read_preset(ws)
             item = preset.get("media", {}).get(field)
             # Collapse stored to bare basename — preset.json is normally written
@@ -2826,7 +3024,7 @@ class Handler(SimpleHTTPRequestHandler):
         if urllib.parse.urlparse(self.path).path.startswith("/api/media/"):
             raw_name = urllib.parse.urlparse(self.path).path.rsplit("/", 1)[-1]
             stored = Path(urllib.parse.unquote(raw_name)).name
-            ws = _workspace_id(self)
+            ws = _config_scope(self)
             path = _ws_media_dir(ws) / stored
             if not path.exists():
                 json_response(self, 404, {"error": "media not found"})
@@ -2949,7 +3147,19 @@ class Handler(SimpleHTTPRequestHandler):
                 job["status"] = "cancelled"
                 job["errors"] = ["任务已取消。"]
                 job["finished_at"] = time.time()
+                local_job_ids = list(job.get("local_job_ids") or [])
+                provider_tasks = list(job.get("provider_tasks") or [])
                 _backlog_remove_locked(job_id)
+            for lid in local_job_ids:
+                try:
+                    request_json("POST", f"{_force_ipv4(LOCAL_GATEWAY_BASE_URL)}/api/video_local/jobs/{lid}/cancel", "", None, timeout=5, max_retries=1)
+                except Exception:
+                    pass
+            for pt in provider_tasks:
+                try:
+                    request_json("DELETE", f"{pt['base_url']}/contents/generations/tasks/{pt['task_id']}", pt.get("api_key") or "", None, timeout=5, max_retries=1)
+                except Exception:
+                    pass
             add_event(job_id, "任务已取消。")
             report_final_to_portal(job_id, "cancelled")
             json_response(self, 200, {"ok": True, "status": "cancelled"})
@@ -2988,7 +3198,7 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/workspace/snapshot":
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
             try:
-                ws = _workspace_id(self)
+                ws = _config_scope(self)
                 json_response(self, 200, preset_to_client(collect_workspace_snapshot_from_form(form, ws), ws))
             except Exception as exc:
                 json_response(self, 500, {"error": str(exc)})
@@ -3005,7 +3215,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self.path == "/api/preset":
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
-            ws = _workspace_id(self)
+            ws = _config_scope(self)
             preset = collect_preset_from_form(form, ws)
             write_active_preset(preset, ws)
             archive_name = get_field(form, "archive_name")
@@ -3018,7 +3228,7 @@ class Handler(SimpleHTTPRequestHandler):
             json_response(self, 200, response)
             return
         if self.path == "/api/media/upload":
-            ws = _workspace_id(self)
+            ws = _config_scope(self)
             ctype = self.headers.get("Content-Type", "")
             if not ctype.startswith("multipart/form-data"):
                 json_response(self, 400, {"error": "expected multipart/form-data"})
@@ -3103,13 +3313,27 @@ class Handler(SimpleHTTPRequestHandler):
                 "url": url,
             })
             return
+        if self.path == "/api/archive/save":
+            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
+            name = (get_field(form, "archive_name") or "").strip()
+            if not name:
+                json_response(self, 400, {"ok": False, "error": "方案名不能为空"})
+                return
+            if safe_archive_name(name) == "默认方案":
+                json_response(self, 400, {"ok": False, "error": "默认方案为只读，不可保存"})
+                return
+            ws = _config_scope(self)
+            preset = collect_preset_from_form(form, ws)
+            saved_path = save_archive_file(name, preset, ws)
+            json_response(self, 200, {"ok": True, "archive": saved_path.stem, "archives": list_archives(self)})
+            return
         if self.path == "/api/archive/load":
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
             try:
                 data = load_archive_file(get_field(form, "archive_name"), self)
                 data["archives"] = list_archives(self)
                 # Merge archive data into current workspace media state
-                ws = _workspace_id(self)
+                ws = _config_scope(self)
                 media_dir = _ws_media_dir(ws)
                 for item in (data.get("media") or {}).values():
                     stored = item.get("stored", "")
@@ -3120,12 +3344,47 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 json_response(self, 400, {"error": str(exc)})
             return
+        if self.path == "/api/archive/rename":
+            if not _is_admin(self):
+                json_response(self, 403, {"ok": False, "error": "admin only"})
+                return
+            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
+            old_name = get_field(form, "archive_name")
+            new_name = get_field(form, "new_name")
+            if safe_archive_name(old_name) == "默认方案":
+                json_response(self, 400, {"ok": False, "error": "默认方案不可重命名"})
+                return
+            if safe_archive_name(new_name) == "默认方案":
+                json_response(self, 400, {"ok": False, "error": "不能重命名为默认方案"})
+                return
+            if not safe_archive_name(new_name):
+                json_response(self, 400, {"ok": False, "error": "新方案名不能为空"})
+                return
+            ws = _config_scope(self)
+            old_path = archive_path(old_name, ws)
+            new_path = archive_path(new_name, ws)
+            if old_path == new_path:
+                json_response(self, 200, {"ok": True, "archive": new_path.stem, "archives": list_archives(self)})
+                return
+            if not old_path.exists():
+                json_response(self, 400, {"ok": False, "error": "方案不存在"})
+                return
+            if new_path.exists():
+                json_response(self, 400, {"ok": False, "error": "方案名已存在"})
+                return
+            old_path.rename(new_path)
+            json_response(self, 200, {"ok": True, "archive": new_path.stem, "archives": list_archives(self)})
+            return
         if self.path == "/api/archive/delete":
             if not _is_admin(self):
                 json_response(self, 403, {"ok": False, "error": "admin only"})
                 return
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
-            path = archive_path(get_field(form, "archive_name"), _workspace_id(self))
+            name = get_field(form, "archive_name")
+            if safe_archive_name(name) == "默认方案":
+                json_response(self, 400, {"ok": False, "error": "默认方案不可删除"})
+                return
+            path = archive_path(name, _config_scope(self))
             if path.exists():
                 path.unlink()
             json_response(self, 200, {"archives": list_archives(self)})
@@ -3134,7 +3393,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not _is_admin(self):
                 json_response(self, 403, {"ok": False, "error": "admin only"})
                 return
-            ws = _workspace_id(self)
+            ws = _config_scope(self)
             ws_dir = _ws_dir(ws)
             if ws_dir.exists():
                 shutil.rmtree(ws_dir)
@@ -3212,7 +3471,11 @@ class Handler(SimpleHTTPRequestHandler):
         request_data = summarize_values_files(form_values, form_files)
         ws = _workspace_id(self)
         form_values["_request_host"] = _public_base_url(self) or ""
-        job_id = create_job(form_values, form_files, "page", "multipart", request_data, ws, username=_decode_username(self))
+        try:
+            job_id = create_job(form_values, form_files, "page", "multipart", request_data, ws, username=_decode_username(self))
+        except Exception as exc:
+            json_response(self, 400, api_error("invalid_request", str(exc)))
+            return
         json_response(self, 200, job_id_response(job_id))
 
 

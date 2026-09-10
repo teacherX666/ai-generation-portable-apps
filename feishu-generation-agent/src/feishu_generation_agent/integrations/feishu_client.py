@@ -58,6 +58,7 @@ class FeishuClient:
         self._http_client = http_client or httpx.AsyncClient(
             base_url=_BASE_URL,
             timeout=30,
+            trust_env=False,
         )
         self._owns_http_client = http_client is None
         self._output_folder_token = settings.lark_output_folder_token

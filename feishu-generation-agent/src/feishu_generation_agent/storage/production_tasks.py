@@ -277,16 +277,23 @@ class ProductionTaskStore:
         async with self._lock:
             cursor = await self._connection.execute(
                 f"""SELECT * FROM (
-                    SELECT {_BINDING_COLUMNS} FROM production_tasks
-                    WHERE source_app_token = ? AND source_table_id = ?
-                      AND active = 0 AND deleted = 0
-                    {owner_clause}
-                    UNION ALL
-                    SELECT {_BINDING_COLUMNS} FROM production_task_history
-                    WHERE source_app_token = ? AND source_table_id = ?
-                      AND active = 0 AND deleted = 0
-                    {owner_clause}
-                ) ORDER BY updated_at DESC LIMIT ?""",
+                    SELECT {_BINDING_COLUMNS},
+                           ROW_NUMBER() OVER (
+                             PARTITION BY source_record_id
+                             ORDER BY updated_at DESC
+                           ) AS _rn
+                    FROM (
+                      SELECT {_BINDING_COLUMNS} FROM production_tasks
+                      WHERE source_app_token = ? AND source_table_id = ?
+                        AND active = 0 AND deleted = 0
+                      {owner_clause}
+                      UNION ALL
+                      SELECT {_BINDING_COLUMNS} FROM production_task_history
+                      WHERE source_app_token = ? AND source_table_id = ?
+                        AND active = 0 AND deleted = 0
+                      {owner_clause}
+                    )
+                ) WHERE _rn = 1 ORDER BY updated_at DESC LIMIT ?""",
                 (
                     app_token,
                     table_id,

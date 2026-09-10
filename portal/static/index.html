@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RedCraft 🐟</title>
   <link rel="icon" type="image/png" href="/ui/brand/favicon.png">
-  <link rel="stylesheet" href="/ui/portal-ui-core.css">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/ui/portal-ui-core.css?v=20260909-ui">
+  <link rel="stylesheet" href="/styles.css?v=20260909-home-bar-clean">
 </head>
 <body class="ui-shell">
   <!-- 顶部两条栏包进统一 sticky 容器：整块一起吸顶，切换栏永远紧贴标题栏下方，
@@ -119,7 +119,6 @@
       </div>
     </div>
     <div class="portal-nav__footer">
-      <button id="optimizeBtn" class="portal-help-btn portal-optimize-btn" type="button">优化提示词</button>
       <button id="helpBtn" class="portal-help-btn" type="button">新手指南</button>
       <button id="moduleHelpBtn" class="portal-help-btn" type="button">模块帮助</button>
     </div>
@@ -142,18 +141,19 @@
   </div>
   <section id="tab-home" class="tab-panel portal-home-panel" role="tabpanel" aria-labelledby="portalHomeBtn" hidden>
   <div class="rc-home">
-    <header class="rc-home__bar">
-      <div class="rc-brand">
-        <span class="rc-brand__mark" aria-hidden="true">R</span>
-        <div class="rc-brand__copy">
-          <strong>RedCraft</strong>
-          <span>红海无限 AI 创作平台</span>
-        </div>
-      </div>
-      <button id="portalHomeExitBtn" class="rc-back" type="button" hidden>返回工作台</button>
-    </header>
+    <div class="rc-orbit rc-orbit--one" aria-hidden="true"></div>
+    <div class="rc-orbit rc-orbit--two" aria-hidden="true"></div>
+    <div class="rc-noise" aria-hidden="true"></div>
 
     <section class="rc-hero">
+      <div class="rc-hero__visual" aria-hidden="true">
+        <div class="rc-hero__visual-grid"></div>
+        <div class="rc-hero__visual-ring rc-hero__visual-ring--outer"></div>
+        <div class="rc-hero__visual-ring rc-hero__visual-ring--inner"></div>
+        <img class="rc-hero__visual-core" src="/ui/brand/favicon.png" alt="RedCraft">
+        <span class="rc-hero__visual-orbit rc-hero__visual-orbit--a"></span>
+        <span class="rc-hero__visual-orbit rc-hero__visual-orbit--b"></span>
+      </div>
       <div class="rc-hero__eyebrow"><span class="rc-hero__dot" aria-hidden="true"></span>RED INFINITY · 全球移动游戏</div>
       <h1 class="rc-hero__title">让灵感，<br><span class="rc-hero__accent">跑赢时间</span></h1>
       <p class="rc-hero__lead">一站式 AI 创作平台，整合图像、视频、数字人与创意画布，从概念到成片，在一个工作台内完成。</p>
@@ -161,9 +161,51 @@
         <button class="rc-btn rc-btn--red" type="button" data-scroll="rc-quick">开始创作</button>
         <button class="rc-btn rc-btn--ghost" type="button" data-scroll="rc-more">了解更多</button>
       </div>
+      <div class="rc-hero__signal" aria-hidden="true"><span>IDEA</span><i></i><span>IMAGE</span><i></i><span>VIDEO</span><i></i><span>WORLD</span></div>
     </section>
 
-    <section id="rc-quick" class="rc-section">
+    <section class="rc-story rc-reveal" aria-labelledby="rc-story-title">
+      <div class="rc-story__intro">
+        <span class="rc-kicker">RED INFINITY / CULTURE</span>
+        <h2 id="rc-story-title"><span class="rc-title-line rc-title-line--lead">为 Ta 做更多</span><span class="rc-title-line rc-title-line--accent">更好的游戏</span></h2>
+        <p>从北京出发，面向全球移动游戏市场。RedCraft 把红海无限的全球视野、长期主义与创造力，带进每一次创作。</p>
+        <div class="rc-story__motto">WE CREATE MORE AND BETTER GAMES</div>
+        <div class="rc-story__stats" aria-label="红海无限公开信息">
+          <div><strong>2016</strong><span>公司成立</span></div>
+          <div><strong>160+</strong><span>覆盖国家和地区</span></div>
+          <div><strong>10亿+</strong><span>官网披露：全球下载量</span></div>
+        </div>
+      </div>
+      <div class="rc-story__sequence">
+        <div class="rc-story__rail" aria-hidden="true"><span class="rc-story__rail-line"></span><i data-story-dot="0" class="is-active">01</i><i data-story-dot="1">02</i><i data-story-dot="2">03</i></div>
+        <div class="rc-story__steps">
+          <article class="rc-story__step is-active" data-story-step="0">
+            <span class="rc-story__step-kicker">01 / GLOBAL MINDSET</span>
+            <h3>全球视野</h3>
+            <p>不把创作困在一个市场。理解不同文化，让好的玩法、画面与故事抵达更多玩家。</p>
+          </article>
+          <article class="rc-story__step" data-story-step="1">
+            <span class="rc-story__step-kicker">02 / CRAFTSMANSHIP</span>
+            <h3>长期打磨</h3>
+            <p>从灵感、素材到成片，每一个细节都值得被认真对待；让效率服务于品质，而不是牺牲品质。</p>
+          </article>
+          <article class="rc-story__step" data-story-step="2">
+            <span class="rc-story__step-kicker">03 / CREATE TOGETHER</span>
+            <h3>一起创造</h3>
+            <p>把工具、经验和灵感连接起来，让团队更快形成共识，也让每一次尝试都能留下资产。</p>
+          </article>
+        </div>
+        <div class="rc-story__stage" aria-hidden="true">
+          <div class="rc-story__stage-grid"></div>
+          <div class="rc-story__stage-ring rc-story__stage-ring--a"></div>
+          <div class="rc-story__stage-ring rc-story__stage-ring--b"></div>
+          <div class="rc-story__stage-core"><span class="rc-story__stage-number">01</span><span class="rc-story__stage-label">GLOBAL<br>CREATIVE</span></div>
+          <div class="rc-story__stage-caption">RED INFINITY &#183; REDCRAFT</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="rc-quick" class="rc-section rc-reveal">
       <div class="rc-section__head">
         <div class="rc-section__titlewrap">
           <span class="rc-kicker">QUICK START</span>
@@ -171,33 +213,33 @@
         </div>
         <p class="rc-section__hint">六个创作模块，一处完成</p>
       </div>
-      <div class="rc-grid">
-        <a class="rc-card rc-launch" data-tab="feishu-generation-agent" href="#" role="button">
+      <div class="rc-grid rc-reveal rc-reveal--delay-2">
+        <a class="rc-card rc-card--feishu rc-launch rc-stagger-1" data-tab="feishu-generation-agent" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--doc" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">01</span>
           <span class="rc-card__body"><strong>飞书创作助手</strong><em>从文档拆任务，审批后批量出图出片</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="seedance" href="#" role="button">
+        <a class="rc-card rc-card--video rc-launch rc-stagger-2" data-tab="seedance" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--video" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">02</span>
           <span class="rc-card__body"><strong>视频生成</strong><em>文生视频 · 图生视频 · 首尾帧</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="nb" href="#" role="button">
+        <a class="rc-card rc-card--image rc-launch rc-stagger-3" data-tab="nb" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--image" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">03</span>
           <span class="rc-card__body"><strong>图片生成</strong><em>文生图 · 图生图 · 批量出图</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="volcengine-portrait" href="#" role="button">
+        <a class="rc-card rc-card--portrait rc-launch rc-stagger-4" data-tab="volcengine-portrait" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--portrait" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">04</span>
           <span class="rc-card__body"><strong>人像视频</strong><em>数字人口播 · 虚拟人物视频</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="infinite-canvas" href="#" role="button">
+        <a class="rc-card rc-card--canvas rc-launch rc-stagger-5" data-tab="infinite-canvas" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--canvas" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">05</span>
           <span class="rc-card__body"><strong>创意画布</strong><em>节点式组织参考图、提示词与模型</em></span>
           <span class="rc-card__arrow">→</span>
         </a>
-        <a class="rc-card rc-launch" data-tab="dreamina" href="#" role="button">
+        <a class="rc-card rc-card--dream rc-launch rc-stagger-6" data-tab="dreamina" href="#" role="button"><span class="rc-card__ghost rc-card__ghost--dream" aria-hidden="true"><i></i><b></b><em></em></span>
           <span class="rc-card__index">06</span>
           <span class="rc-card__body"><strong>即梦创作</strong><em>即梦账号的图片与视频生成</em></span>
           <span class="rc-card__arrow">→</span>
@@ -205,18 +247,18 @@
       </div>
     </section>
 
-    <section id="rc-more" class="rc-section">
+    <section id="rc-more" class="rc-section rc-reveal">
       <div class="rc-section__head">
         <div class="rc-section__titlewrap">
           <span class="rc-kicker">CAPABILITIES</span>
           <h2>一个工作台，完整创作闭环</h2>
         </div>
       </div>
-      <div class="rc-cap-list">
-        <div class="rc-cap"><span class="rc-cap__mark">A</span><div><strong>统一入口</strong><p>所有创作工具集中管理，不切换多个系统。</p></div></div>
-        <div class="rc-cap"><span class="rc-cap__mark">B</span><div><strong>即时状态</strong><p>本地服务与资源状态一目了然，减少等待。</p></div></div>
-        <div class="rc-cap"><span class="rc-cap__mark">C</span><div><strong>记录回放</strong><p>创作记录与历史任务可随时回看和复用。</p></div></div>
-        <div class="rc-cap"><span class="rc-cap__mark">D</span><div><strong>资产沉淀</strong><p>图片、视频与灵感素材沉淀在同一个工作区。</p></div></div>
+      <div class="rc-cap-list rc-reveal rc-reveal--delay-2">
+        <div class="rc-cap rc-stagger-1"><span class="rc-cap__mark">A</span><div><strong>统一入口</strong><p>所有创作工具集中管理，不切换多个系统。</p></div></div>
+        <div class="rc-cap rc-stagger-2"><span class="rc-cap__mark">B</span><div><strong>即时状态</strong><p>本地服务与资源状态一目了然，减少等待。</p></div></div>
+        <div class="rc-cap rc-stagger-3"><span class="rc-cap__mark">C</span><div><strong>记录回放</strong><p>创作记录与历史任务可随时回看和复用。</p></div></div>
+        <div class="rc-cap rc-stagger-4"><span class="rc-cap__mark">D</span><div><strong>资产沉淀</strong><p>图片、视频与灵感素材沉淀在同一个工作区。</p></div></div>
       </div>
     </section>
 
@@ -436,6 +478,7 @@
 
         <div class="rowButtons">
           <button type="button" @click="updateCli()">更新 CLI</button>
+          <button type="button" @click="restoreDefaultConfig()">恢复默认设置</button>
         </div>
         <section style="margin-bottom:14px">
           <!-- 输出目录选择在 Portal(远程)模式下已移除:结果统一保存到服务机
@@ -567,25 +610,9 @@
       </aside>
       <section class="workspace ui-main">
         <div class="panel ui-panel">
-          <div class="sub-tabs">
-            <button type="button" class="sub-tab" :class="{ isActive: wsTab==='jobs' }" @click="wsTab='jobs'">任务</button>
-            <button type="button" class="sub-tab" :class="{ isActive: wsTab==='history' }" @click="wsTab='history'; loadHistory()">历史</button>
-          </div>
-          <div v-show="wsTab==='jobs'">
-            <div class="resultHeader"><h2>任务</h2><span class="running-count">{{ runningCount ? runningCount + ' 进行中' : '' }}</span></div>
-            <div class="results" id="dm-jobsList"><p class="ui-empty ui-empty--compact dm-jobs-empty">暂无任务，提交后这里显示进度</p></div>
-          </div>
-          <div v-show="wsTab==='history'">
-            <div class="resultHeader">
-              <h2>历史记录</h2>
-              <div class="filter-bar">
-                <button type="button" class="filter-btn" :class="{ active: historyFilter==='all' }" @click="historyFilter='all'; historyLimit=8; loadHistory()">全部</button>
-                <button type="button" class="filter-btn" :class="{ active: historyFilter==='image' }" @click="historyFilter='image'; historyLimit=8; loadHistory()">图片</button>
-                <button type="button" class="filter-btn" :class="{ active: historyFilter==='video' }" @click="historyFilter='video'; historyLimit=8; loadHistory()">视频</button>
-              </div>
-            </div>
-            <div id="dm-historyList"></div>
-          </div>
+          <div class="resultHeader"><h2>任务 <button type="button" @click="refreshTasks()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer">↻ 刷新</button></h2><span class="running-count">{{ runningCount ? runningCount + ' 进行中' : '' }}</span></div>
+          <div class="results" id="dm-jobsList"><p class="ui-empty ui-empty--compact dm-jobs-empty">暂无任务，提交后这里显示进度</p></div>
+          <div id="dm-historyList" style="margin-top:14px;padding-top:10px;border-top:1px dashed #e2e8f0"></div>
         </div>
       </section>
     </main>
@@ -780,6 +807,7 @@
                 </option>
               </select>
             </label>
+            <p v-if="modelHint" class="hint" style="margin:4px 0 6px;color:#b45309">{{ modelHint }}</p>
             <p v-if="!localReady" class="hint" style="margin:4px 0 6px;color:#b45309">未检测到本地 AI Port，当前仅提供云端模型。</p>
             <p v-if="isLocalModel(model)" class="hint" style="margin:4px 0 6px;color:#0f766e">本地模型使用海螺 H3 全参考生成，任务类型将按参考生视频处理。</p>
             <label style="margin-top:8px">任务类型
@@ -807,9 +835,7 @@
               </label>
               <label style="flex:1;min-width:100px">比例
                 <select v-model="ratio">
-                  <option>16:9</option><option>9:16</option><option>1:1</option>
-                  <option>4:3</option><option>3:4</option><option>21:9</option>
-                  <option>adaptive</option>
+                  <option v-for="r in modelRatios()" :value="r">{{ r }}</option>
                 </select>
               </label>
               <label style="flex:1;min-width:80px">次数 <input type="number" v-model="repeat" min="1" max="4"></label>
@@ -824,15 +850,7 @@
               <button @click="createJob()" :disabled="submitting" class="ui-btn ui-btn--primary" style="flex:1">
                 {{ submitting ? statusText : '开始生成' }}
               </button>
-              <button v-if="_activeVpJobId" @click="cancelJob()" class="ui-btn ui-btn--danger">✕ 取消任务</button>
-            </div>
-            <div v-if="events" style="margin-top:8px;font-size:11px;color:#334155;max-height:150px;overflow-y:auto;background:#f8fafc;padding:6px;border-radius:4px;border:1px solid #e2e8f0" v-html="events"></div>
-            <div v-for="r in results" style="margin-top:8px">
-              <video v-if="r.url" :src="r.url" controls style="max-height:200px;width:100%;border-radius:6px"></video>
-              <div v-if="r.url" class="row" style="margin-top:4px;align-items:center">
-                <span style="font-size:12px;color:#64748b;flex:1">{{ r.filename }}</span>
-                <button @click="blobDownload(r.url, r.filename)" class="ui-btn ui-btn--sm ui-btn--primary">⬇ 下载</button>
-              </div>
+              <button @click="restoreDefaultConfig()" class="ui-btn ui-btn--ghost">恢复默认设置</button>
             </div>
             <div style="margin-top:12px;padding-top:10px;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b">
               <div class="row" style="align-items:center">
@@ -847,25 +865,58 @@
       </div>
 
       <section class="card">
-        <h2>生成历史 <button @click="loadJobs()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">刷新</button></h2>
-        <div v-if="jobs.length===0 && extraHistory().length===0" style="color:#64748b;font-size:12px">暂无生成记录</div>
-        <div v-for="j in jobs" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px">
-          <div class="row" style="align-items:center;margin-bottom:2px">
-            <span :class="'tag tag-'+(j.status||'queued')">{{ j.status }}</span>
-            <span style="font-size:12px;flex:1">{{ (j.prompt||'').slice(0,60) }}...</span>
-            <span v-if="j.username" style="font-size:11px;color:#64748b;margin-right:6px">@{{ j.username }}</span>
-            <span v-if="formatRuntime(j)" style="font-size:11px;color:#475569;margin-right:6px">{{ formatRuntime(j) }}</span>
-            <span style="font-size:11px;color:#64748b">{{ j.created_at }}</span>
+        <h2>任务 <button @click="loadJobs()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">↻ 刷新</button></h2>
+        <div v-if="jobs.length===0 && extraHistory().length===0" style="color:#64748b;font-size:12px">暂无任务记录，提交后自动显示</div>
+
+        <!-- 任务列表（运行中 + 历史合并，点击查看详情） -->
+        <div v-if="!selectedVpJobId">
+          <div v-for="j in visibleVpJobs()" :key="j.job_id || j.id" @click="selectVpJob(j.job_id || j.id)" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px;cursor:pointer">
+            <div class="row" style="align-items:center;margin-bottom:2px;gap:8px">
+              <span :class="'tag tag-'+(j.status||'queued')">{{ vpStatusLabel(j.status) }}</span>
+              <span style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (j.prompt||'').slice(0,60) }}</span>
+              <span v-if="j.username" style="font-size:11px;color:#64748b;margin-right:6px">@{{ j.username }}</span>
+              <span v-if="formatRuntime(j)" style="font-size:11px;color:#475569;margin-right:6px">{{ formatRuntime(j) }}</span>
+              <span style="font-size:11px;color:#64748b">{{ j.created_at }}</span>
+              <span style="font-size:11px;color:#2563eb;white-space:nowrap">查看 ›</span>
+            </div>
+            <div v-if="j.errors && j.errors.length" style="font-size:11px;color:#dc2626;margin-top:4px">{{ friendlyErrors(j.errors) }}</div>
+            <div v-if="j.retryable" style="font-size:11px;color:#92400e;margin-top:4px">服务重启中断，可点击查看并重试</div>
           </div>
-          <div v-if="j.errors && j.errors.length" style="font-size:11px;color:#dc2626;margin-top:4px">{{ friendlyErrors(j.errors) }}</div>
-          <!-- retryable=服务重启中断；普通失败任务同样可原样重提（后端 retry 端点复用落盘参数） -->
-          <button v-if="j.retryable || j.status==='failed'" @click="retryVpJob(j.job_id)" class="ui-btn ui-btn--sm ui-btn--primary" style="margin-top:6px">重试</button>
-          <div v-for="r in (j.results||[]).filter(x => x.download_url)" class="row" style="align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #f1f5f9">
-            <video :src="appPath + r.download_url" controls style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
-            <span style="font-size:11px;color:#64748b;flex:1;margin-left:8px">{{ r.filename || 'video' }}</span>
-            <button @click="blobDownload(appPath + r.download_url, r.filename || 'video')" class="ui-btn ui-btn--sm ui-btn--primary">⬇ 下载</button>
+          <button v-if="jobs.length > vpJobsLimit" @click="vpJobsLimit += 20" class="ui-btn ui-btn--secondary ui-btn--block" style="margin-top:4px">加载更多（还有 {{ jobs.length - vpJobsLimit }} 条）</button>
+        </div>
+
+        <!-- 任务详情 -->
+        <div v-if="!!selectedVpJobId">
+          <div v-if="vpSelectedJob()">
+            <button @click="closeVpJobDetail()" class="ui-btn ui-btn--secondary ui-btn--block" style="margin-bottom:8px">← 返回列表</button>
+            <div class="row" style="align-items:center;margin-bottom:10px">
+              <h3 style="margin:0;font-size:15px">任务 {{ (vpSelectedJob().job_id||'').slice(0,8) }}</h3>
+            </div>
+            <div class="row" style="align-items:center;gap:8px;margin-bottom:6px">
+              <span :class="'tag tag-'+(vpSelectedJob().status||'queued')">{{ vpStatusLabel(vpSelectedJob().status) }}</span>
+              <span v-if="formatRuntime(vpSelectedJob())" style="font-size:11px;color:#475569">{{ formatRuntime(vpSelectedJob()) }}</span>
+              <span style="font-size:11px;color:#64748b">{{ vpSelectedJob().created_at }}</span>
+            </div>
+            <div style="font-size:12px;color:#334155;margin-bottom:6px;white-space:pre-wrap">{{ (vpSelectedJob().prompt||'') }}</div>
+            <div v-if="vpSelectedJob().errors && vpSelectedJob().errors.length" style="font-size:11px;color:#dc2626;margin:6px 0">{{ friendlyErrors(vpSelectedJob().errors) }}</div>
+            <div v-for="r in (vpSelectedJob().results||[]).filter(x => x.download_url)" class="row" style="align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #f1f5f9">
+              <video :src="appPath + r.download_url" controls style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
+              <span style="font-size:11px;color:#64748b;flex:1;margin-left:8px">{{ r.filename || 'video' }}</span>
+              <button @click="blobDownload(appPath + r.download_url, r.filename || 'video')" class="ui-btn ui-btn--sm ui-btn--primary">⬇ 下载</button>
+            </div>
+            <div class="row" style="margin-top:10px;gap:8px">
+              <button v-if="vpSelectedJob().retryable || vpSelectedJob().status==='failed'" @click="retryVpJob(vpSelectedJob().job_id)" class="ui-btn ui-btn--sm ui-btn--primary">重试</button>
+              <button v-if="isVpCancellable(vpSelectedJob())" @click="cancelJob()" class="ui-btn ui-btn--sm ui-btn--danger">✕ 取消任务</button>
+            </div>
+            <div v-if="(vpSelectedJob().events||[]).length" style="margin-top:10px;font-size:11px;color:#334155;max-height:200px;overflow-y:auto;background:#f8fafc;padding:6px;border-radius:4px;border:1px solid #e2e8f0">
+              <div v-for="e in vpSelectedJob().events">{{ e.time }} {{ e.message }}</div>
+            </div>
+          </div>
+          <div v-else style="color:#64748b;font-size:12px;padding:12px 0">
+            <button @click="closeVpJobDetail()" class="ui-btn ui-btn--secondary">← 返回列表</button>
           </div>
         </div>
+
         <div v-if="extraHistory().length" style="margin-top:14px;padding-top:10px;border-top:1px dashed #e2e8f0;font-size:12px;color:#94a3b8">服务重启前的历史任务</div>
         <div v-for="a in extraHistory()" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px;margin-top:8px">
           <div class="row" style="align-items:center;margin-bottom:2px">
@@ -1347,7 +1398,8 @@
   <script src="/js/portal-analytics.js"></script>
   <script src="/js/portal-utils.js"></script>
   <script src="/js/portal-shell.js"></script>
-  <script src="/app.js"></script>
+  <script src="/js/model-capabilities.js"></script>
+  <script src="/app.js?v=20260910-capabilities"></script>
   <script src="/js/portal-enhancements.js"></script>
   <script src="/js/portal-module-registry.js"></script>
   <script src="/js/portal-rag-interceptor.js"></script>
@@ -1370,5 +1422,52 @@
   });
 })();
 </script>
+<script>
+/* RedCraft Culture Story v2: active chapter follows the scroll container center. */
+(function () {
+  var story = document.querySelector('.rc-story');
+  var steps = Array.prototype.slice.call(document.querySelectorAll('[data-story-step]'));
+  var dots = Array.prototype.slice.call(document.querySelectorAll('[data-story-dot]'));
+  if (!story || !steps.length) return;
+  var number = story.querySelector('.rc-story__stage-number');
+  var label = story.querySelector('.rc-story__stage-label');
+  var labels = [['01', 'GLOBAL\nCREATIVE'], ['02', 'CRAFT\nQUALITY'], ['03', 'CREATE\nTOGETHER']];
+  var active = -1;
+  function activate(index) {
+    if (index === active) return;
+    active = index;
+    steps.forEach(function (step, i) { step.classList.toggle('is-active', i === index); });
+    dots.forEach(function (dot, i) { dot.classList.toggle('is-active', i === index); });
+    story.dataset.story = String(index);
+    if (number) number.textContent = labels[index][0];
+    if (label) label.innerHTML = labels[index][1].replace('\n', '<br>');
+  }
+  function measure() {
+    var root = document.querySelector('.portal-home-panel');
+    var rootRect = root ? root.getBoundingClientRect() : { top: 0, height: window.innerHeight };
+    var targetY = rootRect.top + rootRect.height * 0.44;
+    var nearest = 0;
+    var distance = Infinity;
+    steps.forEach(function (step, i) {
+      var rect = step.getBoundingClientRect();
+      var center = rect.top + rect.height * 0.34;
+      var d = Math.abs(center - targetY);
+      if (d < distance) { distance = d; nearest = i; }
+    });
+    activate(nearest);
+  }
+  var root = document.querySelector('.portal-home-panel');
+  var ticking = false;
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(function () { ticking = false; measure(); });
+  }
+  if (root) root.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', measure, { passive: true });
+  measure();
+})();
+</script>
+
 </body>
 </html>

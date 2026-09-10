@@ -366,6 +366,23 @@ class CatSkinManagerTests(unittest.TestCase):
                 self.assertNotEqual(".", skin["frames"]["a"][y][x], (skin["id"], x, y))
             self.assertEqual(classic["parts"]["tail"], skin["parts"]["tail"])
 
+    def test_legacy_state_is_normalized_on_read(self):
+        self.state_path.write_text(json.dumps({
+            "users": {
+                "legacy": {
+                    "equipped_skin_id": None,
+                    "open_count": "999",
+                    "skins": [None, {"id": "kept"}],
+                }
+            }
+        }), "utf-8")
+        state = self.manager._load()
+        normalized = state["users"]["legacy"]
+        self.assertEqual(2, state["schema_version"])
+        self.assertEqual("classic-black", normalized["equipped_skin_id"])
+        self.assertEqual(2, normalized["open_count"])
+        self.assertEqual([{"id": "kept"}], normalized["skins"])
+
     def test_state_contains_no_api_key(self):
         self.manager.open_gift(self.user_a)
         raw = self.state_path.read_text("utf-8")

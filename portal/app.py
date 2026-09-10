@@ -175,7 +175,9 @@ _METADATA_WHITELIST = {
     "prompt", "text", "content", "aspect_ratio", "ratio", "duration",
     "resolution", "image_size", "count", "mode", "style",
     "negative_prompt", "seed", "generate_audio", "model",
+    "custom_model", "model_name", "model_version",
 }
+_MODEL_FIELDS = {"model", "custom_model", "model_name", "model_version"}
 _METADATA_BLOCKLIST_SUBSTR = ("key", "token", "secret", "password")
 _METADATA_MAX_BODY = 5 * 1024 * 1024
 
@@ -223,8 +225,12 @@ def extract_job_metadata(content_type: str, body: bytes) -> dict:
                 if isinstance(value, (str, int, float, bool)):
                     if low == "prompt":
                         result["prompt"] = str(value).strip()
-                    elif low == "model":
-                        result["model"] = str(value).strip()
+                    elif low in _MODEL_FIELDS:
+                        candidate = str(value).strip()
+                        if not candidate:
+                            continue
+                        if low == "custom_model" or not result["model"]:
+                            result["model"] = candidate
                     else:
                         result["params"][low] = value
         return result
@@ -670,12 +676,40 @@ class AppManager:
 
     def _kill_port_squatter(self, port: int):
         """Kill any process holding `port` that we didn't start ourselves.
-        Retries once if a listener still survives after the first SIGKILL pass —
-        macOS launchd 偶尔会先收养孤儿进程导致首轮 lsof 抢在 launchd 完成 reap 之前。"""
-        lsof_candidates = ["/usr/sbin/lsof", "/usr/bin/lsof", "/opt/homebrew/bin/lsof", "lsof"]
+
+        macOS/Linux use lsof. Windows falls back to netstat + taskkill because
+        lsof is usually absent there and orphaned child processes must not wedge
+        a port after Portal or an app restarts.
+        """
+        def _windows_listeners() -> list[int] | None:
+            try:
+                raw = subprocess.check_output(
+                    ["netstat", "-ano", "-p", "TCP"],
+                    stderr=subprocess.DEVNULL, text=True, timeout=5,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+                return None
+            pids: list[int] = []
+            suffix = f":{port}"
+            for line in raw.splitlines():
+                columns = line.split()
+                if len(columns) < 5 or columns[0].upper() != "TCP":
+                    continue
+                if columns[3].upper() not in ("LISTENING", "LISTEN"):
+                    continue
+                if not columns[1].endswith(suffix):
+                    continue
+                try:
+                    pids.append(int(columns[4]))
+                except ValueError:
+                    continue
+            return pids
 
         def _query_listeners() -> list[int] | None:
-            """Return a list of PIDs holding the port in LISTEN; None if lsof unavailable."""
+            """Return listener PIDs, or None if no supported probe is available."""
+            if os.name == "nt":
+                return _windows_listeners()
+            lsof_candidates = ["/usr/sbin/lsof", "/usr/bin/lsof", "/opt/homebrew/bin/lsof", "lsof"]
             for lsof_bin in lsof_candidates:
                 try:
                     out = subprocess.check_output(
@@ -690,7 +724,7 @@ class AppManager:
                             continue
                     return pids
                 except subprocess.CalledProcessError:
-                    return []  # lsof ran cleanly, no listeners
+                    return []
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             return None
@@ -698,24 +732,37 @@ class AppManager:
         for attempt in range(2):
             pids = _query_listeners()
             if pids is None:
-                print(f"  [port-cleanup] WARNING: lsof not found, cannot probe port {port}", flush=True)
+                print(f"  [port-cleanup] WARNING: no supported listener probe for port {port}", flush=True)
                 return
             own_pids = {proc.pid for proc in self.processes.values() if proc.poll() is None}
             killed_any = False
             for pid in pids:
                 if pid in own_pids or pid == os.getpid():
                     continue
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                    killed_any = True
-                    print(f"  [port-cleanup] killed orphan PID {pid} on port {port}"
-                          + (f" (retry)" if attempt > 0 else ""), flush=True)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                if os.name == "nt":
+                    try:
+                        result = subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/F", "/T"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            check=False, timeout=10,
+                        )
+                        if result.returncode == 0:
+                            killed_any = True
+                            print(f"  [port-cleanup] killed orphan PID {pid} on port {port}"
+                                  + (f" (retry)" if attempt > 0 else ""), flush=True)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                else:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        killed_any = True
+                        print(f"  [port-cleanup] killed orphan PID {pid} on port {port}"
+                              + (f" (retry)" if attempt > 0 else ""), flush=True)
+                    except (ProcessLookupError, PermissionError):
+                        pass
             if not killed_any:
                 return
             time.sleep(0.5 if attempt == 0 else 1.0)
-
     def start_all(self):
         for name, config in APPS.items():
             if config["spec"].managed:
@@ -1012,7 +1059,7 @@ class UsageTracker:
         # 调用，threading.Lock 不可重入，同锁会死锁。
         self._history_lock = threading.Lock()
         self._data = self._load()
-        self._pending_jobs: list[dict] = []
+        self._pending_jobs: list[dict] = self._restore_pending_jobs()
         # Debounced persistence: hot paths (record/register_job/inc_daily_jobs/
         # finalize_job/_add_user_stat) used to json.dumps + double-write the whole
         # usage.json to disk *while holding self._lock*, on EVERY proxied request
@@ -1234,6 +1281,36 @@ class UsageTracker:
         except (json.JSONDecodeError, OSError):
             return {}
 
+    def _restore_pending_jobs(self) -> list[dict]:
+        """Resume polling non-terminal history records after a Portal restart."""
+        restored: list[dict] = []
+        for record in self._load_history().values():
+            if not isinstance(record, dict):
+                continue
+            status = str(record.get("status") or "").lower()
+            app = str(record.get("app") or "")
+            job_id = str(record.get("job_id") or "")
+            if status not in {"pending", "queued", "submitted", "running", "processing"}:
+                continue
+            if not app or app not in APPS or not job_id:
+                continue
+            params = record.get("params") if isinstance(record.get("params"), dict) else {}
+            try:
+                duration_per_item = max(0, int(params.get("duration") or 0))
+            except (TypeError, ValueError):
+                duration_per_item = 0
+            submitted_at = float(record.get("submitted_at") or time.time())
+            restored.append({
+                "app": app,
+                "job_id": job_id,
+                "username": str(record.get("username") or ""),
+                "job_type": "video" if record.get("kind") == "video" else "image",
+                "duration_per_item": duration_per_item,
+                "submitted_at": submitted_at,
+                "date": time.strftime("%Y-%m-%d", time.localtime(submitted_at)),
+            })
+        return restored
+
     def history_records(self) -> dict:
         """任务级历史记录（区别于统计页按天 get_history）。"""
         return self._load_history()
@@ -1258,6 +1335,15 @@ class UsageTracker:
                 first = errors[0]
                 error_text = str(first.get("message") or first.get("error") or first
                                  if isinstance(first, dict) else first).strip()
+            if not str(rec.get("model") or "").strip():
+                model = data.get("model") or nested.get("model") or ""
+                if model:
+                    rec["model"] = str(model).strip()[:200]
+            if not str(rec.get("prompt") or "").strip():
+                prompt = data.get("prompt") or nested.get("prompt") or ""
+                if prompt:
+                    rec["prompt"] = str(prompt).strip()[:2000]
+
             rec["status"] = normalize_history_status(status)
             rec["completed_at"] = time.time()
             rec["duration"] = int(done * per_item) if done > 0 and per_item else 0

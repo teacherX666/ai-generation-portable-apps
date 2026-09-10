@@ -171,19 +171,66 @@ class ProductionBitableService:
 
     async def active_runs(self, *, owner_user_id: str = "prime-local"):
         location = await self._table_location()
+        app_token = location.app_token or ""
+        table_id = location.table_id
+        bindings = await self._store.list_active(
+            app_token,
+            table_id,
+            owner_user_id=owner_user_id,
+        )
+        # Reconcile persisted table bindings before displaying them.  A process
+        # restart or an old cancellation can leave production_tasks at 待审批
+        # while the runtime is already terminal; those rows otherwise render as
+        # dead tasks whose buttons all return conflicts.
+        for binding in bindings:
+            try:
+                await self.sync_once(
+                    binding.run_id,
+                    owner_user_id=binding.owner_user_id,
+                )
+            except RunNotFound:
+                try:
+                    await self._store.release(
+                        binding.run_id,
+                        status=TableTaskStatus.FAILED,
+                        last_error="本地运行记录不存在",
+                        owner_user_id=binding.owner_user_id,
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                # A transient runtime/provider error must not prevent the task
+                # list from loading.  Keep the last persisted status for now.
+                continue
         return await self._store.list_active(
-            location.app_token or "",
-            location.table_id,
+            app_token,
+            table_id,
             owner_user_id=owner_user_id,
         )
 
     async def recent_runs(self, *, owner_user_id: str = "prime-local"):
         location = await self._table_location()
-        return await self._store.list_recent(
-            location.app_token or "",
-            location.table_id,
+        app_token = location.app_token or ""
+        table_id = location.table_id
+        recent = await self._store.list_recent(
+            app_token,
+            table_id,
             owner_user_id=owner_user_id,
+            limit=50,
         )
+        active_record_ids = {
+            binding.record_id
+            for binding in await self._store.list_active(
+                app_token,
+                table_id,
+                owner_user_id=owner_user_id,
+            )
+        }
+        return [
+            binding
+            for binding in recent
+            if binding.record_id not in active_record_ids
+        ][:10]
 
     async def archived_runs(self, *, owner_user_id: str = "prime-local"):
         location = await self._table_location()

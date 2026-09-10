@@ -33,7 +33,7 @@ def test_planner_system_prompt_prime_hash_is_frozen() -> None:
     prime = planner_system_prompt()
 
     assert hashlib.sha256(prime.encode("utf-8")).hexdigest() == (
-        "fc009b4bb8351502a9412b88a5554a8567a9aa9a633eba588fb673b513f16db1"
+        "1283c1dc93fe915049faaf2018c0c0832122287d80b192ad5f3cc1edeb8b216b"
     )
 
 
@@ -647,6 +647,22 @@ async def test_planner_removes_video_only_image_size_without_model_retry(
 
     assert model.calls == 1
     assert plan.tasks[0].image_size is None
+
+
+def test_generated_video_plan_cannot_override_runtime_provider_or_default_count(
+    narrative_document: NormalizedDocument,
+) -> None:
+    task = _video_task()
+    task["video_provider"] = "seedance"
+    task["output_count"] = 4
+    payload = json.loads(_plan_json(task))
+
+    issues = _normalize_generated_plan_payload(payload, narrative_document)
+
+    assert issues == []
+    normalized = payload["tasks"][0]
+    assert normalized["video_provider"] is None
+    assert normalized["output_count"] == 1
 
 
 def test_generated_plan_normalization_filters_unknown_sources_and_remaps_asset_tokens(

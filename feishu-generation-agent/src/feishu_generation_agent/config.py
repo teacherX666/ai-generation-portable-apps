@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     seedance_model: str = "doubao-seedance-2-0-260128"
     # 本地 AI Port 网关（127.0.0.1:8801）桥接 ComfyUI 本地模型。
     # video_provider=aiport 时视频走本地 minimax H3，不再强制 ark_api_key。
-    video_provider: Literal["seedance", "aiport"] = "seedance"
+    video_provider: Literal["seedance", "aiport"] = "aiport"
     aiport_base_url: str = "http://127.0.0.1:8801"
     aiport_image_model: str = "qwen2511"
     aiport_image_enabled: bool = False
@@ -110,7 +110,8 @@ class Settings(BaseSettings):
     max_download_bytes: int = 500 * 1024 * 1024
     allow_benchmark_fake_ips: bool = False
     provider_poll_interval_seconds: float = Field(default=1.0, ge=0.0)
-    provider_poll_max_attempts: int = Field(default=900, ge=1, le=10_000)
+    # 本地 AI Port 在 GPU 队列忙时可能排队 17 分钟以上，15 分钟会过早判超时。
+    provider_poll_max_attempts: int = Field(default=1800, ge=1, le=10_000)
     submission_intent_lease_seconds: float = Field(default=180.0, ge=0.03)
     bot_scan_page_size: int = Field(default=10, ge=1, le=50)
     coordinator_poll_interval_seconds: float = Field(default=1.0, ge=0.05)

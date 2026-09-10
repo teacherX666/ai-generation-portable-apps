@@ -90,23 +90,27 @@ class LocalGatewayConfigTests(unittest.TestCase):
 
         response = Response()
 
+        opener = mock.Mock()
+        opener.open.return_value = response
         with mock.patch.dict(
             self.module.os.environ,
             {"AIPORT_BASE_URL": "http://192.168.1.50:8801"},
             clear=True,
         ), mock.patch.object(
             self.module.urllib.request,
-            "urlopen",
-            return_value=response,
-        ) as urlopen:
+            "build_opener",
+            return_value=opener,
+        ) as build_opener:
             ok, error = self.module.probe(timeout=0.1)
             self.assertTrue(ok)
             self.assertEqual(error, "")
             self.assertTrue(
-                urlopen.call_args[0][0].startswith(
+                opener.open.call_args[0][0].startswith(
                     "http://192.168.1.50:8801/api/modules"
                 )
             )
+            proxy_handler = build_opener.call_args[0][0]
+            self.assertEqual(proxy_handler.proxies, {})
 
 
     def test_all_consumers_use_shared_local_gateway(self):
@@ -120,16 +124,17 @@ class LocalGatewayConfigTests(unittest.TestCase):
             source = (ROOT / relative).read_text(encoding="utf-8")
             self.assertIn("from shared import local_gateway", source, relative)
 
-    def test_launchers_reference_machine_local_env_file(self):
+    def test_launchers_embed_fixed_model_machine_address(self):
         for relative in (
             "Start All.bat",
             "Start All.command",
-            "portal_watchdog.ps1",
-            "local_ai_backends_watchdog.ps1",
             "deploy/ai-portal.service",
         ):
             source = (ROOT / relative).read_text(encoding="utf-8")
-            self.assertIn("local_ai.env", source, relative)
+            self.assertIn("UT-20210713KMWD.local:8801", source, relative)
 
+    def test_model_machine_watchdog_defaults_to_lan_listen(self):
+        source = (ROOT / "local_ai_backends_watchdog.ps1").read_text(encoding="utf-8")
+        self.assertIn('else { "0.0.0.0" }', source)
 if __name__ == "__main__":
     unittest.main()

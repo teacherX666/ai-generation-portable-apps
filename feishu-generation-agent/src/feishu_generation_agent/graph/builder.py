@@ -23,7 +23,8 @@ from .state import AgentState
 
 
 def _route_after_artifact_verification(state: AgentState) -> str:
-    return "review_artifacts" if state.get("artifacts") else END
+    # Generated artifacts define success; result-table delivery is best effort.
+    return "deliver_to_feishu" if state.get("artifacts") else END
 
 
 def build_graph(services: GraphServices, checkpointer: Any):

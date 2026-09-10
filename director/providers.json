@@ -12,7 +12,7 @@
     "model": "deepseek-chat"
   },
   "local": {
-    "base_url": "http://127.0.0.1:8801",
+    "base_url": "http://UT-20210713KMWD.local:8801",
     "model_kind": "qwen2511"
   }
 }

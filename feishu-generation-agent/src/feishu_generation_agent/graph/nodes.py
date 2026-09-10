@@ -103,8 +103,11 @@ class GraphServices:
     asset_library_store: Any | None = None
     character_matcher: Any | None = None
     # 本地 AI Port 视频 provider（minimax H3 all-reference，走 ComfyUI）。
+    # Keep both video providers alive so each task can choose independently.
+    seedance_video_generator: Any | None = None
+    # Local AI Port video provider (MiniMax H3 via ComfyUI).
     aiport_video_generator: Any | None = None
-    # 用户在飞书高级设置里选择的默认图片/视频 provider。
+    # Global defaults; task-level provider fields always take precedence.
     provider_preferences: Any | None = None
 
 
@@ -1496,65 +1499,81 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
     if task.task_type is TaskType.IMAGE_TO_IMAGE:
         registry = getattr(services, "image_providers", None)
         if not registry:
-            # 未配置 registry：沿用单实例与历史 provider 名，存量 run 不受影响。
             if services.image_generator is None:
-                raise _validation_error("图片生成未配置任何 provider")
+                raise _validation_error("No image provider is configured")
             return "chiyun", services.image_generator
-        requested = task.resolved_image_provider
-        # Local-first: only force the local Qwen editor when the human did not
-        # explicitly pick a provider. An explicit pick (local or cloud) wins.
-        if task.reference_images and task.image_provider is None and "aiport" in registry:
-            requested = "aiport"
+
         preferences = getattr(services, "provider_preferences", None)
         preferred_image = getattr(preferences, "image_provider", None)
-        if task.image_provider is None and preferred_image in registry:
-            requested = preferred_image
+        explicit_provider = task.image_provider
+        requested = explicit_provider or preferred_image
+        if requested is None:
+            requested = "aiport" if "aiport" in registry else task.resolved_image_provider
+
         generator = registry.get(requested)
         if generator is None:
-            fallback = (
-                "seedream"
-                if "seedream" in registry
-                else next(iter(registry), None)
-            )
-            if fallback is None:
+            if explicit_provider is not None:
+                available = ", ".join(sorted(registry)) or "none"
                 raise _validation_error(
-                    f"图片 provider {requested} 未配置，"
-                    f"当前可用：{'、'.join(sorted(registry))}"
+                    f"Selected image provider {requested!r} is unavailable; available: {available}"
                 )
+            fallback = "aiport" if "aiport" in registry else next(iter(registry), None)
+            if fallback is None:
+                raise _validation_error("No image provider is configured")
             requested = fallback
             generator = registry[fallback]
         return requested, generator
+
     settings = getattr(services, "settings", None)
-    aiport_video_generator = getattr(services, "aiport_video_generator", None)
     preferences = getattr(services, "provider_preferences", None)
     preferred_video = getattr(preferences, "video_provider", None)
     settings_provider = getattr(settings, "video_provider", None)
-    configured_provider = preferred_video or settings_provider
-    requested = (
-        "aiport"
-        if configured_provider == "aiport"
-        else (task.video_provider or configured_provider or "seedance")
-    )
-    if requested == "aiport":
-        generator = aiport_video_generator or services.video_generator
-        if generator is None:
-            raise _validation_error("本地视频 provider 未配置")
-        return "aiport", generator
-    if services.portrait_video_generator is not None and services.production_task_store is not None:
+    aiport_generator = getattr(services, "aiport_video_generator", None)
+    seedance_generator = getattr(services, "seedance_video_generator", None)
+    legacy_video_generator = getattr(services, "video_generator", None)
+    explicit_provider = task.video_provider
+    requested = explicit_provider or preferred_video or settings_provider
+    if requested is None:
+        requested = "aiport" if aiport_generator is not None else "seedance"
+
+    if (
+        requested == "seedance"
+        and services.portrait_video_generator is not None
+        and services.production_task_store is not None
+    ):
         binding = await services.production_task_store.get_by_run(run_id)
         if binding is not None and binding.snapshot.task_type == "真人类":
             return "volcengine_portrait", services.portrait_video_generator.for_run(run_id)
-    # Seedance 生成器只在 settings.video_provider == "seedance" 时由 bootstrap
-    # 创建（services.video_generator 才会是 SeedanceVideoGenerator）。本地部署
-    # （aiport）不创建它；此时返回 "seedance" 会让「标签」与「生成器身份」不一致，
-    # 被执行层判成「生成服务拒绝了请求」。这里回退到本地 aiport。
-    if settings_provider != "aiport":
-        return "seedance", services.video_generator
-    generator = aiport_video_generator or services.video_generator
-    if generator is None:
-        raise _validation_error("本地视频 provider 未配置")
-    return "aiport", generator
 
+    if requested == "aiport":
+        generator = aiport_generator
+        if generator is None and not explicit_provider and not preferred_video and settings_provider == "aiport":
+            generator = legacy_video_generator
+        if generator is None:
+            # Never turn a local/free choice into a paid cloud request.
+            raise _validation_error(
+                "The selected local video provider is unavailable; check AI Port/ComfyUI"
+            )
+        return "aiport", generator
+
+
+    if requested != "seedance":
+        raise _validation_error(f"Unsupported video provider: {requested}")
+
+    generator = seedance_generator
+    if generator is None and not explicit_provider and not preferred_video and settings_provider != "aiport":
+        generator = legacy_video_generator
+    if generator is None:
+        if explicit_provider is not None:
+            raise _validation_error(
+                "The selected Seedance provider is unavailable; configure ARK_API_KEY"
+            )
+        if aiport_generator is not None:
+            return "aiport", aiport_generator
+        raise _validation_error(
+            "The selected Seedance provider is unavailable; configure ARK_API_KEY"
+        )
+    return "seedance", generator
 
 async def _transition_operation(
     services: GraphServices,
@@ -1828,6 +1847,13 @@ async def _finish_submit_phase(
     artifacts: list[Artifact] | None = None,
     error: dict[str, object] | None = None,
 ) -> tuple[ExecutionRecord, list[Artifact]]:
+    if target == "timed_out" and error is None:
+        error = {
+            "category": "transient_error",
+            "message": "生成服务等待超时，请稍后重新运行。",
+            "retryable": True,
+        }
+
     changed = await _transition_operation(
         services, run_id, task.task_id, operation, target, official_id
     )
@@ -2277,7 +2303,9 @@ async def verify_and_download_artifacts(
             verified.extend(state_items)
         return {
             "artifacts": [_json_model(artifact) for artifact in verified],
-            "status": "waiting_review" if verified else "failed",
+            # Verified artifacts mean generation succeeded. Feishu result-table
+            # export is optional and must not gate the success status.
+            "status": "succeeded" if verified else "failed",
         }
 
     return await _run_node(
@@ -2386,14 +2414,15 @@ async def deliver_to_feishu(
     *,
     services: GraphServices,
 ) -> AgentState:
+    """Best-effort Feishu export after generation has already succeeded."""
     _ensure_thread_id(state, config)
     run_id = state.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise _validation_error()
     summary = _NODE_SUMMARIES["deliver_to_feishu"]
-    await services.repository.append_event(
-        run_id, "deliver_to_feishu", "started", f"{summary} started"
-    )
+    artifacts = [
+        Artifact.model_validate(item) for item in state.get("artifacts", [])
+    ]
     try:
         document = NormalizedDocument.model_validate(
             state.get("normalized_document")
@@ -2402,12 +2431,16 @@ async def deliver_to_feishu(
             state,
             max_output_count=services.settings.max_output_count,
         )
-        artifacts = [
-            Artifact.model_validate(item) for item in state.get("artifacts", [])
-        ]
+        if services.delivery_writer is None:
+            raise RuntimeError("飞书结果表交付服务未配置")
+        await services.repository.append_event(
+            run_id, "deliver_to_feishu", "started", f"{summary} started"
+        )
         record = await services.delivery_writer.deliver(
             run_id, document, plan, artifacts
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         failure = _safe_error(exc)
         await services.repository.append_event(
@@ -2416,8 +2449,10 @@ async def deliver_to_feishu(
             "failed",
             f"{summary} failed ({failure.detail.category.value})",
         )
+        # The generated artifacts were already verified. Export failure is
+        # diagnostic only and must not downgrade the successful run.
         return {
-            "status": "delivery_failed",
+            "status": "succeeded" if artifacts else "failed",
             "delivery_record": None,
             "last_error": _json_model(failure.detail),
         }

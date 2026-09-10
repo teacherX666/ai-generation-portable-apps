@@ -5,7 +5,7 @@
   "providers": {
     "comfyui_local": {
       "label": "本地 ComfyUI（免费）",
-      "base_url": "http://127.0.0.1:8801",
+      "base_url": "http://UT-20210713KMWD.local:8801",
       "api_style": "comfyui_workflow",
       "hint": "Local AI Port gateway (free). Start local ComfyUI first if unavailable.",
       "defaults": {
@@ -95,19 +95,96 @@
       "models": [
         {
           "id": "gemini-3-pro-image",
-          "label": "gemini-3-pro-image"
+          "label": "gemini-3-pro-image",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
         },
         {
           "id": "gemini-3.1-flash-image-preview",
-          "label": "gemini-3.1-flash-image-preview"
+          "label": "gemini-3.1-flash-image-preview",
+          "capabilities": {
+            "image_size": [
+              "1K"
+            ]
+          }
         },
         {
           "id": "gemini-3-pro-image-2k",
-          "label": "gemini-3-pro-image-2k"
+          "label": "gemini-3-pro-image-2k",
+          "capabilities": {
+            "image_size": [
+              "2K"
+            ]
+          }
         },
         {
           "id": "gemini-3-pro-image-4k",
-          "label": "gemini-3-pro-image-4k"
+          "label": "gemini-3-pro-image-4k",
+          "capabilities": {
+            "image_size": [
+              "4K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-flare",
+          "label": "GPT Image 2.5 Flare",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-flare-2k",
+          "label": "GPT Image 2.5 Flare 2K",
+          "capabilities": {
+            "image_size": [
+              "2K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-flare-4k",
+          "label": "GPT Image 2.5 Flare 4K",
+          "capabilities": {
+            "image_size": [
+              "4K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-sunburst",
+          "label": "GPT Image 2.5 Sunburst",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-sunburst-2k",
+          "label": "GPT Image 2.5 Sunburst 2K",
+          "capabilities": {
+            "image_size": [
+              "2K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-sunburst-4k",
+          "label": "GPT Image 2.5 Sunburst 4K",
+          "capabilities": {
+            "image_size": [
+              "4K"
+            ]
+          }
         }
       ]
     },
@@ -138,15 +215,32 @@
       "models": [
         {
           "id": "banana2-ssvip",
-          "label": "banana2-ssvip"
+          "label": "banana2-ssvip",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
         },
         {
           "id": "nano-banana2[2K]-base",
-          "label": "nano-banana2[2K]-base"
+          "label": "nano-banana2[2K]-base",
+          "capabilities": {
+            "image_size": [
+              "2K"
+            ]
+          }
         },
         {
           "id": "gpt-image-2",
-          "label": "gpt-image-2"
+          "label": "gpt-image-2",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
         }
       ]
     },
@@ -190,6 +284,5 @@
         }
       ]
     }
-  },
-  "cloud_fallback_provider": "t8star"
+  }
 }

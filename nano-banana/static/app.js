@@ -27,6 +27,14 @@ function requestNotifyPermission() {
   // 必须在用户手势（提交点击）内调用；浏览器对每个站点只提示一次
   try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
 }
+function confirmSafe(message, options) {
+  try {
+    var p = (window.parent && window.parent !== window) ? window.parent : window;
+    if (typeof p.portalConfirm === 'function') return p.portalConfirm(message, options || {});
+  } catch (e) {}
+  return Promise.resolve(window.confirm(message));
+}
+
 function notifyJobDone(jobId, status, label) {
   try {
     // Portal iframe 内：交给父窗口统一弹窗（同源可直调；去重/页面内弹窗
@@ -404,7 +412,7 @@ function resolveMediaUrl(url) {
 // ============================================================
 var FALLBACK_PROVIDERS = {
   comfyui_local: { label: 'Local ComfyUI (free)', base_url: 'http://127.0.0.1:8801', api_style: 'comfyui_workflow', image_size_options: ['1K', '1.5K', '2K'], models: [{ id: 'qwen2511', label: 'Qwen 2511' }, { id: 'flux2_klein_allinone', label: 'Klein' }, { id: 'krea2_three_stage', label: 'Krea T2I' }, { id: 'anime2real_auto', label: 'Anime2Real' }, { id: 'zimage_multifunction', label: 'Z-Image' }, { id: 'klein_true_v3_assets', label: 'Klein Assets' }, { id: 'krea2_style_transfer', label: 'Krea Style' }] },
-  t8star: { label: 'T8Star Images API', base_url: 'https://ai.t8star.org', models: [{ id: 'nano-banana-2', label: 'nano-banana-2' }, { id: 'gemini-3.1-flash-image-preview', label: 'gemini-3.1-flash-image-preview' }, { id: 'gemini-3-pro-image-2k', label: 'gemini-3-pro-image-2k' }, { id: 'gemini-3-pro-image-4k', label: 'gemini-3-pro-image-4k' }] },
+  t8star: { label: 'T8Star Images API', base_url: 'https://ai.t8star.org', models: [{ id: 'nano-banana-2', label: 'nano-banana-2' }, { id: 'gemini-3.1-flash-image-preview', label: 'gemini-3.1-flash-image-preview' }, { id: 'gemini-3-pro-image-2k', label: 'gemini-3-pro-image-2k' }, { id: 'gemini-3-pro-image-4k', label: 'gemini-3-pro-image-4k' }, { id: 'gpt-image-2.5-flare', label: 'GPT Image 2.5 Flare' }, { id: 'gpt-image-2.5-flare-2k', label: 'GPT Image 2.5 Flare 2K' }, { id: 'gpt-image-2.5-flare-4k', label: 'GPT Image 2.5 Flare 4K' }, { id: 'gpt-image-2.5-sunburst', label: 'GPT Image 2.5 Sunburst' }, { id: 'gpt-image-2.5-sunburst-2k', label: 'GPT Image 2.5 Sunburst 2K' }, { id: 'gpt-image-2.5-sunburst-4k', label: 'GPT Image 2.5 Sunburst 4K' }] },
   gemini: { label: 'Chiyun', base_url: 'https://chiyun.work', models: [{ id: 'banana2-ssvip', label: 'banana2-ssvip' }, { id: 'nano-banana2[2K]-base', label: 'nano-banana2[2K]-base' }, { id: 'gpt-image-2', label: 'gpt-image-2' }] },
   volcengine: {
     label: '火山引擎官方 (Seedream)',
@@ -426,6 +434,7 @@ function NanoBananaApp() {
     // ---- 8a. State Properties ----
 
     isStandalone: !IN_PORTAL,
+    appPath: APP_PATH,
     appStatus: 'unknown',
 
     // Provider / API
@@ -437,10 +446,15 @@ function NanoBananaApp() {
     providerHint: '',
     keyHint: '',
     imageSizeOptions: ['1K', '2K', '4K'],
+    model: '',
+    imageSize: '',
     supportsSeed: true,
     maxReferenceImages: 14,
+    modelCaps: null,
+    modelHint: '',
     _providerKeys: {},
     _activeProvider: 't8star',
+    _defaultProvider: 't8star',
     localReady: true,
     _personalKeyHint: '',
     outputDir: '',
@@ -449,6 +463,7 @@ function NanoBananaApp() {
 
     // Submission
     submitting: false,
+    submittingRequest: false,
     optimizing: false,
     optimizedPrompt: '',
     optimizeError: '',
@@ -458,8 +473,13 @@ function NanoBananaApp() {
 
     // Archives
     archives: [],
-    selectedArchive: '',
+    selectedArchive: '默认方案',
     archiveHint: '',
+    currentSchemeName: '默认方案',
+    isDirty: false,
+    schemeNameInput: '',
+    _dirtyDialogOpen: false,
+    _dirtyPending: null,
 
     // Saved media (reference images from archive)
     savedMedia: {},
@@ -469,6 +489,9 @@ function NanoBananaApp() {
 
     // Jobs list (drives green-dot indicator on non-active tabs)
     jobs: [],
+    jobsLimit: 20,
+    selectedJobId: null,
+    selectedJobLabel: '',
 
     // Activity
     activityRecords: [],
@@ -490,6 +513,7 @@ function NanoBananaApp() {
     _closeConfirmTabId: null,   // tab id that opened the close-confirm modal
     _tabStateCache: {},         // { wsId: {statusText, eventsText, submitting, baseUrl, provider, models, workspaceName} }
     _topicSubmissionSeq: {},    // { wsId: latest submit sequence }
+    _draftLoaded: false,        // set once a workspace draft has been restored (blocks config default clobbering)
 
     // ---- 8b. init() ----
 
@@ -526,9 +550,6 @@ function NanoBananaApp() {
         self.applyProvider(self.provider);
       }
 
-      // Load archives
-      try { self.loadArchives(); } catch (e) { console.warn('loadArchives failed:', e); }
-
       // --- Tab bar restoration (Task 4) ---
       var raw = localStorage.getItem('nano-banana.tabs');
       if (raw) {
@@ -547,11 +568,37 @@ function NanoBananaApp() {
       }
       window._activeWorkspaceId = self.activeTabId;
 
+      // Load archives (after tab restoration so the active workspace id is known)
+      try { await self.loadArchives(); } catch (e) { console.warn('loadArchives failed:', e); }
+
       // Load workspace or server preset
       try { self.loadInitialPreset(); } catch (e) { console.warn('loadPreset failed:', e); }
 
       // Resize state initial sync
       self.updateResizeState();
+
+      // Auto-save workspace on any form control change. The prompt <textarea>
+      // lives outside <form id="nb-form"> (linked via form="nb-form"), so listen
+      // at the app root and filter to controls that carry a name.
+      var nbRoot = document.getElementById('nb-app');
+      if (nbRoot) {
+        var autoSave = function (e) {
+          var t = e.target;
+          if (!t || !t.name) return;
+          self.isDirty = true;
+          self.scheduleWorkspaceSave();
+        };
+        nbRoot.addEventListener('input', autoSave);
+        nbRoot.addEventListener('change', autoSave);
+      }
+
+      // Flush the workspace draft immediately on unload so even a quick
+      // refresh (before the 500ms debounce fires) keeps the latest prompt/params.
+      var flushDraft = function () { try { self.saveWorkspaceDraft(); } catch (e) {} };
+      window.addEventListener('pagehide', flushDraft);
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden') flushDraft();
+      });
 
       // Download links: use blob download to avoid iframe navigation timeout
       var dlContainer = document.getElementById('nb-results');
@@ -599,19 +646,12 @@ function NanoBananaApp() {
       // 导致默认值（火山引擎）被 comfyui 顶掉。用户显式选择由草稿/存档
       // 的 applyPreset 路径保留，不需要这里的启发式。
       var defaultP = data.default_provider || Object.keys(data.providers)[0];
-      if (!this.localReady && defaultP === "comfyui_local") {
-        var cloudKeys = Object.keys(data.providers);
-        for (var ci = 0; ci < cloudKeys.length; ci++) {
-          if (cloudKeys[ci] !== "comfyui_local" && data.providers[cloudKeys[ci]]) {
-            defaultP = cloudKeys[ci];
-            break;
-          }
-        }
-      }
+      this._defaultProvider = defaultP;
       this.applyProvider(defaultP);
       // Ensure select syncs
       var self = this;
       setTimeout(function () {
+        if (self._draftLoaded) return;
         var s = document.querySelector('#nb-form select[name="provider"]');
         if (s && s.value !== defaultP) s.value = defaultP;
         if (data.providers[defaultP]) self.applyProvider(defaultP);
@@ -625,35 +665,16 @@ function NanoBananaApp() {
 
     onProviderChange(value) {
       if (value === "comfyui_local" && this.localReady === false) {
-        var prev = this._activeProvider || this.provider;
-        if (prev === "comfyui_local") {
-          var keys = Object.keys(this.providers);
-          for (var i = 0; i < keys.length; i++) {
-            if (keys[i] !== "comfyui_local" && this.providers[keys[i]]) {
-              prev = keys[i];
-              break;
-            }
-          }
-        }
-        this.applyProvider(prev, true);
-        this.providerHint = "本地模型不可用，已恢复为 " + (this.providers[prev] ? (this.providers[prev].label || prev) : prev) + "。请先启动本地模型或检查服务器 AIPORT_BASE_URL 配置。";
+        this.applyProvider(value, true);
+        this.providerHint = "本地模型未连接，请先启动本地模型，或手动选择云端模型后重试。";
         var s = nbField("provider");
-        if (s) s.value = prev;
+        if (s && s.value !== value) s.value = value;
         return;
       }
       this.applyProvider(value);
     },
 
     applyProvider(provider, skipDefaults) {
-      if (provider === "comfyui_local" && this.localReady === false) {
-        var providerKeys = Object.keys(this.providers);
-        for (var ai = 0; ai < providerKeys.length; ai++) {
-          if (providerKeys[ai] !== "comfyui_local" && this.providers[providerKeys[ai]]) {
-            provider = providerKeys[ai];
-            break;
-          }
-        }
-      }
       var cfg = this.providers[provider];
       if (!cfg) return;
       var keyInput = nbField('api_key');
@@ -700,6 +721,8 @@ function NanoBananaApp() {
       if (seedInput) seedInput.disabled = !this.supportsSeed;
       if (varySeedInput) varySeedInput.disabled = !this.supportsSeed;
       this.applyReferenceImageLimit();
+      var capTimer = this;
+      setTimeout(function () { capTimer.applyModelCapabilities(); }, 0);
       // When restoring a saved draft/preset the form already carries this tab's
       // own aspect_ratio / image_size / etc. Re-applying provider defaults here
       // (async, after applyPreset filled the fields) would clobber them back to
@@ -708,6 +731,7 @@ function NanoBananaApp() {
       if (skipDefaults) return;
       var self = this;
       setTimeout(function () {
+        if (self._draftLoaded) return;
         var defaults = cfg.defaults || {};
         for (var k in defaults) {
           if (!Object.prototype.hasOwnProperty.call(defaults, k)) continue;
@@ -741,6 +765,48 @@ function NanoBananaApp() {
         if (drop.style) drop.style.display = enabled ? '' : 'none';
         if (input) input.disabled = !enabled;
       });
+    },
+
+    applyModelCapabilities() {
+      var provider = nbField('provider') ? nbField('provider').value : this.provider;
+      var model = nbField('model') ? nbField('model').value : '';
+      var caps = (window.ModelCapabilities && window.ModelCapabilities.capabilitiesFor)
+        ? window.ModelCapabilities.capabilitiesFor(this.providers, provider, model)
+        : null;
+      this.modelCaps = caps;
+      var hints = [];
+      var maxRef = caps && caps.max_reference_images != null ? Number(caps.max_reference_images) : null;
+      if (maxRef != null && this.maxReferenceImages !== maxRef) {
+        this.maxReferenceImages = maxRef;
+        this.applyReferenceImageLimit();
+        hints.push('最多参考图 ' + maxRef + ' 张');
+      }
+
+      var sizeSel = nbField('image_size');
+      if (sizeSel && caps && Array.isArray(caps.image_size) && caps.image_size.length) {
+        var prev = sizeSel.value;
+        sizeSel.innerHTML = '';
+        caps.image_size.forEach(function (s) {
+          var o = document.createElement('option');
+          o.value = s; o.textContent = s; sizeSel.appendChild(o);
+        });
+        var keep = caps.image_size.indexOf(prev) >= 0 ? prev : caps.image_size[0];
+        sizeSel.value = keep;
+        this.imageSizeOptions = caps.image_size.slice();
+        if (prev && prev !== keep) hints.push('尺寸 ' + prev + ' 不支持，已切换为 ' + keep);
+      }
+
+      var arSel = nbField('aspect_ratio');
+      if (arSel && caps && Array.isArray(caps.aspect_ratio) && caps.aspect_ratio.length) {
+        var ar = arSel.value;
+        if (ar !== 'auto' && caps.aspect_ratio.indexOf(ar) < 0) {
+          var fallback = caps.aspect_ratio[0];
+          arSel.value = fallback;
+          hints.push('比例 ' + ar + ' 不支持，已切换为 ' + fallback);
+        }
+      }
+
+      this.modelHint = hints.join('；');
     },
 
     // ---- 8d. buildUploadSlots / wireDrops ----
@@ -843,7 +909,7 @@ function NanoBananaApp() {
         cache[name] = value;
         if (self.activeTabId === ownerWorkspaceId) self[name] = value;
       };
-      if (self.submitting) return;
+      if (self.submittingRequest) return;
       // 首次提交时请求系统通知权限（用户手势内调用才有效）
       requestNotifyPermission();
       var selectedProvider = nbField('provider') ? nbField('provider').value : self.provider;
@@ -851,37 +917,44 @@ function NanoBananaApp() {
       // 本地模型未连接兜底：只要想用本地 ComfyUI 而网关不可达，就切回云端并
       // 拦截提交（草稿/旧缓存可能残留本地 provider/base_url，直接提交会打到
       // 127.0.0.1:8801 之类空端口）。
-      if (!self.localReady && (selectedProvider === 'comfyui_local'
+      if (!self.localReady && (selectedProvider === "comfyui_local"
           || /(^|:\/\/)127\.0\.0\.1(:|$)|\.local:8801/.test(String(self.baseUrl || '')))) {
-        var cloudKeyN = null;
-        var pKeysN = Object.keys(self.providers || {});
-        for (var pkn = 0; pkn < pKeysN.length; pkn++) {
-          if (pKeysN[pkn] !== 'comfyui_local' && self.providers[pKeysN[pkn]]) { cloudKeyN = pKeysN[pkn]; break; }
-        }
-        cloudKeyN = cloudKeyN || (selectedProvider !== 'comfyui_local' ? selectedProvider : 't8star');
-        self.applyProvider(cloudKeyN, true);
-        if (self.providers[cloudKeyN]) self.baseUrl = self.providers[cloudKeyN].base_url || self.baseUrl;
-        setTimeout(function () {
-          var mfN = nbField('model');
-          var fmN = (self.models && self.models[0] && self.models[0].id) || '';
-          if (mfN && fmN) mfN.value = fmN;
-          var selN = nbField('provider');
-          if (selN && selN.value !== cloudKeyN) selN.value = cloudKeyN;
-        }, 0);
-        self.providerHint = '本地模型未连接，已为你切回云端模型，请确认后重新提交。';
         setOwnerState('submitting', false);
-        setOwnerState('statusText', '本地模型未连接，已切回云端模型，请确认后重新提交');
+        setOwnerState('statusText', '本地模型未连接，请先启动本地模型，或手动选择云端模型后重试。');
+        self.providerHint = '本地模型未连接，请先启动本地模型，或手动选择云端模型后重试。';
         return;
       }
       var hasReference = false;
+      var refCount = 0;
       for (var ri = 1; ri <= 14; ri++) {
         var refInput = nbField('image_' + ri);
-        if (refInput && refInput.files && refInput.files.length > 0) { hasReference = true; break; }
-        if (self.savedMedia && self.savedMedia['image_' + ri]) { hasReference = true; break; }
+        if (refInput && refInput.files && refInput.files.length > 0) { hasReference = true; refCount++; }
+        else if (self.savedMedia && self.savedMedia['image_' + ri]) { hasReference = true; refCount++; }
       }
       if (selectedProvider === 'comfyui_local' && selectedModel === 'qwen2511' && !hasReference) {
         setOwnerState('statusText', 'Qwen 2511 \u662F\u56FE\u7247\u7F16\u8F91\u6A21\u578B\uFF0C\u8BF7\u5148\u4E0A\u4F20\u81F3\u5C11\u4E00\u5F20\u53C2\u8003\u56FE\uFF1B\u5982\u9700\u6587\u751F\u56FE\u8BF7\u5207\u6362 Krea T2I\u3002');
         return;
+      }
+      var caps = self.modelCaps;
+      if (caps) {
+        var sizeSel = nbField('image_size');
+        var arSel = nbField('aspect_ratio');
+        var sizeVal = sizeSel ? sizeSel.value : '';
+        var arVal = arSel ? arSel.value : '';
+        var problems = [];
+        if (Array.isArray(caps.image_size) && caps.image_size.length && sizeVal !== 'auto' && caps.image_size.indexOf(sizeVal) < 0) {
+          problems.push('尺寸 ' + sizeVal + ' 不支持，可用：' + caps.image_size.join(' / '));
+        }
+        if (Array.isArray(caps.aspect_ratio) && caps.aspect_ratio.length && arVal !== 'auto' && caps.aspect_ratio.indexOf(arVal) < 0) {
+          problems.push('比例 ' + arVal + ' 不支持，可用：' + caps.aspect_ratio.join(' / '));
+        }
+        if (caps.max_reference_images != null && refCount > Number(caps.max_reference_images)) {
+          problems.push('最多支持 ' + caps.max_reference_images + ' 张参考图');
+        }
+        if (problems.length) {
+          setOwnerState('statusText', problems.join('?'));
+          return;
+        }
       }
       var submissionToken = (self._topicSubmissionSeq[ownerWorkspaceId] || 0) + 1;
       self._topicSubmissionSeq[ownerWorkspaceId] = submissionToken;
@@ -895,6 +968,7 @@ function NanoBananaApp() {
       cache._activeJobId = null;
       delete cache._latestJob;
       setOwnerState('submitting', true);
+      setOwnerState('submittingRequest', true);
       setOwnerState('statusText', '提交中');
       var resultsEl = document.getElementById('nb-results');
       var eventsEl = document.getElementById('nb-events');
@@ -917,105 +991,58 @@ function NanoBananaApp() {
         setOwnerState('submitting', false);
         setOwnerState('statusText', '提交失败：网络异常，请重试');
         return;
+      } finally {
+        setOwnerState('submittingRequest', false);
       }
       if (!res || res.error) {
         setOwnerState('submitting', false);
         setOwnerState('statusText', (res && res.error) || '提交失败');
         return;
       }
-      if (!ownerExists() || ownerCache()._submissionToken !== submissionToken) return;
-      ownerCache()._activeJobId = res.job_id;
-      // submitting 保持 true 直到任务终态：防止第二次提交 bump token 后
-      // 上一个任务的轮询静默失效（用户误以为第一个任务死了）。想同时
-      // 跑多个任务请开新主题标签页。
+      if (!ownerExists()) return;
+      self._restoredPollIds = self._restoredPollIds || {};
+      self._restoredPollIds[res.job_id] = true;
       setOwnerState('statusText', '已提交，任务 ' + res.job_id + ' 在后台运行');
       try { self.loadActivity(); } catch (e) { /* ignore */ }
-      self.pollJob(res.job_id, ownerWorkspaceId, submissionToken, delivery);
+      self.pollJob(res.job_id, ownerWorkspaceId, delivery);
     },
 
-    async pollJob(jobId, ownerWorkspaceId, submissionToken, delivery) {
+    async pollJob(jobId, ownerWorkspaceId, delivery) {
       var self = this;
       var ownerWsId = ownerWorkspaceId || self.activeTabId;
       var ownerExists = function () { return self.tabs.some(function (t) { return t.id === ownerWsId; }); };
-      var cache = function () {
-        if (!ownerExists()) return null;
-        return (self._tabStateCache[ownerWsId] = self._tabStateCache[ownerWsId] || {});
-      };
-      var isCurrent = function () {
-        var state = cache();
-        if (!state) return false;
-        if (submissionToken !== undefined && state._submissionToken !== submissionToken) return false;
-        return !state._activeJobId || state._activeJobId === jobId;
-      };
-      var isActive = function () { return isCurrent() && self.activeTabId === ownerWsId; };
-      var setState = function (name, value) {
-        if (!isCurrent()) return;
-        var state = cache();
-        state[name] = value;
-        if (isActive()) self[name] = value;
-      };
-      var setStatus = function (t) { setState('statusText', t); };
-      var setEvents = function (t) { setState('eventsText', t); };
-      var setSubmitting = function (v) { setState('submitting', v); };
-      var setLatestJob = function (job) { if (isCurrent()) cache()._latestJob = job; };
+      var isActiveTab = function () { return self.activeTabId === ownerWsId; };
+      var cache = function () { return (self._tabStateCache[ownerWsId] = self._tabStateCache[ownerWsId] || {}); };
 
-      // Transient-failure tolerance. A single failed poll (proxy timeout, wifi
-      // blip, sub-app 5xx) used to `break` and permanently abandon the watcher,
-      // leaving a finished result invisible until manual resubmit. Now retry
-      // with backoff, give up only after MAX_FAILS consecutive failures. A 404
-      // ('gone' — sub-app restarted, JOBS cleared) exits cleanly instead of
-      // looping forever on "unknown".
       var MAX_FAILS = 15;
       var consecutiveFails = 0;
-      // 退出时保留的终态文案：非空则不再回「空闲」，避免失败提示
-      // 转瞬即逝（此前 break 后紧跟 setStatus('空闲') 会把错误抹掉）。
-      var finalStatus = null;
 
       while (true) {
-        if (!isCurrent()) break;
+        if (!ownerExists()) break;
         var r = await pollJobOnce(APP_PATH + '/api/jobs/' + jobId, ownerWsId);
-        if (!isCurrent()) break;
-        if (r.kind === 'gone') {
-          finalStatus = '任务已失效(服务可能重启过)，请查看活动记录或重新提交';
-          break;
-        }
+        if (!ownerExists()) break;
+        if (r.kind === 'gone') break;
         if (r.kind === 'error') {
           consecutiveFails++;
-          if (consecutiveFails >= MAX_FAILS) {
-            finalStatus = '网络不稳定，已停止刷新 · 稍后可重新提交';
-            break;
-          }
+          if (consecutiveFails >= MAX_FAILS) break;
           var wait = Math.min(10000, 2500 * Math.pow(1.5, consecutiveFails - 1));
           await new Promise(function (res) { setTimeout(res, wait); });
           continue;
         }
         consecutiveFails = 0;
         var job = r.job;
-        // Jobs created before the backend started persisting workspace_id have
-        // no owner to compare against. Treating that as a mismatch would hide
-        // every result until the sub-app restarts, since the frontend picks up
-        // new JS on refresh while the backend keeps running old code.
-        if (job.workspace_id && job.workspace_id !== ownerWsId) {
-          setStatus('主题隔离校验失败，已阻止错误结果显示');
-          setSubmitting(false);
-          return;
-        }
-        setStatus((job.status || '') + ' ' + (job.done || 0) + '/' + (job.total || 0));
-        setEvents((job.events || []).map(function (e) { return '[' + (e.time || '') + '] ' + (e.message || ''); }).join('\n'));
-        setLatestJob(job);
+        if (job.workspace_id && job.workspace_id !== ownerWsId) break;
 
-        if (isActive()) {
+        cache()._latestJob = job;
+        if (isActiveTab()) self._upsertJob(job);
+
+        if (isActiveTab() && self.selectedJobId === jobId) {
+          self.eventsText = (job.events || []).map(function (e) { return '[' + (e.time || '') + '] ' + (e.message || ''); }).join('\n');
           self._renderJobToDom(job, jobId);
         }
 
         if (TERMINAL_STATUSES.has((job.status || '').toLowerCase())) {
-          // 系统通知：确认终态后立即弹（去重后与 Portal 侧 15s 兜底轮询不重复）
           notifyJobDone(jobId, job.status, '图片生成');
-          // Preserved terminal-status behavior from original pollJob:
-          //   - job.status === 'succeeded' + dirHandle → saveToClient
-          //   - job.status === 'succeeded' + autoDownload → triggerDownloads
-          // Delivery settings are captured at submit time. Reading self.* here
-          // would use whichever topic happens to be active when the task ends.
           var deliveryNote = '';
           if (job.status === 'succeeded' && delivery && delivery.dirHandle) {
             var saved = await self.saveToClient(job, delivery.dirHandle);
@@ -1024,28 +1051,22 @@ function NanoBananaApp() {
             var downloaded = self.triggerDownloads(job);
             if (downloaded) deliveryNote = ' · 已下载 ' + downloaded + ' 个文件';
           }
-          // 终态摘要常驻状态栏（不再秒变「空闲」把错误提示抹掉），
-          // 结果卡保留可下载，下一轮提交时 submit 会清空重建。
-          var s = String(job.status || '').toLowerCase();
-          if (['succeeded', 'success', 'completed'].indexOf(s) >= 0) {
-            finalStatus = '上次任务：已完成' + ((job.results || []).length ? '（' + job.results.length + ' 个结果）' : '') + deliveryNote;
-          } else if (s === 'failed' || s === 'failure') {
-            finalStatus = '上次任务：失败 · ' + String(friendlyJobErrorHint(job) || '未记录原因').slice(0, 80);
-          } else {
-            finalStatus = '上次任务：已取消';
+          if (isActiveTab() && self.selectedJobId === jobId) {
+            var s = String(job.status || '').toLowerCase();
+            if (['succeeded', 'success', 'completed'].indexOf(s) >= 0) {
+              self.selectedJobLabel = '已完成' + ((job.results || []).length ? '（' + job.results.length + ' 个结果）' : '') + deliveryNote;
+            } else if (s === 'failed' || s === 'failure') {
+              self.selectedJobLabel = '失败 · ' + String(friendlyJobErrorHint(job) || '未记录原因').slice(0, 80);
+            } else {
+              self.selectedJobLabel = '已取消';
+            }
           }
           break;
         }
         await new Promise(function (r) { setTimeout(r, 2500); });
       }
-      // Clear status + submitting on ALL exit paths (terminal AND null-break).
-      // finalStatus 非空时保留终态文案（gone / 网络中断 / 成功 / 失败），
-      // 仅「非终态提前退出」（如切 tab 后 token 失配）回到空闲。
-      setStatus(finalStatus || '空闲');
-      setSubmitting(false);
-      // Refresh activity list + jobs list on exit (original always ran activity).
       try { self.loadActivity(); } catch (e) { /* ignore */ }
-      if (isActive()) self.loadJobs(); else { try { self.loadJobs(); } catch (e) { /* ignore */ } }
+      self.loadJobs();
     },
 
     // Extracted from pollJob so that both live polling (from pollJob) and
@@ -1057,23 +1078,22 @@ function NanoBananaApp() {
     // 排队中直接取消；运行中弹确认（已计费提示）。后端无取消 API 时
     // 走「取消标志 + 轮询点退出 + 结果丢弃」兜底；409 = 任务已结束。
     async cancelJob(jobId, status) {
-      var ownerWsId = this.activeTabId;
-      if (status === 'running') {
-        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
-      }
-      const res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/cancel', 'POST', null, ownerWsId);
-      if (this.activeTabId !== ownerWsId) return;
-      if (!res) {
-        this.statusText = '取消失败：网络异常，请重试';
+      this.statusText = '正在取消任务...';
+      let res;
+      try {
+        res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/cancel', 'POST', null, this.activeTabId);
+      } catch (e) {
+        this.statusText = '取消失败：' + (e && e.message ? e.message : e);
         return;
       }
-      if (!res.ok) {
-        this.statusText = res.error || '取消失败';
-        return;
+      if (res && res.ok) {
+        this.statusText = '任务已取消，输入和参数已保留。';
+        var j = (this.jobs || []).find(function (x) { return (x.job_id || x.id) === jobId; });
+        if (j) this._upsertJob(Object.assign({}, j, { status: 'cancelled' }));
+      } else {
+        this.statusText = (res && res.error) || '取消失败：网络异常，请重试';
       }
-      this.statusText = '任务已取消，输入和参数已保留。';
     },
-
     _renderJobToDom(job, jobId) {
       var resultsEl = document.getElementById('nb-results');
       if (!resultsEl) return;
@@ -1198,18 +1218,92 @@ function NanoBananaApp() {
         var res = await api(APP_PATH + '/api/jobs');
         if (res && Array.isArray(res.jobs)) {
           self.jobs = res.jobs;
+          // A hard refresh used to reset the form to idle and expose the
+          // activity/history view, while the actual image job kept running.
+          // Rebuild the original lower running-task panel from /api/jobs and
+          // resume its existing poll/cancel flow for every live workspace.
+          var restored = self._restoredPollIds || (self._restoredPollIds = {});
+          (self.jobs || []).filter(function (job) {
+            return !TERMINAL_STATUSES.has((job.status || '').toLowerCase());
+          }).forEach(function (job) {
+            var wsId = job.workspace_id || self.activeTabId;
+            var cache = self._tabStateCache[wsId] || (self._tabStateCache[wsId] = {});
+            cache._latestJob = job;
+            var jid = job.job_id || job.id;
+            if (!restored[jid]) {
+              restored[jid] = true;
+              self.pollJob(jid, wsId);
+            }
+          });
         } else if (res && res.error) {
           // Silent on error to avoid spamming the 5s loop
           return;
         }
         if (self.tabs && self.tabs.length) {
-          self.tabs.forEach(function (t) {
-            t.running = (self.jobs || []).some(function (j) {
-              return !TERMINAL_STATUSES.has((j.status || '').toLowerCase()) && j.workspace_id === t.id;
+          self.tabs.forEach(function (tab) {
+            tab.running = (self.jobs || []).some(function (job) {
+              return !TERMINAL_STATUSES.has((job.status || '').toLowerCase()) && job.workspace_id === tab.id;
             });
           });
         }
       } catch (e) { /* silent */ }
+    },
+
+    visibleJobs() {
+      return (this.jobs || []).slice(0, this.jobsLimit);
+    },
+
+    jobImages(job) {
+      var out = [];
+      ((job && job.results) || []).forEach(function (r) {
+        (r.images || []).forEach(function (im) {
+          if (im.download_url) out.push(im);
+        });
+      });
+      return out;
+    },
+
+    isCancellableJob: function (jobOrStatus) {
+      var status = typeof jobOrStatus === 'string' ? jobOrStatus : (jobOrStatus && jobOrStatus.status);
+      var normalized = String(status || '').toLowerCase();
+      return Boolean(normalized) && !TERMINAL_STATUSES.has(normalized);
+    },
+
+    selectJob(jobId) {
+      var cache = this._tabStateCache[this.activeTabId] || {};
+      var job = (this.jobs || []).find(function (j) { return (j.job_id || j.id) === jobId; })
+        || ((cache._latestJob && ((cache._latestJob.job_id || cache._latestJob.id) === jobId)) ? cache._latestJob : null);
+      this.selectedJobId = jobId;
+      this.selectedJobLabel = job ? ((job.status || 'queued') + ' · ' + String(job.prompt || '').slice(0, 40)) : '任务详情';
+      this._renderedJobId = null;
+      if (job) {
+        this.eventsText = (job.events || []).map(function (e) { return '[' + (e.time || '') + '] ' + (e.message || ''); }).join('\n');
+        this._renderJobToDom(job, jobId);
+      } else {
+        this.eventsText = '';
+        this._clearTopicResultDom();
+      }
+    },
+
+    closeJobDetail() {
+      this.selectedJobId = null;
+      this.selectedJobLabel = '';
+      this.eventsText = '';
+      this._renderedJobId = null;
+      this._clearTopicResultDom();
+    },
+
+    _upsertJob(job) {
+      try {
+        var id = job.job_id || job.id;
+        var list = (this.jobs || []).slice();
+        var idx = list.findIndex(function (j) { return (j.job_id || j.id) === id; });
+        if (idx >= 0) list.splice(idx, 1, job);
+        else list.unshift(job);
+        this.jobs = list;
+      } catch (e) {
+        this.jobs = [job].concat((this.jobs || []).filter(function (x) { return (x.job_id || x.id) !== id; }));
+      }
     },
 
     // ---- 8f. saveToClient / triggerDownloads / _blobDownload ----
@@ -1264,20 +1358,17 @@ function NanoBananaApp() {
         this.statusText = (res && res.error) || '重试失败：网络异常，请稍后重试';
         return;
       }
-      var submissionToken = (this._topicSubmissionSeq[ownerWsId] || 0) + 1;
-      this._topicSubmissionSeq[ownerWsId] = submissionToken;
-      var cache = this._tabStateCache[ownerWsId];
-      cache._submissionToken = submissionToken;
-      cache._activeJobId = res.job_id;
       this.submitting = true;
       this.statusText = '已重试，任务 ' + res.job_id + ' 在后台运行';
-      var resultsEl = document.getElementById('nb-results');
-      var eventsEl = document.getElementById('nb-events');
-      if (resultsEl) resultsEl.innerHTML = '';
-      if (eventsEl) eventsEl.textContent = '';
+      this.selectedJobId = res.job_id;
+      this.selectedJobLabel = '已重试，任务 ' + res.job_id + ' 在后台运行';
+      this._renderedJobId = null;
       this.eventsText = '';
+      this._clearTopicResultDom();
+      this._restoredPollIds = this._restoredPollIds || {};
+      this._restoredPollIds[res.job_id] = true;
       try { this.loadJobs(); } catch (e) { /* ignore */ }
-      this.pollJob(res.job_id, ownerWsId, submissionToken, {
+      this.pollJob(res.job_id, ownerWsId, {
         dirHandle: this.dirHandle, autoDownload: this.autoDownload, outputDir: this.outputDir,
       });
     },
@@ -1392,70 +1483,206 @@ function NanoBananaApp() {
       if (res) alert('清理完成：素材 ' + (res.media_deleted || 0) + ' 个，日志 ' + (res.logs_deleted || 0) + ' 个');
     },
 
-    // ---- 8h. Archives CRUD ----
+    // ---- 8h. 配置方案（存档）CRUD ----
 
     async loadArchives() {
       var ownerWsId = this.activeTabId;
       var res = await api(APP_PATH + '/api/archives', 'GET', null, ownerWsId);
       if (this.activeTabId !== ownerWsId) return;
       this.archives = (res && res.archives) || [];
-      if (this.selectedArchive && !this.archives.some(function(a) { return a.name === this.selectedArchive; }, this)) {
-        this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
-      }
+      this._normalizeSchemeSelection();
     },
 
-    async saveArchive() {
+    _normalizeSchemeSelection() {
+      var list = this.archives || [];
+      var exists = function (name) {
+        return name === '默认方案' || list.some(function (a) { return a.name === name; });
+      };
+      if (!exists(this.currentSchemeName)) this.currentSchemeName = '默认方案';
+      if (!exists(this.selectedArchive)) this.selectedArchive = '默认方案';
+    },
+
+    nextSchemeName() {
+      var used = {};
+      (this.archives || []).forEach(function (a) { used[a.name] = true; });
+      var n = 1;
+      while (used['方案' + n]) n++;
+      return '方案' + n;
+    },
+
+    async _saveScheme(name) {
       var ownerWsId = this.activeTabId;
       var data = await this.formDataWithSavedMedia({});
       if (this.savedMedia && Object.keys(this.savedMedia).length) {
         data.set('saved_media', JSON.stringify(this.savedMedia));
       }
-      var res = await api(APP_PATH + '/api/preset', 'POST', data, ownerWsId);
-      if (this.activeTabId !== ownerWsId) return;
-      this.archiveHint = (res && res.archive) ? '已保存: ' + res.archive : ((res && res.error) || '保存失败');
-      if (res && res.media) this.savedMedia = res.media;
+      data.set('archive_name', name);
+      var res = await api(APP_PATH + '/api/archive/save', 'POST', data, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return false;
+      if (!res || res.ok === false) {
+        this.archiveHint = '保存失败：' + ((res && res.error) || '网络异常');
+        return false;
+      }
+      if (res.media) this.savedMedia = res.media;
       window._currentSavedMedia = this.savedMedia;
+      var savedName = res.archive || name;
       await this.loadArchives();
-      if (this.activeTabId !== ownerWsId) return;
-      this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
+      if (this.activeTabId !== ownerWsId) return false;
+      this.selectedArchive = savedName;
+      this.currentSchemeName = savedName;
+      this.isDirty = false;
+      this.schemeNameInput = '';
+      this.archiveHint = '已保存方案：' + savedName;
+      this.saveWorkspaceDraft();
+      return true;
     },
 
-    async loadArchive() {
-      if (!this.selectedArchive) return;
+    async saveCurrentScheme() {
+      var name = (this.schemeNameInput || '').trim() || this.nextSchemeName();
+      await this._saveScheme(name);
+    },
+
+    async onSchemeSelect() {
       var name = this.selectedArchive;
-      if (!this.archives.some(function(a) { return a.name === name; })) {
-        this.archiveHint = '读取失败：存档「' + name + '」已被删除，请重新选择';
-        this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
+      if (!name || name === this.currentSchemeName) return;
+      if (!(await this._ensureNotDirty('加载方案'))) {
+        this.selectedArchive = this.currentSchemeName;
         return;
       }
+      if (name === '默认方案') {
+        this.resetToFactoryDefaults();
+      } else {
+        await this.loadScheme(name);
+      }
+    },
+
+    async loadScheme(name) {
+      if (!name || name === '默认方案') { this.resetToFactoryDefaults(); return; }
       var ownerWsId = this.activeTabId;
       var data = new FormData(); data.set('archive_name', name);
       var res = await api(APP_PATH + '/api/archive/load', 'POST', data, ownerWsId);
       if (this.activeTabId !== ownerWsId) return;
-      if (!res) return;
-      this.applyPreset(res);
-      this.archiveHint = '已读取: ' + name;
+      if (!res || !res.values) { this.archiveHint = '读取失败'; return; }
+      await this.applyPreset(res);
+      this.currentSchemeName = name;
+      this.isDirty = false;
+      this.selectedArchive = name;
+      this.saveWorkspaceDraft();
+      this.archiveHint = '已加载方案：' + name;
     },
 
-    async deleteArchive() {
-      if (!this.selectedArchive) return;
+    async updateScheme() {
       var name = this.selectedArchive;
-      if (!confirm('确定删除存档「' + name + '」？此操作不可恢复。')) return;
+      if (!name || name === '默认方案') { this.archiveHint = '默认方案为只读，不可更新'; return; }
+      await this._saveScheme(name);
+    },
+
+    async renameScheme() {
+      var name = this.selectedArchive;
+      if (!name || name === '默认方案') { this.archiveHint = '默认方案为只读，不可重命名'; return; }
+      var newName = (prompt('请输入新的方案名', name) || '').trim();
+      if (!newName || newName === name) return;
+      var ownerWsId = this.activeTabId;
+      var data = new FormData(); data.set('archive_name', name); data.set('new_name', newName);
+      var res = await api(APP_PATH + '/api/archive/rename', 'POST', data, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (!res || res.ok === false) { this.archiveHint = '重命名失败：' + ((res && res.error) || '网络异常'); return; }
+      var renamed = res.archive || name;
+      await this.loadArchives();
+      if (this.activeTabId !== ownerWsId) return;
+      if (this.currentSchemeName === name) this.currentSchemeName = renamed;
+      this.selectedArchive = renamed;
+      this.archiveHint = '已重命名：' + renamed;
+      this.saveWorkspaceDraft();
+    },
+
+    async deleteScheme() {
+      var name = this.selectedArchive;
+      if (!name) return;
+      if (name === '默认方案') { this.archiveHint = '默认方案为只读，不可删除'; return; }
+      if (!await confirmSafe('确定删除方案「' + name + '」？此操作不可恢复。')) return;
       var ownerWsId = this.activeTabId;
       var data = new FormData(); data.set('archive_name', name);
       var res = await api(APP_PATH + '/api/archive/delete', 'POST', data, ownerWsId);
       if (this.activeTabId !== ownerWsId) return;
-      if (res && res.ok === false) {
-        this.archiveHint = '删除失败：' + (res.error || '存档可能已被删除或不存在');
+      if (!res || res.ok === false) {
+        this.archiveHint = '删除失败：' + ((res && res.error) || '网络异常');
         return;
       }
-      this.selectedArchive = '';
       await this.loadArchives();
       if (this.activeTabId !== ownerWsId) return;
-      this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
+      if (this.currentSchemeName === name) {
+        this.currentSchemeName = '默认方案';
+        this.selectedArchive = '默认方案';
+      }
       this.archiveHint = '已删除：' + name;
+      this.saveWorkspaceDraft();
     },
 
+    resetToFactoryDefaults() {
+      try { localStorage.removeItem('nano-banana.workspace.' + this.activeTabId); } catch (e) {}
+
+      var promptEl = document.querySelector('textarea[name="prompt"][form="nb-form"]');
+      var keepPrompt = promptEl ? promptEl.value : '';
+      var form = document.getElementById('nb-form');
+      if (form) form.reset();
+      if (promptEl) promptEl.value = keepPrompt;
+
+      clearAllMediaInputs();
+      this.savedMedia = {};
+      window._currentSavedMedia = this.savedMedia;
+
+      this.outputDir = '';
+      this.dirHandle = null;
+      this.autoDownload = false;
+
+      this._draftLoaded = false;
+      this.applyProvider(this._defaultProvider);
+
+      this.currentSchemeName = '默认方案';
+      this.isDirty = false;
+      this.selectedArchive = '默认方案';
+      this.schemeNameInput = '';
+      this.archiveHint = '已恢复默认方案';
+
+      var self = this;
+      setTimeout(function () { self.saveWorkspaceDraft(); }, 120);
+    },
+
+    _ensureNotDirty(actionLabel) {
+      var self = this;
+      if (!this.isDirty) return Promise.resolve(true);
+      return new Promise(function (resolve) {
+        self._dirtyPending = { actionLabel: actionLabel || '切换', resolve: resolve };
+        self._dirtyDialogOpen = true;
+      });
+    },
+
+    async _dirtySaveAndContinue() {
+      var pending = this._dirtyPending;
+      this._dirtyDialogOpen = false;
+      this._dirtyPending = null;
+      if (!pending) return;
+      var resolve = pending.resolve;
+      if (this.currentSchemeName === '默认方案') { resolve(true); return; }
+      var ok = await this._saveScheme(this.currentSchemeName);
+      resolve(!!ok);
+    },
+
+    _dirtyDiscardAndContinue() {
+      var pending = this._dirtyPending;
+      this._dirtyDialogOpen = false;
+      this._dirtyPending = null;
+      this.isDirty = false;
+      if (pending) pending.resolve(true);
+    },
+
+    _dirtyCancel() {
+      var pending = this._dirtyPending;
+      this._dirtyDialogOpen = false;
+      this._dirtyPending = null;
+      if (pending) pending.resolve(false);
+    },
     // ---- 8i. Activity methods ----
 
     async loadActivity() {
@@ -1515,6 +1742,8 @@ function NanoBananaApp() {
       for (var k in values) {
         if (!Object.prototype.hasOwnProperty.call(values, k)) continue;
         var v = values[k];
+        if (k === 'model') this.model = v;
+        if (k === 'image_size') this.imageSize = v;
         var el = nbField(k);
         if (!el) continue;
         if (el.type === 'checkbox') {
@@ -1534,8 +1763,18 @@ function NanoBananaApp() {
         this.applyProvider(values.provider, true);
       }
 
+      // applyProvider() resets baseUrl to the provider default; restore the
+      // saved base_url afterwards so a user-customized endpoint is preserved.
+      if (values.base_url !== undefined) this.baseUrl = values.base_url;
+
       // Update resize state
       this.updateResizeState();
+
+      // Capture the desired model / image_size; the actual DOM restore happens in the
+      // microtask at the end of this method (see the comment there).
+      var desiredModel = values.model;
+      var desiredSize = values.image_size;
+      var self = this;
 
       // Restore saved media
       var media = (preset && preset.media) || {};
@@ -1553,22 +1792,54 @@ function NanoBananaApp() {
       }
       var count = Object.keys(this.savedMedia).length;
       if (count) this.archiveHint = '已读取保存配置：' + count + ' 张图';
+      // Restore v-for / capability-rebuilt selects once PetiteVue has flushed the
+      // option re-render triggered by applyProvider() above. Use a microtask so it
+      // runs BEFORE applyProvider()'s own setTimeout(applyModelCapabilities) — which
+      // otherwise fires first with the stale first-option model and rebuilds image_size
+      // to that wrong model's list (e.g. gemini-3-pro-image -> ['1K','2K'], dropping
+      // the saved '4K'). We set model + image_size first, then call
+      // applyModelCapabilities() ourselves to narrow options against the correct model.
+      return new Promise(function (resolve) {
+        queueMicrotask(function () {
+          var mEl = nbField('model');
+          if (mEl && desiredModel != null && Array.prototype.some.call(mEl.options, function (o) { return o.value === desiredModel; })) {
+            mEl.value = desiredModel;
+            self.model = desiredModel;
+          }
+          if (desiredSize != null) {
+            var sEl = nbField('image_size');
+            if (sEl) {
+              var want = String(desiredSize);
+              if (!Array.prototype.some.call(sEl.options, function (o) { return o.value === want; })) {
+                var opt = document.createElement('option');
+                opt.value = want;
+                opt.textContent = want;
+                sEl.appendChild(opt);
+              }
+              sEl.value = want;
+              self.imageSize = desiredSize;
+            }
+          }
+          self.applyModelCapabilities();
+          resolve();
+        });
+      });
+
     },
 
-    async clearPreset() {
-      var ownerWsId = this.activeTabId;
-      var res = await api(APP_PATH + '/api/preset/clear', 'POST', null, ownerWsId);
-      if (this.activeTabId !== ownerWsId) return;
-      if (!res) return;
-      this.savedMedia = {};
-      window._currentSavedMedia = this.savedMedia;
-      document.querySelectorAll('.drop').forEach(function (d) { clearPreview(d); });
-      this.archiveHint = '已清空当前读取配置';
-    },
 
     async loadInitialPreset(ownerWorkspaceId) {
       var ownerWsId = ownerWorkspaceId || this.activeTabId;
       if (this.activeTabId !== ownerWsId) return;
+      var factoryReset = false;
+      try { factoryReset = sessionStorage.getItem('nano-banana.factoryReset') === '1'; } catch (e) {}
+      if (factoryReset) {
+        try { sessionStorage.removeItem('nano-banana.factoryReset'); } catch (e) {}
+        this.currentSchemeName = '默认方案';
+        this.isDirty = false;
+        this.selectedArchive = '默认方案';
+        return;
+      }
       // Always prefer the per-tab workspace draft (localStorage). It holds this
       // tab's api_key / provider / prompt — which the server preset intentionally
       // strips (api_key is masked/omitted server-side). Gating this on
@@ -1590,12 +1861,20 @@ function NanoBananaApp() {
 
     collectWorkspaceValues() {
       var form = document.getElementById('nb-form');
-      if (!form) return {};
       var values = {};
-      for (var i = 0; i < form.elements.length; i++) {
-        var item = form.elements[i];
-        if (!item.name || item.type === 'file') continue;
-        values[item.name] = item.type === 'checkbox' ? (item.checked ? 'on' : '') : item.value;
+      var collect = function (el) {
+        if (!el || !el.name || el.type === 'file') return;
+        values[el.name] = el.type === 'checkbox' ? (el.checked ? 'on' : '') : el.value;
+      };
+      if (form) {
+        for (var i = 0; i < form.elements.length; i++) collect(form.elements[i]);
+      }
+      // prompt <textarea> and any other controls linked via form="nb-form" but
+      // placed outside the <form> element must still be captured.
+      var linked = document.querySelectorAll('[form="nb-form"]');
+      for (var j = 0; j < linked.length; j++) {
+        var el = linked[j];
+        if (el.name && !(el.name in values)) collect(el);
       }
       return values;
     },
@@ -1606,12 +1885,28 @@ function NanoBananaApp() {
     },
 
     localWorkspaceSnapshot() {
+      var values = this.collectWorkspaceValues();
+      // collectWorkspaceValues() reads the DOM, which can lag the reactive
+      // state when this runs synchronously right after applyPreset() /
+      // applyProvider() (v-model + v-for re-render are async). Pin the
+      // authoritative values so refresh never resurrects a stale provider/base.
+      values.provider = this.provider;
+      values.base_url = this.baseUrl;
+      if (this.model) values.model = this.model;
+      if (this.imageSize) values.image_size = this.imageSize;
       return {
         name: this.workspaceName || '默认主题',
-        values: this.collectWorkspaceValues(),
+        values: values,
         media: this.mediaSnapshot(),
         saved_at: Date.now(),
+        currentSchemeName: this.currentSchemeName,
+        selectedArchive: this.selectedArchive,
       };
+    },
+
+    scheduleWorkspaceSave() {
+      clearTimeout(this._workspaceSaveTimer);
+      this._workspaceSaveTimer = setTimeout(() => this.saveWorkspaceDraft(), 500);
     },
 
     async saveWorkspaceDraft() {
@@ -1637,6 +1932,11 @@ function NanoBananaApp() {
         var draft = JSON.parse(raw);
         this.workspaceName = draft.name || this.workspaceName;
         this.applyPreset({ values: draft.values || {}, media: draft.media || {} });
+        this.currentSchemeName = draft.currentSchemeName || '默认方案';
+        this.selectedArchive = draft.selectedArchive || draft.currentSchemeName || '默认方案';
+        this._normalizeSchemeSelection();
+        this._draftLoaded = true;
+        setTimeout(() => { this._draftLoaded = false; }, 250);
         this.workspaceHint = '已读取主题草稿：' + (this.workspaceName || '');
         return true;
       } catch (e) {
@@ -1654,13 +1954,17 @@ function NanoBananaApp() {
       }));
     },
 
-    newTab() {
+    async newTab() {
+      if (!(await this._ensureNotDirty('新建任务'))) return;
       this.saveCurrentTabState();
       var id = 'ws-' + Date.now() + '-' + Math.random().toString(16).slice(2, 7);
       this.tabs.push({ id: id, name: '未命名主题', running: false });
       this.activeTabId = id;
       window._activeWorkspaceId = id;
       this.workspaceName = '';
+      this.currentSchemeName = '默认方案';
+      this.isDirty = false;
+      this.schemeNameInput = '';
       this.savedMedia = {};
       this.outputDir = '';
       this.dirHandle = null;
@@ -1674,14 +1978,18 @@ function NanoBananaApp() {
       this.statusText = '空闲';
       this.eventsText = '';
       this.submitting = false;
+      this.selectedJobId = null;
+      this.selectedJobLabel = '';
+      this.submittingRequest = false;
       this._clearTopicResultDom();
       this.saveTabsToLocalStorage();
       var self = this;
       setTimeout(function () { self._scrollActiveTabIntoView(); }, 0);
     },
 
-    switchTab(id) {
+    async switchTab(id) {
       if (id === this.activeTabId || this.editingTabId) return;
+      if (!(await this._ensureNotDirty('切换任务'))) return;
       this.saveCurrentTabState();
       this.activeTabId = id;
       window._activeWorkspaceId = id;
@@ -1734,6 +2042,8 @@ function NanoBananaApp() {
         statusText: this.statusText,
         eventsText: this.eventsText,
         submitting: this.submitting,
+        selectedJobId: this.selectedJobId,
+        selectedJobLabel: this.selectedJobLabel,
         baseUrl: this.baseUrl,
         provider: this.provider,
         models: this.models ? JSON.parse(JSON.stringify(this.models)) : [],
@@ -1741,6 +2051,8 @@ function NanoBananaApp() {
         outputDir: this.outputDir,
         dirHandle: this.dirHandle,
         autoDownload: this.autoDownload,
+        currentSchemeName: this.currentSchemeName,
+        isDirty: this.isDirty,
       });
     },
 
@@ -1751,18 +2063,11 @@ function NanoBananaApp() {
       this.statusText = cache.statusText || '空闲';
       this.eventsText = cache.eventsText || '';
       this.submitting = cache.submitting || false;
+      this.selectedJobId = cache.selectedJobId || null;
+      this.selectedJobLabel = cache.selectedJobLabel || '';
       if (cache.baseUrl !== undefined) this.baseUrl = cache.baseUrl;
       if (cache.provider !== undefined) {
         var savedProvider = cache.provider;
-        if (savedProvider === "comfyui_local" && this.localReady === false) {
-          var tabCloudKeys = Object.keys(this.providers);
-          for (var ti = 0; ti < tabCloudKeys.length; ti++) {
-            if (tabCloudKeys[ti] !== "comfyui_local" && this.providers[tabCloudKeys[ti]]) {
-              savedProvider = tabCloudKeys[ti];
-              break;
-            }
-          }
-        }
         this.provider = savedProvider;
         this._activeProvider = savedProvider;
       }
@@ -1771,6 +2076,9 @@ function NanoBananaApp() {
       this.outputDir = cache.outputDir !== undefined ? cache.outputDir : '';
       this.dirHandle = cache.dirHandle || null;
       this.autoDownload = cache.autoDownload || false;
+      this.currentSchemeName = cache.currentSchemeName || '默认方案';
+      this.isDirty = !!cache.isDirty;
+      this.schemeNameInput = '';
       var form = document.querySelector('#nb-form');
       if (form) form.reset();
       this.savedMedia = {};
@@ -1780,8 +2088,15 @@ function NanoBananaApp() {
       // into the DOM. Otherwise clear any stale DOM left by the previous tab.
       // The cache key already proves ownership, so a snapshot predating backend
       // workspace_id persistence is still this tab's own result.
-      if (cache._latestJob && (!cache._latestJob.workspace_id || cache._latestJob.workspace_id === wsId)) {
-        self._renderJobToDom(cache._latestJob, cache._activeJobId);
+      if (this.selectedJobId) {
+        var job = (this.jobs || []).find(function (j) { return (j.job_id || j.id) === this.selectedJobId; }.bind(this))
+          || ((cache._latestJob && ((cache._latestJob.job_id || cache._latestJob.id) === this.selectedJobId)) ? cache._latestJob : null);
+        if (job) {
+          this.eventsText = (job.events || []).map(function (e) { return '[' + (e.time || '') + '] ' + (e.message || ''); }).join('\n');
+          self._renderJobToDom(job, this.selectedJobId);
+        } else {
+          self._clearTopicResultDom();
+        }
       } else {
         delete cache._latestJob;
         self._clearTopicResultDom();
