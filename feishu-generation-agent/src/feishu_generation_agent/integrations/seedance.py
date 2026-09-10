@@ -3,6 +3,7 @@ from hashlib import sha256
 import ipaddress
 from io import BytesIO
 import json
+import logging
 import os
 import stat
 from collections.abc import Awaitable, Callable
@@ -24,11 +25,18 @@ from feishu_generation_agent.domain.errors import (
     ErrorCategory,
     ErrorDetail,
 )
-from feishu_generation_agent.domain.plan import GenerationTask
+from feishu_generation_agent.domain.plan import GenerationTask, ImageReference, SEEDANCE_PROMPT_MAX_CHARS
+from feishu_generation_agent.domain.reference_contract import (
+    canonicalize_references,
+    remap_prompt_references,
+)
 from feishu_generation_agent.integrations.public_media import (
     PublicMediaHost,
     PublicMediaUploadError,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 _IMAGE_MIME_TYPES = frozenset(
@@ -140,6 +148,57 @@ class SeedanceVideoGenerator:
         self._provider_name = provider_name
         self._image_url_resolver = image_url_resolver
 
+    def _strip_non_image_references(
+        self,
+        task: GenerationTask,
+        assets: list[MediaAsset],
+    ) -> tuple[GenerationTask, list[MediaAsset]]:
+        """Image-only mode: drop non-image references (portrait provider).
+
+        Reference videos/audio only inform the prompt (their semantics are
+        already folded into task.prompt by the planner); they must not be
+        submitted to the generation API. Drop those references and rewrite the
+        prompt's @videoN / @audioN tokens so the upstream service does not
+        reject unsupported video_url / audio_url references (HTTP 400).
+        """
+        references = task.reference_images
+        image_references: list[ImageReference] = [
+            reference
+            for reference in references
+            if reference.role in {"reference_image", "first_frame", "last_frame"}
+        ]
+        if len(image_references) == len(references):
+            return task, assets
+
+        keep_ids = {reference.asset_id for reference in image_references}
+        kept_assets = [
+            asset for asset in assets if asset.asset_id in keep_ids
+        ]
+        mime_types = {asset.asset_id: asset.mime_type for asset in assets}
+        canonical_references = canonicalize_references(image_references)
+        try:
+            prompt = remap_prompt_references(
+                task.prompt,
+                references,
+                canonical_references,
+                mime_types,
+            )
+        except Exception:
+            _LOGGER.warning(
+                "Failed to rewrite prompt tokens while dropping portrait "
+                "video/audio refs; keeping original prompt. task=%s",
+                task.task_id,
+                exc_info=True,
+            )
+            prompt = task.prompt
+        updated = task.model_copy(
+            update={
+                "reference_images": canonical_references,
+                "prompt": prompt,
+            }
+        )
+        return updated, kept_assets
+
     async def submit(
         self,
         task: GenerationTask,
@@ -150,6 +209,8 @@ class SeedanceVideoGenerator:
         # This is a local crash-correlation token owned by the orchestration layer.
         # Ark does not support client-assigned task IDs, so it must not cross the API.
         del submission_id
+        if self._image_url_resolver is not None:
+            task, assets = self._strip_non_image_references(task, assets)
         references, ordered_assets, contents = self._validate_submission(task, assets)
         request_content: list[dict[str, Any]] = [
             {"type": "text", "text": self._prompt(task, references)}
@@ -563,6 +624,13 @@ class SeedanceVideoGenerator:
     ) -> tuple[list[Any], list[MediaAsset], list[bytes]]:
         self._validate_video_parameters(task)
         references = sorted(task.reference_images, key=lambda item: item.order)
+        prompt_length = len(self._prompt(task, references))
+        if prompt_length > SEEDANCE_PROMPT_MAX_CHARS:
+            raise self._validation_error(
+                task.task_id,
+                f"Seedance 提示词过长（{prompt_length} 字，上限 {SEEDANCE_PROMPT_MAX_CHARS} 字），请精简后重试",
+                "cause=prompt_too_long",
+            )
         if not references and not assets:
             # Seedance 的文生视频模式：content 只保留 text，不传任何参考素材。
             return [], [], []
@@ -952,6 +1020,10 @@ class SeedanceVideoGenerator:
         if status_code in {401, 403}:
             category = ErrorCategory.PERMISSION
             message = "Seedance 凭证无效或没有模型权限"
+            retryable = False
+        elif status_code == 400:
+            category = ErrorCategory.PROVIDER_TERMINAL
+            message = "Seedance 拒绝了请求，请检查提示词长度、参考图数量和 duration/resolution 组合"
             retryable = False
         elif status_code == 429 or status_code >= 500:
             category = ErrorCategory.TRANSIENT

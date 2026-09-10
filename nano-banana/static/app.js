@@ -180,6 +180,13 @@ function friendlyJobErrorHint(job) {
   if (/ComfyUI.*未启动|未启动.*ComfyUI|timed out|WinError 10061|connection refused/i.test(firstError)) return '本地模型服务未就绪，正在自动拉起，请稍后重试';
   if (/model_kind.*已停用|已停用.*model_kind|not yet supported|unsupported model/i.test(firstError)) return '当前模型不可用，请切换到其它可用模型';
   if (/no output files|no images|produced no output|missing.*reference/i.test(firstError)) return '模型没有返回结果，请检查参考图或更换模型';
+  var failReason = firstError.match(/fail_reason['"]?\s*[:=]\s*['"]([^'"]*)['"]/i);
+  if (failReason) {
+    var fr = failReason[1];
+    if (/model service unavailable|service unavailable/i.test(fr)) return '该模型服务暂时不可用，请稍后再试或更换其它模型';
+    if (/model_not_found|no available channel/i.test(fr)) return '该模型暂未开通或无可用通道，请更换其它模型';
+    return '生成失败：' + fr;
+  }
   return firstError;
 }
 
@@ -999,7 +1006,8 @@ function NanoBananaApp() {
         setOwnerState('statusText', (res && res.error) || '提交失败');
         return;
       }
-      if (!ownerExists()) return;
+      if (!ownerExists() || ownerCache()._submissionToken !== submissionToken) return;
+      ownerCache()._activeJobId = res.job_id;
       self._restoredPollIds = self._restoredPollIds || {};
       self._restoredPollIds[res.job_id] = true;
       setOwnerState('statusText', '已提交，任务 ' + res.job_id + ' 在后台运行');
@@ -1013,14 +1021,21 @@ function NanoBananaApp() {
       var ownerExists = function () { return self.tabs.some(function (t) { return t.id === ownerWsId; }); };
       var isActiveTab = function () { return self.activeTabId === ownerWsId; };
       var cache = function () { return (self._tabStateCache[ownerWsId] = self._tabStateCache[ownerWsId] || {}); };
+      var startToken = cache()._submissionToken;
+      var isCurrent = function () {
+        if (!ownerExists()) return false;
+        var state = cache();
+        if (startToken !== undefined && state._submissionToken !== startToken) return false;
+        return !state._activeJobId || state._activeJobId === jobId;
+      };
 
       var MAX_FAILS = 15;
       var consecutiveFails = 0;
 
       while (true) {
-        if (!ownerExists()) break;
+        if (!isCurrent()) break;
         var r = await pollJobOnce(APP_PATH + '/api/jobs/' + jobId, ownerWsId);
-        if (!ownerExists()) break;
+        if (!isCurrent()) break;
         if (r.kind === 'gone') break;
         if (r.kind === 'error') {
           consecutiveFails++;
@@ -1031,12 +1046,16 @@ function NanoBananaApp() {
         }
         consecutiveFails = 0;
         var job = r.job;
-        if (job.workspace_id && job.workspace_id !== ownerWsId) break;
+        if (job.workspace_id && job.workspace_id !== ownerWsId) {
+          cache().statusText = '主题隔离校验失败，已阻止错误结果显示';
+          cache().submitting = false;
+          break;
+        }
 
-        cache()._latestJob = job;
-        if (isActiveTab()) self._upsertJob(job);
+        if (isCurrent()) cache()._latestJob = job;
+        if (isActiveTab() && isCurrent()) self._upsertJob(job);
 
-        if (isActiveTab() && self.selectedJobId === jobId) {
+        if (isActiveTab() && isCurrent() && self.selectedJobId === jobId) {
           self.eventsText = (job.events || []).map(function (e) { return '[' + (e.time || '') + '] ' + (e.message || ''); }).join('\n');
           self._renderJobToDom(job, jobId);
         }
@@ -2360,15 +2379,10 @@ function NanoBananaApp() {
       // into the DOM. Otherwise clear any stale DOM left by the previous tab.
       // The cache key already proves ownership, so a snapshot predating backend
       // workspace_id persistence is still this tab's own result.
-      if (this.selectedJobId) {
-        var job = (this.jobs || []).find(function (j) { return (j.job_id || j.id) === this.selectedJobId; }.bind(this))
-          || ((cache._latestJob && ((cache._latestJob.job_id || cache._latestJob.id) === this.selectedJobId)) ? cache._latestJob : null);
-        if (job) {
-          this.eventsText = (job.events || []).map(function (e) { return '[' + (e.time || '') + '] ' + (e.message || ''); }).join('\n');
-          self._renderJobToDom(job, this.selectedJobId);
-        } else {
-          self._clearTopicResultDom();
-        }
+      if (cache._latestJob && (!cache._latestJob.workspace_id || cache._latestJob.workspace_id === wsId)) {
+        var job = cache._latestJob;
+        this.eventsText = (job.events || []).map(function (e) { return '[' + (e.time || '') + '] ' + (e.message || ''); }).join('\n');
+        self._renderJobToDom(job, job.job_id || job.id);
       } else {
         delete cache._latestJob;
         self._clearTopicResultDom();

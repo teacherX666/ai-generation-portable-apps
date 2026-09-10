@@ -9,7 +9,10 @@ function workspaceId() {
 
 async function api(url, method, body) {
   try {
-    const opts = { method: method || 'GET', headers: { 'X-Workspace-Id': workspaceId() } };
+    const headers = { 'X-Workspace-Id': workspaceId() };
+    const session = localStorage.getItem('portal_session');
+    if (session) headers['X-Session'] = session;
+    const opts = { method: method || 'GET', headers: headers };
     if (body) opts.body = body;
     const res = await fetch(url, opts);
     return await res.json();
@@ -3603,6 +3606,7 @@ PetiteVue.createApp({
     btn.style.display = '';
     btn.addEventListener('click', async () => {
       await api('/api/auth/logout', 'POST');
+      try { localStorage.removeItem('portal_session'); } catch(_) {}
       location.replace('/login');
     });
   }

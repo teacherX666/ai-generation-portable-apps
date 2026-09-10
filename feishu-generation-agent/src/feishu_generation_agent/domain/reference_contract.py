@@ -2,7 +2,7 @@ from collections.abc import Mapping
 import re
 from typing import Any, Callable
 
-from feishu_generation_agent.domain.plan import ImageReference
+from feishu_generation_agent.domain.plan import ImageReference, SEEDANCE_PROMPT_MAX_CHARS
 
 
 _MEDIA_LABELS = {
@@ -195,6 +195,9 @@ def validate_seedance_prompt(
     prompt = task.get("prompt")
     if not isinstance(prompt, str):
         return ["Seedance prompt 必须是字符串"]
+
+    if len(prompt) > SEEDANCE_PROMPT_MAX_CHARS:
+        return [f"Seedance prompt 必须不超过 {SEEDANCE_PROMPT_MAX_CHARS} 字（当前 {len(prompt)} 字），请删除重复解释与次要描述后重试"]
     raw_references = task.get("reference_images")
     if not isinstance(raw_references, list):
         return ["Seedance reference_images 必须是列表"]

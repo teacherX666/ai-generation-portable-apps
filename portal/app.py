@@ -2021,7 +2021,16 @@ class Handler(SimpleHTTPRequestHandler):
         for part in self.headers.get("Cookie", "").split(";"):
             part = part.strip()
             if part.startswith("session="):
-                return auth.get_user(part[8:].strip())
+                user = auth.get_user(part[8:].strip())
+                if user:
+                    return user
+        token = (self.headers.get("X-Session") or "").strip()
+        if not token:
+            authz = self.headers.get("Authorization") or ""
+            if authz.lower().startswith("bearer "):
+                token = authz[7:].strip()
+        if token:
+            return auth.get_user(token)
         return None
 
     def _is_https(self) -> bool:
@@ -2056,8 +2065,19 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ── Request dispatch ──────────────────────────────────────────────────────
 
+    def _log_req(self, method: str):
+        try:
+            cookies = self.headers.get("Cookie") or ""
+            has_cookie = "session=" in cookies
+            x = (self.headers.get("X-Session") or "").strip()
+            ua = (self.headers.get("User-Agent") or "")[:100]
+            print(f"  [req] {method} {self.path} ip={self.client_address[0]} cookie={has_cookie} xsess={'Y' if x else 'N'} ua={ua}", flush=True)
+        except Exception:
+            pass
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        self._log_req("GET")
         if path == "/api/auth/first-run":
             self._json(200, {"ok": True, "first_run": auth.first_run(), "signup_enabled": auth.signup_enabled()})
             return
@@ -2154,11 +2174,18 @@ class Handler(SimpleHTTPRequestHandler):
         if self._reject_oversized_upload():
             return
         path = urllib.parse.urlparse(self.path).path
+        self._log_req("POST")
         if path == "/api/auth/login":
             self._auth_login()
             return
         if path == "/api/auth/register":
             self._auth_register()
+            return
+        if path == "/auth/login":
+            self._auth_form_login()
+            return
+        if path == "/auth/register":
+            self._auth_form_register()
             return
         if path == "/api/internal/jobs/finalize":
             self._internal_finalize_job()
@@ -2418,7 +2445,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self._set_cookie(token)
         self._cors_headers()
-        raw = json.dumps({"ok": True, "username": user["username"], "role": user["role"]}).encode()
+        raw = json.dumps({"ok": True, "username": user["username"], "role": user["role"], "token": token}).encode()
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -2448,10 +2475,64 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self._set_cookie(token)
         self._cors_headers()
-        raw = json.dumps({"ok": True, "username": username, "role": role}).encode()
+        raw = json.dumps({"ok": True, "username": username, "role": role, "token": token}).encode()
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _safe_next(self, value: str) -> str:
+        v = (value or "").strip()
+        if not v or not v.startswith("/") or v.startswith("//"):
+            return "/"
+        return v
+
+    def _read_form(self) -> dict | None:
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+            raw = self.rfile.read(length) if length > 0 else b""
+            pairs = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+            return {k: v[0] for k, v in pairs.items()}
+        except Exception:
+            return None
+
+    def _auth_form_login(self):
+        body = self._read_form()
+        if body is None:
+            self._redirect("/login?error=bad_request")
+            return
+        username = (body.get("username") or "").strip()
+        pw = body.get("password") or ""
+        nxt = self._safe_next(body.get("next") or "/")
+        token = auth.login(username, pw)
+        if not token:
+            self._redirect(f"/login?error=invalid_credentials&mode=login&next={urllib.parse.quote(nxt, safe='')}")
+            return
+        self._redirect(nxt, set_cookie_token=token)
+
+    def _auth_form_register(self):
+        body = self._read_form()
+        if body is None:
+            self._redirect("/login?error=bad_request")
+            return
+        username = (body.get("username") or "").strip()
+        pw = body.get("password") or ""
+        nxt = self._safe_next(body.get("next") or "/")
+        first_run = auth.first_run()
+        if not first_run and not auth.signup_enabled():
+            self._redirect(f"/login?error=registration_disabled&mode=register&next={urllib.parse.quote(nxt, safe='')}")
+            return
+        if not username or not pw or len(pw) < 6:
+            mode = "setup" if first_run else "register"
+            self._redirect(f"/login?error=password_min_6&mode={mode}&next={urllib.parse.quote(nxt, safe='')}")
+            return
+        role = "admin" if first_run else "user"
+        user = auth.create_user(username, pw, role=role)
+        if not user:
+            mode = "setup" if first_run else "register"
+            self._redirect(f"/login?error=already_exists&mode={mode}&next={urllib.parse.quote(nxt, safe='')}")
+            return
+        token = auth.login(username, pw)
+        self._redirect(nxt, set_cookie_token=token)
 
     def _update_user(self, path: str):
         # PATCH-like via POST /api/users/<id>
@@ -3199,9 +3280,11 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _redirect(self, url: str):
+    def _redirect(self, url: str, set_cookie_token: str | None = None):
         self.send_response(302)
         self.send_header("Location", url)
+        if set_cookie_token:
+            self._set_cookie(set_cookie_token)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -3287,7 +3370,17 @@ def main():
 
         class RedirectHandler(SimpleHTTPRequestHandler):
             def log_message(self, format, *args): pass
-            def do_GET(self):
+            def _log_req(self, method: str):
+        try:
+            cookies = self.headers.get("Cookie") or ""
+            has_cookie = "session=" in cookies
+            x = (self.headers.get("X-Session") or "").strip()
+            ua = (self.headers.get("User-Agent") or "")[:100]
+            print(f"  [req] {method} {self.path} ip={self.client_address[0]} cookie={has_cookie} xsess={'Y' if x else 'N'} ua={ua}", flush=True)
+        except Exception:
+            pass
+
+    def do_GET(self):
                 host = self.headers.get("Host", "").split(":")[0] or lan_ip
                 https_url = f"https://{host}:{PORTAL_PORT}{self.path}"
                 page = (f'<script>var h=window.location.hostname;'

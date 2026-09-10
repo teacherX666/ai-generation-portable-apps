@@ -521,8 +521,7 @@ async def _open_application_services(
             )
             # The production table is the operator-facing source when enabled.
             bitable_factory = production_factory
-        assert delivery_writer is not None
-        aiport_video_generator = AiPortVideoGenerator(
+            aiport_video_generator = AiPortVideoGenerator(
             provider_http,
             base_url=settings.aiport_base_url,
             model_kind=settings.aiport_video_model,

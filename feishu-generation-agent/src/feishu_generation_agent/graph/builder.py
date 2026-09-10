@@ -8,12 +8,14 @@ from .nodes import (
     analyze_images,
     audit_plan,
     check_source_revision,
+    deliver_to_feishu,
     execute_selected_tasks,
     human_approval,
     ingest_source,
     normalize_document,
     plan_requirements,
     revalidate_approval,
+    review_artifacts,
     validate_planned_tasks,
     verify_and_download_artifacts,
 )
@@ -60,6 +62,15 @@ def build_graph(services: GraphServices, checkpointer: Any):
         "verify_and_download_artifacts",
         partial(verify_and_download_artifacts, services=services),
     )
+    builder.add_node(
+        "review_artifacts",
+        partial(review_artifacts, services=services),
+        destinations=("deliver_to_feishu", "plan_requirements", END),
+    )
+    builder.add_node(
+        "deliver_to_feishu",
+        partial(deliver_to_feishu, services=services),
+    )
 
     chain = [
         "ingest_source",
@@ -81,4 +92,5 @@ def build_graph(services: GraphServices, checkpointer: Any):
     # is a separate, user-triggered action and is intentionally not part of the
     # graph's automatic success path.
     builder.add_edge("verify_and_download_artifacts", END)
+    builder.add_edge("deliver_to_feishu", END)
     return builder.compile(checkpointer=checkpointer)

@@ -33,7 +33,6 @@ from feishu_generation_agent.domain.errors import (
 )
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
-    ArtifactReviewDecision,
 )
 from feishu_generation_agent.graph.builder import build_graph
 from feishu_generation_agent.graph.nodes import GraphServices
@@ -1129,19 +1128,7 @@ async def _complete_run_with_approval_edits(
             tasks=[edited_task],
         ),
     )
-    # 生成完成后会停在「成片确认」门禁，确认后才回写结果列并到达终态。
-    for _ in range(200):
-        source = await runtime.get_run_view(run_id)
-        if source["status"] == "waiting_review":
-            break
-        await asyncio.sleep(0.01)
-    else:
-        raise AssertionError("run did not reach artifact review after approval")
-    await runtime.resume_artifact_review(
-        run_id,
-        ArtifactReviewDecision(action="confirm"),
-    )
-    # resume_run 现在异步执行生成与交付，需轮询到终态再断言。
+    # 生成完成即到达终态（succeeded），导出结果表是独立的按需操作。
     for _ in range(200):
         source = await runtime.get_run_view(run_id)
         if source["status"] in {"succeeded", "failed"}:
@@ -1168,6 +1155,45 @@ async def _complete_run_with_approval_edits(
     assert services.video_generator.submit_calls == 1
     return approved
 
+
+async def test_successful_run_exports_only_after_manual_request(
+    fake_services: GraphServices,
+) -> None:
+    graph = build_graph(fake_services, InMemorySaver())
+    runtime = GraphRuntime(
+        graph=graph,
+        repository=fake_services.repository,
+        file_store=fake_services.file_store,
+        settings=fake_services.settings,
+        delivery_writer=fake_services.delivery_writer,
+    )
+    try:
+        await _complete_run_with_approval_edits(
+            runtime,
+            graph,
+            fake_services,
+            run_id="manual-export-original",
+            thread_id="manual-export-original-thread",
+        )
+        before = await runtime.get_run_view("manual-export-original")
+        assert before["status"] == "succeeded"
+        assert before["delivery"] is None
+        assert fake_services.delivery_writer.deliver_calls == 0
+
+        await runtime.retry_delivery("manual-export-original")
+        for _ in range(200):
+            after = await runtime.get_run_view("manual-export-original")
+            if after["status"] != "delivering":
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("manual export did not finish")
+
+        assert after["status"] == "succeeded"
+        assert after["delivery"]["status"] == "succeeded"
+        assert fake_services.delivery_writer.deliver_calls == 1
+    finally:
+        await runtime.close()
 
 async def _assert_cloned_approval_matches(
     runtime: GraphRuntime,

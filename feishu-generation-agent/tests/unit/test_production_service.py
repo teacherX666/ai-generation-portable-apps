@@ -430,7 +430,7 @@ async def test_terminal_runtime_status_releases_shared_production_lock(
         await store.close()
 
 
-async def test_service_rerun_archives_original_binding_and_hides_it_while_active(tmp_path) -> None:
+async def test_service_rerun_keeps_successful_original_visible_while_active(tmp_path) -> None:
     from feishu_generation_agent.domain.bitable import TableTaskStatus
     from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
 
@@ -470,9 +470,9 @@ async def test_service_rerun_archives_original_binding_and_hides_it_while_active
     assert rerun_id != original_run_id
     assert original is not None
     assert original.status is TableTaskStatus.COMPLETED
-    # The original run is preserved in history (get_by_run still returns it), but
-    # recent_runs must not surface it while a rerun of the same record is active.
-    assert [item.run_id for item in recent] == []
+    # A successful rerun must not overwrite the original task: the completed
+    # original stays visible as a separate history entry while the rerun runs.
+    assert [item.run_id for item in recent] == [original_run_id]
     assert len(runtime.clone_calls) == 1
     cloned_from, cloned_run_id, cloned_thread_id = runtime.clone_calls[0]
     assert cloned_from == original_run_id
@@ -554,7 +554,7 @@ async def test_service_rejects_rerun_of_non_animation_task(tmp_path) -> None:
         await store.close()
 
 
-async def test_service_rerun_dedupes_recent_by_record(tmp_path) -> None:
+async def test_service_successful_rerun_keeps_both_completed_tasks(tmp_path) -> None:
     from feishu_generation_agent.domain.bitable import TableTaskStatus
     from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
     import asyncio
@@ -594,10 +594,10 @@ async def test_service_rerun_dedupes_recent_by_record(tmp_path) -> None:
         await store.close()
 
     assert rerun_id != original_run_id
-    assert [item.run_id for item in recent] == [rerun_id]
+    assert [item.run_id for item in recent] == [rerun_id, original_run_id]
 
 
-async def test_service_recent_runs_hides_record_with_active_rerun(tmp_path) -> None:
+async def test_service_recent_runs_keeps_successful_record_with_active_rerun(tmp_path) -> None:
     from feishu_generation_agent.domain.bitable import TableTaskStatus
     from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
     import asyncio
@@ -635,5 +635,49 @@ async def test_service_recent_runs_hides_record_with_active_rerun(tmp_path) -> N
         await store.close()
 
     assert rerun_id != original_run_id
+    assert [item.run_id for item in recent] == [original_run_id]
+    assert [item.run_id for item in active] == [rerun_id]
+
+
+async def test_service_failed_rerun_overwrites_and_hides_failed_original(tmp_path) -> None:
+    from feishu_generation_agent.domain.bitable import TableTaskStatus
+    from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
+    import asyncio
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_calls = []
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, source_run_id, request, *, run_id, thread_id):
+            self.clone_calls.append((source_run_id, run_id, thread_id))
+            return run_id
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.FAILED)
+        await asyncio.sleep(1.1)
+
+        rerun_id = await service.rerun(original_run_id)
+        recent = await service.recent_runs()
+        active = await service.active_runs()
+    finally:
+        await store.close()
+
+    assert rerun_id != original_run_id
+    # A failed rerun overwrites the failed task: the old failed entry is hidden
+    # while the new attempt is the only visible active run.
     assert [item.run_id for item in recent] == []
     assert [item.run_id for item in active] == [rerun_id]

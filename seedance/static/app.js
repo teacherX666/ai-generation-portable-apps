@@ -1338,6 +1338,14 @@ function SeedanceApp() {
 
       const foot = document.createElement('div');
       foot.className = 'job-tile-foot';
+      if (isCancellableJob(j)) {
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'job-tile-btn job-tile-btn--cancel';
+        cancel.textContent = '取消';
+        cancel.addEventListener('click', (e) => { e.stopPropagation(); this.cancelJob(j.job_id || j.id, j.status); });
+        foot.appendChild(cancel);
+      }
       if (first) {
         const dl = document.createElement('button');
         dl.type = 'button';
@@ -1835,7 +1843,8 @@ function SeedanceApp() {
         setOwnerState('statusText', res?.error || '提交失败');
         return;
       }
-      if (!ownerExists()) return;
+      if (!ownerExists() || ownerCache()._submissionToken !== submissionToken) return;
+      ownerCache()._activeJobId = res.job_id;
       this._restoredPollIds = this._restoredPollIds || {};
       this._restoredPollIds[res.job_id] = true;
       setOwnerState('statusText', '已提交，任务 ' + res.job_id + ' 在后台运行');
@@ -1848,14 +1857,21 @@ function SeedanceApp() {
       const ownerExists = () => this.tabs.some(t => t.id === ownerWsId);
       const isActiveTab = () => this.activeTabId === ownerWsId;
       const cache = () => (this._tabStateCache[ownerWsId] = this._tabStateCache[ownerWsId] || {});
+      const startToken = cache()._submissionToken;
+      const isCurrent = () => {
+        if (!ownerExists()) return false;
+        const state = cache();
+        if (startToken !== undefined && state._submissionToken !== startToken) return false;
+        return !state._activeJobId || state._activeJobId === jobId;
+      };
 
       const MAX_FAILS = 15;
       let consecutiveFails = 0;
 
       while (true) {
-        if (!ownerExists()) break;
+        if (!isCurrent()) break;
         const r = await pollJobOnce(APP_PATH + '/api/jobs/' + jobId, ownerWsId);
-        if (!ownerExists()) break;
+        if (!isCurrent()) break;
         if (r.kind === 'gone') break;
         if (r.kind === 'error') {
           consecutiveFails++;
@@ -1866,12 +1882,16 @@ function SeedanceApp() {
         }
         consecutiveFails = 0;
         const job = r.job;
-        if (job.workspace_id && job.workspace_id !== ownerWsId) break;
+        if (job.workspace_id && job.workspace_id !== ownerWsId) {
+          cache().statusText = '主题隔离校验失败，已阻止错误结果显示';
+          cache().submitting = false;
+          break;
+        }
 
-        cache()._latestJob = job;
-        if (isActiveTab()) this._upsertJob(job);
+        if (isCurrent()) cache()._latestJob = job;
+        if (isActiveTab() && isCurrent()) this._upsertJob(job);
 
-        if (isActiveTab() && this.selectedJobId === jobId) {
+        if (isActiveTab() && isCurrent() && this.selectedJobId === jobId) {
           this.eventsText = (job.events || []).map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n');
           this._renderJobToDom(job, jobId);
         }
@@ -1907,14 +1927,20 @@ function SeedanceApp() {
     // 排队中直接取消；运行中弹确认（已计费提示）。后端无取消 API 时
     // 走「取消标志 + 轮询点退出 + 结果丢弃」兜底；409 = 任务已结束。
     async cancelJob(jobId, status) {
+      if (!jobId) return;
+      this._cancellingJobIds = this._cancellingJobIds || {};
+      if (this._cancellingJobIds[jobId]) return;
+      this._cancellingJobIds[jobId] = true;
       this.statusText = '正在取消任务...';
       let res;
       try {
         res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/cancel', 'POST', null, this.activeTabId);
       } catch (e) {
+        delete this._cancellingJobIds[jobId];
         this.statusText = '取消失败：' + (e && e.message ? e.message : e);
         return;
       }
+      delete this._cancellingJobIds[jobId];
       if (res && res.ok) {
         this.statusText = '任务已取消，输入和参数已保留。';
         const j = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
@@ -2593,15 +2619,10 @@ function SeedanceApp() {
       // into the DOM. Otherwise clear any stale DOM left by the previous tab.
       // The cache key already proves ownership, so a snapshot predating backend
       // workspace_id persistence is still this tab's own result.
-      if (this.selectedJobId) {
-        const job = (this.jobs || []).find(j => (j.job_id || j.id) === this.selectedJobId)
-          || ((cache._latestJob && ((cache._latestJob.job_id || cache._latestJob.id) === this.selectedJobId)) ? cache._latestJob : null);
-        if (job) {
-          this.eventsText = (job.events || []).map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n');
-          this._renderJobToDom(job, this.selectedJobId);
-        } else {
-          this._clearTopicResultDom();
-        }
+      if (cache._latestJob && (!cache._latestJob.workspace_id || cache._latestJob.workspace_id === wsId)) {
+        const job = cache._latestJob;
+        this.eventsText = (job.events || []).map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n');
+        this._renderJobToDom(job, job.job_id || job.id);
       } else {
         delete cache._latestJob;
         this._clearTopicResultDom();

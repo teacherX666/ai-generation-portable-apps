@@ -111,7 +111,7 @@ app.taskMode = 'extend';
 app.changeTaskMode();
 
 // User switches to tab B.
-app.switchTab('B');
+await app.switchTab('B');
 
 assert.equal(app.taskMode, 'reference',
   'tab B starts on the default mode — extend must not bleed across tabs');
@@ -131,7 +131,7 @@ app.taskMode = 'extend';
 app.changeTaskMode();
 
 // User switches back to tab A.
-app.switchTab('A');
+await app.switchTab('A');
 
 assert.equal(app.taskMode, 'extend',
   'tab A must remember it was in extend mode');
@@ -149,7 +149,7 @@ assert.equal(ratioSelect.value, '9:16',
   'tab A → reference must restore ratio 9:16, not B\'s or the default');
 
 // And tab B round-trip: switch back and its extend duration is still 9.
-app.switchTab('B');
+await app.switchTab('B');
 assert.equal(app.taskMode, 'extend', 'tab B stays on extend across the round-trip');
 assert.equal(app._taskModeMemory.extend.duration, 9,
   'tab B keeps its own 9, not A\'s 7');
@@ -157,7 +157,7 @@ assert.equal(app._taskModeMemory.extend.duration, 9,
 // newTab must start from scratch, not clone the current tab's mode state.
 app.taskMode = 'edit';
 app.changeTaskMode();
-app.newTab();
+await app.newTab();
 assert.equal(app.taskMode, 'reference',
   'a brand-new tab must open on the default mode regardless of the tab it forked from');
 assert.equal(app._taskModeMemory.reference.duration, 12,

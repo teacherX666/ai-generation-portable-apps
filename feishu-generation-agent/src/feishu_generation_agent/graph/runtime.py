@@ -369,8 +369,11 @@ class GraphRuntime:
                     await self._fail_missing_planning_prompt(run_id)
                     return
                 if run["status"] == "delivering":
+                    previous_status = self._safe_status(
+                        state.get("status"), "succeeded"
+                    )
                     await self._retry_delivery_locked(
-                        run_id, run["thread_id"]
+                        run_id, run["thread_id"], previous_status
                     )
                     return
                 await self.repository.update_run_status(run_id, "running")
@@ -430,9 +433,10 @@ class GraphRuntime:
             ):
                 await self._fail_missing_planning_prompt(run_id)
                 raise RunValidationError("运行缺少有效提示词快照")
-            artifacts = await self.repository.list_artifacts(run_id)
-            if not artifacts:
-                raise RunConflict("没有可导出的成片")
+            if run["status"] != "delivery_failed":
+                artifacts = await self.repository.list_artifacts(run_id)
+                if not artifacts:
+                    raise RunConflict("没有可导出的成片")
             previous_status = run["status"]
             await self.repository.update_run_status(run_id, "delivering")
             self._start_background(
@@ -460,23 +464,32 @@ class GraphRuntime:
                 return
             if self.delivery_writer is None:
                 raise RunConflict("导出结果表未配置")
-            snapshot = await self.graph.aget_state(self._config(thread_id))
-            state = dict(snapshot.values or {})
-            document = NormalizedDocument.model_validate(
-                state.get("normalized_document")
-            )
-            plan = approved_plan_from_state(
-                state, max_output_count=self.settings.max_output_count
-            )
-            artifacts = await self.repository.list_artifacts(run_id)
-            record = await self.delivery_writer.deliver(
-                run_id, document, plan, artifacts
-            )
+            if previous_status == "delivery_failed":
+                # Legacy re-export path: the delivery context already exists.
+                record = await self.delivery_writer.retry_delivery(run_id)
+                artifacts = await self.repository.list_artifacts(run_id)
+                final_status = "succeeded" if artifacts else "failed"
+            else:
+                # Fresh manual export of a successful run: reconstruct the
+                # document/plan from the checkpoint and write the result table.
+                snapshot = await self.graph.aget_state(self._config(thread_id))
+                state = dict(snapshot.values or {})
+                document = NormalizedDocument.model_validate(
+                    state.get("normalized_document")
+                )
+                plan = approved_plan_from_state(
+                    state, max_output_count=self.settings.max_output_count
+                )
+                artifacts = await self.repository.list_artifacts(run_id)
+                record = await self.delivery_writer.deliver(
+                    run_id, document, plan, artifacts
+                )
+                final_status = "succeeded"
             await self._graph_aupdate_state(
                 self._config(thread_id),
                 {
                     "delivery_record": record.model_dump(mode="json"),
-                    "status": "succeeded",
+                    "status": final_status,
                     "last_error": None,
                 },
                 as_node="deliver_to_feishu",
@@ -487,7 +500,7 @@ class GraphRuntime:
                 "completed",
                 "Feishu result-table export completed",
             )
-            await self.repository.update_run_status(run_id, "succeeded")
+            await self.repository.update_run_status(run_id, final_status)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -497,8 +510,8 @@ class GraphRuntime:
                 "failed",
                 "Feishu result-table export failed",
             )
-            # Export is optional: a failed export must not downgrade the
-            # already-successful generation run.
+            # A failed export must not downgrade the already-successful
+            # generation run; legacy delivery_failed runs stay delivery_failed.
             await self.repository.update_run_status(run_id, previous_status)
     async def delete_run(self, run_id: str) -> None:
         lock = self._run_locks.setdefault(run_id, asyncio.Lock())

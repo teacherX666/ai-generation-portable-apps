@@ -412,7 +412,7 @@ async def test_retry_delivery_rejects_non_delivery_failure(tmp_path: Path) -> No
     service, _ = await _service(tmp_path)
     try:
         run_id = await service.claim("rec-1")
-        with pytest.raises(RunConflict, match="交付失败"):
+        with pytest.raises(RunConflict, match="导出结果表"):
             await service.retry_delivery(run_id)
     finally:
         await service.close()

@@ -20,6 +20,7 @@ from feishu_generation_agent.domain.plan import (
     AuditReport,
     ImageReference,
     TaskPlan,
+    SEEDANCE_PROMPT_MAX_CHARS,
 )
 from feishu_generation_agent.domain.reference_contract import (
     canonicalize_references,
@@ -98,7 +99,7 @@ _ACTIONABLE_HUMAN_HANDLING = re.compile(
     r"(?:人工处理|人工确认|手动处理|"
     r"请(?:补充|提供|确认|申请|开通|上传|替换|联系|调整|选择|改用))"
 )
-_SEEDANCE_PLANNING_CONTRACT = """【Seedance 多模态提示词契约】
+_SEEDANCE_PLANNING_CONTRACT = f"""【Seedance 多模态提示词契约】
 图生视频必须逐张读取视觉描述，理解每张素材中的具体主体、场景、风格、构图、动作、运镜或声音，再决定其适用分镜；不得机械平均分配素材，不得用“参考图片风格”等泛化措辞冒充素材理解。
 图片、视频、音频按实际提交顺序分别从 1 编号，并在 prompt 中使用 @图片N、@视频N、@音频N。每个被引用素材都必须写成“@图片N 中的具体主体/场景”“@视频N 中的具体动作/运镜”或“@音频N 中的具体音色/声音”；禁止输出内部 asset_id。
 复杂多分镜任务使用“总体设定与素材绑定 → 镜头 1/镜头 2/镜头 3 → 风格与约束”的结构。每个镜头必须直接写出本镜头采用的素材 token，不得只在开头或末尾罗列素材；每个素材必须至少用于一个实际镜头。禁止绝对秒数。
@@ -107,6 +108,7 @@ _SEEDANCE_PLANNING_CONTRACT = """【Seedance 多模态提示词契约】
 每个 image_to_video 任务的 prompt 都必须加入物理与动作逻辑约束：人物和物体不悬浮、不穿模、重心稳定，动作符合身体结构与因果顺序，镜头运动和物体速度合理。
 如果视频参考语义中存在 camera_movement 或 editing_style，必须把其中的运镜方式或剪辑节奏用中文写入对应任务的 prompt，并说明它约束哪些镜头；不得只当成画面风格参考。
 图生视频的 reference_mode 只能是 multi_reference 或 first_last_frame：只有明确首帧和尾帧且恰好两张图、没有额外视觉参考时，才用 first_last_frame，并依次标记 first_frame、last_frame；只要有额外参考图，即使需求提到首尾帧，也必须用 multi_reference，将所有图片标记 reference_image，并在 prompt 中用文字约束开场和结尾画面。
+每个 image_to_video 任务的 prompt 总长度（含 @图片N/@视频N/@音频N 与所有镜头描述）不得超过 {SEEDANCE_PROMPT_MAX_CHARS} 字；优先保留表情、动作、物理逻辑、运镜和硬性约束，删除重复解释与次要描述。
 video_provider is runtime policy: omit it or set null. output_count must default to 1; only a human may change candidate count in approval.
 """
 _PLAN_SYSTEM_PROMPT = f"""你是 AI 图片与视频生成需求规划器。
@@ -1165,6 +1167,10 @@ class DeepSeekPlanner:
                     "视频参考语义中的 camera_movement / editing_style summary "
                     "必须写入对应 image_to_video 任务的 prompt，明确描述运镜和剪辑节奏；"
                     "没有视频参考时也要写出每个镜头的运镜与动作逻辑。"
+                ),
+                (
+                    f"每个 image_to_video 任务的 prompt 总长度不得超过 {SEEDANCE_PROMPT_MAX_CHARS} 字；"
+                    "优先保留表情、动作、物理逻辑、运镜和硬性约束。"
                 ),
                 (
                     "分镜合并规则：同一分镜表的多行必须合并为一个视频任务，"

@@ -2128,7 +2128,8 @@
       ? `/api/bitable/runs/${state.runId}/retry-delivery`
       : `/api/runs/${state.runId}/retry-delivery`;
     if (state.runMode !== "bitable") {
-      await mutate(url, { method: "POST" });
+      const started = await mutate(url, { method: "POST" });
+      if (started && state.view?.status === "delivering") startPolling();
       return;
     }
     state.bitable = BitableState.retryStarted(state.bitable, state.runId);
@@ -2138,6 +2139,7 @@
       await api(url, { method: "POST" });
       state.bitable = BitableState.retrySucceeded(state.bitable);
       await poll(true);
+      if (state.view?.status === "delivering") startPolling();
     } catch (error) {
       state.bitable = BitableState.retryFailed(state.bitable, error.message);
       showError(error);

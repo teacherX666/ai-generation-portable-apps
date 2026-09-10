@@ -26,6 +26,8 @@ ImageProvider = Literal[
 VideoProvider = Literal["seedance", "aiport"]
 DEFAULT_IMAGE_PROVIDER: ImageProvider = "banana"
 # provider 只接受这三个基准分辨率档位；像素尺寸属于 size_variants。
+# Seedance/视频提示词的硬性上限，规划与提交共用同一个值。
+SEEDANCE_PROMPT_MAX_CHARS = 1500
 IMAGE_SIZE_TOKENS = ("1K", "1.5K", "2K")
 # 图片生成模型（seedream / banana / gpt-image2）支持的离散画面比例。
 # 需求文档里的 1700*2500 是交付尺寸，不是比例参数：禁止写进 aspect_ratio。
@@ -363,6 +365,10 @@ class GenerationTask(BaseModel):
             raise ValueError("size_variants is not allowed for image_to_video")
         if self.safe_area is not None:
             raise ValueError("safe_area is not allowed for image_to_video")
+        if len(self.prompt) > SEEDANCE_PROMPT_MAX_CHARS:
+            raise ValueError(
+                f"image_to_video prompt must not exceed {SEEDANCE_PROMPT_MAX_CHARS} characters"
+            )
         self._normalize_video_reference_mode()
         return self
 

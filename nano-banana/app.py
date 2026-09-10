@@ -2443,7 +2443,14 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                 final = data
                 break
             if state in {"failed", "failure", "error", "cancelled", "canceled"}:
-                raise RuntimeError(f"Task {task_id} ended as {state}: {status}")
+                reason = ""
+                if isinstance(data, dict):
+                    reason = str(data.get("fail_reason") or data.get("error") or data.get("message") or "").strip()
+                if not reason and isinstance(status, dict):
+                    reason = str(status.get("fail_reason") or status.get("error") or status.get("message") or "").strip()
+                if not reason:
+                    reason = str(status)
+                raise RuntimeError(f"任务 {task_id} 失败：{reason}")
 
     items = extract_items(final)
     if not items:

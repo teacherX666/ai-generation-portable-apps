@@ -1,4 +1,4 @@
-from feishu_generation_agent.domain.plan import ImageReference
+from feishu_generation_agent.domain.plan import ImageReference, SEEDANCE_PROMPT_MAX_CHARS
 from feishu_generation_agent.domain.reference_contract import (
     canonicalize_references,
     reference_tokens,
@@ -310,6 +310,28 @@ def test_seedance_prompt_accepts_pure_text_to_video_without_references() -> None
     )
 
     assert issues == []
+
+
+def test_seedance_prompt_rejects_prompt_over_hard_limit() -> None:
+    prompt = "表情夸张、动作符合物理逻辑。" * (SEEDANCE_PROMPT_MAX_CHARS // 13 + 1)
+    issues = validate_seedance_prompt(
+        {"task_id": "task-long", "task_type": "image_to_video", "prompt": prompt, "reference_images": []},
+        {},
+        require_storyboard=False,
+    )
+
+    assert len(issues) == 1
+    assert "1500" in issues[0]
+    assert str(len(prompt)) in issues[0]
+
+
+def test_seedance_prompt_accepts_exactly_hard_limit() -> None:
+    prompt = "稳" * SEEDANCE_PROMPT_MAX_CHARS
+    assert validate_seedance_prompt(
+        {"task_id": "task-limit", "task_type": "image_to_video", "prompt": prompt, "reference_images": []},
+        {},
+        require_storyboard=False,
+    ) == []
 
 
 def test_seedance_prompt_rejects_generic_generation_and_quality_phrases() -> None:

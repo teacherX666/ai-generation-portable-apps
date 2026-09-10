@@ -87,6 +87,7 @@ const sandbox = {
   alert() {}, confirm: () => true, DataTransfer: class {},
 };
 vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync('seedance/static/model-capabilities.js', 'utf8'), sandbox);
 vm.runInContext(fs.readFileSync('seedance/static/app.js', 'utf8'), sandbox);
 
 // The real capability data must come from providers.json, not from the test —

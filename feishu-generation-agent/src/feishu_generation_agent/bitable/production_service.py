@@ -229,7 +229,10 @@ class ProductionBitableService:
         return [
             binding
             for binding in recent
-            if binding.record_id not in active_record_ids
+            if (
+                binding.record_id not in active_record_ids
+                or binding.status is TableTaskStatus.COMPLETED
+            )
         ][:10]
 
     async def archived_runs(self, *, owner_user_id: str = "prime-local"):

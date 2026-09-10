@@ -60,7 +60,10 @@ assert.equal(
 );
 
 
-assert.match(fs.readFileSync('seedance/static/index.html', 'utf8'), /isCancellableJob\(j\)/, 'history jobs should expose cancellation');
+// The history grid is DOM-rendered (renderJobsGrid -> _buildJobTile), so the
+// cancel control lives in app.js rather than an index.html v-if template.
+assert.match(fs.readFileSync('seedance/static/index.html', 'utf8'), /sd-jobsGrid/, 'history grid container must exist');
+assert.match(fs.readFileSync('seedance/static/app.js', 'utf8'), /isCancellableJob\(j\)/, 'history jobs should expose cancellation');
 assert.match(fs.readFileSync('seedance/static/app.js', 'utf8'), /isCancellableJob/, 'all non-terminal states should be cancellable');
 assert.match(fs.readFileSync('seedance/static/app.js', 'utf8'), /_cancellingJobIds/, 'cancel requests should be deduplicated');
 

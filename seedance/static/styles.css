@@ -1155,6 +1155,7 @@ html, body { height: 100%; overflow: hidden; }
 .job-tile-btn:hover { color: var(--accent, #2563eb); background: var(--accent-soft, #eef5ff); border-color: var(--accent, #2563eb); }
 .job-tile-btn--dl { color: #1d4ed8; border-color: #bfd4f8; background: #eaf1fe; }
 .job-tile-btn--retry { color: #15803d; border-color: #bbf7d0; background: #e8f7ee; }
+.job-tile-btn--cancel { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
 
 /* ── 任务详情弹窗（请求 / 返回） ── */
 .job-detail-backdrop {

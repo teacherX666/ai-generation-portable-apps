@@ -31,7 +31,7 @@ const entryExpectations = [
   ['feishu-generation-agent/src/feishu_generation_agent/web/static/index.html', 'static/ui/portal-ui-core.css'],
 ];
 for (const [entry, href] of entryExpectations) {
-  assert.match(read(entry), new RegExp(`href=["']${href.replaceAll('/', '\\/')}["']`), `${entry} should load ${href}`);
+  assert.match(read(entry), new RegExp(`href=["']${href.replaceAll('/', '\\/')}(?:\\?[^"']*)?["']`), `${entry} should load ${href}`);
 }
 
 const portal = read('portal/static/index.html');
