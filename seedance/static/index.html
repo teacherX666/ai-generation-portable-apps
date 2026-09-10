@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Seedance</title>
-  <link rel="stylesheet" href="ui/portal-ui-core.css">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260909-ui">
+  <link rel="stylesheet" href="styles.css?v=20260909-scheme-v2">
   <script src="vendor/petite-vue.iife.js"></script>
 </head>
 <body class="ui-page">
@@ -69,6 +69,7 @@
                 <option v-for="m in models" :value="m.id || m">{{ m.label || m.id || m }}</option>
               </select>
             </label>
+            <p v-if="modelHint" class="hint" style="color:#b45309;margin:2px 0 4px">{{ modelHint }}</p>
             <label>自定义模型名（高级）
               <input name="custom_model" v-model="customModel" placeholder="留空使用上方模型">
             </label>
@@ -138,25 +139,37 @@
             </div>
           </section>
 
-          <button type="submit" :disabled="submitting">{{ submitting ? '生成中...' : '开始生成' }}</button>
+          <button type="submit" :disabled="submittingRequest">{{ submittingRequest ? '提交中...' : '开始生成' }}</button>
 
-          <!-- Archives -->
-          <section class="archiveBox">
-            <h2>存档</h2>
-            <label>存档名<input name="archive_name" placeholder="存档名称"></label>
-            <label>读取存档
-              <select v-model="selectedArchive">
-                <option v-for="a in archives" :value="a.name">{{ a.name }}</option>
-              </select>
-            </label>
-            <div class="rowButtons archiveActions">
-              <button type="button" @click="saveArchive()">保存</button>
-              <button type="button" @click="loadArchive()">读取</button>
-              <button type="button" @click="deleteArchive()">删除</button>
+          <!-- 配置方案 -->
+          <section class="archiveBox" :class="{ dirty: isDirty }">
+            <h2>配置方案 <span v-if="isDirty" class="dirtyBadge">未保存</span></h2>
+
+            <div class="schemeRow">
+              <label>保存当前配置方案
+                <input v-model="schemeNameInput" :placeholder="nextSchemeName()">
+              </label>
+              <button type="button" class="schemeSaveBtn" @click="saveCurrentScheme">保存方案</button>
             </div>
+
+            <div class="schemeRow">
+              <label>加载方案
+                <select v-model="selectedArchive" @change="onSchemeSelect">
+                  <option value="默认方案">默认方案</option>
+                  <option v-for="a in archives" :value="a.name">{{ a.name }}</option>
+                </select>
+              </label>
+              <span v-if="selectedArchive === currentSchemeName" class="schemeCurrent">当前方案</span>
+            </div>
+
+            <div class="rowButtons archiveActions">
+              <button type="button" :disabled="selectedArchive === '默认方案'" @click="renameScheme">重命名</button>
+              <button type="button" :disabled="selectedArchive === '默认方案'" @click="updateScheme">更新配置</button>
+              <button type="button" class="danger" :disabled="selectedArchive === '默认方案'" @click="deleteScheme">删除</button>
+            </div>
+
             <p class="hint">{{ archiveHint }}</p>
           </section>
-          <button type="button" class="secondaryWide" @click="clearPreset()" style="margin-top:8px">清空当前读取配置</button>
         </form>
       </aside>
 
@@ -194,49 +207,44 @@
             <button type="button" class="tabBtn workspace-nav-btn" :class="{ isActive: wsTab === 'jobs' }" @click="switchJobsTab()">任务</button>
             <button type="button" class="tabBtn workspace-nav-btn" :class="{ isActive: wsTab === 'activity' }" @click="switchActivityTab()">活动</button>
             <template v-if="wsTab === 'activity' && activityDetail">
-              <button type="button" class="btn-small workspace-nav-btn" @click="activityDetail=null">← 返回列表</button>
+              <button type="button" class="ui-btn ui-btn--secondary workspace-nav-btn" @click="activityDetail=null">← 返回列表</button>
               <button type="button" class="btn-small ui-btn ui-btn--primary workspace-nav-btn" @click="restoreActivity()">恢复参数</button>
             </template>
           </div>
           <div v-show="wsTab==='jobs'">
-            <!-- Active polling display (during job execution).
-                 任务终态后 statusText 变为「上次任务：…」摘要，此面板保留
-                 结果与下载按钮；「← 返回历史」切回历史列表视图。 -->
-            <div v-if="statusText !== '空闲'">
-              <div class="resultHeader"><h2>{{ statusText.indexOf('上次任务') === 0 ? '上次任务' : '运行中' }}</h2><span>{{ statusText }}</span>
-                <button v-if="statusText.indexOf('上次任务') === 0" @click="backToHistory()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">← 返回历史</button>
-              </div>
-              <div class="results" id="sd-results"></div>
-              <pre id="sd-events">{{ eventsText }}</pre>
-            </div>
-            <!-- Job history (shown when idle, after polling completes) -->
-            <div v-if="statusText === '空闲'">
-              <div class="resultHeader"><h2>生成历史 <button @click="loadJobs()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer">刷新</button></h2></div>
-              <div v-if="jobs.length===0" style="color:#697386;font-size:12px;padding:12px 0">暂无生成记录，提交任务后自动显示</div>
-              <div v-for="j in visibleJobs()" :key="j.job_id" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px">
+            <!-- 统一任务视图：运行中 + 历史合并为同一列表，点击记录查看详情 -->
+            <div v-if="statusText && statusText !== '空闲'" style="margin-bottom:10px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc;color:#334155;font-size:12px">{{ statusText }}</div>
+            <div v-show="!selectedJobId">
+              <div class="resultHeader"><h2>任务 <button class="ui-btn ui-btn--ghost ui-btn--sm" style="margin-left:8px" @click="loadJobs()">刷新</button></h2></div>
+              <div v-if="jobs.length===0" style="color:#697386;font-size:12px;padding:12px 0">暂无任务记录，提交后自动显示</div>
+              <div v-for="j in visibleJobs()" :key="j.job_id || j.id" @click="selectJob(j.job_id || j.id)" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px;cursor:pointer">
                 <div style="display:flex;align-items:center;margin-bottom:2px;gap:8px">
                   <span :class="'tag tag-'+(j.status||'queued')">{{ j.status }}</span>
                   <span style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (j.prompt||'').slice(0,60) }}</span>
                   <span v-if="j.username" style="font-size:11px;color:#697386;white-space:nowrap">@{{ j.username }}</span>
                   <span v-if="formatRuntime(j)" style="font-size:11px;color:#475569;white-space:nowrap">{{ formatRuntime(j) }}</span>
+                  <button v-if="isCancellableJob(j)" class="ui-btn ui-btn--warning-outline ui-btn--sm" @click.stop="cancelJob(j.job_id || j.id, j.status)">取消</button>
                   <span style="font-size:11px;color:#697386;white-space:nowrap">{{ j.created_at }}</span>
+                  <span style="font-size:11px;color:#2563eb;white-space:nowrap">查看 ›</span>
                 </div>
                 <div v-if="j.errors && j.errors.length" style="font-size:11px;color:#dc2626;margin-top:4px">{{ j.errors.join('; ') }}</div>
-                <div v-for="r in (j.results||[]).filter(function(x){ return x.download_url; })" style="display:flex;align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #f1f5f9;gap:8px">
-                  <!-- Lazy video: render a lightweight click-to-play placeholder instead of a live <video>.
-                       Dozens of live <video controls> in the history list pin decoder/buffer memory and
-                       crash the tab over time. Click swaps in the real element on demand. -->
+                <div v-for="r in (j.results||[]).filter(function(x){ return x.download_url; })" @click.stop style="display:flex;align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #f1f5f9;gap:8px">
                   <div v-if="!r._play" @click="r._play = true" style="width:120px;height:68px;border-radius:4px;background:var(--surface-sunken);color:var(--text-secondary);border:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px">▶ 播放</div>
                   <video v-else :src="appPath + r.download_url" controls autoplay muted playsinline style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
                   <span style="font-size:11px;color:#697386;flex:1">{{ r.filename || 'video' }}</span>
-                  <button @click="_blobDownload(appPath + r.download_url, r.filename || 'video')" style="background:#2563eb;color:#fff;border:1px solid #2563eb;font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer">下载</button>
-                  <button v-if="j.retryable" @click="retryJob(j.job_id || j.id)" style="background:#10b981;color:#fff;border:1px solid #10b981;font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer">重试</button>
+                  <button class="ui-btn ui-btn--primary ui-btn--sm" @click="_blobDownload(appPath + r.download_url, r.filename || 'video')">下载</button>
+                  <button v-if="j.retryable" class="ui-btn ui-btn--success ui-btn--sm" @click="retryJob(j.job_id || j.id)">重试</button>
                 </div>
               </div>
-              <button v-if="jobs.length > jobsLimit" @click="jobsLimit += 20"
-                      style="width:100%;padding:8px;margin-top:4px;font-size:12px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px">
+              <button v-if="jobs.length > jobsLimit" class="ui-btn ui-btn--secondary ui-btn--block" style="margin-top:4px" @click="jobsLimit += 20">
                 加载更多（还有 {{ jobs.length - jobsLimit }} 条）
               </button>
+            </div>
+            <div v-show="!!selectedJobId">
+              <button class="ui-btn ui-btn--secondary ui-btn--block" style="margin-bottom:8px" @click="closeJobDetail()">← 返回列表</button>
+              <div class="resultHeader"><h2>{{ selectedJobLabel || '任务详情' }}</h2></div>
+              <div class="results" id="sd-results"></div>
+              <pre id="sd-events">{{ eventsText }}</pre>
             </div>
           </div>
           <div v-show="wsTab==='activity'" class="activity-panel-inner">
@@ -253,6 +261,7 @@
                   <span v-if="r.username" style="font-size:11px;color:#697386;margin-left:6px">@{{ r.username }}</span>
                   <span v-if="formatRuntime(r)" style="font-size:11px;color:#475569;margin-left:6px">{{ formatRuntime(r) }}</span>
                   <span class="act-title">{{ r.title }}</span>
+                  <span v-if="r.attempt_count" style="font-size:11px;color:#2563eb;margin-left:6px">重试 {{ r.attempt_count }} 次</span>
                 </div>
                 <div v-if="!activityRecords.length" style="color:#697386;font-size:12px">暂无活动记录</div>
               </div>
@@ -265,6 +274,14 @@
               <pre style="font-size:11px;max-height:200px">{{ JSON.stringify(activityDetail.restore?.values || activityDetail.request, null, 2) }}</pre>
               <h3 style="margin:8px 0 4px;font-size:13px" v-if="activityDetail.result">结果</h3>
               <pre v-if="activityDetail.result" style="font-size:11px;max-height:150px">{{ JSON.stringify(activityDetail.result, null, 2) }}</pre>
+              <template v-if="activityDetail.attempts && activityDetail.attempts.length">
+                <h3 style="margin:8px 0 4px;font-size:13px">历次尝试</h3>
+                <div v-for="(a, i) in activityDetail.attempts" :key="a.job_id || i" style="font-size:11px;color:#475569;padding:4px 0;border-top:1px solid #f1f5f9">
+                  <span :class="'tag tag-'+(a.status||'failed')">{{ a.status }}</span>
+                  <span style="margin-left:6px">{{ formatAttemptTime(a.finished_at) }}</span>
+                  <span style="margin-left:6px" v-if="a.error">{{ a.error }}</span>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -281,6 +298,17 @@
         </div>
       </div>
     </div>
+    <div v-if="_dirtyDialogOpen" class="modal-overlay" @click.self="_dirtyCancel">
+      <div class="modal">
+        <div class="modal-title">⚠️ 配置已修改但未保存</div>
+        <div class="modal-body">当前配置有未保存的修改，请选择如何处理。</div>
+        <div class="modal-btns">
+          <button type="button" :disabled="currentSchemeName === '默认方案'" @click="_dirtySaveAndContinue">保存到当前方案</button>
+          <button type="button" @click="_dirtyDiscardAndContinue">放弃修改</button>
+          <button type="button" class="danger" @click="_dirtyCancel">取消</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <dialog id="previewDialog" class="previewDialog">
@@ -288,7 +316,8 @@
     <div id="previewDialogBody"></div>
   </dialog>
 
-  <script src="app.js?v=20260908-stall-recovery1"></script>
+  <script src="model-capabilities.js"></script>
+  <script src="app.js?v=20260910-capabilities"></script>
   <script src="effects.js"></script>
 </body>
 </html>

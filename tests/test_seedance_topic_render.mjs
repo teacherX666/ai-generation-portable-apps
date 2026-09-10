@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const eventsEl = { textContent: '主题状态负责渲染此处' };
-const resultsEl = { innerHTML: '' };
+const resultsEl = { innerHTML: '', querySelector() { return null; }, appendChild() {} };
 const document = {
   getElementById(id) {
     if (id === 'sd-events') return eventsEl;
@@ -58,5 +58,10 @@ assert.equal(
   '主题状态负责渲染此处',
   '结果重绘不能直接改写由主题响应式状态管理的日志框',
 );
+
+
+assert.match(fs.readFileSync('seedance/static/index.html', 'utf8'), /isCancellableJob\(j\)/, 'history jobs should expose cancellation');
+assert.match(fs.readFileSync('seedance/static/app.js', 'utf8'), /isCancellableJob/, 'all non-terminal states should be cancellable');
+assert.match(fs.readFileSync('seedance/static/app.js', 'utf8'), /_cancellingJobIds/, 'cancel requests should be deduplicated');
 
 console.log('seedance topic render: ok');

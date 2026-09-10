@@ -210,11 +210,27 @@ class ProductionBitableService:
 
     async def recent_runs(self, *, owner_user_id: str = "prime-local"):
         location = await self._table_location()
-        return await self._store.list_recent(
-            location.app_token or "",
-            location.table_id,
+        app_token = location.app_token or ""
+        table_id = location.table_id
+        recent = await self._store.list_recent(
+            app_token,
+            table_id,
             owner_user_id=owner_user_id,
+            limit=50,
         )
+        active_record_ids = {
+            binding.record_id
+            for binding in await self._store.list_active(
+                app_token,
+                table_id,
+                owner_user_id=owner_user_id,
+            )
+        }
+        return [
+            binding
+            for binding in recent
+            if binding.record_id not in active_record_ids
+        ][:10]
 
     async def archived_runs(self, *, owner_user_id: str = "prime-local"):
         location = await self._table_location()

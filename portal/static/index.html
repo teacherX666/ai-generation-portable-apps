@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RedCraft 🐟</title>
   <link rel="icon" type="image/png" href="/ui/brand/favicon.png">
-  <link rel="stylesheet" href="/ui/portal-ui-core.css">
-  <link rel="stylesheet" href="/styles.css?v=20260908-home-nav-restore1">
+  <link rel="stylesheet" href="/ui/portal-ui-core.css?v=20260909-ui">
+  <link rel="stylesheet" href="/styles.css?v=20260909-home-bar-clean">
 </head>
 <body class="ui-shell">
   <!-- 顶部两条栏包进统一 sticky 容器：整块一起吸顶，切换栏永远紧贴标题栏下方，
@@ -144,23 +144,13 @@
     <div class="rc-orbit rc-orbit--one" aria-hidden="true"></div>
     <div class="rc-orbit rc-orbit--two" aria-hidden="true"></div>
     <div class="rc-noise" aria-hidden="true"></div>
-    <header class="rc-home__bar">
-      <div class="rc-brand">
-        <span class="rc-brand__mark" aria-hidden="true">R</span>
-        <div class="rc-brand__copy">
-          <strong>RedCraft</strong>
-          <span>红海无限 AI 创作平台</span>
-        </div>
-      </div>
-      <button id="portalHomeExitBtn" class="rc-back" type="button" hidden>返回工作台</button>
-    </header>
 
     <section class="rc-hero">
       <div class="rc-hero__visual" aria-hidden="true">
         <div class="rc-hero__visual-grid"></div>
         <div class="rc-hero__visual-ring rc-hero__visual-ring--outer"></div>
         <div class="rc-hero__visual-ring rc-hero__visual-ring--inner"></div>
-        <span class="rc-hero__visual-core">R</span>
+        <img class="rc-hero__visual-core" src="/ui/brand/favicon.png" alt="RedCraft">
         <span class="rc-hero__visual-orbit rc-hero__visual-orbit--a"></span>
         <span class="rc-hero__visual-orbit rc-hero__visual-orbit--b"></span>
       </div>
@@ -488,6 +478,7 @@
 
         <div class="rowButtons">
           <button type="button" @click="updateCli()">更新 CLI</button>
+          <button type="button" @click="restoreDefaultConfig()">恢复默认设置</button>
         </div>
         <section style="margin-bottom:14px">
           <!-- 输出目录选择在 Portal(远程)模式下已移除:结果统一保存到服务机
@@ -619,25 +610,9 @@
       </aside>
       <section class="workspace ui-main">
         <div class="panel ui-panel">
-          <div class="sub-tabs">
-            <button type="button" class="sub-tab" :class="{ isActive: wsTab==='jobs' }" @click="wsTab='jobs'">任务</button>
-            <button type="button" class="sub-tab" :class="{ isActive: wsTab==='history' }" @click="wsTab='history'; loadHistory()">历史</button>
-          </div>
-          <div v-show="wsTab==='jobs'">
-            <div class="resultHeader"><h2>任务</h2><span class="running-count">{{ runningCount ? runningCount + ' 进行中' : '' }}</span></div>
-            <div class="results" id="dm-jobsList"><p class="ui-empty ui-empty--compact dm-jobs-empty">暂无任务，提交后这里显示进度</p></div>
-          </div>
-          <div v-show="wsTab==='history'">
-            <div class="resultHeader">
-              <h2>历史记录</h2>
-              <div class="filter-bar">
-                <button type="button" class="filter-btn" :class="{ active: historyFilter==='all' }" @click="historyFilter='all'; historyLimit=8; loadHistory()">全部</button>
-                <button type="button" class="filter-btn" :class="{ active: historyFilter==='image' }" @click="historyFilter='image'; historyLimit=8; loadHistory()">图片</button>
-                <button type="button" class="filter-btn" :class="{ active: historyFilter==='video' }" @click="historyFilter='video'; historyLimit=8; loadHistory()">视频</button>
-              </div>
-            </div>
-            <div id="dm-historyList"></div>
-          </div>
+          <div class="resultHeader"><h2>任务 <button type="button" @click="refreshTasks()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer">↻ 刷新</button></h2><span class="running-count">{{ runningCount ? runningCount + ' 进行中' : '' }}</span></div>
+          <div class="results" id="dm-jobsList"><p class="ui-empty ui-empty--compact dm-jobs-empty">暂无任务，提交后这里显示进度</p></div>
+          <div id="dm-historyList" style="margin-top:14px;padding-top:10px;border-top:1px dashed #e2e8f0"></div>
         </div>
       </section>
     </main>
@@ -832,6 +807,7 @@
                 </option>
               </select>
             </label>
+            <p v-if="modelHint" class="hint" style="margin:4px 0 6px;color:#b45309">{{ modelHint }}</p>
             <p v-if="!localReady" class="hint" style="margin:4px 0 6px;color:#b45309">未检测到本地 AI Port，当前仅提供云端模型。</p>
             <p v-if="isLocalModel(model)" class="hint" style="margin:4px 0 6px;color:#0f766e">本地模型使用海螺 H3 全参考生成，任务类型将按参考生视频处理。</p>
             <label style="margin-top:8px">任务类型
@@ -859,9 +835,7 @@
               </label>
               <label style="flex:1;min-width:100px">比例
                 <select v-model="ratio">
-                  <option>16:9</option><option>9:16</option><option>1:1</option>
-                  <option>4:3</option><option>3:4</option><option>21:9</option>
-                  <option>adaptive</option>
+                  <option v-for="r in modelRatios()" :value="r">{{ r }}</option>
                 </select>
               </label>
               <label style="flex:1;min-width:80px">次数 <input type="number" v-model="repeat" min="1" max="4"></label>
@@ -876,15 +850,7 @@
               <button @click="createJob()" :disabled="submitting" class="ui-btn ui-btn--primary" style="flex:1">
                 {{ submitting ? statusText : '开始生成' }}
               </button>
-              <button v-if="_activeVpJobId" @click="cancelJob()" class="ui-btn ui-btn--danger">✕ 取消任务</button>
-            </div>
-            <div v-if="events" style="margin-top:8px;font-size:11px;color:#334155;max-height:150px;overflow-y:auto;background:#f8fafc;padding:6px;border-radius:4px;border:1px solid #e2e8f0" v-html="events"></div>
-            <div v-for="r in results" style="margin-top:8px">
-              <video v-if="r.url" :src="r.url" controls style="max-height:200px;width:100%;border-radius:6px"></video>
-              <div v-if="r.url" class="row" style="margin-top:4px;align-items:center">
-                <span style="font-size:12px;color:#64748b;flex:1">{{ r.filename }}</span>
-                <button @click="blobDownload(r.url, r.filename)" class="ui-btn ui-btn--sm ui-btn--primary">⬇ 下载</button>
-              </div>
+              <button @click="restoreDefaultConfig()" class="ui-btn ui-btn--ghost">恢复默认设置</button>
             </div>
             <div style="margin-top:12px;padding-top:10px;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b">
               <div class="row" style="align-items:center">
@@ -899,25 +865,58 @@
       </div>
 
       <section class="card">
-        <h2>生成历史 <button @click="loadJobs()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">刷新</button></h2>
-        <div v-if="jobs.length===0 && extraHistory().length===0" style="color:#64748b;font-size:12px">暂无生成记录</div>
-        <div v-for="j in jobs" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px">
-          <div class="row" style="align-items:center;margin-bottom:2px">
-            <span :class="'tag tag-'+(j.status||'queued')">{{ j.status }}</span>
-            <span style="font-size:12px;flex:1">{{ (j.prompt||'').slice(0,60) }}...</span>
-            <span v-if="j.username" style="font-size:11px;color:#64748b;margin-right:6px">@{{ j.username }}</span>
-            <span v-if="formatRuntime(j)" style="font-size:11px;color:#475569;margin-right:6px">{{ formatRuntime(j) }}</span>
-            <span style="font-size:11px;color:#64748b">{{ j.created_at }}</span>
+        <h2>任务 <button @click="loadJobs()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">↻ 刷新</button></h2>
+        <div v-if="jobs.length===0 && extraHistory().length===0" style="color:#64748b;font-size:12px">暂无任务记录，提交后自动显示</div>
+
+        <!-- 任务列表（运行中 + 历史合并，点击查看详情） -->
+        <div v-if="!selectedVpJobId">
+          <div v-for="j in visibleVpJobs()" :key="j.job_id || j.id" @click="selectVpJob(j.job_id || j.id)" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px;cursor:pointer">
+            <div class="row" style="align-items:center;margin-bottom:2px;gap:8px">
+              <span :class="'tag tag-'+(j.status||'queued')">{{ vpStatusLabel(j.status) }}</span>
+              <span style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (j.prompt||'').slice(0,60) }}</span>
+              <span v-if="j.username" style="font-size:11px;color:#64748b;margin-right:6px">@{{ j.username }}</span>
+              <span v-if="formatRuntime(j)" style="font-size:11px;color:#475569;margin-right:6px">{{ formatRuntime(j) }}</span>
+              <span style="font-size:11px;color:#64748b">{{ j.created_at }}</span>
+              <span style="font-size:11px;color:#2563eb;white-space:nowrap">查看 ›</span>
+            </div>
+            <div v-if="j.errors && j.errors.length" style="font-size:11px;color:#dc2626;margin-top:4px">{{ friendlyErrors(j.errors) }}</div>
+            <div v-if="j.retryable" style="font-size:11px;color:#92400e;margin-top:4px">服务重启中断，可点击查看并重试</div>
           </div>
-          <div v-if="j.errors && j.errors.length" style="font-size:11px;color:#dc2626;margin-top:4px">{{ friendlyErrors(j.errors) }}</div>
-          <!-- retryable=服务重启中断；普通失败任务同样可原样重提（后端 retry 端点复用落盘参数） -->
-          <button v-if="j.retryable || j.status==='failed'" @click="retryVpJob(j.job_id)" class="ui-btn ui-btn--sm ui-btn--primary" style="margin-top:6px">重试</button>
-          <div v-for="r in (j.results||[]).filter(x => x.download_url)" class="row" style="align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #f1f5f9">
-            <video :src="appPath + r.download_url" controls style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
-            <span style="font-size:11px;color:#64748b;flex:1;margin-left:8px">{{ r.filename || 'video' }}</span>
-            <button @click="blobDownload(appPath + r.download_url, r.filename || 'video')" class="ui-btn ui-btn--sm ui-btn--primary">⬇ 下载</button>
+          <button v-if="jobs.length > vpJobsLimit" @click="vpJobsLimit += 20" class="ui-btn ui-btn--secondary ui-btn--block" style="margin-top:4px">加载更多（还有 {{ jobs.length - vpJobsLimit }} 条）</button>
+        </div>
+
+        <!-- 任务详情 -->
+        <div v-if="!!selectedVpJobId">
+          <div v-if="vpSelectedJob()">
+            <button @click="closeVpJobDetail()" class="ui-btn ui-btn--secondary ui-btn--block" style="margin-bottom:8px">← 返回列表</button>
+            <div class="row" style="align-items:center;margin-bottom:10px">
+              <h3 style="margin:0;font-size:15px">任务 {{ (vpSelectedJob().job_id||'').slice(0,8) }}</h3>
+            </div>
+            <div class="row" style="align-items:center;gap:8px;margin-bottom:6px">
+              <span :class="'tag tag-'+(vpSelectedJob().status||'queued')">{{ vpStatusLabel(vpSelectedJob().status) }}</span>
+              <span v-if="formatRuntime(vpSelectedJob())" style="font-size:11px;color:#475569">{{ formatRuntime(vpSelectedJob()) }}</span>
+              <span style="font-size:11px;color:#64748b">{{ vpSelectedJob().created_at }}</span>
+            </div>
+            <div style="font-size:12px;color:#334155;margin-bottom:6px;white-space:pre-wrap">{{ (vpSelectedJob().prompt||'') }}</div>
+            <div v-if="vpSelectedJob().errors && vpSelectedJob().errors.length" style="font-size:11px;color:#dc2626;margin:6px 0">{{ friendlyErrors(vpSelectedJob().errors) }}</div>
+            <div v-for="r in (vpSelectedJob().results||[]).filter(x => x.download_url)" class="row" style="align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #f1f5f9">
+              <video :src="appPath + r.download_url" controls style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
+              <span style="font-size:11px;color:#64748b;flex:1;margin-left:8px">{{ r.filename || 'video' }}</span>
+              <button @click="blobDownload(appPath + r.download_url, r.filename || 'video')" class="ui-btn ui-btn--sm ui-btn--primary">⬇ 下载</button>
+            </div>
+            <div class="row" style="margin-top:10px;gap:8px">
+              <button v-if="vpSelectedJob().retryable || vpSelectedJob().status==='failed'" @click="retryVpJob(vpSelectedJob().job_id)" class="ui-btn ui-btn--sm ui-btn--primary">重试</button>
+              <button v-if="isVpCancellable(vpSelectedJob())" @click="cancelJob()" class="ui-btn ui-btn--sm ui-btn--danger">✕ 取消任务</button>
+            </div>
+            <div v-if="(vpSelectedJob().events||[]).length" style="margin-top:10px;font-size:11px;color:#334155;max-height:200px;overflow-y:auto;background:#f8fafc;padding:6px;border-radius:4px;border:1px solid #e2e8f0">
+              <div v-for="e in vpSelectedJob().events">{{ e.time }} {{ e.message }}</div>
+            </div>
+          </div>
+          <div v-else style="color:#64748b;font-size:12px;padding:12px 0">
+            <button @click="closeVpJobDetail()" class="ui-btn ui-btn--secondary">← 返回列表</button>
           </div>
         </div>
+
         <div v-if="extraHistory().length" style="margin-top:14px;padding-top:10px;border-top:1px dashed #e2e8f0;font-size:12px;color:#94a3b8">服务重启前的历史任务</div>
         <div v-for="a in extraHistory()" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px;margin-top:8px">
           <div class="row" style="align-items:center;margin-bottom:2px">
@@ -1399,7 +1398,8 @@
   <script src="/js/portal-analytics.js"></script>
   <script src="/js/portal-utils.js"></script>
   <script src="/js/portal-shell.js"></script>
-  <script src="/app.js?v=20260908-stall-recovery1"></script>
+  <script src="/js/model-capabilities.js"></script>
+  <script src="/app.js?v=20260910-capabilities"></script>
   <script src="/js/portal-enhancements.js"></script>
   <script src="/js/portal-module-registry.js"></script>
   <script src="/js/portal-rag-interceptor.js"></script>

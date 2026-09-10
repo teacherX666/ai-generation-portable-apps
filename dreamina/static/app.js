@@ -136,6 +136,10 @@ document.addEventListener('DOMContentLoaded', () => {
   buildUploadSlots();
   buildMultiframeUI();
   bindMultiframeControls();
+  restoreDraft();
+  const form = $('#genForm');
+  if (form) { form.addEventListener('input', saveDraft); form.addEventListener('change', saveDraft); }
+  $('#resetConfigBtn')?.addEventListener('click', resetConfig);
 });
 
 // === Environment Check ===
@@ -257,6 +261,7 @@ function bindMajorTabs() {
         currentMode = $('#videoModeSection .sub-tab.active').dataset.mode;
       }
       updateFormVisibility();
+      saveDraft();
     });
   });
 }
@@ -269,6 +274,7 @@ function bindSubTabs() {
       btn.classList.add('active');
       currentMode = btn.dataset.mode;
       updateFormVisibility();
+      saveDraft();
     });
   });
 }
@@ -283,6 +289,86 @@ function updateFormVisibility() {
   $('#multimodalSection').classList.toggle('hidden', currentMode !== 'multimodal2video');
   $('#multiframeSection').classList.toggle('hidden', currentMode !== 'multiframe2video');
   $('#modelVersionGroup')?.classList.toggle('hidden', currentMode === 'multiframe2video');
+}
+
+// === 表单配置固定（草稿持久化 + 恢复默认） ===
+const DRAFT_KEY = 'dreamina.draft';
+
+function saveDraft() {
+  try {
+    const d = {
+      major: currentMajor,
+      mode: currentMode,
+      prompt: $('#prompt')?.value || '',
+      ratio: $('#ratio')?.value || '1:1',
+      resolution_type: $('#resolution_type')?.value || '2k',
+      duration: $('#duration')?.value || '5',
+      video_resolution: $('#video_resolution')?.value || '720P',
+      model_version: $('#model_version')?.value || 'seedance2.0fast_vip',
+      repeat_count: $('#repeat_count')?.value || '1',
+      concurrency: $('#concurrency')?.value || '1',
+      output_name: $('#outputName')?.value || '',
+    };
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+  } catch (e) { /* ignore */ }
+}
+
+function setMajor(major) {
+  currentMajor = major;
+  $$('.major-tabs .tab-btn').forEach(b => b.classList.toggle('active', b.dataset.major === major));
+  const activeSub = currentMajor === 'image'
+    ? $('#imageModeSection .sub-tab.active')
+    : $('#videoModeSection .sub-tab.active');
+  if (activeSub) currentMode = activeSub.dataset.mode;
+  updateFormVisibility();
+}
+
+function setMode(mode) {
+  currentMode = mode;
+  $$('.sub-tab').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  updateFormVisibility();
+}
+
+function applyDraft(d) {
+  if (d.major) setMajor(d.major);
+  if (d.mode) setMode(d.mode);
+  const fieldMap = {
+    prompt: 'prompt',
+    ratio: 'ratio',
+    resolution_type: 'resolution_type',
+    duration: 'duration',
+    video_resolution: 'video_resolution',
+    model_version: 'model_version',
+    repeat_count: 'repeat_count',
+    concurrency: 'concurrency',
+    output_name: 'outputName',
+  };
+  Object.keys(fieldMap).forEach(k => {
+    if (d[k] != null) {
+      const el = $('#' + fieldMap[k]);
+      if (el) el.value = d[k];
+    }
+  });
+}
+
+function restoreDraft() {
+  try {
+    const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
+    if (!d) return;
+    applyDraft(d);
+  } catch (e) { /* ignore */ }
+}
+
+function resetConfig() {
+  try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+  setMajor('image');
+  setMode('text2image');
+  applyDraft({
+    prompt: '', ratio: '1:1', resolution_type: '2k', duration: '5',
+    video_resolution: '720P', model_version: 'seedance2.0fast_vip',
+    repeat_count: '1', concurrency: '1', output_name: '',
+  });
+  if (typeof dmToast === 'function') dmToast('已恢复默认设置');
 }
 
 // === Upload Slots ===
@@ -554,7 +640,7 @@ function renderJobsList(jobs) {
   const list = $('#jobsList');
   _lastJobsForRender = jobs || [];
   const active = jobs.filter(j => j.status === 'pending' || j.status === 'running' || j.status === 'querying');
-  const recent = jobs.filter(j => j.status === 'completed' || j.status === 'failed').slice(0, 10);
+  const recent = jobs.filter(j => j.status === 'completed' || j.status === 'failed').slice(0, 50);
   const all = [...active, ...recent];
   $('#runningCount').textContent = active.length ? `${active.length} 进行中` : '';
   if (!all.length) { list.innerHTML = '<p class="ui-empty ui-empty--compact">暂无任务</p>'; return; }
@@ -722,6 +808,7 @@ async function loadHistory() {
 
 function renderHistory(items) {
   const list = $('#historyList');
+  if (!list) return;
   const filter = $('.filter-btn.active')?.dataset.filter || 'all';
   let filtered = items.slice().reverse();
   if (filter === 'image') filtered = filtered.filter(i => i.task_type?.includes('image'));

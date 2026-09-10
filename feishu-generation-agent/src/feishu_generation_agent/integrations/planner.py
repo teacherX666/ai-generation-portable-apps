@@ -104,6 +104,7 @@ _SEEDANCE_PLANNING_CONTRACT = """【Seedance 多模态提示词契约】
 复杂多分镜任务使用“总体设定与素材绑定 → 镜头 1/镜头 2/镜头 3 → 风格与约束”的结构。每个镜头必须直接写出本镜头采用的素材 token，不得只在开头或末尾罗列素材；每个素材必须至少用于一个实际镜头。禁止绝对秒数。
 提示词必须保留需求指定风格，并包含必要的画质、稳定、不变形、无水印和无 Logo 约束；多人或非写实场景按需求增加主体一致性、避免分身和风格锚定。
 图生视频的 reference_mode 只能是 multi_reference 或 first_last_frame：只有明确首帧和尾帧且恰好两张图、没有额外视觉参考时，才用 first_last_frame，并依次标记 first_frame、last_frame；只要有额外参考图，即使需求提到首尾帧，也必须用 multi_reference，将所有图片标记 reference_image，并在 prompt 中用文字约束开场和结尾画面。
+video_provider is runtime policy: omit it or set null. output_count must default to 1; only a human may change candidate count in approval.
 """
 _PLAN_SYSTEM_PROMPT = f"""你是 AI 图片与视频生成需求规划器。
 只根据给定文档、稳定引用和视觉描述输出 TaskPlan JSON，不得虚构素材或需求。
@@ -447,6 +448,10 @@ def _normalize_generated_plan_payload(
             ]
         if task.get("task_type") == "image_to_video":
             task["image_size"] = None
+            # Provider and candidate count are runtime/human policy, not a
+            # creative-planning decision.
+            task["video_provider"] = None
+            task["output_count"] = 1
         raw_references = task.get("reference_images")
         prompt = task.get("prompt")
         if not isinstance(raw_references, list) or not isinstance(prompt, str):

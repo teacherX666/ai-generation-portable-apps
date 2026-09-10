@@ -107,8 +107,6 @@
     document.body.classList.toggle('portal-home-active', isHome);
     if (previousPanel !== panel) animatePortalPanel(panel, wasHome && !isHome);
     hasActivatedPortalTab = true;
-    const homeExit = document.getElementById('portalHomeExitBtn');
-    if (homeExit) homeExit.hidden = !isHome;
     loadIframeForPanel(panel);
     if (persist) { try { localStorage.setItem('portal_active_tab', btn.dataset.tab); } catch (e) {} }
     if (focus) btn.focus();
@@ -163,16 +161,7 @@
 
   const portalTabButtons = Array.from(document.querySelectorAll('.app-tab'));
   const mobileAppSelect = document.getElementById('mobileAppSelect');
-  const portalHomeExitBtn = document.getElementById('portalHomeExitBtn');
-  if (portalHomeExitBtn) portalHomeExitBtn.addEventListener('click', () => {
-    let name = 'feishu-generation-agent';
-    try { name = localStorage.getItem('portal_last_non_home_tab') || name; } catch (e) {}
-    activatePortalTab(portalTabButtons.find(item => item.dataset.tab === name) || portalTabButtons[0]);
-  });
-  document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || !document.body.classList.contains('portal-home-active')) return;
-    portalHomeExitBtn?.click();
-  });  const portalDebugReturnBtn = document.getElementById('portalDebugReturnBtn');
+  const portalDebugReturnBtn = document.getElementById('portalDebugReturnBtn');
   if (portalDebugReturnBtn) portalDebugReturnBtn.addEventListener('click', () => {
     let name = 'feishu-generation-agent';
     try { name = localStorage.getItem('portal_last_non_home_tab') || name; } catch (e) {}

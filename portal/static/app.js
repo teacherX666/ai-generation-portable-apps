@@ -563,7 +563,6 @@ function DreaminaApp() {
       const res = await api(`/dreamina/api/${this.mode}`, 'POST', data);
       if (!res || res.error) { this.submitting = false; window.portalToast(friendlyDmError(res?.error) || '提交失败', 'danger'); return; }
       this.submitting = false;
-      this.clearDraft();
       window.portalToast('已提交，任务 ' + (res.job_id || res.id) + ' 在后台运行');
       this.pollJob(res.job_id || res.id);
     },
@@ -581,11 +580,11 @@ function DreaminaApp() {
       el.prepend(card);
       // Guard against stacked loops: loadJobs() can run repeatedly (login poll,
       // manual refresh) and must not spawn a second poller for the same job.
-      this._pollingJobs = this._pollingJobs || new Set();
-      if (this._pollingJobs.has(jobId)) { card.remove(); return; }
-      this._pollingJobs.add(jobId);
+      this._pollingJobs = this._pollingJobs || {};
+      if (this._pollingJobs[jobId]) { card.remove(); return; }
+      this._pollingJobs[jobId] = true;
       const stop = () => {
-        this._pollingJobs.delete(jobId);
+        delete this._pollingJobs[jobId];
         card.id = '';
       };
       let fails = 0;
@@ -696,6 +695,7 @@ function DreaminaApp() {
             titleEl.appendChild(rb);
           }
           stop();
+          card.remove();
           // 系统通知：状态归一后与 Portal 15s 兜底轮询按 jobId 去重
           const st = String(job.status).toLowerCase();
           notifyJobDone(jobId, st === 'completed' ? 'succeeded' : (st === 'cancelled' || st === 'canceled') ? 'cancelled' : 'failed', '即梦生成', 'dreamina');
@@ -716,7 +716,7 @@ function DreaminaApp() {
     // 后端走「取消标志 + 结果丢弃」兜底；409 = 任务已结束。
     async cancelJob(jobId, status) {
       if (status === 'running') {
-        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
+        if (false && !(await window.portalConfirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。', { danger: true }))) return;
       }
       const res = await api(`/dreamina/api/jobs/${encodeURIComponent(jobId)}/cancel`, 'POST');
       const card = document.getElementById('card-' + String(jobId).slice(0, 8));
@@ -827,6 +827,11 @@ function DreaminaApp() {
       v.src = el.dataset.src;
       v.style.cssText = 'width:100%;max-height:200px;border-radius:5px;margin-top:6px';
       el.replaceWith(v);
+    },
+
+    refreshTasks() {
+      this.loadJobs();
+      this.loadHistory();
     },
 
     async loadJobs() {
@@ -1312,7 +1317,14 @@ function DreaminaApp() {
       try {
         const d = JSON.parse(localStorage.getItem('aiPortal.draft.dreamina') || 'null');
         if (!d) return;
+        if (d.major) this.major = d.major;
+        if (d.mode) {
+          this.mode = d.mode;
+          if (['text2image', 'image2image'].includes(d.mode)) this.imageSub = d.mode;
+          else if (['frames2video', 'multimodal2video', 'multiframe2video'].includes(d.mode)) this.videoSub = d.mode;
+        }
         Object.keys(d).forEach(name => {
+          if (name === 'major' || name === 'mode') return;
           const el = document.querySelector('#dm-form [name="' + name + '"]');
           if (!el || el.type === 'file') return;
           if (el.type === 'checkbox') el.checked = !!d[name];
@@ -1323,7 +1335,7 @@ function DreaminaApp() {
     wireDraftAutosave() {
       const save = () => {
         try {
-          const out = {};
+          const out = { major: this.major, mode: this.mode };
           document.querySelectorAll('#dm-form [name]').forEach(el => {
             if (el.type === 'file') return;
             if (el.type === 'checkbox') out[el.name] = el.checked ? 1 : 0;
@@ -1336,6 +1348,19 @@ function DreaminaApp() {
       if (root) { root.addEventListener('input', save); root.addEventListener('change', save); }
     },
     clearDraft() { try { localStorage.removeItem('aiPortal.draft.dreamina'); } catch (e) {} },
+    restoreDefaultConfig() {
+      try { localStorage.removeItem('aiPortal.draft.dreamina'); } catch (e) {}
+      this.major = 'image';
+      this.mode = 'text2image';
+      this.imageSub = 'text2image';
+      this.videoSub = 'frames2video';
+      const defaults = { prompt: '', ratio: '1:1', resolution_type: '2k', duration: '5', video_resolution: '720P', model_version: 'seedance2.0fast_vip', repeat_count: '1', concurrency: '1', output_name: '' };
+      Object.keys(defaults).forEach(name => {
+        const el = document.querySelector('#dm-form [name="' + name + '"]');
+        if (el) el.value = defaults[name];
+      });
+      if (typeof window.portalToast === 'function') window.portalToast('已恢复默认设置');
+    },
 
     async copyAccountLoginUrl(url) {
       try {
@@ -2060,6 +2085,8 @@ function VolcenginePortraitApp() {
 
   return {
     statusText: '空闲',
+    modelCaps: null,
+    modelHint: '',
     appPath,  // exposed to petite-vue templates (used in index.html for download urls)
     // 本地 AI Port 检测（PR #11）：/api/config 返回 local_ready/local_models
     localReady: false,
@@ -2092,19 +2119,19 @@ function VolcenginePortraitApp() {
     portraitModels: [
       {
         id: 'doubao-seedance-2-0-260128', label: 'Seedance 2.0（最高 4k）',
-        maxDuration: 15, resolutions: ['480p', '720p', '1080p', '4k'],
+        maxDuration: 15, duration_range: [4, 15], resolutions: ['480p', '720p', '1080p', '4k'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
         id: 'doubao-seedance-2-0-fast-260128', label: 'Seedance 2.0 fast',
-        maxDuration: 15, resolutions: ['480p', '720p'],
+        maxDuration: 15, duration_range: [4, 15], resolutions: ['480p', '720p'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
         id: 'doubao-seedance-2-0-mini-260615', label: 'Seedance 2.0 mini（最快）',
-        maxDuration: 15, resolutions: ['480p', '720p'],
+        maxDuration: 15, duration_range: [4, 15], resolutions: ['480p', '720p'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
         id: 'doubao-seedance-2-5-260628', label: 'Seedance 2.5（最长 30s）',
-        maxDuration: 30, resolutions: ['480p', '720p'],
+        maxDuration: 30, duration_range: [4, 30], resolutions: ['480p', '720p'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
     ],
     submitting: false, events: '', results: [], jobs: [], activityRecords: [],
@@ -2118,6 +2145,9 @@ function VolcenginePortraitApp() {
     _activeVpJobId: null,
     _activeVpStatus: '',
     _vpPollingJobId: null,
+    selectedVpJobId: null,
+    vpJobsLimit: 20,
+    _vpPollingJobs: [],
     runtimeTick: 0,
     outputDir: '', outputDirInput: '', showOutputDirInput: false,
     savingOutputDir: false, outputDirMsg: '', outputDirOk: true,
@@ -2162,6 +2192,16 @@ function VolcenginePortraitApp() {
       this.restoreDraft();
       setInterval(() => this.saveDraft(), 5000);
       setInterval(() => { this.runtimeTick = (this.runtimeTick + 1) % 1e9; }, 1000);
+      // 输入即保存 + 刷新前落盘（原来只有 5s 轮询，快速刷新会丢最后几秒的修改）
+      const vpRoot = document.getElementById('tab-volcengine-portrait');
+      if (vpRoot) {
+        const saveSoon = () => { clearTimeout(this._vpSaveTimer); this._vpSaveTimer = setTimeout(() => this.saveDraft(), 500); };
+        vpRoot.addEventListener('input', saveSoon);
+        vpRoot.addEventListener('change', saveSoon);
+      }
+      const vpFlush = () => { try { this.saveDraft(); } catch (e) {} };
+      window.addEventListener('pagehide', vpFlush);
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') vpFlush(); });
       // 拖文件进资产库 = 快捷上传（等价于「选择文件」）
       const lib = document.getElementById('vp-library');
       if (lib) {
@@ -2232,9 +2272,11 @@ function VolcenginePortraitApp() {
       try {
         const d = JSON.parse(localStorage.getItem('aiPortal.draft.portrait') || 'null');
         if (!d) return;
-        ['prompt', 'genAssetId', 'model', 'duration', 'resolution', 'ratio', 'repeat'].forEach(k => {
+        ['prompt', 'genAssetId', 'model', 'duration', 'resolution', 'ratio', 'repeat', 'taskMode'].forEach(k => {
           if (d[k] !== undefined) this[k] = d[k];
         });
+        if (Array.isArray(d.extraAssetIds)) this.extraAssetIds = d.extraAssetIds;
+        if (this.genAssetId) this.syncFig1Asset();
       } catch (e) { /* 草稿恢复尽力而为 */ }
     },
     saveDraft() {
@@ -2242,11 +2284,33 @@ function VolcenginePortraitApp() {
         const d = {
           prompt: this.prompt, genAssetId: this.genAssetId, model: this.model,
           duration: this.duration, resolution: this.resolution, ratio: this.ratio, repeat: this.repeat,
+          taskMode: this.taskMode, extraAssetIds: this.extraAssetIds,
         };
         localStorage.setItem('aiPortal.draft.portrait', JSON.stringify(d));
       } catch (e) {}
     },
     clearDraft() { try { localStorage.removeItem('aiPortal.draft.portrait'); } catch (e) {} },
+    restoreDefaultConfig() {
+      try { localStorage.removeItem('aiPortal.draft.portrait'); } catch (e) {}
+      this.prompt = '';
+      this.genAssetId = '';
+      this.extraAssetIds = [];
+      this.extraFiles = [];
+      this.model = 'doubao-seedance-2-0-260128';
+      this.duration = 12;
+      this.resolution = '720p';
+      this.ratio = '16:9';
+      this.repeat = 1;
+      this.taskMode = 'reference';
+      this._prevTaskMode = 'reference';
+      this._taskModeMemory = {
+        reference: { ratio: '16:9', duration: 12 },
+        extend: { ratio: 'adaptive', duration: 5 },
+        edit: { ratio: 'adaptive', duration: -1 },
+      };
+      this.syncFig1Asset();
+      if (typeof window.portalToast === 'function') window.portalToast('已恢复默认设置（资产库不受影响）');
+    },
 
     formatRuntime(job) {
       const _ = this.runtimeTick;
@@ -2510,7 +2574,9 @@ function VolcenginePortraitApp() {
           id: m.id,
           label: m.label || m.id,
           maxDuration: Number(m.maxDuration || 15),
+          duration_range: [Number(m.minDuration || 4), Number(m.maxDuration || 15)],
           resolutions: Array.isArray(m.resolutions) && m.resolutions.length ? m.resolutions : ['720p'],
+          ratios: Array.isArray(m.ratios) && m.ratios.length ? m.ratios : ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'],
         });
       }
     },
@@ -2588,18 +2654,54 @@ function VolcenginePortraitApp() {
     modelSpec() {
       return this.portraitModels.find(m => m.id === this.model) || this.portraitModels[0];
     },
-    modelResolutions() { return this.modelSpec().resolutions; },
-    modelMaxDuration() { return this.modelSpec().maxDuration; },
+    modelCapabilities() {
+      return (window.ModelCapabilities && window.ModelCapabilities.capabilitiesFor)
+        ? window.ModelCapabilities.capabilitiesFor({ __vp: { models: this.portraitModels } }, '__vp', this.model)
+        : null;
+    },
+    modelResolutions() {
+      const caps = this.modelCapabilities();
+      if (caps && Array.isArray(caps.resolution) && caps.resolution.length) return caps.resolution;
+      const spec = this.modelSpec();
+      return (spec && spec.resolutions) || ['720p'];
+    },
+    modelMaxDuration() {
+      const caps = this.modelCapabilities();
+      if (caps && caps.duration) return Number(caps.duration.max);
+      const spec = this.modelSpec();
+      return Number(spec && spec.maxDuration) || 15;
+    },
+    modelRatios() {
+      const caps = this.modelCapabilities();
+      if (caps && Array.isArray(caps.ratio) && caps.ratio.length) return caps.ratio;
+      return ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'];
+    },
     // Called from index.html on model change so a stale resolution or an
     // out-of-range duration is corrected before the user can submit.
     onModelChange() {
-      const spec = this.modelSpec();
-      if (!spec.resolutions.includes(this.resolution)) this.resolution = spec.resolutions[0];
-      // -1 means "let Ark pick the length" and is required by video edit /
-      // extend tasks, so it must survive a model switch instead of being clamped.
-      if (Number(this.duration) !== -1 && Number(this.duration) > spec.maxDuration) {
-        this.duration = spec.maxDuration;
+      const caps = this.modelCapabilities();
+      this.modelCaps = caps;
+      const hints = [];
+      if (!caps) { this.modelHint = ''; return; }
+      if (Array.isArray(caps.resolution) && caps.resolution.length && !caps.resolution.includes(this.resolution)) {
+        const keep = caps.resolution[0];
+        hints.push('分辨率 ' + this.resolution + ' 不支持，已切换为 ' + keep);
+        this.resolution = keep;
       }
+      if (Array.isArray(caps.ratio) && caps.ratio.length && !caps.ratio.includes(this.ratio)) {
+        const keep = caps.ratio.includes('adaptive') ? 'adaptive' : caps.ratio[0];
+        hints.push('比例 ' + this.ratio + ' 不支持，已切换为 ' + keep);
+        this.ratio = keep;
+      }
+      if (caps.duration) {
+        const n = Number(this.duration);
+        if (!Number.isNaN(n) && n !== -1 && (n < Number(caps.duration.min) || n > Number(caps.duration.max))) {
+          const keep = Math.min(Number(caps.duration.max), Math.max(Number(caps.duration.min), n));
+          hints.push('时长 ' + n + ' 不支持，已切换为 ' + keep);
+          this.duration = keep;
+        }
+      }
+      this.modelHint = hints.join('；');
     },
 
     // Task-type switch. reference / extend / edit each impose different
@@ -2632,6 +2734,21 @@ function VolcenginePortraitApp() {
     async createJob() {
       if (!this.genAssetId) { this.statusText = '请选择资产 ID（图1）'; return; }
       if (!this.prompt) { this.statusText = '请输入 Prompt'; return; }
+      const vpCaps = this.modelCapabilities();
+      if (vpCaps) {
+        const vpProblems = [];
+        if (Array.isArray(vpCaps.resolution) && vpCaps.resolution.length && !vpCaps.resolution.includes(this.resolution)) {
+          vpProblems.push('分辨率 ' + this.resolution + ' 不支持，可用：' + vpCaps.resolution.join(' / '));
+        }
+        if (Array.isArray(vpCaps.ratio) && vpCaps.ratio.length && !vpCaps.ratio.includes(this.ratio)) {
+          vpProblems.push('比例 ' + this.ratio + ' 不支持，可用：' + vpCaps.ratio.join(' / '));
+        }
+        const vpDuration = Number(this.duration);
+        if (vpCaps.duration && !Number.isNaN(vpDuration) && vpDuration !== -1 && (vpDuration < Number(vpCaps.duration.min) || vpDuration > Number(vpCaps.duration.max))) {
+          vpProblems.push('时长仅支持 ' + Number(vpCaps.duration.min) + '-' + Number(vpCaps.duration.max) + ' 秒');
+        }
+        if (vpProblems.length) { this.statusText = vpProblems.join('；'); return; }
+      }
       // 本地模型未连接时兜底：即使草稿/历史残留 local-* 模型，也切回云端再拦
       // 截，避免把本地模型请求发到不可达的 AI Port。
       if (this.isLocalModel(this.model) && !this.localReady) {
@@ -2676,9 +2793,7 @@ function VolcenginePortraitApp() {
       }
       if (res?.ok) {
         this.statusText = '已提交，任务 ' + res.job_id + ' 在后台运行';
-        this._activeVpJobId = res.job_id;
-        this._activeVpStatus = '';
-        this.clearDraft();
+        this.selectedVpJobId = res.job_id;
         this.loadJobs();
         this.pollJob(res.job_id);
       } else {
@@ -2687,70 +2802,63 @@ function VolcenginePortraitApp() {
     },
 
     async pollJob(jobId) {
-      if (this._vpPollingJobId === jobId) return;
-      this._vpPollingJobId = jobId;
-      // Transient failures (network blip / sub-app restart) used to break the
-      // loop silently — the running task vanished from view with no hint. Now
-      // retry with a cap, and say so while retrying.
+      if (!jobId) return;
+      if (this._vpPollingJobs.includes(jobId)) return;
+      this._vpPollingJobs.push(jobId);
       let fails = 0;
-      let terminal = '';
       while (true) {
         const job = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}`);
         if (!job || job.ok === false) {
           fails++;
           if (fails >= 10) {
-            this.statusText = '网络不稳定，已暂停轮询（任务仍在后台运行，稍后可从历史查看）';
+            if (this.selectedVpJobId === jobId) this.statusText = '网络不稳定，已暂停轮询（任务仍在后台运行，稍后刷新查看）';
             break;
           }
-          this.statusText = `连接中断，正在重试 (${fails}/10)...`;
+          if (this.selectedVpJobId === jobId) this.statusText = `连接中断，正在重试 (${fails}/10)...`;
           await new Promise(r => setTimeout(r, 3000));
           continue;
         }
         fails = 0;
-        this._activeVpStatus = job.status || '';
-        const vpLabel = { queued: '排队中', running: '处理中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }[job.status] || job.status;
-        this.statusText = `${vpLabel} ${job.done || 0}/${job.total || 0}`;
-        this.events = (job.events || []).map(e => '<div>' + e.time + ' ' + e.message + '</div>').join('');
-        for (const r of job.results || []) {
-          if (r.download_url) {
-            const url = `${appPath}${r.download_url}`;
-            if (!this.results.find(x => x.url === url)) this.results.push({ url, filename: r.filename });
-          }
+        const idx = (this.jobs || []).findIndex(x => (x.job_id || x.id) === jobId);
+        if (idx >= 0) this.jobs.splice(idx, 1, { ...this.jobs[idx], ...job });
+        if (this.selectedVpJobId === jobId) {
+          this.statusText = `${this.vpStatusLabel(job.status)} ${job.done || 0}/${job.total || 0}`;
         }
         if (['succeeded', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
-          terminal = job.status;
-          // 系统通知：与 Portal 15s 兜底轮询按 jobId 去重
           notifyJobDone(jobId, String(job.status).toLowerCase() === 'canceled' ? 'cancelled' : String(job.status).toLowerCase(), '人像视频', 'volcengine-portrait');
-          // 失败原因留在状态区（用户视线所在），而不是清成「空闲」让错误只沉在历史卡片里
-          if (job.status === 'failed') {
+          if (job.status === 'failed' && this.selectedVpJobId === jobId) {
             const reason = this.friendlyErrors(job.errors);
-            this.statusText = '❌ 任务失败' + (reason ? '：' + reason : '') + '。可在下方「生成历史」点击「重试」原样重提。';
+            this.statusText = '❌ 任务失败' + (reason ? '：' + reason : '') + '。可在下方「任务」点击「重试」原样重提。';
+          } else if (this.selectedVpJobId === jobId && job.status !== 'failed') {
+            this.statusText = '空闲';
           }
           break;
         }
         await new Promise(r => setTimeout(r, 3000));
       }
-      if (this._vpPollingJobId === jobId) this._vpPollingJobId = null;
-      this._activeVpJobId = null;
-      this._activeVpStatus = '';
-      if (terminal !== 'failed') this.statusText = '空闲';
+      this._vpPollingJobs = this._vpPollingJobs.filter(id => id !== jobId);
       this.loadJobs();
     },
 
     // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）
     async cancelJob() {
-      const jobId = this._activeVpJobId;
+      const jobId = this.selectedVpJobId;
       if (!jobId) return;
-      if (this._activeVpStatus === 'running') {
-        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
+      const j = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
+      if (j && String(j.status || '').toLowerCase() === 'running') {
+        if (false && !(await window.portalConfirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。', { danger: true }))) return;
       }
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}/cancel`, 'POST');
       if (res?.ok) {
         this.statusText = '任务已取消，输入和参数已保留。';
+        if (typeof window.portalToast === 'function') window.portalToast('任务已取消', 'success');
+        this.loadJobs();
       } else if (res && res.error) {
         this.statusText = res.error;
+        if (typeof window.portalToast === 'function') window.portalToast(res.error, 'danger');
       } else {
         this.statusText = '取消失败：网络异常，请重试';
+        if (typeof window.portalToast === 'function') window.portalToast('取消失败：网络异常，请重试', 'danger');
       }
     },
 
@@ -2758,22 +2866,11 @@ function VolcenginePortraitApp() {
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs`);
       if (res?.ok) {
         this.jobs = res.jobs || [];
-        // Refresh-safe recovery: the original lower task/status bar is driven
-        // by _activeVpJobId, not by the history list. Rehydrate the newest
-        // non-terminal job and restart the existing poller so its original
-        // cancel button comes back in the same place after a page refresh.
-        const active = this.jobs
-          .filter(j => !['succeeded', 'failed', 'cancelled', 'canceled', 'completed'].includes(String(j.status || '').toLowerCase()))
-          .sort((a, b) => Number(b.submitted_at || 0) - Number(a.submitted_at || 0))[0];
-        if (active && this._vpPollingJobId !== active.job_id) {
-          this._activeVpJobId = active.job_id;
-          this._activeVpStatus = active.status || '';
-          this.statusText = `${active.status || 'queued'} ${active.done || 0}/${active.total || 0}`;
-          this.events = (active.events || []).map(e => '<div>' + e.time + ' ' + e.message + '</div>').join('');
-          this.results = (active.results || []).filter(r => r.download_url).map(r => ({
-            url: `${appPath}${r.download_url}`, filename: r.filename,
-          }));
-          this.pollJob(active.job_id);
+        // 统一任务视图：为每个运行中的任务启动独立轮询，支持一次提交多条
+        const running = this.jobs.filter(j => !['succeeded', 'failed', 'cancelled', 'canceled', 'completed'].includes(String(j.status || '').toLowerCase()));
+        for (const j of running) this.pollJob(j.job_id || j.id);
+        if (!this.selectedVpJobId && running.length) {
+          this.statusText = running.length + ' 个任务进行中';
         }
       }
       this.loadActivity();
@@ -2784,8 +2881,7 @@ function VolcenginePortraitApp() {
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs/${encodeURIComponent(jobId)}/retry`, 'POST');
       if (res?.ok) {
         this.statusText = '已重试，任务 ' + res.job_id + ' 在后台运行';
-        this._activeVpJobId = res.job_id;
-        this._activeVpStatus = '';
+        this.selectedVpJobId = res.job_id;
         this.loadJobs();
         this.pollJob(res.job_id);
       } else {
@@ -2805,6 +2901,41 @@ function VolcenginePortraitApp() {
     extraHistory() {
       const liveIds = new Set((this.jobs || []).map(j => j.job_id));
       return (this.activityRecords || []).filter(a => a.job_id && !liveIds.has(a.job_id));
+    },
+
+    vpStatusLabel(status) {
+      return { queued: '排队中', pending: '排队中', running: '处理中', querying: '处理中', succeeded: '已完成', completed: '已完成', failed: '失败', cancelled: '已取消', canceled: '已取消' }[status] || status || '排队中';
+    },
+
+    visibleVpJobs() {
+      const jobs = this.jobs || [];
+      const rank = s => ['queued', 'pending', 'running', 'querying'].includes(String(s || '').toLowerCase()) ? 0 : 1;
+      return jobs.slice().sort((a, b) => {
+        const ra = rank(a.status), rb = rank(b.status);
+        if (ra !== rb) return ra - rb;
+        return Number(b.submitted_at || b.created_at || 0) - Number(a.submitted_at || a.created_at || 0);
+      }).slice(0, this.vpJobsLimit);
+    },
+
+    vpSelectedJob() {
+      const id = this.selectedVpJobId;
+      if (!id) return null;
+      return (this.jobs || []).find(j => (j.job_id || j.id) === id) || null;
+    },
+
+    isVpCancellable(j) {
+      const s = String(j.status || '').toLowerCase();
+      return ['queued', 'pending', 'running', 'querying'].includes(s) && !!j.job_id;
+    },
+
+    selectVpJob(jobId) {
+      this.selectedVpJobId = jobId;
+      const j = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
+      if (j && this.isVpCancellable(j)) this.pollJob(jobId);
+    },
+
+    closeVpJobDetail() {
+      this.selectedVpJobId = null;
     },
 
     // Retry a failed task from the persisted history: restore its params into
@@ -2872,6 +3003,16 @@ function HistoryApp() {
       } catch (e) { /* 权限信息拿不到时按普通用户渲染 */ }
       try { this.favorites = JSON.parse(localStorage.getItem('portal_history_favorites') || '{}'); } catch (e) {}
       try { this.downloaded = JSON.parse(localStorage.getItem('portal_history_downloads') || '{}'); } catch (e) {}
+      if (!this._historyTabListenerBound) {
+        this._historyTabListenerBound = true;
+        document.addEventListener('portal:tabchange', (event) => {
+          if (event.detail && event.detail.tab === 'history') this.reload();
+        });
+        this._historyAutoRefreshTimer = window.setInterval(() => {
+          const active = document.querySelector('.app-tab.active');
+          if (active && active.dataset.tab === 'history' && !document.hidden) this.reload();
+        }, 15000);
+      }
       this.reload();
     },
     async reload() {

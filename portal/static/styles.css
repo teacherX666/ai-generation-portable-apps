@@ -2207,8 +2207,6 @@ body.portal-home-active .portal-home-panel {
 }
 body.portal-home-active #globalBanner,
 body.portal-home-active .portal-mobile-switcher { display: none !important; }
-#portalHomeExitBtn { display: none; }
-body.portal-home-active #portalHomeExitBtn { display: inline-flex; }
 /* ========================================================================
    RedCraft Home — RED INFINITY · 红海无限 AI 创作平台
    高端红色系落地页。仅作用于首页 tab，不改顶部栏与导航几何。
@@ -2237,40 +2235,6 @@ body.portal-home-active #portalHomeExitBtn { display: inline-flex; }
   background: linear-gradient(90deg, #7C0B18, #C4102A 34%, #E6303B 66%, #F25C3D);
 }
 
-/* ---- 品牌栏（首页内容内，独立于全局顶部栏） ---- */
-.rc-home__bar {
-  position: sticky; top: 0; z-index: 20;
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  padding: 18px clamp(28px, 5vw, 72px);
-  border-bottom: 1px solid var(--rc-line);
-  background: rgba(251, 250, 248, 0.94);
-}
-.rc-brand { display: flex; align-items: center; gap: 12px; }
-.rc-brand__mark {
-  flex: none; width: 40px; height: 40px; border-radius: 11px;
-  display: grid; place-items: center;
-  background: linear-gradient(135deg, #F14A5A, #C4102A);
-  color: #fff; font-size: 21px; font-weight: 800; line-height: 1;
-  box-shadow: 0 8px 18px rgba(193, 16, 42, 0.26);
-}
-.rc-brand__copy { display: flex; flex-direction: column; line-height: 1.18; }
-.rc-brand__copy strong { font-size: 18px; font-weight: 760; letter-spacing: -0.01em; }
-.rc-brand__copy span { font-size: 12px; color: var(--rc-ink-3); font-weight: 500; margin-top: 2px; }
-
-/* 返回工作台（首页内） */
-body.portal-home-active #portalHomeExitBtn {
-  display: inline-flex !important;
-  align-items: center; justify-content: center;
-  height: 40px; margin: 0 !important; padding: 0 20px;
-  border: 1px solid var(--rc-line); border-radius: 999px;
-  background: #fff; color: var(--rc-ink);
-  font-size: 13px; font-weight: 650; letter-spacing: 0.02em;
-  cursor: pointer;
-  transition: color .18s ease, border-color .18s ease, transform .18s ease;
-}
-body.portal-home-active #portalHomeExitBtn:hover {
-  color: var(--rc-red); border-color: var(--rc-red); transform: translateY(-1px);
-}
 
 /* ---- Hero ---- */
 .rc-hero {
@@ -2478,10 +2442,9 @@ body.portal-home-active #portalHomeExitBtn:hover {
 .rc-hero__visual-ring--outer { inset: 7%; transform: rotate(-25deg) scaleX(.72); animation: rc-spin 26s linear infinite; }
 .rc-hero__visual-ring--inner { inset: 24%; border-color: rgba(225,29,46,.30); transform: rotate(25deg) scaleY(.72); animation: rc-spin-reverse 19s linear infinite; }
 .rc-hero__visual-core {
-  position: absolute; left: 50%; top: 50%; display: grid; place-items: center;
+  position: absolute; left: 50%; top: 50%; display: block;
   width: 90px; height: 90px; transform: translate(-50%, -50%);
-  border-radius: 28px; color: #fff; font-size: 44px; font-weight: 800;
-  background: linear-gradient(145deg, #F04A59, #B20E24);
+  border: 0; border-radius: 28px; object-fit: cover; background: transparent;
   box-shadow: 0 20px 48px rgba(193,16,42,.30), 0 0 0 12px rgba(225,29,46,.06);
   animation: rc-core-float 5s ease-in-out infinite;
 }

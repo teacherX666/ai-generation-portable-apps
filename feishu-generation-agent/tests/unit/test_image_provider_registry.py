@@ -182,6 +182,24 @@ async def test_video_task_explicit_seedance_uses_seedance_generator(fake_service
     assert (provider, generator) == ("seedance", seedance)
 
 
+async def test_local_video_preference_never_falls_back_to_paid_seedance(
+    fake_services,
+):
+    services = replace(
+        fake_services,
+        aiport_video_generator=None,
+        seedance_video_generator="seedance-generator",
+        video_generator="seedance-generator",
+        provider_preferences=ProviderPreferences(
+            video_provider="aiport",
+            image_provider="seedream",
+        ),
+    )
+
+    with pytest.raises(Exception, match="local video provider is unavailable"):
+        await _generator_for_task("run-1", _video_task(), services)
+
+
 async def test_video_task_prefers_local_aiport_when_preference_says_so(fake_services):
     """云部署（settings.video_provider=seedance）时，用户偏好 aiport 则走本地。"""
     aiport = "aiport-generator"

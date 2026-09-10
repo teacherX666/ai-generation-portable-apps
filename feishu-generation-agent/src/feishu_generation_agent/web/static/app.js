@@ -102,6 +102,12 @@
   const RERUNNABLE_RUN_STATUSES = new Set([
     "succeeded", "completed_with_errors", "failed", "cancelled",
   ]);
+  // Active (non-terminal) run states that can be force-cancelled via
+  // POST /api/runs/{run_id}/cancel. waiting_approval / waiting_review keep
+  // their own decision buttons, so they are intentionally excluded here.
+  const CANCELLABLE_RUN_STATUSES = new Set([
+    "created", "running", "resuming", "waiting_provider", "delivering",
+  ]);
   const RUN_STATUS_UI = {
     planning: { label: "正在生成计划", tone: "running", action: "系统正在读取文档并拆解任务，请稍候。" },
     running: { label: "正在执行", tone: "running", action: "任务正在处理中，页面会自动更新进度。" },
@@ -839,8 +845,9 @@
     const status = state.view?.status;
     const statusInfo = statusUi(status);
     const conflict = ReviewState.conflictMessage(state.review);
+    const canCancelRun = CANCELLABLE_RUN_STATUSES.has(status);
     rejectButton.disabled = state.busy || !canReview;
-    cancelButton.disabled = state.busy || !canReview;
+    cancelButton.disabled = state.busy || (!canReview && !canCancelRun);
     approveButton.disabled = state.busy || !ReviewState.canApprove(state.review);
     retryDeliveryButton.disabled = state.busy || state.view?.status !== "delivery_failed";
     const retryableAssetIssues = (state.view?.approval?.ingest_issue_records || [])
@@ -858,7 +865,9 @@
     retryDeliveryButton.hidden = status !== "delivery_failed";
     rejectButton.hidden = !canReview;
     approveButton.hidden = !canReview;
-    cancelButton.hidden = !canReview;
+    cancelButton.hidden = !(canReview || canCancelRun);
+    cancelButton.textContent = (canCancelRun && !canReview)
+      ? "取消运行" : "取消本次任务";
     actionTitle.textContent = statusInfo.label;
     byId("reject-feedback").disabled = state.busy || !canReview;
     taskList.querySelectorAll("input, textarea, select, button").forEach((control) => {
@@ -1809,9 +1818,12 @@
       aiport: "本地模型",
     };
     const executionErrors = (view.execution_records || [])
-      .filter((record) => record?.error?.message)
+      .filter((record) => record?.error?.message || record?.status === "timed_out")
       .map((record) => {
         const provider = providerNames[record.provider] || record.provider || "生成服务";
+        if (record.status === "timed_out" && !record.error?.message) {
+          return `${provider}：生成服务等待超时，请稍后重新运行`;
+        }
         const code = record.error.code ? `（${record.error.code}）` : "";
         return `${provider}：${record.error.message}${code}`;
       });
@@ -2058,8 +2070,28 @@
     }
   }
 
+  async function cancelActiveRun() {
+    if (!state.runId || state.busy) return;
+    setBusy(true);
+    clearError();
+    try {
+      await api(`/api/runs/${state.runId}/cancel`, { method: "POST" });
+      await poll(true);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   byId("reject-button").addEventListener("click", () => submitDecision("reject"));
-  byId("cancel-button").addEventListener("click", () => submitDecision("cancel"));
+  byId("cancel-button").addEventListener("click", () => {
+    if (CANCELLABLE_RUN_STATUSES.has(state.view?.status)) {
+      cancelActiveRun();
+    } else {
+      submitDecision("cancel");
+    }
+  });
   byId("approve-button").addEventListener("click", () => submitDecision("approve"));
   confirmArtifactsButton.addEventListener("click", () => submitArtifactReview("confirm"));
   adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));

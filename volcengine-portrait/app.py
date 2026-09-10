@@ -65,6 +65,14 @@ _MODEL_MAX_DURATION = {
     "local-minimax-h3-ref2v": 30,
 }
 _ALLOWED_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
+
+_MODEL_RESOLUTIONS = {
+    "doubao-seedance-2-0-260128": {"480p", "720p", "1080p", "4k"},
+    "doubao-seedance-2-0-fast-260128": {"480p", "720p"},
+    "doubao-seedance-2-0-mini-260615": {"480p", "720p"},
+    "doubao-seedance-2-5-260628": {"480p", "720p"},
+    "local-minimax-h3-ref2v": {"480p", "720p", "1080p"},
+}
 # Keep in sync with the Portal selector; 21:9 was exposed in the UI but was
 # previously rejected by the backend, making that valid option unusable.
 _ALLOWED_RATIOS = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"}
@@ -109,10 +117,10 @@ def _validate_job_params(model, duration, resolution, ratio, repeat_count):
         raise ValueError(f"{model} 时长必须为 4~{max_duration} 秒，编辑模式才可填 -1")
     if duration == -1 and ratio != "adaptive":
         raise ValueError("时长为 -1 时比例必须为 adaptive")
-    if str(resolution) not in _ALLOWED_RESOLUTIONS:
-        raise ValueError("不支持的分辨率")
-    if str(ratio) not in _ALLOWED_RATIOS:
-        raise ValueError("不支持的画面比例")
+    allowed_resolutions = _MODEL_RESOLUTIONS.get(str(model), _ALLOWED_RESOLUTIONS)
+    if str(resolution) not in allowed_resolutions:
+        raise ValueError("分辨率 " + str(resolution) + " 不支持，可用：" + " / ".join(sorted(allowed_resolutions)))
+        raise ValueError("比例 " + str(ratio) + " 不支持，可用：" + " / ".join(sorted(_ALLOWED_RATIOS)))
     if not 1 <= repeat_count <= 4:
         raise ValueError("生成数量必须为 1~4")
 

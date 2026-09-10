@@ -820,3 +820,37 @@ html, body { height: 100%; overflow: hidden; }
 }
 .cancel-job-btn:hover { background: #fef3c7; }
 
+
+/* 配置方案（保存/加载方案） */
+.schemeRow { margin-bottom: 12px; }
+.schemeRow > label { display: block; }
+.schemeRow .schemeSaveBtn { margin-top: 6px; width: auto; padding: 6px 14px; }
+.dirtyBadge {
+  display: inline-block;
+  background: var(--danger);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 10px;
+  border-radius: 999px;
+  margin-left: 8px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+  box-shadow: 0 0 0 3px var(--danger-soft), 0 2px 6px rgba(239, 68, 68, 0.35);
+  animation: dirtyPulse 1.4s ease-in-out infinite;
+}
+.archiveBox.dirty {
+  border: 1px solid var(--danger);
+  border-left: 4px solid var(--danger);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  background: var(--danger-soft);
+}
+@keyframes dirtyPulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 3px var(--danger-soft), 0 0 0 0 rgba(239, 68, 68, 0.45); }
+  50% { transform: scale(1.06); box-shadow: 0 0 0 7px rgba(239, 68, 68, 0.16), 0 0 18px 2px rgba(239, 68, 68, 0.5); }
+}
+.schemeCurrent { color: var(--accent); font-size: 11px; margin-left: 6px; }
+.rowButtons button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.rowButtons button.danger:hover:not(:disabled) { background: #dc2626; border-color: #dc2626; }

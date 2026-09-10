@@ -375,6 +375,9 @@ _PHONE_EXPLICIT_OVERRIDE_PHRASES = (
 )
 
 
+_PHONE_GAMING_RE = re.compile(r"(?:打|玩|正在玩|在打|打一局|玩一局)[^，。；;\n]{0,12}手游")
+
+
 _PHONE_NEGATED_PHRASES = (
     "没有手机", "没手机", "不要手机", "不要出现手机", "无手机",
     "不出现手机", "没有出现手机", "禁止出现手机",
@@ -415,7 +418,8 @@ def _rule_match(prompt: str, doc, title: str) -> tuple[bool, float]:
     if kind == "phone":
         if _contains_phrase(prompt, _PHONE_NEGATED_PHRASES):
             return False, 0.0
-        if not _contains_phrase(prompt, _PHONE_TRIGGER_PHRASES):
+        gaming = bool(_PHONE_GAMING_RE.search(prompt))
+        if not _contains_phrase(prompt, _PHONE_TRIGGER_PHRASES) and not gaming:
             return False, 0.0
         if _contains_phrase(prompt, _PHONE_SATISFIED_PHRASES):
             return False, 0.0
@@ -423,7 +427,7 @@ def _rule_match(prompt: str, doc, title: str) -> tuple[bool, float]:
         # missing constraint. Do not override it with the KB recommendation.
         if _contains_phrase(prompt, _PHONE_EXPLICIT_OVERRIDE_PHRASES):
             return False, 0.0
-        score = sum(1 for phrase in _PHONE_TRIGGER_PHRASES if phrase in prompt)
+        score = sum(1 for phrase in _PHONE_TRIGGER_PHRASES if phrase in prompt) + (1 if gaming else 0)
         return True, float(score)
 
     return False, 0.0

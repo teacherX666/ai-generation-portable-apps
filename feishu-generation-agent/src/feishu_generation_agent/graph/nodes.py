@@ -1550,18 +1550,12 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
         if generator is None and not explicit_provider and not preferred_video and settings_provider == "aiport":
             generator = legacy_video_generator
         if generator is None:
-            if explicit_provider is not None:
-                raise _validation_error(
-                    "The selected local video provider is unavailable; check AI Port/ComfyUI"
-                )
-            if seedance_generator is not None:
-                requested = "seedance"
-            else:
-                raise _validation_error(
-                    "The selected local video provider is unavailable; check AI Port/ComfyUI"
-                )
-        else:
-            return "aiport", generator
+            # Never turn a local/free choice into a paid cloud request.
+            raise _validation_error(
+                "The selected local video provider is unavailable; check AI Port/ComfyUI"
+            )
+        return "aiport", generator
+
 
     if requested != "seedance":
         raise _validation_error(f"Unsupported video provider: {requested}")
@@ -1853,6 +1847,13 @@ async def _finish_submit_phase(
     artifacts: list[Artifact] | None = None,
     error: dict[str, object] | None = None,
 ) -> tuple[ExecutionRecord, list[Artifact]]:
+    if target == "timed_out" and error is None:
+        error = {
+            "category": "transient_error",
+            "message": "生成服务等待超时，请稍后重新运行。",
+            "retryable": True,
+        }
+
     changed = await _transition_operation(
         services, run_id, task.task_id, operation, target, official_id
     )
@@ -2302,7 +2303,9 @@ async def verify_and_download_artifacts(
             verified.extend(state_items)
         return {
             "artifacts": [_json_model(artifact) for artifact in verified],
-            "status": "waiting_review" if verified else "failed",
+            # Verified artifacts mean generation succeeded. Feishu result-table
+            # export is optional and must not gate the success status.
+            "status": "succeeded" if verified else "failed",
         }
 
     return await _run_node(
@@ -2411,14 +2414,15 @@ async def deliver_to_feishu(
     *,
     services: GraphServices,
 ) -> AgentState:
+    """Best-effort Feishu export after generation has already succeeded."""
     _ensure_thread_id(state, config)
     run_id = state.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise _validation_error()
     summary = _NODE_SUMMARIES["deliver_to_feishu"]
-    await services.repository.append_event(
-        run_id, "deliver_to_feishu", "started", f"{summary} started"
-    )
+    artifacts = [
+        Artifact.model_validate(item) for item in state.get("artifacts", [])
+    ]
     try:
         document = NormalizedDocument.model_validate(
             state.get("normalized_document")
@@ -2427,12 +2431,16 @@ async def deliver_to_feishu(
             state,
             max_output_count=services.settings.max_output_count,
         )
-        artifacts = [
-            Artifact.model_validate(item) for item in state.get("artifacts", [])
-        ]
+        if services.delivery_writer is None:
+            raise RuntimeError("飞书结果表交付服务未配置")
+        await services.repository.append_event(
+            run_id, "deliver_to_feishu", "started", f"{summary} started"
+        )
         record = await services.delivery_writer.deliver(
             run_id, document, plan, artifacts
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         failure = _safe_error(exc)
         await services.repository.append_event(
@@ -2441,8 +2449,10 @@ async def deliver_to_feishu(
             "failed",
             f"{summary} failed ({failure.detail.category.value})",
         )
+        # The generated artifacts were already verified. Export failure is
+        # diagnostic only and must not downgrade the successful run.
         return {
-            "status": "delivery_failed",
+            "status": "succeeded" if artifacts else "failed",
             "delivery_record": None,
             "last_error": _json_model(failure.detail),
         }

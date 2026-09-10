@@ -209,6 +209,42 @@ def _iso_timestamp(value: str) -> float:
         return 0.0
 
 
+def _feishu_run_model_label(settings: Settings, kind: str, providers: list[str]) -> str:
+    image_models = {
+        "banana": settings.banana_model,
+        "gpt-image2": settings.gpt_image_model,
+        "seedream": settings.seedream_model,
+        "chiyun": settings.chiyun_model or settings.banana_model,
+        "aiport": settings.aiport_image_model,
+        "aiport_klein": "flux2_klein_allinone",
+        "aiport_klein_v3": "klein_true_v3_assets",
+        "aiport_anime2real": "anime2real_auto",
+        "aiport_zimage": "zimage_multifunction",
+        "aiport_style": "krea2_style_transfer",
+    }
+    video_models = {
+        "seedance": settings.seedance_model,
+        "aiport": settings.aiport_video_model,
+        "volcengine_portrait": settings.seedance_model,
+    }
+    labels: list[str] = []
+    for provider in providers:
+        provider = str(provider or "").strip()
+        if not provider:
+            continue
+        if kind == "video":
+            label = video_models.get(provider)
+        elif kind == "image":
+            label = image_models.get(provider)
+        else:
+            label = video_models.get(provider) or image_models.get(provider)
+        if not label:
+            label = provider
+        if label and label not in labels:
+            labels.append(label)
+    return ", ".join(labels)
+
+
 async def _probe_aiport(base_url: str) -> bool:
     """探活本地 AI Port 网关（127.0.0.1:8801）。TCP 连上即视为在线。"""
     try:
@@ -1155,13 +1191,24 @@ def create_app(
                 item_kind = "image"
             else:
                 item_kind = "agent"
+            providers = []
+            try:
+                operations = await active.repository.list_operations(run_id)
+                providers = [
+                    str(operation.get("provider") or "").strip()
+                    for operation in operations
+                    if operation.get("provider")
+                ]
+            except Exception:
+                providers = []
+            model_label = _feishu_run_model_label(active.settings, item_kind, providers)
             items.append({
                 "app": "feishu-generation-agent",
                 "job_id": run_id,
                 "username": identity.username,
                 "kind": item_kind,
                 "prompt": "飞书任务 Agent 生成任务",
-                "model": "",
+                "model": model_label,
                 "params": {"source_url": str(row.get("source_url") or "")},
                 "status": portal_status,
                 "submitted_at": _iso_timestamp(created_at),
