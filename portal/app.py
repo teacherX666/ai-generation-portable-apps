@@ -1010,6 +1010,13 @@ class AppManager:
 
 # ─── Usage Tracker ─────────────────────────────────────────────────────────────
 
+def _cache_path_of(target_path: str) -> str:
+    """静态资源缓存判定用纯路径：?v= 之类的版本参数拼在 target_path 里
+    会让 endswith('.js') 失配（2026-09-10 实锤：app.js?v=20260910-refresh-fix3
+    因带 query 不加 no-cache，用户浏览器启发式缓存旧 JS，页面按钮全死）。"""
+    return target_path.split("?", 1)[0]
+
+
 def _append_usage_jsonl(entry: dict, today: str):
     """Append a single usage entry to state/logs/usage-YYYY-MM-DD.jsonl.
     Failures are logged but do NOT propagate — primary usage.json save must not be blocked."""
@@ -3211,7 +3218,7 @@ class Handler(SimpleHTTPRequestHandler):
                     if key.lower() in ("transfer-encoding", "connection", "server", "date", "content-length"):
                         continue
                     self.send_header(key, value)
-                if target_path.endswith((".html", ".js", ".css", ".mjs")):
+                if _cache_path_of(target_path).endswith((".html", ".js", ".css", ".mjs")):
                     self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self._cors_headers()
                 self.send_header("Content-Length", str(len(resp_body)))
@@ -3224,7 +3231,7 @@ class Handler(SimpleHTTPRequestHandler):
                     if key.lower() in ("transfer-encoding", "connection", "server", "date"):
                         continue
                     self.send_header(key, value)
-                if target_path.endswith((".html", ".js", ".css", ".mjs")):
+                if _cache_path_of(target_path).endswith((".html", ".js", ".css", ".mjs")):
                     self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self._cors_headers()
                 self.end_headers()

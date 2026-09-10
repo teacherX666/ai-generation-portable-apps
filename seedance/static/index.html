@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Seedance</title>
-  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260909-ui">
-  <link rel="stylesheet" href="styles.css?v=20260909-scheme-v2">
+  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix7-datadriven">
+  <link rel="stylesheet" href="styles.css?v=20260910-fix7-datadriven">
   <script src="vendor/petite-vue.iife.js"></script>
 </head>
 <body class="ui-page">
@@ -206,10 +206,10 @@
           <div class="workspace-nav-grid">
             <button type="button" class="tabBtn workspace-nav-btn" :class="{ isActive: wsTab === 'jobs' }" @click="switchJobsTab()">任务</button>
             <button type="button" class="tabBtn workspace-nav-btn" :class="{ isActive: wsTab === 'activity' }" @click="switchActivityTab()">活动</button>
-            <template v-if="wsTab === 'activity' && activityDetail">
+            <div v-if="wsTab === 'activity' && activityDetail" style="display:contents">
               <button type="button" class="ui-btn ui-btn--secondary workspace-nav-btn" @click="activityDetail=null">← 返回列表</button>
               <button type="button" class="btn-small ui-btn ui-btn--primary workspace-nav-btn" @click="restoreActivity()">恢复参数</button>
-            </template>
+            </div>
           </div>
           <div v-show="wsTab==='jobs'">
             <!-- Active polling display (during job execution).
@@ -242,7 +242,7 @@
             </div>
           </div>
           <div v-show="wsTab==='activity'" class="activity-panel-inner">
-            <div v-if="!activityDetail">
+            <div v-show="!activityDetail">
               <div class="activity-counts" v-if="activityCounts">
                 <span>共 {{ activityCounts.total }} 条</span>
                 <span class="act-ok">成功 {{ activityCounts.succeeded }}</span>
@@ -260,7 +260,7 @@
                 <div v-if="!activityRecords.length" style="color:#697386;font-size:12px">暂无活动记录</div>
               </div>
             </div>
-            <div v-else-if="activityDetail" class="act-detail">
+            <div v-if="activityDetail" class="act-detail">
               <div class="act-detail-meta">
                 <span :class="activityDetail.status">{{ activityDetail.status }}</span> · {{ activityDetail.created_at }}
               </div>
@@ -268,14 +268,14 @@
               <pre style="font-size:11px;max-height:200px">{{ JSON.stringify(activityDetail.restore?.values || activityDetail.request, null, 2) }}</pre>
               <h3 style="margin:8px 0 4px;font-size:13px" v-if="activityDetail.result">结果</h3>
               <pre v-if="activityDetail.result" style="font-size:11px;max-height:150px">{{ JSON.stringify(activityDetail.result, null, 2) }}</pre>
-              <template v-if="activityDetail.attempts && activityDetail.attempts.length">
+              <div v-show="activityDetail.attempts && activityDetail.attempts.length" style="display:contents">
                 <h3 style="margin:8px 0 4px;font-size:13px">历次尝试</h3>
                 <div v-for="(a, i) in activityDetail.attempts" :key="a.job_id || i" style="font-size:11px;color:#475569;padding:4px 0;border-top:1px solid #f1f5f9">
                   <span :class="'tag tag-'+(a.status||'failed')">{{ a.status }}</span>
                   <span style="margin-left:6px">{{ formatAttemptTime(a.finished_at) }}</span>
                   <span style="margin-left:6px" v-if="a.error">{{ a.error }}</span>
                 </div>
-              </template>
+              </div>
             </div>
           </div>
         </div>
@@ -311,7 +311,7 @@
   </dialog>
 
   <script src="model-capabilities.js"></script>
-  <script src="app.js?v=20260910-detail-close-fix"></script>
+  <script src="app.js?v=20260910-fix7-datadriven"></script>
   <script src="effects.js?v=20260910-fx-perf"></script>
 </body>
 </html>

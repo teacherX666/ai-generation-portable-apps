@@ -792,14 +792,13 @@ function NanoBananaApp() {
       var sizeSel = nbField('image_size');
       if (sizeSel && caps && Array.isArray(caps.image_size) && caps.image_size.length) {
         var prev = sizeSel.value;
-        sizeSel.innerHTML = '';
-        caps.image_size.forEach(function (s) {
-          var o = document.createElement('option');
-          o.value = s; o.textContent = s; sizeSel.appendChild(o);
-        });
         var keep = caps.image_size.indexOf(prev) >= 0 ? prev : caps.image_size[0];
-        sizeSel.value = keep;
+        // 纯数据驱动：option 由模板 v-for 渲染、选中值由 :value 绑定。
+        // 此前命令式 innerHTML='' 重建 option 会清掉 petite-vue 的 v-for 块
+        // DOM，而 tracked 块还在——下次 diff 对旧块 remove() 时 parentNode
+        // 为 null，removeChild 崩溃拖死整个页面（2026-09-10 用户实锤）。
         this.imageSizeOptions = caps.image_size.slice();
+        this.imageSize = keep;
         if (prev && prev !== keep) hints.push('尺寸 ' + prev + ' 不支持，已切换为 ' + keep);
       }
 

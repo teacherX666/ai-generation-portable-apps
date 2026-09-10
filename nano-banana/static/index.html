@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>图像生成模块</title>
-  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260909-ui">
-  <link rel="stylesheet" href="styles.css?v=20260909-scheme-v2">
+  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix7-datadriven">
+  <link rel="stylesheet" href="styles.css?v=20260910-fix7-datadriven">
 </head>
 <body class="ui-page">
   <div id="nb-app" v-scope="NanoBananaApp()" @vue:mounted="init()">
 
     <!-- Standalone page chrome (hidden in Portal proxy) -->
-    <template v-if="isStandalone">
+    <div v-if="isStandalone" style="display:contents">
       <h1>图像生成模块 <span class="app-status-dot" :class="appStatus"></span></h1>
-    </template>
+    </div>
 
     <div class="app-tabs" v-if="tabs.length">
       <div v-for="t in tabs" :key="t.id"
@@ -100,7 +100,7 @@
                 </select>
               </label>
               <label>尺寸
-                <select name="image_size">
+                <select name="image_size" :value="imageSize">
                   <option v-for="size in imageSizeOptions" :value="size">{{ size }}</option>
                 </select>
               </label>
@@ -265,10 +265,10 @@
           <div class="workspace-nav-grid">
             <button type="button" class="sub-tab workspace-nav-btn" :class="{ isActive: wsTab === 'jobs' }" @click="wsTab='jobs'">任务</button>
             <button type="button" class="sub-tab workspace-nav-btn" :class="{ isActive: wsTab === 'activity' }" @click="wsTab='activity'; loadActivity()">活动</button>
-            <template v-if="wsTab === 'activity' && activityDetail">
+            <div v-if="wsTab === 'activity' && activityDetail" style="display:contents">
               <button type="button" class="ui-btn ui-btn--secondary workspace-nav-btn" @click="activityDetail=null">← 返回列表</button>
               <button type="button" class="btn-small ui-btn ui-btn--primary workspace-nav-btn" @click="restoreActivity()">恢复参数</button>
-            </template>
+            </div>
           </div>
 
           <!-- Jobs Tab：运行中 + 历史合并为同一列表，点击记录查看详情 -->
@@ -281,7 +281,7 @@
             <div id="nb-jobsGrid" class="job-grid" style="margin-top:10px"></div>
           </div>
           <div v-show="wsTab==='activity'" class="activity-panel-inner">
-            <div v-if="!activityDetail">
+            <div v-show="!activityDetail">
               <div class="activity-counts" v-if="activityCounts">
                 <span>共 {{ activityCounts.total }} 条</span>
                 <span class="act-ok">成功 {{ activityCounts.succeeded }}</span>
@@ -300,7 +300,7 @@
                 <div v-if="!activityRecords.length" style="color:#697386;font-size:12px">暂无活动记录</div>
               </div>
             </div>
-            <div v-else-if="activityDetail" class="act-detail">
+            <div v-if="activityDetail" class="act-detail">
               <div class="act-detail-meta">
                 <span :class="activityDetail.status">{{ activityDetail.status }}</span> · {{ activityDetail.created_at }} · <span v-if="activityDetail.provider">{{ activityDetail.provider }}</span> <span v-if="activityDetail.model">· {{ activityDetail.model }}</span>
               </div>
@@ -347,7 +347,7 @@
 
   <script src="vendor/petite-vue.iife.js"></script>
   <script src="model-capabilities.js"></script>
-  <script src="app.js?v=20260910-refresh-fix4"></script>
+  <script src="app.js?v=20260910-fix7-datadriven"></script>
   <script src="effects.js?v=20260910-fx-perf"></script>
 </body>
 </html>
