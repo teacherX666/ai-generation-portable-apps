@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>图像生成模块</title>
-  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix4-cache">
-  <link rel="stylesheet" href="styles.css?v=20260910-fix4-cache">
+  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix5-vifvshow">
+  <link rel="stylesheet" href="styles.css?v=20260910-fix5-vifvshow">
 </head>
 <body class="ui-page">
   <div id="nb-app" v-scope="NanoBananaApp()" @vue:mounted="init()">
@@ -281,7 +281,7 @@
             <div id="nb-jobsGrid" class="job-grid" style="margin-top:10px"></div>
           </div>
           <div v-show="wsTab==='activity'" class="activity-panel-inner">
-            <div v-if="!activityDetail">
+            <div v-show="!activityDetail">
               <div class="activity-counts" v-if="activityCounts">
                 <span>共 {{ activityCounts.total }} 条</span>
                 <span class="act-ok">成功 {{ activityCounts.succeeded }}</span>
@@ -300,7 +300,7 @@
                 <div v-if="!activityRecords.length" style="color:#697386;font-size:12px">暂无活动记录</div>
               </div>
             </div>
-            <div v-else-if="activityDetail" class="act-detail">
+            <div v-show="activityDetail" class="act-detail" style="display:none">
               <div class="act-detail-meta">
                 <span :class="activityDetail.status">{{ activityDetail.status }}</span> · {{ activityDetail.created_at }} · <span v-if="activityDetail.provider">{{ activityDetail.provider }}</span> <span v-if="activityDetail.model">· {{ activityDetail.model }}</span>
               </div>
@@ -347,7 +347,7 @@
 
   <script src="vendor/petite-vue.iife.js"></script>
   <script src="model-capabilities.js"></script>
-  <script src="app.js?v=20260910-fix4-cache"></script>
+  <script src="app.js?v=20260910-fix5-vifvshow"></script>
   <script src="effects.js"></script>
 </body>
 </html>

@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Seedance</title>
-  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix4-cache">
-  <link rel="stylesheet" href="styles.css?v=20260910-fix4-cache">
+  <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix5-vifvshow">
+  <link rel="stylesheet" href="styles.css?v=20260910-fix5-vifvshow">
   <script src="vendor/petite-vue.iife.js"></script>
 </head>
 <body class="ui-page">
@@ -242,7 +242,7 @@
             </div>
           </div>
           <div v-show="wsTab==='activity'" class="activity-panel-inner">
-            <div v-if="!activityDetail">
+            <div v-show="!activityDetail">
               <div class="activity-counts" v-if="activityCounts">
                 <span>共 {{ activityCounts.total }} 条</span>
                 <span class="act-ok">成功 {{ activityCounts.succeeded }}</span>
@@ -260,7 +260,7 @@
                 <div v-if="!activityRecords.length" style="color:#697386;font-size:12px">暂无活动记录</div>
               </div>
             </div>
-            <div v-else-if="activityDetail" class="act-detail">
+            <div v-show="activityDetail" class="act-detail" style="display:none">
               <div class="act-detail-meta">
                 <span :class="activityDetail.status">{{ activityDetail.status }}</span> · {{ activityDetail.created_at }}
               </div>
@@ -268,7 +268,7 @@
               <pre style="font-size:11px;max-height:200px">{{ JSON.stringify(activityDetail.restore?.values || activityDetail.request, null, 2) }}</pre>
               <h3 style="margin:8px 0 4px;font-size:13px" v-if="activityDetail.result">结果</h3>
               <pre v-if="activityDetail.result" style="font-size:11px;max-height:150px">{{ JSON.stringify(activityDetail.result, null, 2) }}</pre>
-              <div v-if="activityDetail.attempts && activityDetail.attempts.length" style="display:contents">
+              <div v-show="activityDetail.attempts && activityDetail.attempts.length" style="display:contents">
                 <h3 style="margin:8px 0 4px;font-size:13px">历次尝试</h3>
                 <div v-for="(a, i) in activityDetail.attempts" :key="a.job_id || i" style="font-size:11px;color:#475569;padding:4px 0;border-top:1px solid #f1f5f9">
                   <span :class="'tag tag-'+(a.status||'failed')">{{ a.status }}</span>
@@ -311,7 +311,7 @@
   </dialog>
 
   <script src="model-capabilities.js"></script>
-  <script src="app.js?v=20260910-fix4-cache"></script>
+  <script src="app.js?v=20260910-fix5-vifvshow"></script>
   <script src="effects.js"></script>
 </body>
 </html>
