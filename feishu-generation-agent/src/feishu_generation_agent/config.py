@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     coordinator_poll_interval_seconds: float = Field(default=1.0, ge=0.05)
     # RAG prompt optimization service (rag-assistant /api/rag/preflight).
     # Empty disables automatic prompt optimization.
-    rag_preflight_url: str | None = None
+    rag_preflight_url: str = "http://127.0.0.1:8900"
 
     @field_validator("asset_base_url")
     @classmethod

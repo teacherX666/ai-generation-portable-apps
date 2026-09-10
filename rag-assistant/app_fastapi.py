@@ -637,10 +637,20 @@ def _director_optimize_prompt(prompt: str) -> str:
         logger.warning("director rag prompt optimization unavailable; using KB context")
     return ""
 
+def _is_loopback_request(request: Request) -> bool:
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None) if client else None
+    return host in ("127.0.0.1", "::1")
+
+
 @app.post("/api/rag/preflight")
 async def rag_preflight(request: Request):
     token = portal_token()
-    if token and verify_portal_identity(request.headers) is None:
+    if (
+        token
+        and verify_portal_identity(request.headers) is None
+        and not _is_loopback_request(request)
+    ):
         return JSONResponse(status_code=403, content={"error": "forbidden"})
     try:
         body = await request.json()

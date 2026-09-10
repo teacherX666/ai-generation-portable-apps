@@ -3370,17 +3370,7 @@ def main():
 
         class RedirectHandler(SimpleHTTPRequestHandler):
             def log_message(self, format, *args): pass
-            def _log_req(self, method: str):
-        try:
-            cookies = self.headers.get("Cookie") or ""
-            has_cookie = "session=" in cookies
-            x = (self.headers.get("X-Session") or "").strip()
-            ua = (self.headers.get("User-Agent") or "")[:100]
-            print(f"  [req] {method} {self.path} ip={self.client_address[0]} cookie={has_cookie} xsess={'Y' if x else 'N'} ua={ua}", flush=True)
-        except Exception:
-            pass
-
-    def do_GET(self):
+            def do_GET(self):
                 host = self.headers.get("Host", "").split(":")[0] or lan_ip
                 https_url = f"https://{host}:{PORTAL_PORT}{self.path}"
                 page = (f'<script>var h=window.location.hostname;'
