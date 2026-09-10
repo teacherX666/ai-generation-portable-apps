@@ -2496,6 +2496,16 @@ body.portal-home-active #portalHomeExitBtn:hover {
 .vp-job-detail-result { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
 .vp-job-detail-file { flex: 1; color: #64748b; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 矩阵分页控件 */
+.vp-job-pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 12px 0 2px; }
+.vp-job-pager-btn {
+  font-size: 12px; color: #475569; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 7px; padding: 5px 14px; cursor: pointer;
+}
+.vp-job-pager-btn:hover:not(:disabled) { color: #2563eb; border-color: #2563eb; background: #eef5ff; }
+.vp-job-pager-btn:disabled { color: #cbd5e1; cursor: not-allowed; }
+.vp-job-pager-info { font-size: 11.5px; color: #64748b; }
+
 /* ── 即梦模块：分段控制器 + 矩阵历史网格 + 放大弹窗操作区 ── */
 .dm-seg-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 

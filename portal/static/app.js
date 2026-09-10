@@ -2104,6 +2104,10 @@ function VolcenginePortraitApp() {
     ],
     submitting: false, events: '', results: [], jobs: [], activityRecords: [],
     vpHistory: [],            // 矩阵渲染数据：内存任务 + 持久化活动记录合并（dedupe by job_id）
+    vpPageItems: [],          // 当前页切片（每页 20 个，防全量 video 缩略图同时挂载卡顿）
+    vpHistoryPage: 1,         // 当前页码
+    vpPageSize: 20,           // 每页任务数（2026-09-10 用户要求，防加载卡顿）
+    vpPageCount: 0,           // 总页数
     vpJobDetail: null,        // 任务详情弹窗数据（请求参数 / 返回事件 / 产出）
     // 新版资产库交互状态
     zoomAsset: null,          // 放大预览弹窗中的资产（图片/视频通用；关闭时不置 null，避免模板渲染竞态）
@@ -2840,6 +2844,25 @@ function VolcenginePortraitApp() {
       }
       // 新任务在上（活动记录 summary 已是倒序；live jobs 按后端排序）
       this.vpHistory = items;
+      this._applyVpPage();
+    },
+
+    // 分页（2026-09-10 用户要求：一页 20 个，防止 87 个 video 缩略图同时挂载卡顿）。
+    // 轮询刷新时保持当前页码；总页数减少时自动收拢到最后一页。
+    setVpPage(n) {
+      const max = Math.max(1, this.vpPageCount);
+      this.vpHistoryPage = Math.min(Math.max(1, n), max);
+      this._applyVpPage();
+      // 翻页后滚回历史区顶部（长页里翻页控件在底部）
+      const sec = document.querySelector('.vp-job-grid');
+      if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    },
+    _applyVpPage() {
+      const size = this.vpPageSize || 20;
+      this.vpPageCount = Math.max(1, Math.ceil((this.vpHistory.length || 1) / size));
+      this.vpHistoryPage = Math.min(Math.max(1, this.vpHistoryPage), this.vpPageCount);
+      const start = (this.vpHistoryPage - 1) * size;
+      this.vpPageItems = this.vpHistory.slice(start, start + size);
     },
 
     // 整格点击 → 详情弹窗：live 单任务 + 持久化活动记录合并展示

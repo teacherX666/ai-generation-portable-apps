@@ -927,9 +927,10 @@
       <section class="card">
         <h2>生成历史 <button @click="loadJobs()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">刷新</button></h2>
         <div v-if="vpHistory.length===0" style="color:#64748b;font-size:12px">暂无生成记录</div>
-        <!-- 任务矩阵（2026-09-09 对齐 seedance/nano）：一格一任务，整格点开详情，缩略图点开放大 -->
+        <!-- 任务矩阵（2026-09-09 对齐 seedance/nano）：一格一任务，整格点开详情，缩略图点开放大。
+             分页渲染 vpPageItems（每页 20 个），防止大量 video 缩略图同时挂载卡顿。 -->
         <div class="vp-job-grid">
-          <div v-for="j in vpHistory" :key="j.job_id" class="vp-job-tile" :data-status="j.status || ''" @click="openVpJobDetail(j)">
+          <div v-for="j in vpPageItems" :key="j.job_id" class="vp-job-tile" :data-status="j.status || ''" @click="openVpJobDetail(j)">
             <div class="vp-job-tile-media">
               <video v-if="j.first && j.first.isVideo" :src="appPath + j.first.url" preload="metadata" muted playsinline title="点开预览" @click.stop="openVpJobPreview(j)"></video>
               <img v-else-if="j.first" :src="appPath + j.first.url" alt="产出预览" title="点开预览" @click.stop="openVpJobPreview(j)">
@@ -947,6 +948,11 @@
               <button type="button" class="vp-job-tile-btn vp-job-tile-btn--detail" @click.stop="openVpJobDetail(j)">详情</button>
             </div>
           </div>
+        </div>
+        <div class="vp-job-pager" v-if="vpPageCount > 1">
+          <button type="button" class="vp-job-pager-btn" :disabled="vpHistoryPage <= 1" @click="setVpPage(vpHistoryPage - 1)">‹ 上一页</button>
+          <span class="vp-job-pager-info">第 {{ vpHistoryPage }} / {{ vpPageCount }} 页 · 共 {{ vpHistory.length }} 个任务</span>
+          <button type="button" class="vp-job-pager-btn" :disabled="vpHistoryPage >= vpPageCount" @click="setVpPage(vpHistoryPage + 1)">下一页 ›</button>
         </div>
       </section>
 
