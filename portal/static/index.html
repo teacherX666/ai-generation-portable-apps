@@ -940,11 +940,11 @@
       </section>
 
       <!-- 任务详情弹窗：请求参数 + 返回事件/产出（key 类字段剥离） -->
-      <div class="vp-zoom-backdrop" v-if="vpJobDetail" @click="closeVpJobDetail()">
+      <div class="vp-zoom-backdrop" v-if="vpJobDetailOpen" @click="closeVpJobDetail()">
         <div class="vp-zoom-box" style="max-width:min(760px,94vw)" @click.stop>
           <div class="vp-zoom-head">
             <span class="vp-zoom-title">任务详情 {{ vpJobDetail.job_id || '' }}</span>
-            <button class="vp-zoom-close" @click="closeVpJobDetail()" title="关闭">✕</button>
+            <button type="button" class="vp-zoom-close" @click.stop.prevent="closeVpJobDetail()" title="关闭">✕</button>
           </div>
           <div class="vp-job-detail-body">
             <div v-if="vpJobDetail.loading" class="vp-zoom-empty">加载中…</div>
@@ -1447,7 +1447,7 @@
   <script src="/js/portal-utils.js"></script>
   <script src="/js/portal-shell.js"></script>
   <script src="/js/model-capabilities.js"></script>
-  <script src="/app.js?v=20260910-capabilities"></script>
+  <script src="/app.js?v=20260910-task-detail-close1"></script>
   <script src="/js/portal-enhancements.js"></script>
   <script src="/js/portal-module-registry.js"></script>
   <script src="/js/portal-rag-interceptor.js"></script>

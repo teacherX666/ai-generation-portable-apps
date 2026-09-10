@@ -2165,7 +2165,9 @@ function VolcenginePortraitApp() {
     vpHistoryPage: 1,         // 当前页码
     vpPageSize: 20,           // 每页任务数（2026-09-10 用户要求，防加载卡顿）
     vpPageCount: 0,           // 总页数
-    vpJobDetail: null,        // 任务详情弹窗数据（请求参数 / 返回事件 / 产出）
+    vpJobDetail: null,
+    vpJobDetailOpen: false,
+    _vpJobDetailRequest: 0,        // 任务详情弹窗数据（请求参数 / 返回事件 / 产出）
     // 新版资产库交互状态
     zoomAsset: null,          // 放大预览弹窗中的资产（图片/视频通用；关闭时不置 null，避免模板渲染竞态）
     zoomOpen: false,          // 弹窗开关（与 zoomAsset 分离，zoomAsset 保持非 null 供模板安全读取）
@@ -2967,8 +2969,10 @@ function VolcenginePortraitApp() {
     },
 
     closeVpJobDetail() {
+      this._vpJobDetailRequest += 1;
       this.selectedVpJobId = null;
-      this.vpJobDetail = null;
+      // Keep the detail object alive for petite-vue; only toggle visibility.
+      this.vpJobDetailOpen = false;
     },
     // === 矩阵渲染数据（2026-09-09 对齐 seedance/nano 任务矩阵） ===
     // 模板不直接调方法（petite-vue 渲染竞态教训），由数据属性 vpHistory 维护；
@@ -3028,6 +3032,8 @@ function VolcenginePortraitApp() {
 
     // 整格点击 → 详情弹窗：live 单任务 + 持久化活动记录合并展示
     async openVpJobDetail(j) {
+      const requestToken = ++this._vpJobDetailRequest;
+      this.vpJobDetailOpen = true;
       this.vpJobDetail = {
         job_id: j.job_id, activity_id: j.activity_id || '',
         status: j.status || '', prompt: j.prompt || '', loading: true,
@@ -3045,7 +3051,7 @@ function VolcenginePortraitApp() {
           : null;
         if (r && !r.error) rec = r;
       } catch (e) { /* 活动记录缺失时只展示 live */ }
-      if (!this.vpJobDetail) return;
+      if (!this.vpJobDetail || !this.vpJobDetailOpen || requestToken !== this._vpJobDetailRequest) return;
       const d = this.vpJobDetail;
       // 请求参数：live 任务字段优先；内存剪枝后回退活动记录 request（无 key 类字段）
       const req = (rec && rec.request) || {};
