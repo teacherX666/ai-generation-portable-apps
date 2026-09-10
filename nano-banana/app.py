@@ -651,6 +651,19 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict[str, Any]:
             counts[source] += 1
         if status in counts:
             counts[status] += 1
+        first_url = ""
+        first_filename = ""
+        try:
+            for run in ((item.get("result") or {}).get("results") or []):
+                for im in (run.get("images") or []):
+                    if im.get("download_url"):
+                        first_url = im["download_url"]
+                        first_filename = im.get("filename") or first_filename
+                        break
+                if first_url:
+                    break
+        except Exception:
+            first_url = ""
         summary.append({
             "id": item.get("id"),
             "job_id": item.get("job_id"),
@@ -665,6 +678,8 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict[str, Any]:
             "username": item.get("username", ""),
             "started_at": item.get("started_at"),
             "finished_at": item.get("finished_at"),
+            "first_url": first_url,
+            "first_filename": first_filename,
         })
     summary.reverse()
     return {"counts": counts, "records": summary}
@@ -1106,9 +1121,11 @@ def retry_job(job_id: str) -> str:
 
 
 def recover_backlog() -> tuple[int, int]:
-    """启动时恢复：queued → 自动重新入队；started → 标记服务更新中断。"""
+    """启动时恢复：queued/started → 原 job_id 重新入队继续跑（重启前后无感）。"""
     recovered = 0
     interrupted = 0
+    dropped = 0
+    stale_cleared = 0
     backlog = _backlog_load()
     if not backlog:
         return 0, 0
@@ -1117,6 +1134,15 @@ def recover_backlog() -> tuple[int, int]:
         activity_id = str(meta.get("activity_id") or "")
         try:
             act = activities.get(activity_id) or {}
+            # 终态守卫：活动记录已收尾（成功/失败/取消）说明任务早已走完完成
+            # 路径、只是 backlog 条目没清掉——只清条目，绝不做中断改写
+            # （否则会把成功任务在重启时翻成失败，2026-09-09 用户实锤）。
+            act_status = str(act.get("status") or "").lower()
+            if act and act_status in {"succeeded", "success", "completed", "failed", "failure", "cancelled", "canceled"}:
+                with LOCK:
+                    _backlog_remove_locked(job_id)
+                stale_cleared += 1
+                continue
             restore = act.get("restore") or {}
             if not isinstance(restore, dict) or "values" not in restore:
                 raise ValueError("restore 数据缺失")
@@ -1125,26 +1151,10 @@ def recover_backlog() -> tuple[int, int]:
             values.setdefault("api_key", resolve_provider_api_key(str(values.get("provider") or "")))
             ws_id = str(meta.get("ws_id") or "localhost")
             files = _files_from_restore(restore, ws_id)
-            if meta.get("stage") == "started":
-                with LOCK:
-                    JOBS[job_id] = {
-                        "id": job_id, "status": "failed",
-                        "events": [{"time": time.strftime("%H:%M:%S"),
-                                    "message": "服务更新重启，任务中断"}],
-                        "results": [], "errors": ["服务更新重启，任务中断——请点击「重试」重新提交。"],
-                        "done": 0, "total": 0,
-                        "username": str(meta.get("username") or ""),
-                        "workspace_id": ws_id,
-                        "submitted_at": time.time(), "started_at": None,
-                        "finished_at": time.time(),
-                        "retryable": True,
-                    }
-                    _backlog_remove_locked(job_id)
-                update_activity(activity_id, status="failed",
-                                error="服务更新重启，任务中断——请点击重试",
-                                finished_at=time.time())
-                interrupted += 1
-                continue
+            # 排队中/运行中统一语义（2026-09-09 用户确认）：
+            # 重启后原 job_id 重新入队、自动继续跑，活动记录保持 running——
+            # 重启前后用户无感。failed/succeeded 的任务由上方终态守卫保护。
+            # （重新执行会重跑生成，可能重复计费——用户明确选择无感优先。）
             with LOCK:
                 JOBS[job_id] = {
                     "id": job_id, "status": "queued", "events": [{"time": time.strftime("%H:%M:%S"),
@@ -1158,6 +1168,13 @@ def recover_backlog() -> tuple[int, int]:
             threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True).start()
             recovered += 1
         except Exception as exc:
+            # 数据残缺无法重放：活动记录还在 → 标记中断；记录已被 100 条上限
+            # 滚出日志 → 直接丢弃，绝不造无主失败条目污染任务列表
+            with LOCK:
+                _backlog_remove_locked(job_id)
+            if not act:
+                dropped += 1
+                continue
             with LOCK:
                 JOBS[job_id] = {
                     "id": job_id, "status": "failed",
@@ -1168,9 +1185,41 @@ def recover_backlog() -> tuple[int, int]:
                     "workspace_id": str(meta.get("ws_id") or "localhost"),
                     "submitted_at": time.time(), "started_at": None, "finished_at": time.time(),
                 }
-                _backlog_remove_locked(job_id)
+            update_activity(
+                activity_id,
+                status="failed",
+                error="服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）",
+                finished_at=time.time(),
+            )
             interrupted += 1
+    # 孤儿自愈：恢复流程结束后仍处于进行中状态、且内存里没有对应任务的活动记录
+    # （fastapi 引擎此前从不跑恢复、或运行线程异常消失等）统一标记中断，
+    # 避免「永久 running」的幽灵任务继续被前端与统计当作进行中。
+    with LOCK:
+        live_ids = set(JOBS.keys())
+    orphaned = 0
+    for act in activities.values():
+        status = str(act.get("status") or "").lower()
+        if status not in {"running", "pending", "queued", "processing", "submitted"}:
+            continue
+        jid = str(act.get("job_id") or "")
+        if jid and jid in live_ids:
+            continue
+        update_activity(
+            str(act.get("id") or ""),
+            status="failed",
+            error="任务因服务重启/异常中断（恢复流程未找到该任务），请点击重试或重新提交",
+            finished_at=time.time(),
+        )
+        orphaned += 1
+    if orphaned:
+        print(f"Orphaned running activities marked interrupted: {orphaned}", flush=True)
+    if dropped:
+        print(f"Stale backlog entries dropped (activity rolled out): {dropped}", flush=True)
+    if stale_cleared:
+        print(f"Backlog entries cleared for already-final records: {stale_cleared}", flush=True)
     return recovered, interrupted
+
 
 
 def activity_record_for_client(record: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2612,7 +2661,10 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
         with LOCK:
             _backlog_remove_locked(job_id)
     except Exception as exc:
-        set_job(job_id, status="failed", errors=[str(exc)], finished_at=time.time())
+        try:
+            set_job(job_id, status="failed", errors=[str(exc)], finished_at=time.time())
+        except KeyError:
+            print(f"[run_job] JOBS 条目缺失（异常前已被移出？）: {job_id}: {exc}", flush=True)
         with LOCK:
             final_job = json.loads(json.dumps(JOBS.get(job_id, {})))
             _backlog_remove_locked(job_id)

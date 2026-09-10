@@ -212,31 +212,25 @@
             </template>
           </div>
           <div v-show="wsTab==='jobs'">
-            <!-- 统一任务视图：运行中 + 历史合并为同一列表，点击记录查看详情 -->
-            <div v-if="statusText && statusText !== '空闲'" style="margin-bottom:10px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc;color:#334155;font-size:12px">{{ statusText }}</div>
-            <div v-show="!selectedJobId">
-              <div class="resultHeader"><h2>任务 <button class="ui-btn ui-btn--ghost ui-btn--sm" style="margin-left:8px" @click="loadJobs()">刷新</button></h2></div>
-              <div v-if="jobs.length===0" style="color:#697386;font-size:12px;padding:12px 0">暂无任务记录，提交后自动显示</div>
-              <div v-for="j in visibleJobs()" :key="j.job_id || j.id" @click="selectJob(j.job_id || j.id)" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:10px;cursor:pointer">
-                <div style="display:flex;align-items:center;margin-bottom:2px;gap:8px">
-                  <span :class="'tag tag-'+(j.status||'queued')">{{ j.status }}</span>
-                  <span style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (j.prompt||'').slice(0,60) }}</span>
-                  <span v-if="j.username" style="font-size:11px;color:#697386;white-space:nowrap">@{{ j.username }}</span>
-                  <span v-if="formatRuntime(j)" style="font-size:11px;color:#475569;white-space:nowrap">{{ formatRuntime(j) }}</span>
-                  <button v-if="isCancellableJob(j)" class="ui-btn ui-btn--warning-outline ui-btn--sm" @click.stop="cancelJob(j.job_id || j.id, j.status)">取消</button>
-                  <span style="font-size:11px;color:#697386;white-space:nowrap">{{ j.created_at }}</span>
-                  <span style="font-size:11px;color:#2563eb;white-space:nowrap">查看 ›</span>
-                </div>
-                <div v-if="j.errors && j.errors.length" style="font-size:11px;color:#dc2626;margin-top:4px">{{ j.errors.join('; ') }}</div>
-                <div v-for="r in (j.results||[]).filter(function(x){ return x.download_url; })" @click.stop style="display:flex;align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #f1f5f9;gap:8px">
-                  <div v-if="!r._play" @click="r._play = true" style="width:120px;height:68px;border-radius:4px;background:var(--surface-sunken);color:var(--text-secondary);border:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px">▶ 播放</div>
-                  <video v-else :src="appPath + r.download_url" controls autoplay muted playsinline style="width:120px;height:68px;border-radius:4px;object-fit:cover;flex-shrink:0"></video>
-                  <span style="font-size:11px;color:#697386;flex:1">{{ r.filename || 'video' }}</span>
-                  <button class="ui-btn ui-btn--primary ui-btn--sm" @click="_blobDownload(appPath + r.download_url, r.filename || 'video')">下载</button>
-                  <button v-if="j.retryable" class="ui-btn ui-btn--success ui-btn--sm" @click="retryJob(j.job_id || j.id)">重试</button>
-                </div>
+            <!-- Active polling display (during job execution).
+                 任务终态后 statusText 变为「上次任务：…」摘要，此面板保留
+                 结果与下载按钮；「← 返回历史」切回历史列表视图。 -->
+            <div v-if="statusText !== '空闲'">
+              <div class="resultHeader"><h2>{{ statusText.indexOf('上次任务') === 0 ? '上次任务' : '运行中' }}</h2><span>{{ statusText }}</span>
+                <button @click="openActiveJobDetail()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">📋 详情</button>
+                <button v-if="statusText.indexOf('上次任务') === 0" @click="backToHistory()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">← 返回历史</button>
               </div>
-              <button v-if="jobs.length > jobsLimit" class="ui-btn ui-btn--secondary ui-btn--block" style="margin-top:4px" @click="jobsLimit += 20">
+              <div class="results" id="sd-results"></div>
+              <pre id="sd-events" v-if="eventsText">{{ eventsText }}</pre>
+            </div>
+            <!-- Job history (shown when idle, after polling completes) -->
+            <div v-if="statusText === '空闲'">
+              <div class="resultHeader"><h2>生成历史 <button @click="loadJobs()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer">刷新</button></h2></div>
+              <div id="sd-jobsEmpty" v-if="jobs.length===0" style="color:#697386;font-size:12px;padding:12px 0">暂无生成记录，提交任务后自动显示</div>
+              <!-- 任务矩阵：一个任务一个格子（缩略图 / 状态 / 下载 / 详情） -->
+              <div id="sd-jobsGrid" class="job-grid"></div>
+              <button v-if="jobs.length > jobsLimit" @click="jobsLimit += 20; renderJobsGrid()"
+                      style="width:100%;padding:8px;margin-top:4px;font-size:12px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px">
                 加载更多（还有 {{ jobs.length - jobsLimit }} 条）
               </button>
             </div>

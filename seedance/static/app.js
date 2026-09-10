@@ -157,7 +157,7 @@ function escHtml(s) {
 }
 
 function jobStatusLabel(status) {
-  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '???' };
+  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '已中断' };
   return map[String(status || '').toLowerCase()] || String(status || '未知');
 }
 
@@ -1236,21 +1236,304 @@ function SeedanceApp() {
       return (this.jobs || []).slice(0, this.jobsLimit);
     },
 
+    // === 任务矩阵：历史列表矩阵化（一个任务一个格子） ===
+    renderJobsGrid() {
+      const grid = document.getElementById('sd-jobsGrid');
+      if (!grid) return;
+      // 内存任务 + 持久化活动记录（去重：活动里有而内存里没有的才并入）
+      const liveIds = new Set((this.jobs || []).map(j => j.job_id));
+      const merged = (this.jobs || []).slice();
+      for (const rec of (this._activityRecords || [])) {
+        if (!rec || !rec.job_id || liveIds.has(rec.job_id)) continue;
+        if (merged.length >= this.jobsLimit) break;
+        merged.push(rec);
+      }
+      const items = merged.slice(0, this.jobsLimit);
+      // 有内容时隐藏「暂无生成记录」空状态（idle 分支里的静态提示）
+      const emptyEl = document.getElementById('sd-jobsEmpty');
+      if (emptyEl) emptyEl.style.display = items.length ? 'none' : '';
+      const seen = new Set();
+      const frag = document.createDocumentFragment();
+      for (const j of items) {
+        seen.add(j.job_id);
+        let tile = grid.querySelector('[data-jid="' + CSS.escape(j.job_id) + '"]');
+        if (!tile) {
+          tile = this._buildJobTile(j);
+          frag.appendChild(tile);
+        } else {
+          // 已有格子只轻量更新状态徽章，媒体元素保持不动（避免缩略图反复重载）
+          const badge = tile.querySelector('.job-tile-badge');
+          if (badge && badge.textContent !== (j.status || '?')) {
+            badge.textContent = j.status || '?';
+            badge.className = 'job-tile-badge ' + (j.status || '');
+          }
+          tile.dataset.status = j.status || '';
+        }
+      }
+      if (frag.childNodes.length) grid.prepend(frag);
+      for (const el of Array.from(grid.children)) {
+        if (!seen.has(el.dataset.jid)) el.remove();
+      }
+    },
+
+    _buildJobTile(j) {
+      // 活动记录（内存 JOBS 剪枝后并入）没有 results 顶层字段：
+      // 产出快照在 result.results 里，提示词在 title / request.values
+      const raw = j.results || (j.result && j.result.results) || [];
+      let first = (raw || []).find(r => r.download_url);
+      if (!first && j.first_url) first = { download_url: j.first_url, filename: j.first_filename || 'video' };
+      const tile = document.createElement('div');
+      tile.className = 'job-tile';
+      tile.dataset.jid = j.job_id;
+      tile.dataset.status = j.status || '';
+
+      // 缩略图：video preload=metadata 取首帧（不常驻解码）；点开放大预览
+      const media = document.createElement('div');
+      media.className = 'job-tile-media';
+      if (first) {
+        const url = APP_PATH + first.download_url;
+        const v = document.createElement('video');
+        v.src = url;
+        v.preload = 'metadata';
+        v.muted = true;
+        v.playsInline = true;
+        v.title = '点开预览';
+        v.addEventListener('click', (e) => { e.stopPropagation(); openPreview('video', url); });
+        // 产出文件可能已被 14 天清理策略删除：加载失败换过期占位
+        v.addEventListener('error', () => {
+          v.remove();
+          const ph = document.createElement('span');
+          ph.className = 'job-tile-ph';
+          ph.textContent = '🗑';
+          ph.title = '产出文件已过期（保留 14 天后自动清理）';
+          media.appendChild(ph);
+        });
+        media.appendChild(v);
+      } else {
+        const ph = document.createElement('span');
+        ph.className = 'job-tile-ph';
+        ph.textContent = (j.status === 'failed' || j.status === 'failure') ? '❌' : '⏳';
+        media.appendChild(ph);
+      }
+      tile.appendChild(media);
+
+      const meta = document.createElement('div');
+      meta.className = 'job-tile-meta';
+      const badge = document.createElement('span');
+      badge.className = 'job-tile-badge ' + (j.status || '');
+      badge.textContent = j.status || '?';
+      meta.appendChild(badge);
+      const time = document.createElement('span');
+      time.className = 'job-tile-time';
+      time.textContent = (j.created_at || '').slice(5, 16);
+      meta.appendChild(time);
+      tile.appendChild(meta);
+
+      const prompt = document.createElement('div');
+      prompt.className = 'job-tile-prompt';
+      const promptText = j.prompt || j.title || ((j.request && j.request.values && j.request.values.prompt) || '');
+      prompt.textContent = promptText || '';
+      prompt.title = promptText || '';
+      tile.appendChild(prompt);
+
+      const foot = document.createElement('div');
+      foot.className = 'job-tile-foot';
+      if (first) {
+        const dl = document.createElement('button');
+        dl.type = 'button';
+        dl.className = 'job-tile-btn job-tile-btn--dl';
+        dl.textContent = '⬇ 下载';
+        dl.addEventListener('click', (e) => { e.stopPropagation(); this._blobDownload(APP_PATH + first.download_url, first.filename || 'video'); });
+        foot.appendChild(dl);
+      }
+      if (j.retryable) {
+        const rt = document.createElement('button');
+        rt.type = 'button';
+        rt.className = 'job-tile-btn job-tile-btn--retry';
+        rt.textContent = '重试';
+        rt.addEventListener('click', (e) => { e.stopPropagation(); this.retryJob(j.job_id || j.id); });
+        foot.appendChild(rt);
+      }
+      const dt = document.createElement('button');
+      dt.type = 'button';
+      dt.className = 'job-tile-btn job-tile-btn--detail';
+      dt.textContent = '详情';
+      dt.addEventListener('click', (e) => { e.stopPropagation(); this.openJobDetail(j.job_id); });
+      foot.appendChild(dt);
+      tile.appendChild(foot);
+
+      tile.addEventListener('click', () => this.openJobDetail(j.job_id, j.id));
+      return tile;
+    },
+
+    // === 任务详情弹窗：请求（参数）与返回（事件/结果/错误） ===
+    // 运行中面板的「详情」入口：从当前 tab 的运行态缓存解析活跃任务 id
+    openActiveJobDetail() {
+      const cache = (this._tabStateCache || {})[this.activeTabId];
+      const jid = cache && cache._activeJobId;
+      if (!jid) {
+        if (typeof window.portalToast === 'function') window.portalToast('当前没有运行中的任务', 'info');
+        return;
+      }
+      const rec = (this._activityRecords || []).find(r => r.job_id === jid);
+      this.openJobDetail(jid, rec && rec.id);
+    },
+
+    async openJobDetail(jobId, activityId) {
+      let job = null;
+      try { job = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId)); } catch (e) { job = null; }
+      // 单任务接口返回的是原始 JOBS 条目（id 为键），列表接口才是 job_id——统一归一化
+      if (job && !job.job_id && job.id) job.job_id = job.id;
+      // 参数不在内存任务字典里（存于活动记录 request）——用 job_id 反查活动记录 id
+      if (!activityId && jobId) {
+        const rec = (this._activityRecords || []).find(r => r.job_id === jobId);
+        if (rec) activityId = rec.id;
+      }
+      // 内存任务已被剪枝（重启/超出上限）或参数缺失 → 回退/合并持久化活动记录
+      const liveHasParams = !!(job && ((job.params && Object.keys(job.params).length) || (job.form && Object.keys(job.form).length)));
+      if ((!job || !job.job_id || !liveHasParams) && activityId) {
+        try {
+          const rec = await api(APP_PATH + '/api/activity/' + encodeURIComponent(activityId));
+          if (rec && !rec.error) {
+            if (!job || !job.job_id) {
+              job = rec;
+              job.job_id = job.job_id || job.id || jobId;
+              const result = job.result || {};
+              job.results = job.results || result.results || [];
+              job.events = job.events || result.events || [];
+              job.errors = job.errors || result.errors || [];
+            } else {
+              // live 任务存在但参数缺失：只补参数/提示词/模型，其余用 live 的实时数据
+              const result = rec.result || {};
+              if (!liveHasParams) job.params = (rec.request && rec.request.values) || {};
+              if (!(job.events && job.events.length)) job.events = result.events || [];
+              if (!(job.errors && job.errors.length)) job.errors = result.errors || [];
+            }
+            job.params = job.params || (job.request && job.request.values) || {};
+            job.prompt = job.prompt || job.title || ((job.request && job.request.values && job.request.values.prompt) || '');
+            job.model = job.model || ((job.request && job.request.values && job.request.values.model) || '');
+          }
+        } catch (e) { /* 活动记录拿不到时保留 live 数据 */ }
+      }
+      if (!job || !job.job_id) {
+        if (typeof window.portalToast === 'function') window.portalToast('任务详情获取失败（任务可能已被清理）', 'danger');
+        else alert('任务详情获取失败（任务可能已被清理）');
+        return;
+      }
+      this._renderJobDetail(job);
+    },
+    _renderJobDetail(job) {
+      let overlay = document.getElementById('sd-job-detail');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'sd-job-detail';
+        overlay.className = 'job-detail-backdrop';
+        overlay.hidden = true;
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) this.closeJobDetail(); });
+        overlay.innerHTML =
+          '<div class="job-detail-box">' +
+          '  <div class="job-detail-head">' +
+          '    <span class="job-detail-title">任务详情</span>' +
+          '    <button type="button" class="job-detail-close" title="关闭">✕</button>' +
+          '  </div>' +
+          '  <div class="job-detail-body"></div>' +
+          '</div>';
+        overlay.querySelector('.job-detail-close').addEventListener('click', () => this.closeJobDetail());
+        document.body.appendChild(overlay);
+      }
+      const body = overlay.querySelector('.job-detail-body');
+      body.innerHTML = '';
+      const add = (cls, html) => { const d = document.createElement('div'); d.className = cls; d.innerHTML = html; body.appendChild(d); return d; };
+
+      add('job-detail-ids',
+        '<span class="job-detail-status status-badge ' + escHtml(job.status || '') + '">' + escHtml(job.status || '?') + '</span>' +
+        '<span class="job-detail-mono">' + escHtml(job.job_id || '') + '</span>' +
+        '<span class="job-detail-mono">' + escHtml(job.created_at || '') + '</span>');
+      const errText = (Array.isArray(job.errors) && job.errors.length)
+  ? job.errors.join('\n')
+  : (job.error ? String(job.error) : '');
+      if (errText) {
+        add('job-detail-errors', escHtml(errText));
+      }
+
+      // 请求（表单参数；key 类敏感字段剥离）
+      const params = Object.assign({}, job.params || job.form || {});
+      for (const k of Object.keys(params)) {
+        if (/key|secret|token|password/i.test(k)) delete params[k];
+      }
+      if (!params.prompt) params.prompt = job.prompt || '';
+      if (!params.model) params.model = job.model || '';
+      add('job-detail-section', '<h4>请求（提交参数）</h4><pre class="job-detail-pre">' + escHtml(JSON.stringify(params, null, 2)) + '</pre>');
+
+      // 返回（事件 + 结果）
+      const events = Array.isArray(job.events) ? job.events : [];
+      const eventsText = events.length
+        ? events.map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n')
+        : '（无事件记录）';
+      add('job-detail-section', '<h4>返回（执行过程）</h4><pre class="job-detail-pre">' + escHtml(eventsText) + '</pre>');
+
+      const results = Array.isArray(job.results) ? job.results : [];
+      if (results.length) {
+        const sec = add('job-detail-section', '<h4>返回（产出）</h4>');
+        const rows = document.createElement('div');
+        rows.className = 'job-detail-results';
+        for (const r of results) {
+          if (!r.download_url) continue;
+          const row = document.createElement('div');
+          row.className = 'job-detail-result';
+          const name = document.createElement('span');
+          name.textContent = r.filename || 'video';
+          name.title = r.task_id || '';
+          row.appendChild(name);
+          const dl = document.createElement('button');
+          dl.type = 'button';
+          dl.className = 'job-tile-btn job-tile-btn--dl';
+          dl.textContent = '⬇ 下载';
+          dl.addEventListener('click', () => this._blobDownload(APP_PATH + r.download_url, r.filename || 'video'));
+          row.appendChild(dl);
+          rows.appendChild(row);
+        }
+        sec.appendChild(rows);
+      }
+      overlay.hidden = false;
+    },
+    closeJobDetail() {
+      const overlay = document.getElementById('sd-job-detail');
+      if (overlay) overlay.hidden = true;
+    },
+
     async loadJobs() {
       const res = await api(APP_PATH + '/api/jobs');
       if (res?.jobs) {
         this.jobs = res.jobs;
+        // 持久化活动记录并入矩阵：内存 JOBS 会随重启/剪枝清空，历史在 activity_log
+        try {
+          const act = await api(APP_PATH + '/api/activity');
+          this._activityRecords = (act && (act.records || act.items)) || [];
+        } catch (e) { this._activityRecords = this._activityRecords || []; }
+        this.renderJobsGrid();
         // Refresh normally initializes the form as idle, which used to switch
         // the UI to history despite a live job. Rehydrate the original running
         // task panel from /api/jobs and resume its existing poll/cancel flow.
         const restored = this._restoredPollIds || (this._restoredPollIds = {});
         (this.jobs || []).filter(job =>
-          !TERMINAL_STATUSES.has((job.status || '').toLowerCase())
+          job && typeof job === 'object' && !TERMINAL_STATUSES.has((job.status || '').toLowerCase())
         ).forEach(job => {
           const wsId = job.workspace_id || this.activeTabId;
+          this._tabStateCache = this._tabStateCache || {};
           const cache = this._tabStateCache[wsId] || (this._tabStateCache[wsId] = {});
           cache._latestJob = job;
           const jid = job.job_id || job.id;
+          cache.statusText = (job.status || 'queued') + ' ' + (job.done || 0) + '/' + (job.total || 0);
+          cache.eventsText = (Array.isArray(job.events) ? job.events : []).map(e =>
+            '[' + (e.time || '') + '] ' + (e.message || '')
+          ).join('\n');
+          cache.submitting = true;
+          if (wsId === this.activeTabId) {
+            this.statusText = cache.statusText;
+            this.eventsText = cache.eventsText;
+            this.submitting = true;
+          }
           if (!restored[jid]) {
             restored[jid] = true;
             this.pollJob(jid, wsId);
@@ -1899,15 +2182,11 @@ function SeedanceApp() {
         if (bar) bar.done();
       } catch (e) {
         if (bar) bar.fail();
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.target = '_blank';
-        a.rel = 'noopener';
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        // 不回退 <a download> 直链：无效 token 会把 404/JSON 错误体存成 .txt 文件；
+        // 明确提示失败原因，让用户知道文件可能已被清理。
+        const _msg = '下载失败：文件可能已被清理或网络异常，请稍后重试';
+        if (typeof window.portalToast === 'function') window.portalToast(_msg, 'danger');
+        else alert(_msg);
       }
     },
 
@@ -2426,7 +2705,9 @@ PetiteVue.createApp({ SeedanceApp }).mount();
               txt.textContent = '已下载 ' + fmt(received) + ' MB';
             }
           }
-          return new Blob(chunks);
+          // 保留响应 Content-Type：Blob 默认 text/plain 会让无扩展名文件
+          // 被 Chrome 补成 .txt（下载 4MB 原图却存成 txt 的根因）
+          return new Blob(chunks, { type: resp.headers.get('Content-Type') || 'application/octet-stream' });
         },
         done: function () {
           row.classList.add('done');
