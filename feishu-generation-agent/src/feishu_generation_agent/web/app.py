@@ -454,11 +454,13 @@ def create_app(
         checks = {
             "local_storage": True,
             "feishu_read": configured("lark_app_id", "lark_app_secret"),
-            "feishu_write": configured(
-                "lark_app_id",
-                "lark_app_secret",
-                "lark_output_owner_open_id",
-                "lark_output_folder_token",
+            # 写回飞书有两条路：旧版「新建交付文档」要 owner + folder；
+            # 现网走多维表格回写，只要结果表（url + table_id，或结果文件夹）
+            # 配好就算可用 —— 只看旧字段会把已配置的环境误报成「缺少配置」。
+            "feishu_write": configured("lark_app_id", "lark_app_secret")
+            and (
+                configured("lark_output_owner_open_id", "lark_output_folder_token")
+                or bool(getattr(active_settings, "production_bitable_configured", False))
             ),
             "bitable_read": configured(
                 "lark_app_id",
