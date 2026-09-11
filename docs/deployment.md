@@ -219,6 +219,10 @@ launchctl kickstart -k gui/$(id -u)/com.ai-portal
    - 权限：「私有」就行（**不需要**公共读，代码用预签名 URL）
    - 名称：本项目用的是 `seedance-sd`
 2. 子用户 AK/SK 权限：至少包含 `tos:PutObject` 和 `tos:GetObject`（或挂 `TOSFullAccess` 策略），同一对 AK/SK 同时被人像 API 用，所以 ark 权限也得保留
+   - **AK/SK 与 IAM 项目绑定**：同一对 AK/SK 只能操作它被授权的那个项目（`ark:*Asset*` 的资源范围）。
+     2026-09-11 起本项目用新项目 `COOP_YZQ`（旧项目 `Seedance2.0` 的素材库内容不共享），
+     因此 `volcengine-portrait/config.json` 的 `project_name`、`infinite-canvas/state/asset-library.json`
+     的 `project_name`、飞书的 `VOLCENGINE_PROJECT_NAME` 三处都要跟 AK/SK 指向同一个项目，否则报 `AccessDenied`
 3. 在 `seedance/state/secrets.json` 配 bucket：
    ```json
    {
@@ -232,7 +236,8 @@ launchctl kickstart -k gui/$(id -u)/com.ai-portal
    {
      "...": "保留现有所有字段",
      "tos_bucket": "seedance-sd",
-     "tos_region": "cn-beijing"
+     "tos_region": "cn-beijing",
+     "project_name": "COOP_YZQ"
    }
    ```
 5. portal admin 通过「火山方舟人像 Key」面板已经配过 AK/SK 的话不用动；portal 启动时会读 portrait config.json 把 AK/SK 通过 env 注入给 seedance 和 portrait 两边

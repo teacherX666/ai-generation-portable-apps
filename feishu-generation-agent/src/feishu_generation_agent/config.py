@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     aiport_video_model: str = "minimax_h3_all_reference"
     volcengine_access_key: SecretStr | None = None
     volcengine_secret_key: SecretStr | None = None
-    volcengine_project_name: str = "Seedance2.0"
+    volcengine_project_name: str = "COOP_YZQ"
     tos_bucket: str | None = None
     tos_region: str = "cn-beijing"
     langsmith_tracing: bool = False

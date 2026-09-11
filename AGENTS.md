@@ -195,7 +195,8 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 
 ### Volcengine Portrait 子应用要点
 
-- **ProjectName 硬编码 `Seedance2.0`**（所有 Action 无例外），`handle_virtual_groups_post` 移除了从请求体覆盖能力
+- **ProjectName 默认 `COOP_YZQ`**（2026-09-11 由 `Seedance2.0` 改名来的新项目，项目 id 不同、素材库不共享）；可用 `volcengine-portrait/config.json` 的 `project_name` 覆盖，请求体仍不能覆盖（`handle_virtual_groups_post` 已移除该能力）
+- **AK/SK 是按 IAM 项目授权的**：换 AK/SK 必须同时把项目名换成该 key 被授权的那一个，否则素材库所有 Action 直接 `AccessDenied`（实测：新 key 只授权 `COOP_YZQ`，旧 key 只授权 `Seedance2.0`）
 - **真人认证是控制台流程，没有 API**：真人和虚拟素材最终都是 `asset://` 引用，Real handler 全部委托给 Virtual handler
 - **Ark Files API `purpose` 只接受 `user_data` 或 `agent`**（`private-avatar` 会 400；旧文档写错了）
 - CreateAsset 需要**公开可访问的 HTTP/HTTPS URL**，Ark v3 上传后返回的 URL 需 Bearer Token → TOS 后端拉不到 → 走 `_upload_to_public_host()` 传 uguu.se

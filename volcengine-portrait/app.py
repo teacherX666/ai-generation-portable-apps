@@ -381,7 +381,7 @@ def tos_upload(blob: bytes, mime: str, filename: str) -> str:
 
 
 def load_config():
-    global MAX_CONCURRENT, ARK_BASE_URL, API_KEY, ACCESS_KEY, SECRET_KEY, OUTPUT_DIR, TOS_BUCKET, TOS_REGION
+    global MAX_CONCURRENT, ARK_BASE_URL, API_KEY, ACCESS_KEY, SECRET_KEY, OUTPUT_DIR, TOS_BUCKET, TOS_REGION, PROJECT_NAME
     cfg_path = ROOT / "config.json"
     if cfg_path.exists():
         try:
@@ -395,6 +395,9 @@ def load_config():
                 SECRET_KEY = raw_sk
             TOS_BUCKET = (cfg.get("tos_bucket") or "").strip()
             TOS_REGION = (cfg.get("tos_region") or "").strip()
+            # 火山 IAM 项目名会随合作方改名（2026-09-11：Seedance2.0 → COOP_YZQ）。
+            # AK/SK 是按项目授权的，项目名写死会让换了 key 的部署直接 403。
+            PROJECT_NAME = (cfg.get("project_name") or PROJECT_NAME).strip() or PROJECT_NAME
             if cfg.get("output_dir"):
                 p = Path(cfg["output_dir"])
                 p.mkdir(parents=True, exist_ok=True)
@@ -980,7 +983,7 @@ def _openapi_v4_sign(ak, sk, method, host, uri, query, headers, payload):
     return authorization, amz_date
 
 
-PROJECT_NAME = "Seedance2.0"
+PROJECT_NAME = "COOP_YZQ"
 
 
 # ============================================================

@@ -96,7 +96,7 @@ def load_config() -> dict | None:
         "tos_secret_key": data["tos_secret_key"].strip(),
         "tos_bucket": data["tos_bucket"],
         "tos_region": data["tos_region"],
-        "project_name": str(data.get("project_name") or "Seedance2.0")[:64],
+        "project_name": str(data.get("project_name") or "COOP_YZQ")[:64],
     }
     return cfg
 

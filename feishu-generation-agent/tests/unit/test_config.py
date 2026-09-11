@@ -78,7 +78,7 @@ def test_portrait_generation_requires_ak_sk_and_ark_key() -> None:
     )
 
     assert capability_is_configured(configured, "portrait_generation")
-    assert configured.volcengine_project_name == "Seedance2.0"
+    assert configured.volcengine_project_name == "COOP_YZQ"
 
 
 def test_runtime_accepts_complete_production_bitable_configuration() -> None:
