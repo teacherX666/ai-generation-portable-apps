@@ -85,11 +85,14 @@ else
 fi
 
 # ---- 4. lan_ip 与 cert 一致性 ----
+# 路径按脚本位置推导，避免写死某台机器的绝对路径（换机/换目录后会静默失效）。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PORTAL_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 info "检查 LAN IP 与证书 SAN 一致..."
-CERT_IP_FILE=/Users/260413a/ai-generation-portable-apps/portal/certs/lan_ip.txt
+CERT_IP_FILE="$PORTAL_DIR/certs/lan_ip.txt"
 CURRENT_IP="?"
 CERT_IP="?"
-if python3 -c "import sys; sys.path.insert(0,'/Users/260413a/ai-generation-portable-apps/portal'); from app import get_lan_ip; print(get_lan_ip())" >/tmp/.safe_restart_ip.txt 2>/dev/null; then
+if python3 -c "import sys; sys.path.insert(0,'$PORTAL_DIR'); from app import get_lan_ip; print(get_lan_ip())" >/tmp/.safe_restart_ip.txt 2>/dev/null; then
   CURRENT_IP=$(cat /tmp/.safe_restart_ip.txt)
 fi
 rm -f /tmp/.safe_restart_ip.txt
