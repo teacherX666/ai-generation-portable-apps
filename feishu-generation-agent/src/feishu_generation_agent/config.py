@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     banana_model: str = "banana2-ssvip"
     gpt_image_model: str = "gpt-image-2"
     # seedream 走火山方舟，复用 ark_api_key / ark_base_url。
-    seedream_model: str = "doubao-seedream-5-0-pro-260628"
+    seedream_model: str = "ep-20260912121809-6wt62"
     ark_api_key: SecretStr | None = None
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     seedance_model: str = "doubao-seedance-2-0-260128"

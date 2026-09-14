@@ -60,7 +60,7 @@ MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)
 _MODEL_MAX_DURATION = {
     "doubao-seedance-2-0-260128": 15,
     "doubao-seedance-2-0-fast-260128": 15,
-    "doubao-seedance-2-0-mini-260615": 15,
+    "ep-20260912121738-vtd78": 15,
     "doubao-seedance-2-5-260628": 30,
     "local-minimax-h3-ref2v": 30,
 }

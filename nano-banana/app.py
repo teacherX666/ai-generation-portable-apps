@@ -428,8 +428,8 @@ FALLBACK_PROVIDERS = {
             "image_size_options": ["1K", "1.5K", "2K"],
             "max_reference_images": 10,
             "supports_seed": False,
-            "defaults": {"mode": "img2img", "model": "doubao-seedream-5-0-pro-260628", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 300, "vary_seed": False, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
-            "models": [{"id": "doubao-seedream-5-0-pro-260628", "label": "Seedream 5.0 Pro"}],
+            "defaults": {"mode": "img2img", "model": "ep-20260912121809-6wt62", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 300, "vary_seed": False, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
+            "models": [{"id": "ep-20260912121809-6wt62", "label": "Seedream 5.0 Pro"}],
         },
     },
 }

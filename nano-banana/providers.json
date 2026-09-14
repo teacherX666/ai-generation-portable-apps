@@ -165,7 +165,7 @@
       "supports_seed": false,
       "defaults": {
         "mode": "img2img",
-        "model": "doubao-seedream-5-0-pro-260628",
+        "model": "ep-20260912121809-6wt62",
         "aspect_ratio": "auto",
         "image_size": "2K",
         "response_format": "url",
@@ -185,7 +185,7 @@
       },
       "models": [
         {
-          "id": "doubao-seedream-5-0-pro-260628",
+          "id": "ep-20260912121809-6wt62",
           "label": "Seedream 5.0 Pro"
         }
       ]

@@ -435,7 +435,7 @@ const FALLBACK_PROVIDERS = {
         ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
-        id: 'doubao-seedance-2-0-mini-260615', label: 'Seedance 2.0 mini（最快）',
+        id: 'ep-20260912121738-vtd78', label: 'Seedance 2.0 mini（最快）',
         duration_range: [4, 15], resolutions: ['480p', '720p'],
         ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },

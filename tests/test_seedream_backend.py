@@ -30,7 +30,7 @@ def _values(tmp_path: Path, **overrides):
         "provider": "volcengine",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "mode": "text2img",
-        "model": "doubao-seedream-5-0-pro-260628",
+        "model": "ep-20260912121809-6wt62",
         "custom_model": "",
         "prompt": "一只纸雕小鸟",
         "aspect_ratio": "16:9",
@@ -57,7 +57,7 @@ def test_provider_config_matches_official_seedream_5_pro_limits():
     assert provider["max_reference_images"] == 10
     assert provider["supports_seed"] is False
     assert provider["models"] == [
-        {"id": "doubao-seedream-5-0-pro-260628", "label": "Seedream 5.0 Pro"}
+        {"id": "ep-20260912121809-6wt62", "label": "Seedream 5.0 Pro"}
     ]
 
 
@@ -88,7 +88,13 @@ def test_resolve_api_key_uses_server_managed_ark_key():
     with mock.patch.dict(os.environ, {"VOLCENGINE_ARK_API_KEY": "shared-ark-key"}):
         assert module.resolve_provider_api_key("volcengine", "") == "shared-ark-key"
         assert module.resolve_provider_api_key("volcengine", "manual-override") == "manual-override"
-        assert module.resolve_provider_api_key("t8star", "") == module.load_default_key()
+        # 解析顺序：请求里带的 key → state/secrets.json 的 provider 专属 key → 全局默认 key。
+        # 该断言原来假设「没有 provider 专属 key」，本机配了 provider_keys 后就会失败，
+        # 所以显式把两种情形都钉住（不再依赖运行时的 state/secrets.json）。
+        with mock.patch.object(module, "load_provider_keys", return_value={}):
+            assert module.resolve_provider_api_key("t8star", "") == module.load_default_key()
+        with mock.patch.object(module, "load_provider_keys", return_value={"t8star": "provider-key"}):
+            assert module.resolve_provider_api_key("t8star", "") == "provider-key"
 
 
 def test_run_one_posts_synchronous_seedream_request_without_unsupported_seed(tmp_path):
@@ -115,7 +121,7 @@ def test_run_one_posts_synchronous_seedream_request_without_unsupported_seed(tmp
     assert url == "https://ark.cn-beijing.volces.com/api/v3/images/generations"
     assert key == "ark-key"
     assert payload == {
-        "model": "doubao-seedream-5-0-pro-260628",
+        "model": "ep-20260912121809-6wt62",
         "prompt": "一只纸雕小鸟",
         "size": "2048x1152",
         "response_format": "b64_json",

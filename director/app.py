@@ -111,7 +111,7 @@ def config_payload() -> dict[str, Any]:
     return {
         # 导演台默认走付费的火山方舟 Seedream；本地 AI Port 仅保留为
         # 兼容配置，不参与默认选择。
-        "model": ark.get("model", "doubao-seedream-5-0-pro-260628"),
+        "model": ark.get("model", "ep-20260912121809-6wt62"),
         "aspect_ratios": list(ASPECT_RATIOS),
         "resolutions": ["1K", "1.5K", "2K"],
         "default_resolution": ark.get("default_resolution", "2K"),
@@ -231,7 +231,7 @@ def _run_text2image(job_id: str, prompt: str, aspect_ratio: str,
     job = JOBS[job_id]
     ark = PROVIDERS.get("ark", {})
     base_url = str(ark.get("base_url") or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
-    model = str(ark.get("model") or "doubao-seedream-5-0-pro-260628")
+    model = str(ark.get("model") or "ep-20260912121809-6wt62")
     api_key = _ark_key()
     if not api_key:
         job["status"] = "failed"

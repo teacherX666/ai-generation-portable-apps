@@ -2,7 +2,7 @@
   "default_provider": "ark",
   "ark": {
     "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-    "model": "doubao-seedream-5-0-pro-260628",
+    "model": "ep-20260912121809-6wt62",
     "default_resolution": "2K",
     "default_aspect_ratio": "1:1",
     "default_count": 1

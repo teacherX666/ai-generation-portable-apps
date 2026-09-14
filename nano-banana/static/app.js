@@ -414,7 +414,7 @@ var FALLBACK_PROVIDERS = {
     image_size_options: ['1K', '1.5K', '2K'],
     max_reference_images: 10,
     supports_seed: false,
-    models: [{ id: 'doubao-seedream-5-0-pro-260628', label: 'Seedream 5.0 Pro' }],
+    models: [{ id: 'ep-20260912121809-6wt62', label: 'Seedream 5.0 Pro' }],
   },
 };
 

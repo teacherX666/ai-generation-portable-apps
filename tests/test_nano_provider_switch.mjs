@@ -61,8 +61,8 @@ app.providers = {
     company_key: true, company_key_available: true,
     image_size_options: ['1K', '1.5K', '2K'], supports_seed: false,
     max_reference_images: 10,
-    models: [{ id: 'doubao-seedream-5-0-pro-260628' }],
-    defaults: { model: 'doubao-seedream-5-0-pro-260628', image_size: '2K' },
+    models: [{ id: 'ep-20260912121809-6wt62' }],
+    defaults: { model: 'ep-20260912121809-6wt62', image_size: '2K' },
   },
 };
 app.provider = 't8star';

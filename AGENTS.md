@@ -204,6 +204,23 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 - Windows `cgi.FieldStorage` 必须显式传入 `CONTENT_LENGTH` 到 environ
 - SK 是原始值，**不做 base64 解码**，`_normalize_sk() = return raw_sk`
 
+### 火山方舟：模型名 vs 推理接入点（ep-）
+
+- 换到新项目 `COOP_YZQ` 后，**部分模型名不再被授权**（2026-09-14 实测）：
+  `doubao-seedream-5-0-pro-260628`、`doubao-seedance-2-0-mini-260615` 按模型名调用返回
+  `403 AccessDenied`；其余 `doubao-seedance-2-0-260128` / `-fast-260128` / `2-5-260628` 按名字仍可用
+- 这两个模型必须走控制台建的**推理接入点**（当前值）：
+  Seedream 5.0 Pro = `ep-20260912121809-6wt62`，Seedance 2.0 mini = `ep-20260912121738-vtd78`
+- 接入点是**项目/部署相关**的，换项目或换 key 时要在控制台重建，并同步更新所有落点：
+  `seedance/providers.json`、`seedance/static/app.js`、`portal/static/app.js`（`portraitModels`）、
+  `nano-banana/providers.json`、`nano-banana/app.py`（FALLBACK_PROVIDERS）、`nano-banana/static/app.js`、
+  `director/providers.json`、`director/app.py` 的两个默认值、
+  `feishu-generation-agent/src/feishu_generation_agent/config.py`（`seedream_model`）、
+  `volcengine-portrait/app.py`（`_MODEL_MAX_DURATION`）
+- **零成本判定某个 id 是否可用**：带一个非法参数发一次请求看错误码 ——
+  `InvalidParameter` = 模型/接入点已路由成功（只是参数不合法），`AccessDenied` = 没权限，
+  `InvalidEndpointOrModel.NotFound` = 不存在。图像用 `size: "3K"`，视频用 `duration: 999`
+
 ### 端口冲突（release 打包）
 
 - seedance / nano-banana **release zip 曾共用 8787-8899 窗口**，Windows 用户 seedance 打开命中 nano-banana Tab

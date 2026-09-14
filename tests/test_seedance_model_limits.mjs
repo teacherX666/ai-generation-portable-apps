@@ -41,7 +41,7 @@ function makeSelect(name, values) {
 const modelSelect = makeSelect('model', [
   'doubao-seedance-2-0-260128',
   'doubao-seedance-2-0-fast-260128',
-  'doubao-seedance-2-0-mini-260615',
+  'ep-20260912121738-vtd78',
   'doubao-seedance-2-5-260628',
 ]);
 const durationInput = { name: 'duration', type: 'number', value: '12', min: '4', max: '15' };

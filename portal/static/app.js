@@ -2099,7 +2099,7 @@ function VolcenginePortraitApp() {
         maxDuration: 15, resolutions: ['480p', '720p'],
       },
       {
-        id: 'doubao-seedance-2-0-mini-260615', label: 'Seedance 2.0 mini（最快）',
+        id: 'ep-20260912121738-vtd78', label: 'Seedance 2.0 mini（最快）',
         maxDuration: 15, resolutions: ['480p', '720p'],
       },
       {

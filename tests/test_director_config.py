@@ -36,4 +36,4 @@ def test_config_payload_shape(tmp_path, monkeypatch):
     assert payload["aspect_ratios"] == list(director.ASPECT_RATIOS)
     assert payload["resolutions"] == ["1K", "1.5K", "2K"]
     assert payload["ark_ready"] is True
-    assert payload["model"] == "doubao-seedream-5-0-pro-260628"
+    assert payload["model"] == "ep-20260912121809-6wt62"
