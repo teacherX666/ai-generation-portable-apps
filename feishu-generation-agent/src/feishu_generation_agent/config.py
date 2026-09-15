@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     seedream_model: str = "ep-20260912121809-6wt62"
     ark_api_key: SecretStr | None = None
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
-    seedance_model: str = "doubao-seedance-2-0-260128"
+    seedance_model: str = "doubao-seedance-2-5-260628"
     # 本地 AI Port 网关（127.0.0.1:8801）桥接 ComfyUI 本地模型。
     # video_provider=aiport 时视频走本地 minimax H3，不再强制 ark_api_key。
     video_provider: Literal["seedance", "aiport"] = "aiport"
