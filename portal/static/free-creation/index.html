@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>自由创作</title>
+  <link rel="stylesheet" href="./styles.css?v=20260915-27">
+</head>
+<body>
+  <div class="fc-shell" id="fc-shell">
+    <header class="fc-appbar">
+      <div class="fc-mode-switch" id="mode-switch" role="tablist" aria-label="生成模式">
+        <button class="fc-mode-option" data-mode="video" role="tab" type="button">
+          <span class="fc-mode-icon"><svg viewBox="0 0 24 24"><path d="m16 13 5 3V8l-5 3Z"/><rect x="3" y="6" width="13" height="12" rx="2"/></svg></span>
+          <span><strong>视频</strong><small>动态画面</small></span>
+        </button>
+        <button class="fc-mode-option" data-mode="image" role="tab" type="button">
+          <span class="fc-mode-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg></span>
+          <span><strong>图片</strong><small>视觉画面</small></span>
+        </button>
+        <span class="fc-mode-slider" aria-hidden="true"></span>
+      </div>
+      <button class="fc-sidebar-toggle" id="menu-button" type="button" aria-label="收起侧栏" title="收起侧栏">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/><path d="m15 9-3 3 3 3"/></svg>
+      </button>
+      <div class="fc-appbar-spacer"></div>
+    </header>
+
+    <aside class="fc-sidebar" id="fc-sidebar">
+      <button class="fc-new-chat" id="new-chat" type="button">
+        <span class="fc-new-chat-icon"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+        <span>开启新对话</span>
+      </button>
+      <div class="fc-history-heading"><span>对话</span><span id="conversation-count">0</span></div>
+      <nav class="fc-conversation-list" id="conversation-list" aria-label="对话列表"></nav>
+      <div class="fc-archive-area">
+        <button class="fc-archive-toggle" id="archive-toggle" type="button" aria-expanded="false">
+          <svg viewBox="0 0 24 24"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg>
+          <span>已归档</span><span id="archived-count">0</span>
+        </button>
+        <div class="fc-archived-list" id="archived-list" hidden></div>
+      </div>
+      <footer class="fc-sidebar-footer">
+        <div class="fc-capability-row"><span class="fc-capability-dot"></span><span id="service-state">正在连接模型服务</span></div>
+        <p>图片、视频与本地创作能力统一入口</p>
+      </footer>
+    </aside>
+    <div class="fc-sidebar-scrim" id="sidebar-scrim"></div>
+
+    <main class="fc-workspace">
+      <section class="fc-stage" id="stage">
+        <div class="fc-empty-orbit" aria-hidden="true"><span class="fc-orbit-ring fc-orbit-ring-a"></span><span class="fc-orbit-ring fc-orbit-ring-b"></span><span class="fc-orbit-core"></span></div>
+        <section class="fc-preview-panel" id="preview-panel" hidden>
+          <div class="fc-preview-frame" id="preview-frame">
+            <div class="fc-media-loading" id="media-loading" hidden><span></span><span></span><span></span></div>
+            <div id="preview-media" class="fc-preview-media"></div>
+            <div class="fc-preview-corner"><button class="fc-history-pill" id="history-toggle" type="button" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg><span>查看历史记录</span><svg class="fc-chevron" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></button></div>
+          </div>
+          <div class="fc-history-strip" id="history-strip" aria-hidden="true"></div>
+          <div class="fc-preview-actions"><button class="fc-secondary-button" id="download-latest" type="button" disabled><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg>下载结果</button><button class="fc-primary-button" id="refine-latest" type="button"><svg viewBox="0 0 24 24"><path d="m12 3-1.9 5.1L5 10l5.1 1.9L12 17l1.9-5.1L19 10l-5.1-1.9Z"/><path d="M5 19h14"/></svg>继续修改</button></div>
+        </section>
+        <section class="fc-composer" id="composer">
+          <div class="fc-composer-glow" aria-hidden="true"></div>
+          <div class="fc-drop-overlay" id="drop-overlay" hidden><div><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5"/><path d="M5 21h14"/></svg><strong>松开即可加入素材</strong><span>自动识别图片、视频和音频</span></div></div>
+          <div class="fc-composer-input"><button class="fc-inline-upload" id="upload-bubble" type="button" aria-label="&#x4E0A;&#x4F20;&#x53C2;&#x8003;&#x7D20;&#x6750;" title="&#x4E0A;&#x4F20;&#x56FE;&#x7247;&#x3001;&#x89C6;&#x9891;&#x6216;&#x97F3;&#x9891;"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button><textarea id="prompt" rows="1" placeholder="描述你想创作的内容，也可以直接拖入参考素材…"></textarea><div class="fc-attachment-list" id="attachment-list"></div></div>
+          <div class="fc-composer-toolbar" id="bubble-bar">
+            <button class="fc-toolbar-chip fc-model-trigger" id="model-bubble" type="button" aria-label="&#x9009;&#x62E9;&#x6A21;&#x578B;" title="&#x9009;&#x62E9;&#x6A21;&#x578B;">
+              <svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M19 9h3M2 15h3M19 15h3"/></svg>
+              <span id="model-summary">&#x9009;&#x62E9;&#x6A21;&#x578B;</span>
+              <svg class="fc-chip-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>
+            </button>
+            <button class="fc-toolbar-chip fc-params-trigger" id="params-bubble" type="button" aria-label="&#x8C03;&#x6574;&#x53C2;&#x6570;" title="&#x8C03;&#x6574;&#x53C2;&#x6570;">
+              <span class="fc-param-summary" id="param-summary"></span>
+              <svg class="fc-chip-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>
+            </button>
+            <button class="fc-send-button" id="generate" type="button" aria-label="&#x5F00;&#x59CB;&#x751F;&#x6210;" title="&#x5F00;&#x59CB;&#x751F;&#x6210;"><span id="generate-label">&#x751F;&#x6210;&#x89C6;&#x9891;</span><svg viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <aside class="fc-popover fc-model-popover" id="model-popover" hidden>
+      <header><div><span class="fc-eyebrow">MODEL</span><h2>选择创作模型</h2></div><button class="fc-icon-button" data-close="model-popover" type="button" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></header>
+      <div class="fc-model-mode" id="model-mode-switch"><button data-mode="video" type="button">视频模式</button><button data-mode="image" type="button">图片模式</button></div>
+      <div class="fc-model-list" id="model-list"></div>
+    </aside>
+    <aside class="fc-popover fc-param-popover" id="params-popover" hidden>
+      <header><div><span class="fc-eyebrow">PARAMETERS</span><h2>生成参数</h2></div><button class="fc-icon-button" data-close="params-popover" type="button" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></header>
+      <div class="fc-param-form" id="param-form"></div>
+    </aside>
+    <div class="fc-toast" id="toast" role="status" aria-live="polite"></div>
+    <input id="file-input" type="file" accept="image/*,video/*,audio/*" multiple hidden>
+  </div>
+
+  <template id="asset-template"><div class="fc-asset"><div class="fc-asset-preview"></div><div class="fc-asset-copy"><strong></strong><span></span></div><button type="button" aria-label="移除素材"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div></template>
+  <template id="conversation-template">
+    <article class="fc-conversation-item" role="button" tabindex="0">
+      <span class="fc-conversation-symbol"><svg viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg></span>
+      <span class="fc-conversation-copy"><strong></strong><small></small></span>
+      <input class="fc-conversation-rename" type="text" hidden>
+      <span class="fc-conversation-actions">
+        <button type="button" data-action="rename" aria-label="重命名" title="重命名"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+        <button type="button" data-action="archive" aria-label="归档" title="归档"><svg viewBox="0 0 24 24"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg></button>
+      </span>
+    </article>
+  </template>
+  <template id="archived-template"><article class="fc-conversation-item is-archived"><span class="fc-conversation-symbol"><svg viewBox="0 0 24 24"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg></span><span class="fc-conversation-copy"><strong></strong><small></small></span><button class="fc-restore" type="button">恢复</button></article></template>
+  <template id="history-template"><button class="fc-history-card" type="button"><span class="fc-history-thumb"></span><span class="fc-history-copy"><strong></strong><small></small></span></button></template>
+  <script src="./app.js?v=20260915-28" defer></script>
+</body>
+</html>
