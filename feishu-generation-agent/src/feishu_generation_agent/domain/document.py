@@ -403,6 +403,44 @@ class VideoReferenceAnalysis(BaseModel):
     uncertainties: list[str] = Field(default_factory=list)
 
 
+class VideoShot(BaseModel):
+    """原生视频理解产出的单个镜头。"""
+
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    shot_size: str = ""
+    action: str = ""
+    camera: str = ""
+
+
+class TranscriptLine(BaseModel):
+    """台词 / 歌词，带出现时间点（秒）。"""
+
+    t: float = Field(ge=0)
+    text: str
+
+
+class VideoEvidence(BaseModel):
+    """原生多模态引擎对参考视频的带时间点结构化证据。
+
+    engine_id / schema_version 由构造方（原生引擎或抽帧降级）显式写入，
+    缓存 key 与审核留痕都依赖它们区分 native_v1 与 frame_v1。
+    """
+
+    asset_id: str
+    engine_id: str
+    schema_version: str
+    duration: float
+    shots: list[VideoShot] = Field(default_factory=list)
+    transcript: list[TranscriptLine] = Field(default_factory=list)
+    audio: list[str] = Field(default_factory=list)
+    on_screen_text: list[str] = Field(default_factory=list)
+    representative_timestamp: float = 0.0
+    summary: str = ""
+    kind: VideoReferenceKind = VideoReferenceKind.OTHER
+    uncertainties: list[str] = Field(default_factory=list)
+
+
 class NormalizedDocument(BaseModel):
     document_id: str
     title: str
@@ -415,3 +453,4 @@ class NormalizedDocument(BaseModel):
     ingest_issue_records: list[IngestIssueRecord] = Field(default_factory=list)
     ingest_issues: list[str] = Field(default_factory=list)
     video_semantics: list[VideoReferenceAnalysis] = Field(default_factory=list)
+    video_evidence: list[VideoEvidence] = Field(default_factory=list)
