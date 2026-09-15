@@ -50,6 +50,12 @@ function loadStore() {
     state.activeConversationId = parsed.activeConversationId || null;
   } catch { state.conversations = []; }
 
+  // 记录隔离（2026-09-15）：清掉以前从别的模块导入进来的历史对话
+  // （带 historyConversation 标记）。只停止导入是不够的 —— 之前已经写进
+  // localStorage 的混合记录不清掉，用户仍然会看到。
+  // 清空后由下面的兜底逻辑（本函数末尾）自动补一个空白对话，不会出现零对话。
+  state.conversations = state.conversations.filter((item) => !item?.historyConversation);
+
   const baseParams = structuredClone(state.params);
   state.conversations.forEach((conversation) => {
     const savedParams = conversation.params && typeof conversation.params === "object" ? conversation.params : {};
@@ -407,7 +413,12 @@ async function reconcileRunningTasks() {
 }
 
 async function syncLiveState(options = {}) {
-  await syncUnifiedHistory(options);
+  // 记录隔离（2026-09-15，用户要求）：**不再导入**「视频生成 / 图片生成 / 人像生成」
+  // 等模块的历史。这里原来每 15 秒把别的模块历史整份导进来（一次最多 200 条），
+  // 两个后果：① 用户在本页看到不属于自己的记录；② 打开页面时发起上百个大文件
+  // 请求（实测 372 次 / 185 个文件 / 约 1.8GB），把页面和 Portal 代理一起压死。
+  // 现在本页只显示自己产生的记录。options 保留仅为兼容现有调用方。
+  void options;
   return reconcileRunningTasks();
 }
 
