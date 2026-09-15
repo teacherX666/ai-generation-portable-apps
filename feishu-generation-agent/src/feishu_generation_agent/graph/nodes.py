@@ -44,6 +44,12 @@ from feishu_generation_agent.domain.errors import (
     ErrorCategory,
     ErrorDetail,
 )
+from feishu_generation_agent.domain.video_models import (
+    DEFAULT_VIDEO_MODEL_KEY,
+    VIDEO_MODEL_BY_KEY,
+    normalize_video_task_payload,
+    resolve_video_model_key,
+)
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
     ArtifactReviewDecision,
@@ -51,6 +57,7 @@ from feishu_generation_agent.domain.plan import (
     GenerationTask,
     TaskPlan,
     TaskType,
+    SEEDANCE_PROMPT_MAX_CHARS,
     reconcile_task_asset_coverage,
 )
 from feishu_generation_agent.domain.artifact import (
@@ -80,7 +87,8 @@ from feishu_generation_agent.integrations.video_reference import (
 )
 
 from feishu_generation_agent.integrations.rag_prompt_optimizer import (
-    optimize_plan_prompts,
+    fetch_knowledge_rules,
+    format_knowledge_context,
 )
 from .state import AgentState
 
@@ -108,6 +116,7 @@ class GraphServices:
     # 本地 AI Port 视频 provider（minimax H3 all-reference，走 ComfyUI）。
     # Keep both video providers alive so each task can choose independently.
     seedance_video_generator: Any | None = None
+    seedance_video_generators: Mapping[str, Any] | None = None
     # Local AI Port video provider (MiniMax H3 via ComfyUI).
     aiport_video_generator: Any | None = None
     # Global defaults; task-level provider fields always take precedence.
@@ -127,6 +136,8 @@ _NODE_SUMMARIES = {
     "check_source_revision": "Source revision check",
     "execute_selected_tasks": "Approved task execution",
     "verify_and_download_artifacts": "Artifact verification",
+    "review_artifacts": "Artifact review",
+    "deliver_to_feishu": "Feishu delivery",
 }
 
 _PENDING_PROVIDER_STATUSES = frozenset(
@@ -195,6 +206,10 @@ def _safe_error(exc: BaseException) -> AgentError:
     technical_detail = f"{category.value} in workflow node"
     if inner_detail:
         technical_detail = f"{technical_detail}; {inner_detail}"
+    else:
+        technical_detail = (
+            f"{technical_detail}; exception_type={type(exc).__name__}"
+        )
     return AgentError(
         ErrorDetail(
             category=category,
@@ -220,6 +235,12 @@ async def _run_node(
     try:
         result = await operation()
     except Exception as exc:
+        _LOGGER.exception(
+            "workflow node failed node=%s run_id=%s exception_type=%s",
+            node,
+            run_id,
+            type(exc).__name__,
+        )
         failure = _safe_error(exc)
     if failure is not None:
         await services.repository.append_event(
@@ -781,6 +802,46 @@ def _planner_mode_argument(
     return {"mode": mode}
 
 
+def _knowledge_context_argument(
+    planner: RequirementPlanner,
+    knowledge_context: str,
+) -> dict[str, str]:
+    """把命中的知识库规则作为上下文传给 planner。
+
+    与 _planner_mode_argument 同样的签名探测做法：存量测试里的 fake planner
+    大多没有该参数，直接传会 TypeError；而 planner 本来就支持时，
+    这条上下文会让它**一次**就把知识库经验写进提示词，不再需要事后改写。
+    """
+    if not knowledge_context:
+        return {}
+    try:
+        parameters = signature(planner.plan).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "knowledge_context" not in parameters:
+        return {}
+    return {"knowledge_context": knowledge_context}
+
+
+async def _knowledge_context_for_plan(
+    document: NormalizedDocument,
+    services: GraphServices,
+) -> str:
+    """取知识库命中的规则文本；服务不可用或没命中都返回空串。
+
+    实测真实文档 1.7k~7.6k 字符（最长约 23KB UTF-8），而 planner 本来就把
+    document.text_view 全文当输入，所以这里直接用全文，不做截断。
+    """
+    rag_url = getattr(services.settings, "rag_preflight_url", None)
+    if not (isinstance(rag_url, str) and rag_url.strip()):
+        return ""
+    text = getattr(document, "text_view", "") or ""
+    if not text.strip():
+        return ""
+    rules = await fetch_knowledge_rules(text, rag_url)
+    return format_knowledge_context(rules)
+
+
 def _planner_prompt_argument(
     planner: RequirementPlanner,
     planning_prompt: PlanningPromptSnapshot,
@@ -973,6 +1034,10 @@ async def plan_requirements(
             if mode == "image"
             else []
         )
+        # 知识库必须在 planner **之前**查：命中的规则当上下文喂给 planner，
+        # 让它一次就把经验写进提示词。旧做法是写完再改写提示词（且逐任务调导演台），
+        # 既和 planner 打架，又要多花 N 次调用。
+        knowledge_context = await _knowledge_context_for_plan(document, services)
         plan = await services.planner.plan(
             document,
             descriptions,
@@ -982,10 +1047,8 @@ async def plan_requirements(
             **_character_context_argument(
                 services.planner, resolved_characters
             ),
+            **_knowledge_context_argument(services.planner, knowledge_context),
         )
-        rag_url = getattr(services.settings, "rag_preflight_url", None)
-        if isinstance(rag_url, str) and rag_url.strip():
-            plan = await optimize_plan_prompts(plan, rag_url)
         plan_json = _json_model(plan)
         updates: AgentState = {
             "draft_plan": plan_json,
@@ -1011,6 +1074,23 @@ async def plan_requirements(
 
     return await _run_node(state, "plan_requirements", services, operation)
 
+
+def _default_video_model_key(services: GraphServices) -> str:
+    preferences = getattr(services, "provider_preferences", None)
+    preferred = getattr(preferences, "video_provider", None)
+    settings = services.settings
+    fallback = resolve_video_model_key(
+        getattr(settings, "seedance_model", None),
+        fallback=DEFAULT_VIDEO_MODEL_KEY,
+    )
+    resolved = resolve_video_model_key(preferred, fallback=fallback or "")
+    if resolved in VIDEO_MODEL_BY_KEY:
+        return resolved
+    resolved = resolve_video_model_key(
+        getattr(settings, "video_provider", None),
+        fallback=fallback or "",
+    )
+    return resolved if resolved in VIDEO_MODEL_BY_KEY else DEFAULT_VIDEO_MODEL_KEY
 
 async def audit_plan(
     state: AgentState,
@@ -1038,7 +1118,28 @@ async def validate_planned_tasks(
 ) -> AgentState:
     async def operation() -> AgentState:
         _ensure_thread_id(state, config)
-        plan = TaskPlan.model_validate(_draft_plan(state))
+        raw_plan = _draft_plan(state)
+        default_model_key = _default_video_model_key(services)
+        normalized_payload = raw_plan
+        if isinstance(raw_plan, dict):
+            normalized_payload = dict(raw_plan)
+            normalized_tasks: list[Any] = []
+            for item in raw_plan.get("tasks", []):
+                if not isinstance(item, dict):
+                    normalized_tasks.append(item)
+                    continue
+                normalized_task, notes = normalize_video_task_payload(
+                    item,
+                    default_model_key=default_model_key,
+                    max_output_count=services.settings.max_output_count,
+                )
+                if notes:
+                    warnings = list(normalized_task.get("warnings") or [])
+                    warnings.extend(notes)
+                    normalized_task["warnings"] = list(dict.fromkeys(warnings))
+                normalized_tasks.append(normalized_task)
+            normalized_payload["tasks"] = normalized_tasks
+        plan = TaskPlan.model_validate(normalized_payload)
         document = NormalizedDocument.model_validate(
             state.get("normalized_document")
         )
@@ -1059,10 +1160,16 @@ async def validate_planned_tasks(
             issues.extend(
                 f"audit: {issue}"
                 for issue in audit.issues
-                if issue.startswith("技术阻断")
-                or "人工处理" in issue
+                if issue.startswith("\u6280\u672f\u963b\u65ad")
+                or "\u4eba\u5de5\u5904\u7406" in issue
             )
-        return {"validation_issues": issues, "status": "waiting_approval"}
+        normalized_json = _json_model(plan)
+        return {
+            "draft_plan": normalized_json,
+            "task_plan": normalized_json,
+            "validation_issues": issues,
+            "status": "waiting_approval",
+        }
 
     return await _run_node(state, "validate_plan", services, operation)
 
@@ -1543,51 +1650,73 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
     preferred_video = getattr(preferences, "video_provider", None)
     settings_provider = getattr(settings, "video_provider", None)
     aiport_generator = getattr(services, "aiport_video_generator", None)
-    seedance_generator = getattr(services, "seedance_video_generator", None)
+    generator_registry = getattr(services, "seedance_video_generators", None) or {}
+    default_generator = getattr(services, "seedance_video_generator", None)
     legacy_video_generator = getattr(services, "video_generator", None)
     explicit_provider = task.video_provider
-    requested = explicit_provider or preferred_video or settings_provider
-    if requested is None:
-        requested = "aiport" if aiport_generator is not None else "seedance"
 
-    if (
-        requested == "seedance"
-        and services.portrait_video_generator is not None
-        and services.production_task_store is not None
-    ):
-        binding = await services.production_task_store.get_by_run(run_id)
-        if binding is not None and binding.snapshot.task_type == "真人类":
-            return "volcengine_portrait", services.portrait_video_generator.for_run(run_id)
-
-    if requested == "aiport":
-        generator = aiport_generator
-        if generator is None and not explicit_provider and not preferred_video and settings_provider == "aiport":
-            generator = legacy_video_generator
+    if settings_provider == "aiport":
+        generator = aiport_generator or legacy_video_generator
         if generator is None:
-            # Never turn a local/free choice into a paid cloud request.
             raise _validation_error(
                 "The selected local video provider is unavailable; check AI Port/ComfyUI"
             )
         return "aiport", generator
 
+    default_key = resolve_video_model_key(
+        getattr(settings, "seedance_model", None),
+        fallback=DEFAULT_VIDEO_MODEL_KEY,
+    ) or DEFAULT_VIDEO_MODEL_KEY
+    preferred_key = None
+    for candidate in (explicit_provider, preferred_video, settings_provider):
+        if candidate == "aiport":
+            continue
+        resolved = resolve_video_model_key(candidate, fallback="")
+        if resolved in VIDEO_MODEL_BY_KEY:
+            preferred_key = resolved
+            break
+    model_key = preferred_key or default_key
 
-    if requested != "seedance":
-        raise _validation_error(f"Unsupported video provider: {requested}")
-
-    generator = seedance_generator
-    if generator is None and not explicit_provider and not preferred_video and settings_provider != "aiport":
-        generator = legacy_video_generator
-    if generator is None:
-        if explicit_provider is not None:
-            raise _validation_error(
-                "The selected Seedance provider is unavailable; configure ARK_API_KEY"
+    if (
+        model_key
+        and services.portrait_video_generator is not None
+        and services.production_task_store is not None
+    ):
+        binding = await services.production_task_store.get_by_run(run_id)
+        if binding is not None and binding.snapshot.task_type == "\u771f\u4eba\u7c7b":
+            return (
+                "volcengine_portrait",
+                services.portrait_video_generator.for_run(
+                    run_id,
+                    model_key=model_key,
+                ),
             )
-        if aiport_generator is not None:
-            return "aiport", aiport_generator
-        raise _validation_error(
-            "The selected Seedance provider is unavailable; configure ARK_API_KEY"
+
+    generator = generator_registry.get(model_key)
+    using_model_registry = bool(generator_registry)
+    if generator is None and not using_model_registry:
+        cloud_requested = (
+            explicit_provider not in (None, "aiport")
+            or preferred_video not in (None, "aiport")
         )
-    return "seedance", generator
+        legacy_provider = getattr(legacy_video_generator, "provider", None)
+        if legacy_provider is None and settings_provider not in (None, "aiport"):
+            legacy_provider = "seedance"
+        if default_generator is not None:
+            generator = default_generator
+        elif legacy_provider not in (None, "aiport"):
+            generator = legacy_video_generator
+        elif cloud_requested:
+            raise _validation_error(
+                "The selected Seedance model is unavailable; configure ARK_API_KEY"
+            )
+        else:
+            generator = legacy_video_generator
+    if generator is None:
+        raise _validation_error(
+            "The selected Seedance model is unavailable; configure ARK_API_KEY"
+        )
+    return (model_key if using_model_registry else "seedance"), generator
 
 async def _transition_operation(
     services: GraphServices,
@@ -1646,8 +1775,11 @@ async def _poll_submission(
     generator: Any,
     submission: ProviderSubmission,
     services: GraphServices,
+    run_id: str,
+    task_id: str,
 ) -> ProviderSubmission | None:
     current = submission
+    last_reported_status = ""
     for attempt in range(services.settings.provider_poll_max_attempts):
         try:
             current = await generator.poll(current)
@@ -1661,6 +1793,18 @@ async def _poll_submission(
                 official_id=submission.provider_task_id,
             )
             status = current.status.lower()
+            if status in {"submitted", "pending", "queued"} and status != last_reported_status:
+                last_reported_status = status
+                await services.repository.append_event(
+                    run_id, "execute_selected_tasks", "running",
+                    "本地模型排队中，等待 GPU / ComfyUI 空闲",
+                )
+            elif status in {"running", "processing"} and status != last_reported_status:
+                last_reported_status = status
+                await services.repository.append_event(
+                    run_id, "execute_selected_tasks", "running",
+                    "本地模型生成中，请稍候",
+                )
             if status not in _PENDING_PROVIDER_STATUSES:
                 return current
         if attempt + 1 < services.settings.provider_poll_max_attempts:
@@ -1787,6 +1931,8 @@ async def _repair_succeeded_submission(
             ProviderSubmission(provider=provider, provider_task_id=official_id,
                                status="submitted"),
             services,
+            run_id,
+            task.task_id,
         )
         if submission is None:
             target = "timed_out"
@@ -2122,6 +2268,8 @@ async def _execute_one_task(
                     status="submitted",
                 ),
                 services,
+                run_id,
+                task.task_id,
             )
         if submission is None:
             return await _finish_submit_phase(
@@ -2340,8 +2488,8 @@ def _artifact_review_payload(state: AgentState) -> dict[str, Any]:
 
 def _parse_artifact_review(value: Any) -> ArtifactReviewDecision:
     if not isinstance(value, dict):
-        raise _validation_error("成片确认请求格式无效：期望 JSON 对象")
-    allowed_keys = {"action", "feedback"}
+        raise _validation_error("成片确认请求格式无效：需要 JSON 对象")
+    allowed_keys = {"action", "feedback", "task_ids"}
     extra_keys = set(value) - allowed_keys
     if extra_keys:
         raise _validation_error(
@@ -2357,11 +2505,13 @@ def _parse_artifact_review(value: Any) -> ArtifactReviewDecision:
         )
         raise _validation_error(f"成片确认载荷无效：{compact}") from None
 
+    if len(decision.task_ids) != len(set(decision.task_ids)):
+        raise _validation_error("重跑任务不能重复选择")
     if decision.action == "adjust":
         if not isinstance(decision.feedback, str) or not decision.feedback.strip():
             raise _validation_error("退回调整时必须填写调整意见")
-    elif decision.feedback is not None:
-        raise _validation_error("确认或取消时不能携带调整意见")
+    elif decision.feedback is not None or decision.task_ids:
+        raise _validation_error("确认或取消时不能携带调整意见或任务")
     return decision
 
 
@@ -2371,13 +2521,11 @@ async def review_artifacts(
     *,
     services: GraphServices,
 ) -> Command:
-    """Legacy explicit review entry retained for existing checkpoints.
-
-    New runs no longer route here automatically. A user who already has a
-    waiting-review checkpoint can still explicitly confirm export, adjust, or
-    cancel it.
-    """
+    """Review generated artifacts and optionally rerun selected tasks."""
     _ensure_thread_id(state, config)
+    if not services.settings.artifact_review_enabled:
+        return Command(update={}, goto=END)
+
     resume_value = interrupt(_artifact_review_payload(state))
 
     async def operation() -> Command:
@@ -2394,24 +2542,103 @@ async def review_artifacts(
             )
         if decision.action == "adjust":
             run_id = state.get("run_id")
-            if isinstance(run_id, str) and run_id:
-                await services.repository.delete_run_operations(run_id)
-                await services.repository.delete_run_artifacts(run_id)
+            if not isinstance(run_id, str) or not run_id:
+                raise _validation_error()
+            plan = approved_plan_from_state(
+                state,
+                max_output_count=services.settings.max_output_count,
+            )
+            artifacts = [
+                Artifact.model_validate(item)
+                for item in state.get("artifacts", [])
+            ]
+            records = [
+                ExecutionRecord.model_validate(item)
+                for item in state.get("execution_records", [])
+            ]
+            available_task_ids = {artifact.task_id for artifact in artifacts}
+            requested_ids = set(decision.task_ids) or set(available_task_ids)
+
+            def base_task_id(task_id: str) -> str:
+                return task_id.split(_OUTPUT_SLOT_MARKER, 1)[0]
+
+            target_task_ids = {base_task_id(task_id) for task_id in requested_ids}
+            known_task_ids = {task.task_id for task in plan.tasks}
+            unknown_ids = target_task_ids - known_task_ids
+            if unknown_ids:
+                raise _validation_error(
+                    "重跑任务不存在："
+                    + "、".join(sorted(unknown_ids))
+                )
+            if not target_task_ids:
+                raise _validation_error("请至少选择一条需要重跑的任务")
+
+            feedback = decision.feedback.strip()
+            marker = "【返工要求】"
+            updated_tasks: list[GenerationTask] = []
+            for task in plan.tasks:
+                if task.task_id not in target_task_ids:
+                    updated_tasks.append(task)
+                    continue
+                existing = task.prompt
+                if marker in existing:
+                    existing = existing.split(marker, 1)[0].rstrip()
+                prompt = f"{existing}\n{marker}{feedback}"
+                if len(prompt) > SEEDANCE_PROMPT_MAX_CHARS:
+                    raise _validation_error(
+                        f"任务 {task.task_id} 添加返工要求后提示词过长"
+                    )
+                updated_tasks.append(task.model_copy(update={"prompt": prompt}))
+
+            target_unit_ids = {
+                artifact.task_id
+                for artifact in artifacts
+                if base_task_id(artifact.task_id) in target_task_ids
+            } | {
+                record.task_id
+                for record in records
+                if base_task_id(record.task_id) in target_task_ids
+            }
+            for unit_id in sorted(target_unit_ids):
+                await services.repository.delete_task_operations(run_id, unit_id)
+                await services.repository.delete_task_artifacts(run_id, unit_id)
+
+            updated_plan = plan.model_copy(update={"tasks": updated_tasks})
+            remaining_artifacts = [
+                artifact
+                for artifact in artifacts
+                if base_task_id(artifact.task_id) not in target_task_ids
+            ]
+            remaining_records = [
+                record
+                for record in records
+                if base_task_id(record.task_id) not in target_task_ids
+            ]
+            await services.repository.append_event(
+                run_id,
+                "review_artifacts",
+                "running",
+                "Selected task feedback queued for regeneration",
+            )
             return Command(
                 update={
                     "artifact_review_decision": decision_json,
-                    "artifact_review_feedback": decision.feedback.strip(),
-                    "planner_feedback": decision.feedback.strip(),
-                    "approval_decision": None,
-                    "approval_revision": None,
-                    "approved_tasks": [],
-                    "approved_plan": None,
-                    "execution_records": [],
-                    "artifacts": [],
+                    "artifact_review_feedback": feedback,
+                    "approved_tasks": [
+                        _json_model(task) for task in updated_plan.tasks
+                    ],
+                    "approved_plan": _json_model(updated_plan),
+                    "execution_records": [
+                        _json_model(record) for record in remaining_records
+                    ],
+                    "artifacts": [
+                        _json_model(artifact) for artifact in remaining_artifacts
+                    ],
                     "delivery_record": None,
+                    "last_error": None,
                     "status": "running",
                 },
-                goto="plan_requirements",
+                goto="execute_selected_tasks",
             )
         return Command(
             update={

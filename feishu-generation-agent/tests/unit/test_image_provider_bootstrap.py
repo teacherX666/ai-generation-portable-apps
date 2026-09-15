@@ -28,7 +28,10 @@ def _settings(**updates: object) -> Settings:
 
 @pytest.fixture
 def http_client():
-    client = httpx.AsyncClient()
+    # trust_env=False：本机系统代理是 socks4://127.0.0.1:1080，httpx 不认这个
+    # scheme，构造时就会抛 "Unknown scheme for proxy URL"。仓库其它地方
+    # （bootstrap.py、test_seedance.py）都显式关掉了 env 代理。
+    client = httpx.AsyncClient(trust_env=False)
     yield client
 
 

@@ -268,7 +268,17 @@ async def test_user_profiles_are_independent_and_delete_only_removes_requested_u
         await store.close()
 
 
-@pytest.mark.parametrize("prompt_text", ["", " \t\n", "文" * 20_001])
+@pytest.mark.parametrize(
+    "prompt_text",
+    [
+        "",
+        " \t\n",
+        # 超长用例必须给短 id：pytest 会把参数化的 node id 写进 PYTEST_CURRENT_TEST
+        # 环境变量，20k 字符的 id 在 Windows 上超过 32767 上限，setup/teardown 直接抛
+        # ValueError: the environment variable is longer than 32767 characters。
+        pytest.param("文" * 20_001, id="overlong"),
+    ],
+)
 async def test_save_rejects_blank_and_overlong_prompt_text(
     tmp_path: Path, prompt_text: str
 ) -> None:

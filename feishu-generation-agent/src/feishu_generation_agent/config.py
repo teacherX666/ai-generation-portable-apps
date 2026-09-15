@@ -87,13 +87,15 @@ class Settings(BaseSettings):
     banana_model: str = "banana2-ssvip"
     gpt_image_model: str = "gpt-image-2"
     # seedream 走火山方舟，复用 ark_api_key / ark_base_url。
+    # 统一写模型名（doubao-…）而不是账号相关的 endpoint id（ep-…），
+    # 让配置可移植；ep-… 由 VIDEO_MODEL_BY_ID / 别名表兼容。
     seedream_model: str = "doubao-seedream-5-0-pro-260628"
     ark_api_key: SecretStr | None = None
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
-    seedance_model: str = "doubao-seedance-2-0-260128"
+    seedance_model: str = "doubao-seedance-2-5-260628"
     # 本地 AI Port 网关（127.0.0.1:8801）桥接 ComfyUI 本地模型。
-    # video_provider=aiport 时视频走本地 minimax H3，不再强制 ark_api_key。
-    video_provider: Literal["seedance", "aiport"] = "aiport"
+    # 当前飞书创作助手默认仅用 Seedance 2.5；aiport 仅用于本地模型开发。
+    video_provider: str = "seedance2.5"
     aiport_base_url: str = "http://127.0.0.1:8801"
     aiport_image_model: str = "qwen2511"
     aiport_image_enabled: bool = False
@@ -107,11 +109,12 @@ class Settings(BaseSettings):
     langsmith_api_key: SecretStr | None = None
     langsmith_project: str = "feishu-generation-agent-local"
     max_output_count: int = 4
+    artifact_review_enabled: bool = True
     max_download_bytes: int = 500 * 1024 * 1024
     allow_benchmark_fake_ips: bool = False
     provider_poll_interval_seconds: float = Field(default=1.0, ge=0.0)
     # 本地 AI Port 在 GPU 队列忙时可能排队 17 分钟以上，15 分钟会过早判超时。
-    provider_poll_max_attempts: int = Field(default=1800, ge=1, le=10_000)
+    provider_poll_max_attempts: int = Field(default=3600, ge=1, le=20_000)
     submission_intent_lease_seconds: float = Field(default=180.0, ge=0.03)
     bot_scan_page_size: int = Field(default=10, ge=1, le=50)
     coordinator_poll_interval_seconds: float = Field(default=1.0, ge=0.05)

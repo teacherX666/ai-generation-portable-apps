@@ -963,6 +963,7 @@ class DeepSeekPlanner:
         exact_system_prompt: str | None = None,
         mode: PlanningMode = "video",
         character_context: str | None = None,
+        knowledge_context: str | None = None,
     ) -> TaskPlan:
         image_mode = mode == "image"
         if exact_system_prompt is not None:
@@ -988,6 +989,17 @@ class DeepSeekPlanner:
                 "画面出现上述角色时，必须把对应 asset_id 挂进 reference_images"
                 "（role=reference_image），并在 prompt 中沿用该角色的既有形象，"
                 "不要用文档里的普通图片替代。"
+            )
+        if knowledge_context:
+            # 知识库经验要在**写 prompt 之前**给到模型，让它一次写对；
+            # 而不是等 planner 写完再回头改写（那样是两次加工，会互相打架）。
+            user_content = (
+                f"{user_content}\n\n"
+                "【知识库经验（写 prompt 时就要遵守）】\n"
+                f"{knowledge_context}\n"
+                "以上是平台实际踩过的坑与硬约束。请在生成 prompt 时就遵守，"
+                "不要产出一个之后再改；与文档要求冲突时以知识库为准，"
+                "并在计划里说明依据。"
             )
         messages = [
             {"role": "system", "content": effective_system_prompt},
