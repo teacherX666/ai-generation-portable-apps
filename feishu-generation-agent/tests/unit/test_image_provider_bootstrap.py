@@ -71,8 +71,9 @@ def test_builds_all_three_image_providers(http_client, tmp_path):
 
 
 def test_seedream_uses_ark_model_and_endpoint(http_client, tmp_path):
+    settings = _settings()
     providers = build_image_providers(
-        _settings(),
+        settings,
         http_client,
         staging_dir=tmp_path,
         result_downloader=DOWNLOADER,
@@ -80,7 +81,8 @@ def test_seedream_uses_ark_model_and_endpoint(http_client, tmp_path):
     )
 
     seedream = providers["seedream"]
-    assert seedream._model == "doubao-seedream-5-0-pro-260628"
+    # 模型名来自配置（2026-09-14 起是推理接入点 ep-…），断言绑定配置而不是写死某个 id
+    assert seedream._model == settings.seedream_model
     assert seedream._base_url.startswith("https://ark.cn-beijing.volces.com")
 
 
