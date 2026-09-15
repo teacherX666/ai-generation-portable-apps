@@ -74,8 +74,10 @@ class Settings(BaseSettings):
     lark_output_owner_open_id: str | None = None
     lark_output_folder_token: str | None = None
     deepseek_api_key: SecretStr | None = None
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-v4-pro"
+    # 规划/提示词生成走火山方舟（Ark key + DeepSeek V4.1 Flash）；
+    # 原来是官方 DeepSeek（api.deepseek.com + deepseek-v4-pro）。
+    deepseek_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    deepseek_model: str = "deepseek-v4-1-flash-260910"
     claude_api_key: SecretStr | None = None
     claude_base_url: str | None = None
     claude_model: str | None = None

@@ -25,11 +25,11 @@
       "env": ["VOLCENGINE_ARK_API_KEY"]
     },
     "deepseek": {
-      "label": "DeepSeek",
+      "label": "DeepSeek V4.1 Flash（火山方舟）",
       "kind": "cloud",
-      "base_url": "https://api.deepseek.com/v1",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "api_style": "openai_chat",
-      "model": "deepseek-chat",
+      "model": "deepseek-v4-1-flash-260910",
       "env": ["DEEPSEEK_API_KEY"]
     },
     "t8star": {

@@ -249,7 +249,8 @@ class CatSkinGenerator:
         key = (os.environ.get("CAT_SKIN_API_KEY") or self.key_loader() or "").strip()
         if provider == "openai":
             return provider, key, os.environ.get("CAT_SKIN_MODEL", "gpt-4.1-mini"), os.environ.get("CAT_SKIN_BASE_URL", "https://api.openai.com/v1/chat/completions")
-        return "deepseek", key, os.environ.get("CAT_SKIN_MODEL", "deepseek-chat"), os.environ.get("CAT_SKIN_BASE_URL", "https://api.deepseek.com/v1/chat/completions")
+        # 2026-09-15 起改走火山方舟的 DeepSeek V4.1 Flash（原官方 DeepSeek key 即将停用）
+        return "deepseek", key, os.environ.get("CAT_SKIN_MODEL", "deepseek-v4-1-flash-260910"), os.environ.get("CAT_SKIN_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
 
     def provider_info(self) -> dict:
         provider, key, model, _ = self._config()
