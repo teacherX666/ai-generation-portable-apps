@@ -404,19 +404,25 @@ class VideoReferenceAnalysis(BaseModel):
 
 
 class VideoShot(BaseModel):
-    """原生视频理解产出的单个镜头。"""
+    """原生视频理解产出的单个镜头。
 
-    start: float = Field(ge=0)
-    end: float = Field(ge=0)
+    时间字段**不加 pydantic 约束**（spec §5.1）：时间轴的合法性由
+    native_understanding/validation.py 这个确定性门卫独占判定。
+    若这里加 ge=0，NaN 会在构造时就被拒，validation 里"剔除非有限时间戳"
+    那段既测不到也无意义，两处校验反而互相打架。
+    """
+
+    start: float
+    end: float
     shot_size: str = ""
     action: str = ""
     camera: str = ""
 
 
 class TranscriptLine(BaseModel):
-    """台词 / 歌词，带出现时间点（秒）。"""
+    """台词 / 歌词，带出现时间点（秒）。时间字段理由同 VideoShot。"""
 
-    t: float = Field(ge=0)
+    t: float
     text: str
 
 
