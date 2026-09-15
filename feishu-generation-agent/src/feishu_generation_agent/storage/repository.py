@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
+from pydantic import BaseModel
 
 from feishu_generation_agent.domain import Artifact, VisionDescription
 
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS vision_cache (
 _BEARER_TOKEN = re.compile(r"(?i)(\bBearer\s+)[^\s,;]+")
 _QUERY_TOKEN = re.compile(r"(?i)([?&]token=)[^&#\s]*")
 _CLIENT_SUBMISSION_ID = re.compile(r"[0-9a-f]{32}\Z")
-_SAFE_PROVIDER = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+_SAFE_PROVIDER = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 _TASK_FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 _OPERATION_PHASES = frozenset(
     {
@@ -129,6 +130,7 @@ class Repository:
             await connection.executescript(_SCHEMA)
             await cls._migrate_runs(connection)
             await cls._migrate_operations(connection)
+            await cls._migrate_vision_cache(connection)
             await connection.commit()
         except BaseException:
             await connection.rollback()
@@ -794,6 +796,12 @@ class Repository:
             (run_id,),
         )
 
+    async def delete_task_operations(self, run_id: str, task_id: str) -> None:
+        await self._write(
+            "DELETE FROM operations WHERE run_id = ? AND task_id = ?",
+            (run_id, task_id),
+        )
+
     async def delete_run_operations(self, run_id: str) -> None:
         await self._write(
             "DELETE FROM operations WHERE run_id = ?",
@@ -864,7 +872,11 @@ class Repository:
     async def save_vision_cache(
         self,
         cache_key: str,
-        description: VisionDescription,
+        description: BaseModel,
+        *,
+        engine_id: str | None = None,
+        schema_version: str | None = None,
+        kind: str | None = None,
     ) -> None:
         description_json = json.dumps(
             description.model_dump(mode="json"),
@@ -873,14 +885,38 @@ class Repository:
         )
         await self._write(
             """
-            INSERT INTO vision_cache (cache_key, description_json, updated_at)
-            VALUES (?, ?, ?)
+            INSERT INTO vision_cache (
+              cache_key, description_json, updated_at,
+              engine_id, schema_version, kind
+            ) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
               description_json = excluded.description_json,
-              updated_at = excluded.updated_at
+              updated_at = excluded.updated_at,
+              engine_id = excluded.engine_id,
+              schema_version = excluded.schema_version,
+              kind = excluded.kind
             """,
-            (cache_key, description_json, _now()),
+            (
+                cache_key,
+                description_json,
+                _now(),
+                engine_id,
+                schema_version,
+                kind,
+            ),
         )
+
+    async def list_vision_cache_engine_ids(self) -> dict[str, int]:
+        cursor = await self._connection.execute(
+            """
+            SELECT COALESCE(engine_id, '<null>') AS engine_id, COUNT(*)
+            FROM vision_cache
+            GROUP BY engine_id
+            """
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return {str(row[0]): int(row[1]) for row in rows}
 
     async def _write(self, sql: str, parameters: tuple[Any, ...]) -> None:
         async with self._write_lock:
@@ -890,6 +926,39 @@ class Repository:
             except BaseException:
                 await self._connection.rollback()
                 raise
+
+    @staticmethod
+    async def _migrate_vision_cache(connection: aiosqlite.Connection) -> None:
+        """给 vision_cache 加引擎维度，并把 Claude 时代的存量行标记为 frame_v1。
+
+        回填用 user_version 门控：只看 `engine_id IS NULL` 会把每次新写入、
+        未显式带 engine_id 的行也误标成 frame_v1，那样就不幂等了。
+        """
+        cursor = await connection.execute("PRAGMA table_info(vision_cache)")
+        rows = await cursor.fetchall()
+        await cursor.close()
+        columns = {str(row[1]) for row in rows}
+        for name in ("engine_id", "schema_version", "kind"):
+            if name not in columns:
+                await connection.execute(
+                    f"ALTER TABLE vision_cache ADD COLUMN {name} TEXT"
+                )
+
+        cursor = await connection.execute("PRAGMA user_version")
+        version_row = await cursor.fetchone()
+        await cursor.close()
+        version = int(version_row[0]) if version_row is not None else 0
+        if version < 1:
+            await connection.execute(
+                """
+                UPDATE vision_cache
+                   SET engine_id = 'frame_v1',
+                       schema_version = 'frame_v1',
+                       kind = 'image'
+                 WHERE engine_id IS NULL
+                """
+            )
+            await connection.execute("PRAGMA user_version = 1")
 
     @staticmethod
     async def _migrate_runs(connection: aiosqlite.Connection) -> None:
