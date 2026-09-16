@@ -922,19 +922,25 @@ def validate_plan(
 
 
 _REWORK_FUSION_SYSTEM_PROMPT = (
-    "你是生成模型提示词的改写器。把「原始提示词」与「历次返工要求」合并成一条"
-    "自然、可直接用于生成模型的提示词。\n"
-    "硬性要求：\n"
+    "你是生成模型提示词的改写器。把「原始提示词」与「历次返工要求」合并，"
+    '只输出一个 JSON 对象：{"prompt": 改写后的提示词, "must_avoid": [必须避免项]}。\n'
+    "prompt 的硬性要求：\n"
     "1. 保留原始提示词里的全部画面信息（主体、场景、构图、动作、运镜、风格与"
     "画质约束），不得删减。\n"
     "2. 原始提示词中出现的每一个 @图片N / @视频N / @音频N 引用令牌都必须原样"
     "保留，一个都不能增加、不能删除、不能改号。\n"
-    "3. 每一条返工要求都必须自然融入画面描述；一条都不能遗漏，也不得互相冲突——"
-    "若新旧要求冲突，以更新的要求为准，并把被替代的表述改写掉而不是并存。\n"
-    "4. 不要逐条粘贴返工要求的原文，不要输出「【返工要求】」这类标记或任何解释"
-    "性标题。\n"
-    f"5. 最终提示词不超过 {SEEDANCE_PROMPT_MAX_CHARS} 个字符。\n"
-    "只输出最终提示词正文，不要任何前后缀说明。"
+    "3. 每一条返工要求都必须落实：能写成正向画面描述的写进 prompt，只能写成"
+    "禁止项的放进 must_avoid。一条都不能遗漏。\n"
+    "4. 用户的返工要求往往是口语，必须改写成具体、可执行、可判定的物理描述，"
+    "不能照抄口语。例如「不要让红衣服老头跑出去」：prompt 写「老头d 双脚始终"
+    "踩在起跑线后，全程不发生位移，镜头结束时仍保持起跑姿势」，must_avoid 写"
+    "「老头d 不得跑出起跑线」。禁止把空泛的「不要…」「别…」当作唯一表述。\n"
+    "5. 若新旧要求冲突，以更新的要求为准，并把被替代的表述改写掉而不是并存。\n"
+    "6. 不要输出「【返工要求】」这类标记或解释性标题。\n"
+    f"7. prompt 不超过 {SEEDANCE_PROMPT_MAX_CHARS} 个字符。\n"
+    "must_avoid 的要求：每条是简短祈使句、针对画面里可判定的事物（不得出现"
+    "文字或水印、不得位移、不得发光等）；最多 8 条；没有就给空数组。\n"
+    "只输出 JSON，不要任何前后缀说明。"
 )
 
 
@@ -987,11 +993,15 @@ class DeepSeekPlanner:
         self,
         original_prompt: str,
         requirements: list[str],
-    ) -> str | None:
-        """把「原始提示词 + 全部历史返工要求」融合成一条可直接生成的新提示词。
+    ) -> dict[str, Any] | None:
+        """把「原始提示词 + 全部历史返工要求」融合成提示词与必避清单。
 
-        任何失败（异常、空返回、非文本）都返回 None，由调用方回退到安全拼接——
-        融合能力不可用绝不能让返工本身失败。
+        返回 `{"prompt": str, "must_avoid": list[str]}`：口语要求被改写成可执行的
+        物理描述，正向的进 prompt、禁止项进 must_avoid（调用方并入
+        negative_constraints，会以「必须避免：…」整块附在提交文本末尾）。
+
+        任何失败（异常、空返回、非 JSON、缺 prompt）都返回 None，由调用方回退到
+        安全拼接——融合能力不可用绝不能让返工本身失败。
         """
         entries = [
             item.strip()
@@ -1016,9 +1026,16 @@ class DeepSeekPlanner:
             {"role": "system", "content": _REWORK_FUSION_SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ]
+        fuse_model = self._fuse_model()
+        try:
+            fuse_model = fuse_model.bind(
+                response_format={"type": "json_object"}
+            )
+        except Exception:
+            pass
         try:
             with tracing_context(enabled=False, parent=False):
-                response = await self._fuse_model().ainvoke(
+                response = await fuse_model.ainvoke(
                     messages,
                     config={"callbacks": []},
                 )
@@ -1029,7 +1046,26 @@ class DeepSeekPlanner:
         if not isinstance(content, str):
             return None
         text = content.strip()
-        return text or None
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        prompt = payload.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return None
+        entries = payload.get("must_avoid")
+        must_avoid: list[str] = []
+        if isinstance(entries, list):
+            must_avoid = [
+                str(item).strip()
+                for item in entries
+                if isinstance(item, str) and str(item).strip()
+            ]
+        return {"prompt": prompt.strip(), "must_avoid": must_avoid}
 
     async def plan(
         self,

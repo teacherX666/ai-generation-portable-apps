@@ -91,6 +91,7 @@ from feishu_generation_agent.integrations.rag_prompt_optimizer import (
 )
 from feishu_generation_agent.integrations.rework_prompt import (
     build_rework_prompt,
+    merge_requirements,
     rework_inputs,
 )
 from .state import AgentState
@@ -2500,20 +2501,24 @@ async def _rework_prompt_for_task(
     services: GraphServices,
     task: GenerationTask,
     feedback: str,
-) -> tuple[str, list[str], str, bool]:
-    """算出这条任务重跑后的提示词与累积要求。
+) -> tuple[str, list[str], str, bool, list[str]]:
+    """算出这条任务重跑后的提示词、累积要求与负向约束。
 
     走 `integrations.rework_prompt` 的共享实现，与多维表格重跑
     （`GraphRuntime.clone_run_for_approval`）保持完全一致的语义：
     要求只累积不覆盖、优先 AI 融合、永不因超长失败。
+
+    融合顺带产出的「必须避免」清单并入 `negative_constraints`——那条通道会以
+    「必须避免：…」整块附在提交文本末尾，比埋在正文中段的否定句更容易被执行。
     """
     base_prompt, requirements = rework_inputs(task, feedback)
-    prompt, truncated = await build_rework_prompt(
+    prompt, truncated, must_avoid = await build_rework_prompt(
         base_prompt,
         requirements,
         fuse=getattr(services.planner, "fuse_rework_prompt", None),
     )
-    return base_prompt, requirements, prompt, truncated
+    constraints = merge_requirements(task.negative_constraints, must_avoid)
+    return base_prompt, requirements, prompt, truncated, constraints
 
 
 def _artifact_review_payload(state: AgentState) -> dict[str, Any]:
@@ -2628,11 +2633,13 @@ async def review_artifacts(
                     requirements,
                     prompt,
                     truncated,
+                    constraints,
                 ) = await _rework_prompt_for_task(services, task, feedback)
                 task_updates: dict[str, Any] = {
                     "prompt": prompt,
                     "rework_requirements": requirements,
                     "rework_base_prompt": base_prompt,
+                    "negative_constraints": constraints,
                 }
                 if truncated:
                     task_updates["warnings"] = [

@@ -54,6 +54,7 @@ from feishu_generation_agent.integrations.planner import (
 )
 from feishu_generation_agent.integrations.rework_prompt import (
     build_rework_prompt,
+    merge_requirements,
     rework_inputs,
 )
 from feishu_generation_agent.storage.files import FileStore
@@ -318,7 +319,7 @@ class GraphRuntime:
                     # 与图节点 review_artifacts 共用同一套语义：历次返工要求
                     # 只累积不覆盖、优先 AI 融合、永不因超长失败。
                     base_prompt, requirements = rework_inputs(task, feedback_text)
-                    prompt, _truncated = await build_rework_prompt(
+                    prompt, _truncated, must_avoid = await build_rework_prompt(
                         base_prompt,
                         requirements,
                         fuse=self.rework_fuser,
@@ -329,6 +330,11 @@ class GraphRuntime:
                                 "prompt": prompt,
                                 "rework_requirements": requirements,
                                 "rework_base_prompt": base_prompt,
+                                # 融合产出的必避项并入 negative_constraints：
+                                # 提交时会以「必须避免：…」整块附在文本末尾。
+                                "negative_constraints": merge_requirements(
+                                    task.negative_constraints, must_avoid
+                                ),
                             }
                         )
                     )

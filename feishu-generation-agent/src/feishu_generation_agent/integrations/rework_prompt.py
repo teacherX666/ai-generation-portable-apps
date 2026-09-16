@@ -119,31 +119,66 @@ def rework_inputs(task: Any, feedback: str) -> tuple[str, list[str]]:
     return base_prompt, requirements
 
 
+def parse_fusion_payload(raw: Any) -> tuple[str, list[str]] | None:
+    """归一化融合结果：`(提示词, 必须避免清单)`；不合契约返回 None。
+
+    兼容两种返回：纯文本提示词（老契约），或
+    `{"prompt": "...", "must_avoid": ["..."]}`（双通道契约）。
+    """
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        return text, []
+    if isinstance(raw, dict):
+        prompt = raw.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return None
+        entries = raw.get("must_avoid")
+        must_avoid: list[str] = []
+        if isinstance(entries, list):
+            must_avoid = [
+                item.strip()
+                for item in entries
+                if isinstance(item, str) and item.strip()
+            ]
+        return prompt.strip(), must_avoid
+    return None
+
+
 async def build_rework_prompt(
     base_prompt: str,
     requirements: Sequence[str],
     *,
     fuse: ReworkFuser | None = None,
     max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, list[str]]:
     """把「原始提示词 + 全部历史返工要求」变成一条可直接生成的新提示词。
 
-    优先让 AI 融合（结果必须通过契约校验）；融合器缺失、抛错或结果不合约时，
-    回退到安全拼接。两条路都不超过 `max_chars`，也都不抛错。
+    返回 `(prompt, truncated, must_avoid)`。`must_avoid` 是融合时顺带产出的
+    「必须避免」清单（口语要求已改写成可判定的物理描述），由调用方并入任务的
+    `negative_constraints`——那条通道会以「必须避免：…」整块附在提交文本末尾，
+    比埋在正文中段的否定句更容易被执行，同时给正文腾出长度。
+
+    融合器缺失、抛错或结果不合约时回退安全拼接，此时 `must_avoid` 为空。
     """
     if fuse is not None:
         try:
-            fused = await fuse(base_prompt, list(requirements))
+            raw = await fuse(base_prompt, list(requirements))
         except Exception:
             _LOGGER.warning("返工提示词 AI 融合失败，回退安全拼接", exc_info=True)
-            fused = None
-        if is_acceptable_fusion(
-            fused, base_prompt=base_prompt, max_chars=max_chars
-        ):
-            return fused.strip(), False
-    return build_fallback_prompt(
+            raw = None
+        parsed = parse_fusion_payload(raw)
+        if parsed is not None:
+            fused, must_avoid = parsed
+            if is_acceptable_fusion(
+                fused, base_prompt=base_prompt, max_chars=max_chars
+            ):
+                return fused, False, must_avoid
+    prompt, truncated = build_fallback_prompt(
         base_prompt, requirements, max_chars=max_chars
     )
+    return prompt, truncated, []
 
 
 def build_fallback_prompt(

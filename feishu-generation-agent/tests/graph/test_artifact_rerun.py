@@ -254,3 +254,24 @@ async def test_rework_falls_back_when_fusion_adds_reference_token(
     task = await _rework_once(graph, config, task_id)
 
     assert "【返工要求】手不要僵" in task["prompt"]
+
+
+async def test_rework_merges_must_avoid_into_negative_constraints(
+    fake_services: GraphServices,
+) -> None:
+    """融合产出的必避项要进 negative_constraints（提交时附在末尾的硬约束块）。"""
+    services = _fusing_services(
+        fake_services,
+        lambda base, requirements: {
+            "prompt": f"{base}（已按返工要求融合）",
+            "must_avoid": ["老头d 不得跑出起跑线", "眼睛不得发光"],
+        },
+    )
+    graph = build_graph(services, InMemorySaver())
+    config = _config("thread-rework-must-avoid")
+    task_id = await _drive_to_review(graph, config, "run-rework-must-avoid")
+
+    task = await _rework_once(graph, config, task_id)
+
+    assert "老头d 不得跑出起跑线" in task["negative_constraints"]
+    assert "眼睛不得发光" in task["negative_constraints"]

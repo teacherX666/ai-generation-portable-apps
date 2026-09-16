@@ -10,6 +10,7 @@ from feishu_generation_agent.integrations.rework_prompt import (
     build_rework_prompt,
     is_acceptable_fusion,
     merge_requirements,
+    parse_fusion_payload,
     rework_inputs,
     split_legacy_requirements,
 )
@@ -179,34 +180,102 @@ async def test_build_rework_prompt_uses_accepted_fusion() -> None:
         assert requirements == ["手不要僵"]
         return f"{original_prompt}（已融合）"
 
-    prompt, truncated = await build_rework_prompt(
+    prompt, truncated, must_avoid = await build_rework_prompt(
         "原始画面", ["手不要僵"], fuse=fuse
     )
 
     assert prompt == "原始画面（已融合）"
     assert truncated is False
+    assert must_avoid == []
 
 
 async def test_build_rework_prompt_falls_back_when_fuser_raises() -> None:
     async def fuse(original_prompt: str, requirements: list[str]) -> str:
         raise RuntimeError("上游 500")
 
-    prompt, _ = await build_rework_prompt("原始画面", ["手不要僵"], fuse=fuse)
+    prompt, _truncated, must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse
+    )
 
     assert prompt == f"原始画面\n{REWORK_MARKER}手不要僵"
+    assert must_avoid == []
 
 
 async def test_build_rework_prompt_falls_back_without_fuser() -> None:
-    prompt, _ = await build_rework_prompt("原始画面", ["手不要僵"])
+    prompt, _truncated, must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"]
+    )
     assert prompt == f"原始画面\n{REWORK_MARKER}手不要僵"
+    assert must_avoid == []
 
 
 async def test_build_rework_prompt_rejects_fusion_that_drops_tokens() -> None:
     async def fuse(original_prompt: str, requirements: list[str]) -> str:
         return "丢了 @图片N 的结果"
 
-    prompt, _ = await build_rework_prompt(
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
         "@图片1 中的猫在跑", ["手不要僵"], fuse=fuse
     )
 
     assert prompt == f"@图片1 中的猫在跑\n{REWORK_MARKER}手不要僵"
+
+
+# --- 双通道：融合时顺带产出「必须避免」清单，写进 negative_constraints ---
+
+
+async def test_build_rework_prompt_returns_must_avoid_from_fusion() -> None:
+    async def fuse(original_prompt: str, requirements: list[str]) -> dict:
+        return {
+            "prompt": f"{original_prompt}（已融合）",
+            "must_avoid": ["红衣服老头不得跑出起跑线", "眼睛不得发光"],
+        }
+
+    prompt, truncated, must_avoid = await build_rework_prompt(
+        "原始画面", ["不要让红衣服老头跑出去"], fuse=fuse
+    )
+
+    assert prompt == "原始画面（已融合）"
+    assert truncated is False
+    assert must_avoid == ["红衣服老头不得跑出起跑线", "眼睛不得发光"]
+
+
+async def test_build_rework_prompt_keeps_prompt_when_must_avoid_is_malformed() -> None:
+    async def fuse(original_prompt: str, requirements: list[str]) -> dict:
+        return {"prompt": f"{original_prompt}（已融合）", "must_avoid": "不是数组"}
+
+    prompt, _truncated, must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse
+    )
+
+    assert prompt == "原始画面（已融合）"
+    assert must_avoid == []
+
+
+async def test_build_rework_prompt_ignores_blank_must_avoid_entries() -> None:
+    async def fuse(original_prompt: str, requirements: list[str]) -> dict:
+        return {
+            "prompt": f"{original_prompt}（已融合）",
+            "must_avoid": ["  ", "眼睛不得发光", ""],
+        }
+
+    _prompt, _truncated, must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse
+    )
+
+    assert must_avoid == ["眼睛不得发光"]
+
+
+def test_parse_fusion_payload_accepts_plain_text() -> None:
+    assert parse_fusion_payload("一段提示词") == ("一段提示词", [])
+
+
+def test_parse_fusion_payload_accepts_mapping() -> None:
+    assert parse_fusion_payload(
+        {"prompt": "一段提示词", "must_avoid": ["不要发光"]}
+    ) == ("一段提示词", ["不要发光"])
+
+
+def test_parse_fusion_payload_rejects_missing_prompt() -> None:
+    assert parse_fusion_payload({"must_avoid": ["不要发光"]}) is None
+    assert parse_fusion_payload(None) is None
+    assert parse_fusion_payload("   ") is None

@@ -1,9 +1,15 @@
-"""返工提示词的 AI 融合：Planner 侧的行为契约。"""
+"""返工提示词的 AI 融合：Planner 侧的行为契约（输出 JSON，含必避清单）。"""
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
 from feishu_generation_agent.integrations.planner import DeepSeekPlanner
+
+_FUSED = json.dumps(
+    {"prompt": "@图片1 中的猫缓缓走开", "must_avoid": ["画面不得出现文字"]},
+    ensure_ascii=False,
+)
 
 
 class FakeFuseModel:
@@ -29,31 +35,41 @@ class FakeFuseModel:
         return SimpleNamespace(content=self.response)
 
 
-async def test_fusion_returns_stripped_content() -> None:
-    model = FakeFuseModel("  @图片1 中的猫缓慢走开  ")
-    planner = DeepSeekPlanner(model)
+async def test_fusion_returns_prompt_and_must_avoid() -> None:
+    planner = DeepSeekPlanner(FakeFuseModel(_FUSED))
 
-    fused = await planner.fuse_rework_prompt("@图片1 中的猫在跑", ["动作慢一点"])
+    result = await planner.fuse_rework_prompt("@图片1 中的猫在跑", ["动作慢一点"])
 
-    assert fused == "@图片1 中的猫缓慢走开"
+    assert result == {
+        "prompt": "@图片1 中的猫缓缓走开",
+        "must_avoid": ["画面不得出现文字"],
+    }
+
+
+async def test_fusion_returns_none_when_content_is_not_json() -> None:
+    planner = DeepSeekPlanner(FakeFuseModel("这就是一段普通文本"))
+    assert await planner.fuse_rework_prompt("原始提示词", ["动作慢一点"]) is None
+
+
+async def test_fusion_returns_none_when_prompt_missing() -> None:
+    planner = DeepSeekPlanner(
+        FakeFuseModel(json.dumps({"must_avoid": ["不要发光"]}))
+    )
+    assert await planner.fuse_rework_prompt("原始提示词", ["动作慢一点"]) is None
 
 
 async def test_fusion_returns_none_when_model_raises() -> None:
-    model = FakeFuseModel(RuntimeError("上游 500"))
-    planner = DeepSeekPlanner(model)
-
+    planner = DeepSeekPlanner(FakeFuseModel(RuntimeError("上游 500")))
     assert await planner.fuse_rework_prompt("原始提示词", ["动作慢一点"]) is None
 
 
 async def test_fusion_returns_none_when_content_blank() -> None:
-    model = FakeFuseModel("   ")
-    planner = DeepSeekPlanner(model)
-
+    planner = DeepSeekPlanner(FakeFuseModel("   "))
     assert await planner.fuse_rework_prompt("原始提示词", ["动作慢一点"]) is None
 
 
 async def test_fusion_returns_none_without_requirements() -> None:
-    model = FakeFuseModel("不该被调用")
+    model = FakeFuseModel(_FUSED)
     planner = DeepSeekPlanner(model)
 
     assert await planner.fuse_rework_prompt("原始提示词", []) is None
@@ -61,7 +77,7 @@ async def test_fusion_returns_none_without_requirements() -> None:
 
 
 async def test_fusion_request_carries_base_prompt_and_every_requirement() -> None:
-    model = FakeFuseModel("融合结果")
+    model = FakeFuseModel(_FUSED)
     planner = DeepSeekPlanner(model)
 
     await planner.fuse_rework_prompt(
@@ -77,9 +93,20 @@ async def test_fusion_request_carries_base_prompt_and_every_requirement() -> Non
     assert "背景太暗" in payload
 
 
+async def test_fusion_prompt_asks_for_executable_rewrite_and_must_avoid() -> None:
+    model = FakeFuseModel(_FUSED)
+    planner = DeepSeekPlanner(model)
+
+    await planner.fuse_rework_prompt("原始提示词", ["不要让红衣服老头跑出去"])
+
+    system = model.requests[0][0]["content"]
+    assert "must_avoid" in system
+    assert "可判定" in system or "可执行" in system
+
+
 async def test_fusion_does_not_add_bind_calls_to_constructor() -> None:
     """融合模型按需派生，构造期仍然只有 plan/audit 两次 bind。"""
-    model = FakeFuseModel("融合结果")
+    model = FakeFuseModel(_FUSED)
     DeepSeekPlanner(model)
 
     assert len(model.bind_calls) == 2
