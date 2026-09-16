@@ -538,6 +538,54 @@ async def test_service_rerun_selected_task_creates_branch_and_auto_approves(
     assert decision.action == "approve"
     assert decision.selected_task_ids == ["task-1"]
 
+
+async def test_service_rerun_selected_waits_for_user_approval(tmp_path) -> None:
+    """不带 auto_approve 时，重跑必须停在审批页等人放行。"""
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_kwargs = None
+            self.resume_calls = []
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, source_run_id, request, **kwargs):
+            self.clone_kwargs = (source_run_id, request, kwargs)
+            return kwargs["run_id"]
+
+        async def resume_run(self, run_id, decision):
+            self.resume_calls.append((run_id, decision))
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.COMPLETED)
+
+        rerun_id = await service.rerun(
+            original_run_id,
+            task_ids=["task-1"],
+            feedback="动作再慢一点",
+        )
+    finally:
+        await store.close()
+
+    assert rerun_id != original_run_id
+    assert runtime.clone_kwargs is not None
+    _source, _request, clone_kwargs = runtime.clone_kwargs
+    assert clone_kwargs["task_ids"] == ["task-1"]
+    assert clone_kwargs["feedback"] == "动作再慢一点"
+    assert runtime.resume_calls == []
+
 async def test_service_rerun_returns_existing_active_run_for_same_record(tmp_path) -> None:
     from feishu_generation_agent.domain.bitable import TableTaskStatus
     from feishu_generation_agent.storage.production_tasks import ProductionTaskStore

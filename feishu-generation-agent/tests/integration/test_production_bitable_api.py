@@ -31,6 +31,12 @@ class _Runtime:
         )
         self.resume_calls: list[str] = []
         self.start_requests = []
+        self.run_views: dict[str, dict] = {}
+
+    async def get_run_view(self, run_id: str) -> dict:
+        return dict(
+            self.run_views.get(run_id, {"run_id": run_id, "status": "succeeded"})
+        )
 
     async def close(self) -> None:
         pass
@@ -47,6 +53,7 @@ class _Runtime:
 class _ProductionService:
     def __init__(self, *, task_type: str = "动画类") -> None:
         self.rerun_calls: list[str] = []
+        self.rerun_selected_calls: list[tuple[str, list[str], str, bool]] = []
         self.archive_calls: list[str] = []
         self.restore_calls: list[str] = []
         self.rerun_error: Exception | None = None
@@ -175,12 +182,23 @@ class _ProductionService:
         self.restore_calls.append(run_id)
 
     async def rerun(
-        self, run_id: str, *, owner_user_id: str = "prime-local"
+        self,
+        run_id: str,
+        *,
+        owner_user_id: str = "prime-local",
+        task_ids: list[str] | None = None,
+        feedback: str | None = None,
+        auto_approve: bool = False,
     ) -> str:
         self._require_owner(run_id, owner_user_id)
         self.rerun_calls.append(run_id)
         if self.rerun_error is not None:
             raise self.rerun_error
+        if task_ids is not None or feedback is not None or auto_approve:
+            self.rerun_selected_calls.append(
+                (run_id, list(task_ids or []), feedback or "", auto_approve)
+            )
+            return "run-selected"
         return "run-new"
 
     async def result_table_url(
@@ -468,6 +486,84 @@ async def test_recent_runs_and_rerun_endpoints(tmp_path) -> None:
     assert rerun.status_code == 202
     assert rerun.json() == {"run_id": "run-new"}
     assert production.rerun_calls == ["run-old"]
+
+
+async def test_rerun_selected_endpoint_creates_new_branch(tmp_path) -> None:
+    runtime = _Runtime(tmp_path)
+    production = _ProductionService()
+    app = create_app(runtime=runtime, bitable_service=production)
+    transport = httpx.ASGITransport(app=app)
+
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.post(
+            "/api/bitable/runs/run-old/rerun-selected",
+            json={
+                "action": "adjust",
+                "feedback": "动作再慢一点",
+                "task_ids": ["task-1"],
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json() == {"run_id": "run-selected"}
+    # 重跑只重写提示词，必须停在审批页让用户过目、改参数与模型；
+    # 自动通过会把这一步直接跳掉（用户体感：重跑后立刻开始生成、改不了东西）。
+    assert production.rerun_selected_calls == [
+        ("run-old", ["task-1"], "动作再慢一点", False)
+    ]
+
+
+async def test_run_view_exposes_shared_result_table_url(tmp_path) -> None:
+    runtime = _Runtime(tmp_path)
+    runtime.run_views["run-old"] = {
+        "run_id": "run-old",
+        "status": "succeeded",
+        "artifacts": [{"artifact_id": "artifact-1", "kind": "video"}],
+    }
+    production = _ProductionService()
+    app = create_app(runtime=runtime, bitable_service=production)
+    transport = httpx.ASGITransport(app=app)
+
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        view = await client.get("/api/runs/run-old")
+
+    assert view.status_code == 200
+    assert view.json()["result_table_url"] == (
+        "https://tenant.feishu.cn/base/result-table"
+    )
+
+
+class _ServiceWithoutResultTable:
+    async def sync_once(
+        self, run_id: str, *, owner_user_id: str = "prime-local"
+    ) -> None:
+        del run_id, owner_user_id
+
+    async def close(self) -> None:
+        pass
+
+
+async def test_run_view_tolerates_service_without_result_table_url(
+    tmp_path,
+) -> None:
+    runtime = _Runtime(tmp_path)
+    runtime.run_views["run-old"] = {"run_id": "run-old", "status": "succeeded"}
+    app = create_app(
+        runtime=runtime, bitable_service=_ServiceWithoutResultTable()
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        view = await client.get("/api/runs/run-old")
+
+    assert view.status_code == 200
+    assert "result_table_url" not in view.json()
 
 
 async def test_archive_restore_and_archived_runs_endpoints(tmp_path) -> None:

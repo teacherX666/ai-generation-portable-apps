@@ -1774,6 +1774,27 @@ async def _existing_valid_artifacts(
     return artifacts
 
 
+# 真正跑在本机的推理供应商（ComfyUI 网关等）。只有这些才该说「本地模型」——
+# 旧文案把这句写死了，云端方舟的任务也显示「本地模型生成中」，用户因此以为
+# 重跑被强制走了本地（2026-09-16 误判）。
+_LOCAL_PROVIDER_NAMES = {"aiport", "local_gateway", "local_llm", "comfyui"}
+
+
+def _provider_progress_message(provider: str | None, status: str) -> str | None:
+    """把轮询状态翻成给用户看的事件文案；不需要播报的状态返回 None。"""
+    name = (provider or "").strip()
+    is_local = name in _LOCAL_PROVIDER_NAMES
+    if status in {"submitted", "pending", "queued"}:
+        if is_local:
+            return "本地模型排队中，等待 GPU / ComfyUI 空闲"
+        return f"云端模型（{name or '生成服务'}）排队等待中"
+    if status in {"running", "processing"}:
+        if is_local:
+            return "本地模型生成中，请稍候"
+        return f"云端模型（{name or '生成服务'}）生成中，请稍候"
+    return None
+
+
 async def _poll_submission(
     generator: Any,
     submission: ProviderSubmission,
@@ -1796,17 +1817,15 @@ async def _poll_submission(
                 official_id=submission.provider_task_id,
             )
             status = current.status.lower()
-            if status in {"submitted", "pending", "queued"} and status != last_reported_status:
+            progress = (
+                _provider_progress_message(submission.provider, status)
+                if status != last_reported_status
+                else None
+            )
+            if progress is not None:
                 last_reported_status = status
                 await services.repository.append_event(
-                    run_id, "execute_selected_tasks", "running",
-                    "本地模型排队中，等待 GPU / ComfyUI 空闲",
-                )
-            elif status in {"running", "processing"} and status != last_reported_status:
-                last_reported_status = status
-                await services.repository.append_event(
-                    run_id, "execute_selected_tasks", "running",
-                    "本地模型生成中，请稍候",
+                    run_id, "execute_selected_tasks", "running", progress
                 )
             if status not in _PENDING_PROVIDER_STATUSES:
                 return current

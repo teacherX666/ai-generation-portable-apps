@@ -1223,7 +1223,8 @@ def create_app(
                     run_id,
                     task_ids=payload.task_ids,
                     feedback=payload.feedback.strip(),
-                    auto_approve=True,
+                    # 刻意不传 auto_approve：重跑只负责把提示词重写好，
+                    # 必须停在审批页让用户过目、改参数/换模型后再放行。
                     **owner_argument(active.rerun, identity.owner_user_id),
                 )
         except Exception as exc:
