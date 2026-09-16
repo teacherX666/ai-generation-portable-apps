@@ -1,0 +1,138 @@
+"""返工提示词的「净化」逻辑：要求只累积不覆盖，融合失败也有安全兜底。
+
+背景（2026-09-16）：旧实现在追加返工要求前，会先把提示词里已有的
+`【返工要求】` 段**整段删掉**，于是「上一轮刚修好的问题」在下一轮必然复发。
+本模块把「历次要求」从提示词正文里解耦出来单独累积，并保证三件事：
+
+1. 任何一次返工都不会丢掉历史要求（`merge_requirements`）；
+2. 提示词永远不超过 `SEEDANCE_PROMPT_MAX_CHARS`，且**永不抛错**
+   （旧实现在超长时直接让返工失败，用户拿不到补救路径）；
+3. AI 融合结果必须先通过契约校验（长度 / 素材令牌 / 标记）才能采用，
+   否则回退到安全拼接——坏结果绝不进生产。
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from collections.abc import Iterable, Sequence
+
+from feishu_generation_agent.domain.plan import (
+    SEEDANCE_PROMPT_MAX_CHARS,
+    _REFERENCE_TOKEN,
+)
+
+#: 与历史数据兼容的标记；新流程不再把它写进提示词，仅在兜底拼接时使用。
+REWORK_MARKER = "【返工要求】"
+
+# 兼容历史上被写成列表的返工条目（`- xxx` / `1. xxx` / `1、xxx`）。
+_LEGACY_ENTRY_PREFIX = re.compile(r"^\s*(?:[-*•]|\d+\s*[.、)])\s*")
+
+
+def _clip(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    return text[:limit]
+
+
+def split_legacy_requirements(prompt: str) -> tuple[str, list[str]]:
+    """拆出提示词里历史遗留的 `【返工要求】` 段。
+
+    返回 `(base_prompt, requirements)`。没有标记时原样返回、要求为空——
+    这样老 run 的返工历史能被接住，不会在升级后凭空丢失。
+    """
+    text = prompt or ""
+    if REWORK_MARKER not in text:
+        return text, []
+    head, _, tail = text.partition(REWORK_MARKER)
+    requirements: list[str] = []
+    for line in tail.splitlines():
+        cleaned = _LEGACY_ENTRY_PREFIX.sub("", line).strip()
+        if cleaned:
+            requirements.append(cleaned)
+    return head.rstrip(), requirements
+
+
+def merge_requirements(*groups: Iterable[str]) -> list[str]:
+    """按顺序累加多组要求，去重（保留首次出现的位置），忽略空白项。
+
+    这是「说过的绝不再丢」的唯一入口：调用方只做累加，永不做覆盖。
+    """
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for raw in group:
+            if not isinstance(raw, str):
+                continue
+            item = raw.strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            merged.append(item)
+    return merged
+
+
+def reference_token_counts(text: str) -> Counter[str]:
+    """统计 `@图片N` / `@视频N` / `@音频N` 多重集，用于校验融合没丢/没加素材。"""
+    return Counter(_REFERENCE_TOKEN.findall(text or ""))
+
+
+def is_acceptable_fusion(
+    fused: str | None,
+    *,
+    base_prompt: str,
+    max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
+) -> bool:
+    """融合结果是否可以采纳。任一契约不满足即返回 False（调用方回退拼接）。"""
+    if not isinstance(fused, str):
+        return False
+    text = fused.strip()
+    if not text or len(text) > max_chars:
+        return False
+    if REWORK_MARKER in text:
+        return False
+    return reference_token_counts(text) == reference_token_counts(base_prompt)
+
+
+def build_fallback_prompt(
+    base_prompt: str,
+    requirements: Sequence[str],
+    *,
+    max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
+) -> tuple[str, bool]:
+    """安全兜底：把**全部**要求拼在提示词后，永远不超长、永远不抛错。
+
+    返回 `(prompt, truncated)`。空间不足时优先保要求、牺牲原始画面描述；
+    连要求都放不下时从**最旧**的条目开始丢，最新的返工诉求优先保住。
+    """
+    base = base_prompt or ""
+    entries = [
+        item.strip()
+        for item in requirements
+        if isinstance(item, str) and item.strip()
+    ]
+    if not entries:
+        return _clip(base, max_chars), len(base) > max_chars
+
+    truncated = False
+    kept = list(entries)
+    while kept:
+        block = REWORK_MARKER + "\n".join(kept)
+        if len(block) + 1 <= max_chars:
+            break
+        if len(kept) == 1:
+            room = max(0, max_chars - 1 - len(REWORK_MARKER))
+            kept = [kept[0][:room]]
+            truncated = True
+            break
+        kept.pop(0)
+        truncated = True
+
+    block = REWORK_MARKER + "\n".join(kept)
+    base_room = max_chars - 1 - len(block)
+    if base_room <= 0:
+        return _clip(block, max_chars), True
+    clipped_base = base[:base_room].rstrip()
+    if len(clipped_base) != len(base):
+        truncated = True
+    return _clip(f"{clipped_base}\n{block}", max_chars), truncated

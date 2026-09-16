@@ -57,7 +57,6 @@ from feishu_generation_agent.domain.plan import (
     GenerationTask,
     TaskPlan,
     TaskType,
-    SEEDANCE_PROMPT_MAX_CHARS,
     reconcile_task_asset_coverage,
 )
 from feishu_generation_agent.domain.artifact import (
@@ -89,6 +88,12 @@ from feishu_generation_agent.integrations.video_reference import (
 from feishu_generation_agent.integrations.rag_prompt_optimizer import (
     fetch_knowledge_rules,
     format_knowledge_context,
+)
+from feishu_generation_agent.integrations.rework_prompt import (
+    build_fallback_prompt,
+    is_acceptable_fusion,
+    merge_requirements,
+    split_legacy_requirements,
 )
 from .state import AgentState
 
@@ -2474,6 +2479,29 @@ async def verify_and_download_artifacts(
         state, "verify_and_download_artifacts", services, operation
     )
 
+async def _rework_prompt_for_task(
+    services: GraphServices,
+    base_prompt: str,
+    requirements: list[str],
+) -> tuple[str, bool]:
+    """把「原始提示词 + 全部历史返工要求」融合成一条新提示词。
+
+    优先让 AI 融合（结果必须通过契约校验）；模型不可用、超时或结果不合约时
+    回退到安全拼接。两条路都保证不超过 `SEEDANCE_PROMPT_MAX_CHARS` 且不抛错，
+    所以返工不再因为「提示词过长」而失败。
+    """
+    fuse = getattr(services.planner, "fuse_rework_prompt", None)
+    if callable(fuse):
+        try:
+            fused = await fuse(base_prompt, requirements)
+        except Exception:
+            _LOGGER.warning("返工提示词 AI 融合失败，回退安全拼接", exc_info=True)
+            fused = None
+        if is_acceptable_fusion(fused, base_prompt=base_prompt):
+            return fused.strip(), False
+    return build_fallback_prompt(base_prompt, requirements)
+
+
 def _artifact_review_payload(state: AgentState) -> dict[str, Any]:
     payload = {
         "action": "review_artifacts",
@@ -2574,21 +2602,37 @@ async def review_artifacts(
                 raise _validation_error("请至少选择一条需要重跑的任务")
 
             feedback = decision.feedback.strip()
-            marker = "【返工要求】"
             updated_tasks: list[GenerationTask] = []
             for task in plan.tasks:
                 if task.task_id not in target_task_ids:
                     updated_tasks.append(task)
                     continue
-                existing = task.prompt
-                if marker in existing:
-                    existing = existing.split(marker, 1)[0].rstrip()
-                prompt = f"{existing}\n{marker}{feedback}"
-                if len(prompt) > SEEDANCE_PROMPT_MAX_CHARS:
-                    raise _validation_error(
-                        f"任务 {task.task_id} 添加返工要求后提示词过长"
-                    )
-                updated_tasks.append(task.model_copy(update={"prompt": prompt}))
+                # 老 run 的返工历史写在提示词正文里，先接住再并入累积清单，
+                # 否则升级后历史要求会凭空丢失。
+                legacy_base, legacy_requirements = split_legacy_requirements(
+                    task.prompt
+                )
+                base_prompt = task.rework_base_prompt or legacy_base
+                # 关键：只累加、不覆盖——上一轮修好的问题下一轮必须还在。
+                requirements = merge_requirements(
+                    task.rework_requirements,
+                    legacy_requirements,
+                    [feedback],
+                )
+                prompt, truncated = await _rework_prompt_for_task(
+                    services, base_prompt, requirements
+                )
+                task_updates: dict[str, Any] = {
+                    "prompt": prompt,
+                    "rework_requirements": requirements,
+                    "rework_base_prompt": base_prompt,
+                }
+                if truncated:
+                    task_updates["warnings"] = [
+                        *task.warnings,
+                        "返工要求过多，提示词已截断；历史要求仍完整保留",
+                    ]
+                updated_tasks.append(task.model_copy(update=task_updates))
 
             target_unit_ids = {
                 artifact.task_id

@@ -921,6 +921,23 @@ def validate_plan(
     return issues
 
 
+_REWORK_FUSION_SYSTEM_PROMPT = (
+    "你是生成模型提示词的改写器。把「原始提示词」与「历次返工要求」合并成一条"
+    "自然、可直接用于生成模型的提示词。\n"
+    "硬性要求：\n"
+    "1. 保留原始提示词里的全部画面信息（主体、场景、构图、动作、运镜、风格与"
+    "画质约束），不得删减。\n"
+    "2. 原始提示词中出现的每一个 @图片N / @视频N / @音频N 引用令牌都必须原样"
+    "保留，一个都不能增加、不能删除、不能改号。\n"
+    "3. 每一条返工要求都必须自然融入画面描述；一条都不能遗漏，也不得互相冲突——"
+    "若新旧要求冲突，以更新的要求为准，并把被替代的表述改写掉而不是并存。\n"
+    "4. 不要逐条粘贴返工要求的原文，不要输出「【返工要求】」这类标记或任何解释"
+    "性标题。\n"
+    f"5. 最终提示词不超过 {SEEDANCE_PROMPT_MAX_CHARS} 个字符。\n"
+    "只输出最终提示词正文，不要任何前后缀说明。"
+)
+
+
 class DeepSeekPlanner:
     def __init__(self, model: Any, *, max_output_count: int = 4) -> None:
         # reasoning_effort / thinking 必须直接写进模型配置再 bind，
@@ -953,6 +970,66 @@ class DeepSeekPlanner:
                 extra_body={"thinking": {"type": "disabled"}},
             )
         self.max_output_count = max_output_count
+        # 保留原始模型，供按需派生「融合模型」（见 _fuse_model）。
+        # 刻意不在构造期 bind：存量测试对构造期的 bind 次数有严格断言。
+        self._model = model
+
+    def _fuse_model(self) -> Any:
+        """派生出用于返工融合的模型副本：改写任务不需要推理预算，关掉思考。"""
+        model = self._model
+        if hasattr(model, "model_copy"):
+            return model.model_copy(
+                update={"extra_body": {"thinking": {"type": "disabled"}}}
+            )
+        return model
+
+    async def fuse_rework_prompt(
+        self,
+        original_prompt: str,
+        requirements: list[str],
+    ) -> str | None:
+        """把「原始提示词 + 全部历史返工要求」融合成一条可直接生成的新提示词。
+
+        任何失败（异常、空返回、非文本）都返回 None，由调用方回退到安全拼接——
+        融合能力不可用绝不能让返工本身失败。
+        """
+        entries = [
+            item.strip()
+            for item in requirements
+            if isinstance(item, str) and item.strip()
+        ]
+        if not entries:
+            return None
+        user_content = "\n".join(
+            [
+                "原始提示词：",
+                original_prompt,
+                "",
+                "历次返工要求（必须全部融入，一条都不能遗漏）：",
+                *[
+                    f"{index}. {item}"
+                    for index, item in enumerate(entries, 1)
+                ],
+            ]
+        )
+        messages = [
+            {"role": "system", "content": _REWORK_FUSION_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        try:
+            with tracing_context(enabled=False, parent=False):
+                response = await self._fuse_model().ainvoke(
+                    messages,
+                    config={"callbacks": []},
+                )
+        except Exception:
+            _LOGGER.warning("返工提示词融合调用失败", exc_info=True)
+            return None
+        content = self._response_content(response)
+        if not isinstance(content, str):
+            return None
+        text = content.strip()
+        return text or None
 
     async def plan(
         self,
