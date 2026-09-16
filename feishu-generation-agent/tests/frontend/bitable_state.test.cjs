@@ -32,6 +32,16 @@ const tasks = [
   },
 ];
 
+test("app persists and restores the selected bitable category", () => {
+  const app = readFileSync(
+    join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
+    "utf8",
+  );
+
+  assert.match(app, /feishu-agent\.active-category/);
+  assert.match(app, /BitableState\.createState\(initialBitableCategory\(\)\)/);
+  assert.match(app, /persistBitableCategory\(category\)/);
+});
 test("scan start, success and failure preserve explicit UI phases", () => {
   let state = BitableState.createState();
   state = BitableState.scanStarted(state, "animation");
@@ -48,7 +58,7 @@ test("scan start, success and failure preserve explicit UI phases", () => {
   assert.deepEqual(state.categories.animation.tasks, tasks);
 });
 
-test("claim success removes the task and conflict keeps it retryable", () => {
+test("claim success keeps the task marked as processing", () => {
   let state = BitableState.scanSucceeded(BitableState.createState(), "animation", tasks);
   state = BitableState.claimStarted(state, "rec-1", "animation");
   assert.deepEqual(state.claim, {
@@ -67,9 +77,83 @@ test("claim success removes the task and conflict keeps it retryable", () => {
   state = BitableState.claimSucceeded(state, "run-1");
   assert.equal(state.claim.phase, "ready");
   assert.equal(state.claim.runId, "run-1");
-  assert.deepEqual(state.categories.animation.tasks, []);
+  assert.equal(state.categories.animation.tasks.length, 1);
+  assert.equal(state.categories.animation.tasks[0].claimed_run_id, "run-1");
+  assert.equal(state.categories.animation.tasks[0].claim_status, "processing");
 });
 
+test("rescan keeps a claimed task when the backend excludes active runs", () => {
+  let state = BitableState.scanSucceeded(BitableState.createState(), "portrait", tasks);
+  state = BitableState.claimStarted(state, "rec-1", "portrait");
+  state = BitableState.claimSucceeded(state, "run-portrait");
+  state = BitableState.scanSucceeded(state, "portrait", []);
+
+  assert.equal(state.categories.portrait.tasks.length, 1);
+  assert.equal(state.categories.portrait.tasks[0].record_id, "rec-1");
+  assert.equal(state.categories.portrait.tasks[0].claimed_run_id, "run-portrait");
+});
+
+test("createState accepts a persisted category", () => {
+  assert.equal(BitableState.createState("portrait").activeCategory, "portrait");
+  assert.equal(BitableState.createState("invalid").activeCategory, "animation");
+});
+
+test("claim badge labels follow the persisted claim status", () => {
+  assert.equal(BitableState.claimBadge({ record_id: "rec-1" }), null);
+  assert.equal(BitableState.claimBadge(null), null);
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "processing" }),
+    { label: "分析中", tone: "busy" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "处理中" }),
+    { label: "处理中", tone: "busy" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "待审批" }),
+    { label: "待审批", tone: "attention" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "待确认成片" }),
+    { label: "待确认成片", tone: "attention" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "回写失败" }),
+    { label: "回写失败", tone: "danger" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1" }),
+    { label: "分析中", tone: "busy" },
+  );
+});
+
+test("rescan adopts the claim fields the backend now returns", () => {
+  let state = BitableState.scanSucceeded(
+    BitableState.createState(),
+    "animation",
+    tasks,
+  );
+  state = BitableState.claimStarted(state, "rec-1", "animation");
+  state = BitableState.claimSucceeded(state, "run-local");
+  // 后端现在会把已领取的记录一起带回来（带真实状态），服务端数据优先。
+  state = BitableState.scanSucceeded(state, "animation", [
+    { ...tasks[0], claimed_run_id: "run-local", claim_status: "待审批" },
+  ]);
+
+  assert.equal(state.categories.animation.tasks.length, 1);
+  assert.equal(state.categories.animation.tasks[0].claimed_run_id, "run-local");
+  assert.equal(state.categories.animation.tasks[0].claim_status, "待审批");
+});
+
+test("task list renders the claim badge from the shared helper", () => {
+  const app = readFileSync(
+    join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
+    "utf8",
+  );
+
+  assert.match(app, /BitableState\.claimBadge\(/);
+  assert.match(app, /bitable-task-badge/);
+});
 test("retry delivery has loading, success and failure states", () => {
   let state = BitableState.createState();
   state = BitableState.retryStarted(state, "run-1");
@@ -141,8 +225,13 @@ test("category tabs keep independent scan results", () => {
   );
 });
 
-test("claim success removes a task only from its category", () => {
+test("claim success retains the task only in its own category", () => {
   let state = BitableState.createState();
+  state = BitableState.scanSucceeded(
+    state,
+    "animation",
+    [{ record_id: "rec-animation" }],
+  );
   state = BitableState.scanSucceeded(
     state,
     "portrait",
@@ -151,8 +240,14 @@ test("claim success removes a task only from its category", () => {
   state = BitableState.claimStarted(state, "rec-portrait", "portrait");
   state = BitableState.claimSucceeded(state, "run-portrait");
 
-  assert.deepEqual(state.categories.portrait.tasks, []);
-  assert.deepEqual(state.categories.animation.tasks, []);
+  assert.equal(state.categories.portrait.tasks.length, 1);
+  assert.equal(
+    state.categories.portrait.tasks[0].claimed_run_id,
+    "run-portrait",
+  );
+  assert.equal(state.categories.animation.tasks.length, 1);
+  assert.equal(state.categories.animation.tasks[0].record_id, "rec-animation");
+  assert.equal(state.categories.animation.tasks[0].claimed_run_id, undefined);
   assert.equal(state.claim.category, "portrait");
 });
 

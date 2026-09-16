@@ -171,6 +171,32 @@ button {
 }
 .bitable-task h3 { margin-bottom: .25rem; }
 .bitable-task-meta { margin: 0; color: var(--muted); font-size: .76rem; }
+/* 已领取/进行中任务的状态徽章（#1：记录不再从列表消失，改为挂徽章） */
+.bitable-task-badge {
+  display: inline-block;
+  margin-top: .3rem;
+  padding: .1rem .45rem;
+  border: 1px solid var(--brand-border);
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand-dark);
+  font-size: .72rem;
+}
+.bitable-task-badge[data-tone="attention"] {
+  border-color: #e0c37a;
+  background: #fff0c9;
+  color: #68420d;
+}
+.bitable-task-badge[data-tone="danger"] {
+  border-color: #e6b3ad;
+  background: #fde4e1;
+  color: #7d241e;
+}
+.bitable-task-badge[data-tone="done"] {
+  border-color: #9bc1af;
+  background: #e1f1e8;
+  color: #14503c;
+}
 .bitable-task-warning { margin: .28rem 0 0; color: #a24b12; font-size: .76rem; }
 .bitable-task a { color: var(--brand); font-size: .8rem; overflow-wrap: anywhere; }
 .bitable-empty { margin: 0; color: var(--muted); font-size: .82rem; }

@@ -571,6 +571,15 @@
     state.pollTimer = globalThis.setInterval(() => poll(false), 1000);
   }
 
+  /**
+   * 列表里那条记录可能还没被后端刷新（刚点完「开始分析」），此时用本地
+   * 乐观状态的 runId 补上，徽章就不会闪一下消失。
+   */
+  function claimBadgeFor(task, claimedRunId) {
+    if (!claimedRunId) return null;
+    return BitableState.claimBadge({ ...task, claimed_run_id: claimedRunId });
+  }
+
   function renderBitableTasks() {
     const categoryState = BitableState.activeCategoryState(state.bitable);
     const scan = categoryState.scan;
@@ -591,12 +600,19 @@
     ) {
       bitableStatus.textContent = state.bitable.claim.error;
     } else if (scan.phase === "ready") {
-      const analyzingCount = tasks.filter((task) => task.claimed_run_id).length;
-      const claimableCount = tasks.length - analyzingCount;
-      if (claimableCount && analyzingCount) {
-        bitableStatus.textContent = `${claimableCount} 条可处理，${analyzingCount} 条分析中。`;
-      } else if (analyzingCount) {
-        bitableStatus.textContent = `${analyzingCount} 条任务分析中，可在当前列表查看进度。`;
+      const claimed = tasks.filter((task) => task.claimed_run_id);
+      const waitingCount = claimed.filter(
+        (task) => BitableState.claimBadge(task)?.tone === "attention",
+      ).length;
+      const claimableCount = tasks.length - claimed.length;
+      if (waitingCount) {
+        bitableStatus.textContent = `${
+          claimableCount ? `${claimableCount} 条可处理，` : ""
+        }${claimed.length} 条已领取，其中 ${waitingCount} 条等你处理。`;
+      } else if (claimableCount && claimed.length) {
+        bitableStatus.textContent = `${claimableCount} 条可处理，${claimed.length} 条已领取。`;
+      } else if (claimed.length) {
+        bitableStatus.textContent = `${claimed.length} 条任务已领取，可在当前列表查看进度。`;
       } else if (claimableCount) {
         bitableStatus.textContent = `发现 ${claimableCount} 条可处理任务，请手动选择一条。`;
       } else {
@@ -630,10 +646,15 @@
           ? state.bitable.claim.runId
           : null
       );
-      if (claimedRunId) {
-        identity.append(
-          element("p", "bitable-task-meta", "状态：分析中"),
+      const badge = claimBadgeFor(task, claimedRunId);
+      if (badge) {
+        const badgeNode = element(
+          "span",
+          "bitable-task-badge",
+          `状态：${badge.label}`,
         );
+        badgeNode.dataset.tone = badge.tone;
+        identity.append(badgeNode);
       }
       const link = element("a", "", "查看需求来源");
       link.href = task.source_url;

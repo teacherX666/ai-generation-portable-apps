@@ -971,6 +971,14 @@ def create_app(
                 "maker_name": task.maker_name,
                 "deliverable": task.deliverable,
                 "delivery_block_reason": task.delivery_block_reason,
+                # 已领取的记录现在会留在列表里，前端据此渲染状态徽章并跳回
+                # 对应运行（#1：以前这些记录直接消失，用户找不回来）。
+                "claim_status": (
+                    task.claim_status.value
+                    if task.claim_status is not None
+                    else None
+                ),
+                "claimed_run_id": task.claimed_run_id,
             }
         return task.model_dump(mode="json")
 

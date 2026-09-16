@@ -33,6 +33,10 @@ class ProductionTaskSummary(BaseModel):
     maker_open_id: str | None = None
     maker_name: str | None = None
     snapshot: ProductionSourceSnapshot
+    # 已领取的记录不再从扫描结果里剔除，而是把领取状态挂在摘要上，让任务
+    # 列表能显示「处理中 / 待审批 / 生成中…」的徽章并跳回对应运行。
+    claim_status: TableTaskStatus | None = None
+    claimed_run_id: str | None = None
 
     @computed_field
     @property

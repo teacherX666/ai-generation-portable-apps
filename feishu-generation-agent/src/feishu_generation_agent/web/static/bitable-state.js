@@ -138,6 +138,35 @@
     };
   }
 
+  /**
+   * 已领取任务的徽章文案与配色。
+   *
+   * 后端 `claim_status` 是 `TableTaskStatus` 的中文值（处理中/待审批/生成中…），
+   * 而刚点完「开始分析」时本地乐观状态写的是 `"processing"`，两种都要认。
+   * 返回 null 表示这条记录还没被领取。
+   */
+  const CLAIM_STATUS_META = {
+    processing: { label: "分析中", tone: "busy" },
+    待处理: { label: "待处理", tone: "busy" },
+    处理中: { label: "处理中", tone: "busy" },
+    生成中: { label: "生成中", tone: "busy" },
+    回写中: { label: "回写中", tone: "busy" },
+    待审批: { label: "待审批", tone: "attention" },
+    待确认成片: { label: "待确认成片", tone: "attention" },
+    已完成: { label: "已完成", tone: "done" },
+    失败: { label: "失败", tone: "danger" },
+    回写失败: { label: "回写失败", tone: "danger" },
+  };
+
+  function claimBadge(task) {
+    if (!task || !task.claimed_run_id) return null;
+    const raw = task.claim_status;
+    const meta = CLAIM_STATUS_META[raw];
+    if (meta) return { ...meta };
+    const text = typeof raw === "string" && raw ? raw : "分析中";
+    return { label: text, tone: "busy" };
+  }
+
   function retryStarted(state, runId) {
     return {
       ...state,
@@ -270,6 +299,7 @@
     claimStarted,
     claimSucceeded,
     claimConflict,
+    claimBadge,
     retryStarted,
     retrySucceeded,
     retryFailed,

@@ -265,7 +265,11 @@ async def test_service_lists_active_production_run_for_browser_restore(tmp_path)
     assert [(item.run_id, item.status.value) for item in active] == [
         (run_id, "处理中")
     ]
-    assert scanned_after_claim == []
+    # #1：已领取的记录不能从列表里消失，否则用户一点「开始分析」这条记录就
+    # 再也看不见了（要重新进审批页才能找回来）。它应该带着领取信息回来。
+    assert [item.record_id for item in scanned_after_claim] == ["rec-no-maker"]
+    assert scanned_after_claim[0].claimed_run_id == run_id
+    assert scanned_after_claim[0].claim_status is TableTaskStatus.PROCESSING
 
 
 async def test_service_keeps_scan_global_while_active_runs_are_owner_scoped(
@@ -294,9 +298,36 @@ async def test_service_keeps_scan_global_while_active_runs_are_owner_scoped(
         assert (
             await service.active_runs(owner_user_id="user-b")
         ) == []
-        assert await service.scan() == []
+        scanned = await service.scan()
+        assert [item.record_id for item in scanned] == ["rec-no-maker"]
+        assert scanned[0].claimed_run_id == run_id
     finally:
         await store.close()
+
+
+async def test_claim_refuses_a_record_that_is_already_claimed(tmp_path) -> None:
+    """列表现在会带回已领取的记录，所以领取入口必须自己挡住重复领取。"""
+
+    class Bitable:
+        async def ensure_schema(self, location):
+            return object()
+
+        async def list_tasks(self, location, schema, *, include_completed):
+            return [_task()]
+
+    service, store = await _production_service(
+        tmp_path,
+        bitable=Bitable(),
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+    )
+    try:
+        first_run_id = await service.claim("rec-no-maker")
+        with pytest.raises(RunConflict, match="当前不可领取"):
+            await service.claim("rec-no-maker")
+    finally:
+        await store.close()
+
+    assert first_run_id
 
 
 async def test_service_hides_owned_run_from_wrong_owner_mutations(

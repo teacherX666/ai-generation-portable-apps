@@ -105,18 +105,39 @@ class ProductionBitableService:
             schema,
             include_completed=self._include_completed_for_test,
         )
-        active_record_ids = {
-            binding.record_id
+        # 显示前先把绑定状态跟运行时对齐，否则徽章会一直停在领取那一刻的
+        # 「处理中」，而任务其实早就到了待审批 —— 单条失败不影响整个列表。
+        await self._reconcile_bindings(await self._store.list_active(*schema_key))
+        claimed_by_record = {
+            binding.record_id: binding
             for binding in await self._store.list_active(*schema_key)
         }
         return [
-            task
+            self._stamp_claim(
+                task,
+                claimed_by_record.get(task.record_id),
+            )
             for task in (
                 self._stamp_declared_type(task, source) for task in tasks
             )
             if source.matches_task_type(task.task_type)
-            and task.record_id not in active_record_ids
         ]
+
+    @staticmethod
+    def _stamp_claim(task, binding):
+        """把「这条记录已被领取」挂到摘要上，而不是把记录整条滤掉。
+
+        #1 之前是直接过滤掉已领取的记录，用户一点「开始分析」这条记录就从
+        列表里消失，只能进审批页才找得回来。
+        """
+        if binding is None:
+            return task
+        return task.model_copy(
+            update={
+                "claim_status": binding.status,
+                "claimed_run_id": binding.run_id,
+            }
+        )
 
     @staticmethod
     def _stamp_declared_type(task, source: ProductionTaskSource):
@@ -150,7 +171,7 @@ class ProductionBitableService:
             (item for item in await self.scan(category) if item.record_id == record_id),
             None,
         )
-        if task is None:
+        if task is None or task.claimed_run_id is not None:
             raise RunConflict("该生产表记录当前不可领取")
         if task.task_type not in self._enabled_task_types:
             raise RunConflict(f"{task.task_type or '未分类'}任务暂未启用")
@@ -192,6 +213,15 @@ class ProductionBitableService:
         # restart or an old cancellation can leave production_tasks at 待审批
         # while the runtime is already terminal; those rows otherwise render as
         # dead tasks whose buttons all return conflicts.
+        await self._reconcile_bindings(bindings)
+        return await self._store.list_active(
+            app_token,
+            table_id,
+            owner_user_id=owner_user_id,
+        )
+
+    async def _reconcile_bindings(self, bindings) -> None:
+        """把绑定状态跟运行时对齐；单条失败不能拖垮整个列表。"""
         for binding in bindings:
             try:
                 await self.sync_once(
@@ -212,11 +242,6 @@ class ProductionBitableService:
                 # A transient runtime/provider error must not prevent the task
                 # list from loading.  Keep the last persisted status for now.
                 continue
-        return await self._store.list_active(
-            app_token,
-            table_id,
-            owner_user_id=owner_user_id,
-        )
 
     async def recent_runs(self, *, owner_user_id: str = "prime-local"):
         location = await self._table_location()
