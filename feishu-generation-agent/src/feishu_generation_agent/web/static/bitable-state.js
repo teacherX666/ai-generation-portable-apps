@@ -42,9 +42,10 @@
     };
   }
 
-  function createState() {
+  function createState(activeCategory = "animation") {
+    const selected = CATEGORY_NAMES.has(activeCategory) ? activeCategory : "animation";
     return {
-      activeCategory: "animation",
+      activeCategory: selected,
       categories: {
         animation: createCategoryState(),
         portrait: createCategoryState(),
@@ -81,9 +82,14 @@
 
   function scanSucceeded(state, category, tasks) {
     const current = categoryState(state, category);
+    const incoming = Array.isArray(tasks) ? JSON.parse(JSON.stringify(tasks)) : [];
+    const incomingIds = new Set(incoming.map((task) => task.record_id));
+    const claimed = current.tasks.filter(
+      (task) => task.claimed_run_id && !incomingIds.has(task.record_id),
+    );
     return withCategory(state, category, {
       ...current,
-      tasks: Array.isArray(tasks) ? JSON.parse(JSON.stringify(tasks)) : [],
+      tasks: [...incoming, ...claimed],
       scan: { phase: "ready", error: "" },
     });
   }
@@ -109,9 +115,11 @@
     const category = state.claim.category;
     const nextState = withCategory(state, category, {
       ...categoryState(state, category),
-      tasks: categoryState(state, category).tasks.filter(
-        (task) => task.record_id !== recordId,
-      ),
+      tasks: categoryState(state, category).tasks.map((task) => (
+        task.record_id === recordId
+          ? { ...task, claimed_run_id: runId, claim_status: "processing" }
+          : task
+      )),
     });
     return {
       ...nextState,
@@ -209,6 +217,49 @@
     return Math.max(0, end - started);
   }
 
+  /**
+   * 把墙钟总耗时拆成「系统耗时」与「人工耗时」。
+   *
+   * `runElapsedMs` 是 created_at→updated_at 的墙钟时间，会把用户在审批页/审片页
+   * 停留的时间也算进去（实测某单 16分37秒 里有 2分15秒是用户在读计划），
+   * 于是数字虚高、看不出真正的瓶颈。这里按事件流把人工停留扣出来：
+   *  - `human_approval/started` 与前一个事件之间的间隔 = 计划审批停留
+   *  - `verify_and_download_artifacts/completed` 之后的第一个事件之前的间隔
+   *    = 成片审核停留
+   */
+  function runElapsedBreakdown(view, now = Date.now()) {
+    const totalMs = runElapsedMs(view, now);
+    if (totalMs === null) {
+      return { totalMs: null, humanMs: 0, systemMs: null };
+    }
+    const events = Array.isArray(view.events) ? view.events : [];
+    let humanMs = 0;
+    let awaitingReview = false;
+    for (let index = 0; index < events.length; index += 1) {
+      const current = events[index] || {};
+      const previous = index > 0 ? events[index - 1] || {} : null;
+      const currentMs = Date.parse(current.created_at);
+      const previousMs = previous ? Date.parse(previous.created_at) : NaN;
+      const gap =
+        Number.isFinite(currentMs) && Number.isFinite(previousMs)
+          ? Math.max(0, currentMs - previousMs)
+          : 0;
+      if (
+        current.node === "human_approval" &&
+        current.status === "started"
+      ) {
+        humanMs += gap;
+      } else if (awaitingReview) {
+        humanMs += gap;
+      }
+      awaitingReview =
+        current.node === "verify_and_download_artifacts" &&
+        current.status === "completed";
+    }
+    const human = Math.min(humanMs, totalMs);
+    return { totalMs, humanMs: human, systemMs: Math.max(0, totalMs - human) };
+  }
+
   return {
     createState,
     selectCategory,
@@ -226,5 +277,6 @@
     resetRunContext,
     runStage,
     runElapsedMs,
+    runElapsedBreakdown,
   };
 });

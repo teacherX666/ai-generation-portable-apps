@@ -2272,7 +2272,16 @@
     byId("thread-id").textContent = view.thread_id;
     const latestEvent = (view.events || []).at(-1);
     byId("current-node").textContent = BitableState.runStage(view) || latestEvent?.node || "—";
-    byId("run-duration").textContent = formatDuration(BitableState.runElapsedMs(view));
+    const elapsed = BitableState.runElapsedBreakdown(view);
+    if (elapsed.systemMs === null) {
+      byId("run-duration").textContent = "—";
+    } else {
+      const human =
+        elapsed.humanMs > 0
+          ? ` + 你审阅 ${formatDuration(elapsed.humanMs)}`
+          : "";
+      byId("run-duration").textContent = `${formatDuration(elapsed.systemMs)}${human}`;
+    }
     byId("document-title").textContent = view.approval.document_title || "未命名文档";
     byId("source-link").href = view.source_url;
     byId("document-revision").textContent = view.approval.revision ?? "—";
