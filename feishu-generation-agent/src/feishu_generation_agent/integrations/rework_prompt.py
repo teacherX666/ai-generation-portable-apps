@@ -7,8 +7,10 @@
 1. 任何一次返工都不会丢掉历史要求（`merge_requirements`）；
 2. 提示词永远不超过 `SEEDANCE_PROMPT_MAX_CHARS`，且**永不抛错**
    （旧实现在超长时直接让返工失败，用户拿不到补救路径）；
-3. AI 融合结果必须先通过契约校验（长度 / 素材令牌 / 标记）才能采用，
-   否则回退到安全拼接——坏结果绝不进生产。
+3. AI 融合结果必须先通过契约校验（长度 / 素材引用集合 / 标记）才能采用，
+   不合约时先重试（真实模型会偶发违规），重试用尽才回退安全拼接——
+   坏结果绝不进生产，且**每次拒绝都带原因进日志**（2026-09-16：这条路径
+   曾经完全静默，线上只能看到「返工要求又被直接贴在末尾」）。
 """
 
 from __future__ import annotations
@@ -84,6 +86,50 @@ def reference_token_counts(text: str) -> Counter[str]:
     return Counter(_REFERENCE_TOKEN.findall(text or ""))
 
 
+#: 融合被拒后的重试次数。
+#:
+#: 2026-09-16 生产事故：实测同一输入、同一 temperature=0，真实模型仍会偶发
+#: 违反契约（3 次里 2 次成功、1 次失败），而旧代码一次失败就回退安全拼接——
+#: 用户看到的是「返工要求又变成直接贴在提示词末尾」。偶发失败应该重试。
+_FUSION_ATTEMPTS = 3
+
+
+def fusion_rejection_reason(
+    fused: str | None,
+    *,
+    base_prompt: str,
+    max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
+) -> str | None:
+    """融合结果为什么不合约；通过契约时返回 None。
+
+    这是验收契约的**唯一真相**：`is_acceptable_fusion` 只是它的布尔包装，
+    回退前的日志也用它。这样「为什么这次没融合」在生产上有据可查——此前这条
+    路径完全静默，只能看到结果里莫名多出一段【返工要求】。
+
+    素材引用的判据是**集合**而不是多重集：要求「提及次数一模一样」会把
+    「同一张图少提了一次」这种无害改写也判死（实测 @图片1 出现 5 次→4 次被拒），
+    真正要防的是「整张图丢了」和「凭空多出一张图」。
+    """
+    if not isinstance(fused, str):
+        return "融合结果不是文本"
+    text = fused.strip()
+    if not text:
+        return "融合结果为空"
+    if len(text) > max_chars:
+        return f"融合结果超长（{len(text)} > {max_chars}）"
+    if REWORK_MARKER in text:
+        return f"融合结果里带出了 {REWORK_MARKER} 标记"
+    base_tokens = set(reference_token_counts(base_prompt))
+    fused_tokens = set(reference_token_counts(text))
+    lost = base_tokens - fused_tokens
+    if lost:
+        return "融合结果丢了素材引用：" + "、".join(sorted(lost))
+    added = fused_tokens - base_tokens
+    if added:
+        return "融合结果多出素材引用：" + "、".join(sorted(added))
+    return None
+
+
 def is_acceptable_fusion(
     fused: str | None,
     *,
@@ -91,14 +137,12 @@ def is_acceptable_fusion(
     max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
 ) -> bool:
     """融合结果是否可以采纳。任一契约不满足即返回 False（调用方回退拼接）。"""
-    if not isinstance(fused, str):
-        return False
-    text = fused.strip()
-    if not text or len(text) > max_chars:
-        return False
-    if REWORK_MARKER in text:
-        return False
-    return reference_token_counts(text) == reference_token_counts(base_prompt)
+    return (
+        fusion_rejection_reason(
+            fused, base_prompt=base_prompt, max_chars=max_chars
+        )
+        is None
+    )
 
 
 def rework_inputs(task: Any, feedback: str) -> tuple[str, list[str]]:
@@ -161,20 +205,40 @@ async def build_rework_prompt(
     比埋在正文中段的否定句更容易被执行，同时给正文腾出长度。
 
     融合器缺失、抛错或结果不合约时回退安全拼接，此时 `must_avoid` 为空。
+
+    融合结果不合约时会**重试** `_FUSION_ATTEMPTS` 次再回退：真实模型在同一
+    输入下仍会偶发违反契约，一次失败就整段贴会让用户以为「返工没生效」。
+    上游抛错不重试（httpx 客户端已带 max_retries），避免真故障时把返工拖长。
     """
     if fuse is not None:
-        try:
-            raw = await fuse(base_prompt, list(requirements))
-        except Exception:
-            _LOGGER.warning("返工提示词 AI 融合失败，回退安全拼接", exc_info=True)
-            raw = None
-        parsed = parse_fusion_payload(raw)
-        if parsed is not None:
+        for attempt in range(1, _FUSION_ATTEMPTS + 1):
+            try:
+                raw = await fuse(base_prompt, list(requirements))
+            except Exception:
+                _LOGGER.warning(
+                    "返工提示词 AI 融合调用失败，回退安全拼接", exc_info=True
+                )
+                break
+            parsed = parse_fusion_payload(raw)
+            if parsed is None:
+                _LOGGER.warning(
+                    "返工提示词融合结果无法解析（第 %d/%d 次尝试）",
+                    attempt,
+                    _FUSION_ATTEMPTS,
+                )
+                continue
             fused, must_avoid = parsed
-            if is_acceptable_fusion(
+            reason = fusion_rejection_reason(
                 fused, base_prompt=base_prompt, max_chars=max_chars
-            ):
+            )
+            if reason is None:
                 return fused, False, must_avoid
+            _LOGGER.warning(
+                "返工提示词融合结果不合契约（第 %d/%d 次尝试）：%s",
+                attempt,
+                _FUSION_ATTEMPTS,
+                reason,
+            )
     prompt, truncated = build_fallback_prompt(
         base_prompt, requirements, max_chars=max_chars
     )

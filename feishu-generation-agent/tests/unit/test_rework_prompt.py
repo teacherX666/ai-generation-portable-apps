@@ -279,3 +279,124 @@ def test_parse_fusion_payload_rejects_missing_prompt() -> None:
     assert parse_fusion_payload({"must_avoid": ["不要发光"]}) is None
     assert parse_fusion_payload(None) is None
     assert parse_fusion_payload("   ") is None
+
+
+# --- 2026-09-16 生产事故：融合偶发不合契约 → 静默掉进兜底拼接 ---
+#
+# 现象：用户在成片审核页填的返工要求，没有融进提示词，而是以
+# `原始提示词 + 【返工要求】+ 原话` 的形式被整段贴在末尾。
+# 实测（真实模型、同一输入、temperature=0）3 次里 2 次成功、1 次失败——
+# 失败是「偶发」而不是「必然」，但旧代码一次失败就回退，于是用户看到的就是
+# 「又变成直接加返工要求」。而且这条回退路径一行日志都没有，生产上无从查起。
+
+
+def test_fusion_accepted_when_token_mention_count_drops() -> None:
+    """契约是「素材不能丢/不能多」，不是「提及次数必须一模一样」。
+
+    实测被误拒的一例：base 里 @图片1 出现 5 次，融合后 4 次（同一张图，
+    只是少提了一次），旧的多重集比较直接判拒 → 掉进兜底拼接。
+    """
+    base = "@图片1 中的猫在跑，@图片1 的毛色是白色"
+    assert is_acceptable_fusion("@图片1 中的猫缓慢行走", base_prompt=base)
+
+
+def test_fusion_rejection_reason_names_each_violation() -> None:
+    from feishu_generation_agent.integrations.rework_prompt import (
+        fusion_rejection_reason,
+    )
+
+    assert fusion_rejection_reason(
+        "@图片1 中的猫缓慢行走", base_prompt="@图片1 中的猫在跑"
+    ) is None
+    assert "不是文本" in fusion_rejection_reason(None, base_prompt="x")
+    assert "为空" in fusion_rejection_reason("   ", base_prompt="x")
+    assert "超长" in fusion_rejection_reason(
+        "画" * (SEEDANCE_PROMPT_MAX_CHARS + 1), base_prompt="x"
+    )
+    assert "标记" in fusion_rejection_reason(
+        f"x\n{REWORK_MARKER}y", base_prompt="x"
+    )
+    assert "丢了素材引用" in fusion_rejection_reason(
+        "一只猫在跑", base_prompt="@图片1 中的猫在跑"
+    )
+    assert "多出素材引用" in fusion_rejection_reason(
+        "@图片1 与 @图片2 在跑", base_prompt="@图片1 在跑"
+    )
+
+
+async def test_build_rework_prompt_retries_rejected_fusion_until_accepted() -> None:
+    """偶发不合契约时应当重试，而不是一次失败就整段贴。
+
+    第 1 次故意丢令牌（旧代码在这里就回退了），第 2 次合规。
+    """
+    calls: list[int] = []
+
+    async def fuse(original_prompt: str, requirements: list[str]):
+        calls.append(1)
+        if len(calls) == 1:
+            return {"prompt": "丢了 @图片N 的结果", "must_avoid": []}
+        return {
+            "prompt": f"{original_prompt}（已融合）",
+            "must_avoid": ["手不得僵"],
+        }
+
+    prompt, truncated, must_avoid = await build_rework_prompt(
+        "@图片1 中的猫在跑", ["手不要僵"], fuse=fuse
+    )
+
+    assert len(calls) == 2
+    assert prompt == "@图片1 中的猫在跑（已融合）"
+    assert REWORK_MARKER not in prompt
+    assert truncated is False
+    assert must_avoid == ["手不得僵"]
+
+
+async def test_build_rework_prompt_gives_up_after_attempt_limit() -> None:
+    """重试用尽仍不合契约，才回退安全拼接（兜底不能让返工整体失败）。"""
+    calls: list[int] = []
+
+    async def fuse(original_prompt: str, requirements: list[str]):
+        calls.append(1)
+        return "丢了 @图片N 的结果"
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "@图片1 中的猫在跑", ["手不要僵"], fuse=fuse
+    )
+
+    assert len(calls) == 3
+    assert prompt == f"@图片1 中的猫在跑\n{REWORK_MARKER}手不要僵"
+
+
+async def test_build_rework_prompt_does_not_retry_upstream_exception(
+    caplog,
+) -> None:
+    """上游抛错不重试：httpx 客户端已经带了 max_retries=2，再叠重试只会拖慢返工。"""
+    calls: list[int] = []
+
+    async def fuse(original_prompt: str, requirements: list[str]):
+        calls.append(1)
+        raise RuntimeError("上游 500")
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse
+    )
+
+    assert len(calls) == 1
+    assert prompt == f"原始画面\n{REWORK_MARKER}手不要僵"
+
+
+async def test_build_rework_prompt_logs_rejection_reason(caplog) -> None:
+    """回退必须留下原因，否则生产上只能看到「又变成直接加返工要求」。"""
+    import logging
+
+    async def fuse(original_prompt: str, requirements: list[str]):
+        return {"prompt": "丢了 @图片N 的结果", "must_avoid": []}
+
+    with caplog.at_level(logging.WARNING):
+        await build_rework_prompt(
+            "@图片1 中的猫在跑", ["手不要僵"], fuse=fuse
+        )
+
+    joined = " ".join(record.getMessage() for record in caplog.records)
+    assert "丢了素材引用" in joined
+    assert "@图片1" in joined
