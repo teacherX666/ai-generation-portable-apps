@@ -167,6 +167,37 @@
     return { label: text, tone: "busy" };
   }
 
+  //: 运行状态文案（app.js 的 RUN_STATUS_UI）的 tone → 徽章 tone。
+  const BADGE_TONE_BY_RUN_TONE = {
+    running: "busy",
+    attention: "attention",
+    success: "done",
+    warning: "attention",
+    danger: "danger",
+    muted: "busy",
+  };
+
+  /**
+   * 徽章优先用「刚轮询到的运行状态」，拿不到才退回任务自带的 claim_status。
+   *
+   * `claim_status` 是扫描那一刻的快照，扫描要读整张飞书表，做不到高频；
+   * 而任务记录列表每隔几秒就会拉一次运行状态。两者取新鲜的那个，徽章才不会
+   * 一直停在「处理中」——这正是走查时看到的「状态不实时更新」。
+   *
+   * `runUi` 是 `{label, tone}`（由 app.js 的 statusUi 给出），传 null 表示
+   * 当前没有这个运行的新鲜状态。
+   */
+  function liveClaimBadge(task, claimedRunId, runUi) {
+    if (!claimedRunId) return null;
+    if (runUi && runUi.label) {
+      return {
+        label: runUi.label,
+        tone: BADGE_TONE_BY_RUN_TONE[runUi.tone] || "busy",
+      };
+    }
+    return claimBadge({ ...task, claimed_run_id: claimedRunId });
+  }
+
   function retryStarted(state, runId) {
     return {
       ...state,
@@ -300,6 +331,7 @@
     claimSucceeded,
     claimConflict,
     claimBadge,
+    liveClaimBadge,
     retryStarted,
     retrySucceeded,
     retryFailed,

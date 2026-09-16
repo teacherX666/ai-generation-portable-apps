@@ -151,8 +151,66 @@ test("task list renders the claim badge from the shared helper", () => {
     "utf8",
   );
 
-  assert.match(app, /BitableState\.claimBadge\(/);
+  assert.match(app, /BitableState\.liveClaimBadge\(/);
   assert.match(app, /bitable-task-badge/);
+});
+
+test("live claim badge prefers the freshly polled run status", () => {
+  const task = {
+    record_id: "rec-1",
+    claimed_run_id: "run-1",
+    claim_status: "处理中",
+  };
+
+  // 轮询到的新鲜运行状态优先：徽章要跟着运行走，而不是停在领取那一刻。
+  assert.deepEqual(
+    BitableState.liveClaimBadge(task, "run-1", {
+      label: "等待你审核",
+      tone: "attention",
+    }),
+    { label: "等待你审核", tone: "attention" },
+  );
+  assert.deepEqual(
+    BitableState.liveClaimBadge(task, "run-1", {
+      label: "正在生成内容",
+      tone: "running",
+    }),
+    { label: "正在生成内容", tone: "busy" },
+  );
+  assert.deepEqual(
+    BitableState.liveClaimBadge(task, "run-1", {
+      label: "生成完成",
+      tone: "success",
+    }),
+    { label: "生成完成", tone: "done" },
+  );
+  // 没有新鲜状态时退回任务自带的 claim_status。
+  assert.deepEqual(
+    BitableState.liveClaimBadge(task, "run-1", null),
+    { label: "处理中", tone: "busy" },
+  );
+  // 未领取的任务没有徽章。
+  assert.equal(
+    BitableState.liveClaimBadge({ record_id: "rec-2" }, null, {
+      label: "等待你审核",
+      tone: "attention",
+    }),
+    null,
+  );
+});
+
+test("任务记录 面板定时刷新，页面不可见时不刷", () => {
+  const app = readFileSync(
+    join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
+    "utf8",
+  );
+
+  // 走查时用户看到的问题：任务记录只能靠手动/偶发刷新，状态长期是旧的。
+  assert.match(app, /BITABLE_REFRESH_MS/);
+  assert.match(app, /setInterval\(refreshBitablePanel/);
+  assert.match(app, /document\.hidden/);
+  assert.match(app, /visibilitychange/);
+  assert.match(app, /BitableState\.liveClaimBadge\(/);
 });
 test("retry delivery has loading, success and failure states", () => {
   let state = BitableState.createState();

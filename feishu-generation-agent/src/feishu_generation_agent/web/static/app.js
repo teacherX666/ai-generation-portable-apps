@@ -572,12 +572,19 @@
   }
 
   /**
-   * 列表里那条记录可能还没被后端刷新（刚点完「开始分析」），此时用本地
-   * 乐观状态的 runId 补上，徽章就不会闪一下消失。
+   * 徽章文案：优先用任务记录列表刚轮询到的运行状态（新鲜），拿不到才退回
+   * 扫描时带的 claim_status（可能已经旧了）。
    */
   function claimBadgeFor(task, claimedRunId) {
     if (!claimedRunId) return null;
-    return BitableState.claimBadge({ ...task, claimed_run_id: claimedRunId });
+    const run = (state.bitable.recentRuns || []).find(
+      (item) => item.run_id === claimedRunId,
+    );
+    return BitableState.liveClaimBadge(
+      task,
+      claimedRunId,
+      run ? statusUi(run.status) : null,
+    );
   }
 
   function renderBitableTasks() {
@@ -602,7 +609,7 @@
     } else if (scan.phase === "ready") {
       const claimed = tasks.filter((task) => task.claimed_run_id);
       const waitingCount = claimed.filter(
-        (task) => BitableState.claimBadge(task)?.tone === "attention",
+        (task) => claimBadgeFor(task, task.claimed_run_id)?.tone === "attention",
       ).length;
       const claimableCount = tasks.length - claimed.length;
       if (waitingCount) {
@@ -679,6 +686,7 @@
       nodes.push(element("p", "bitable-empty", "没有可领取任务。"));
     }
     bitableTaskList.replaceChildren(...nodes);
+    bitableTaskList.dataset.taskSig = taskListSignature(tasks);
     renderRecentRuns();
   }
 
@@ -787,9 +795,58 @@
         });
       state.bitable = BitableState.recentSucceeded(state.bitable, merged);
       renderRecentRuns();
+      // 徽章文案取自这份新鲜状态，所以列表也要跟着重算（内容没变则不重建 DOM，
+      // 免得用户正要点「开始分析」时按钮被换掉）。
+      refreshTaskListIfChanged();
     } catch (error) {
       showError(error);
     }
+  }
+
+  // 任务记录 / 任务列表徽章每 5 秒对一次账。以前只有手动刷新、切分类或任务
+  // 结束时才更新，用户看到的就是「状态不实时」。飞书表格本身不在这里重扫
+  // （那要读整张表），所以「有没有新任务」仍以「刷新任务」按钮为准。
+  const BITABLE_REFRESH_MS = 5000;
+  let bitableRefreshTimer = null;
+  let bitableRefreshInFlight = false;
+
+  async function refreshBitablePanel() {
+    if (document.hidden || !state.modes.bitable) return;
+    if (state.busy || bitableRefreshInFlight) return;
+    bitableRefreshInFlight = true;
+    try {
+      await loadRecentRuns();
+    } finally {
+      bitableRefreshInFlight = false;
+    }
+  }
+
+  function startBitableRefresh() {
+    if (bitableRefreshTimer !== null) return;
+    bitableRefreshTimer = globalThis.setInterval(refreshBitablePanel, BITABLE_REFRESH_MS);
+    // 从别的标签页切回来时立刻对一次，别让用户盯着旧数据。
+    // 用可选调用是刻意的：这套前端的测试跑在自制的极简 DOM 上，不一定实现
+    // addEventListener；浏览器里它始终存在，缺了也只是少一次「切回来即刷新」。
+    document.addEventListener?.("visibilitychange", () => {
+      if (!document.hidden) refreshBitablePanel();
+    });
+  }
+
+  /** 任务列表内容（含徽章文案）没变就不重建 DOM，避免点击落空与闪烁。 */
+  function taskListSignature(tasks) {
+    return JSON.stringify(
+      (tasks || []).map((task) => [
+        task.record_id,
+        claimBadgeFor(task, task.claimed_run_id)?.label || "",
+      ]),
+    );
+  }
+
+  function refreshTaskListIfChanged() {
+    const current = BitableState.activeCategoryState(state.bitable);
+    const signature = taskListSignature(current.tasks);
+    if (bitableTaskList.dataset.taskSig === signature) return;
+    renderBitableTasks();
   }
 
   async function archiveBitableRun(runId) {
@@ -2775,4 +2832,5 @@
     loadPlannerPrompt();
   }
   configureModes();
+  startBitableRefresh();
 })();
