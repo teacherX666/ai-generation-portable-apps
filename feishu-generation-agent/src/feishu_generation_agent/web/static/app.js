@@ -777,7 +777,7 @@
     recentRunList.replaceChildren(...nodes);
   }
 
-  async function loadRecentRuns() {
+  async function loadRecentRuns({ silent = false } = {}) {
     if (!state.modes.bitable) return;
     try {
       const [activeRuns, recentRuns] = await Promise.all([
@@ -799,7 +799,9 @@
       // 免得用户正要点「开始分析」时按钮被换掉）。
       refreshTaskListIfChanged();
     } catch (error) {
-      showError(error);
+      // 后台定时刷新失败（服务重启中、飞书抖动）不该每 5 秒弹一次全局错误：
+      // 用户没法对它做任何事，手动「刷新任务」仍会把错误如实报出来。
+      if (!silent) showError(error);
     }
   }
 
@@ -815,7 +817,7 @@
     if (state.busy || bitableRefreshInFlight) return;
     bitableRefreshInFlight = true;
     try {
-      await loadRecentRuns();
+      await loadRecentRuns({ silent: true });
     } finally {
       bitableRefreshInFlight = false;
     }

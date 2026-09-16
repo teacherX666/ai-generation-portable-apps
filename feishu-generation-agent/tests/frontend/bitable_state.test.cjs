@@ -211,6 +211,9 @@ test("任务记录 面板定时刷新，页面不可见时不刷", () => {
   assert.match(app, /document\.hidden/);
   assert.match(app, /visibilitychange/);
   assert.match(app, /BitableState\.liveClaimBadge\(/);
+  // 后台定时刷新失败要静默：服务重启的几秒里不能每 5 秒弹一次全局错误。
+  assert.match(app, /loadRecentRuns\(\{ silent: true \}\)/);
+  assert.match(app, /if \(!silent\) showError\(error\)/);
 });
 test("retry delivery has loading, success and failure states", () => {
   let state = BitableState.createState();
