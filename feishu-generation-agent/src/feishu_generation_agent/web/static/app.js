@@ -12,6 +12,25 @@
   const PlannerPromptState = globalThis.PlannerPromptState;
   const ApiPaths = globalThis.ApiPaths;
 
+  const BITABLE_CATEGORY_STORAGE_KEY = "feishu-agent.active-category";
+
+  function initialBitableCategory() {
+    try {
+      const value = globalThis.localStorage?.getItem(BITABLE_CATEGORY_STORAGE_KEY);
+      return ["animation", "portrait", "image"].includes(value) ? value : "animation";
+    } catch {
+      return "animation";
+    }
+  }
+
+  function persistBitableCategory(category) {
+    try {
+      globalThis.localStorage?.setItem(BITABLE_CATEGORY_STORAGE_KEY, category);
+    } catch {
+      // Local storage is optional; category selection still works in-session.
+    }
+  }
+
   const state = {
     runId: null,
     view: null,
@@ -22,12 +41,14 @@
     providers: null,
     providerDefaults: null,
     providerPreferences: null,
-    bitable: BitableState.createState(),
+    bitable: BitableState.createState(initialBitableCategory()),
     review: ReviewState.createReviewState(),
     referenceUploads: ReferenceUploadState.createState(),
     referenceMutations: ReferenceMutationState.createState(),
     plannerPrompt: PlannerPromptState?.createPlannerPromptState?.() || null,
     artifactPreviewSignature: null,
+    artifactRetryTaskIds: new Set(),
+    artifactReviewRunId: null,
   };
   const byId = (id) => document.getElementById(id);
   const errorMessage = byId("error-message");
@@ -43,6 +64,7 @@
   const artifactReview = byId("artifact-review");
   const artifactList = byId("artifact-list");
   const artifactReviewMessage = byId("artifact-review-message");
+  const artifactResultLink = byId("artifact-result-table-link");
   const artifactReviewFeedbackBox = byId("artifact-review-feedback-box");
   const artifactReviewActions = byId("artifact-review-actions");
   const artifactReviewFeedback = byId("artifact-review-feedback");
@@ -111,6 +133,9 @@
   const EXPORTABLE_RUN_STATUSES = new Set([
     "succeeded", "completed_with_errors", "delivery_failed",
   ]);
+  const ARTIFACT_REVIEWABLE_STATUSES = new Set([
+    "waiting_review", "succeeded", "completed_with_errors", "delivery_failed",
+  ]);
   const RUN_STATUS_UI = {
     planning: { label: "正在生成计划", tone: "running", action: "系统正在读取文档并拆解任务，请稍候。" },
     running: { label: "正在执行", tone: "running", action: "任务正在处理中，页面会自动更新进度。" },
@@ -174,6 +199,45 @@
       : path;
   }
 
+  function artifactExtension(artifact) {
+    if (artifact.kind === "video") return ".mp4";
+    if (artifact.mime_type === "image/jpeg") return ".jpg";
+    if (artifact.mime_type === "image/webp") return ".webp";
+    return ".png";
+  }
+
+  async function downloadArtifact(artifact, button) {
+    if (!artifact?.preview_url) return;
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "\u4e0b\u8f7d\u4e2d...";
+    try {
+      const response = await fetch(agentUrl(artifact.preview_url), {
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      if (!blob.size) throw new Error("\u6587\u4ef6\u4e3a\u7a7a");
+      const taskId = String(artifact.task_id || "artifact").replace(/[^A-Za-z0-9._-]+/g, "-");
+      const artifactId = String(artifact.artifact_id || "artifact").slice(0, 12);
+      const filename = `feishu-${taskId}-${artifactId}${artifactExtension(artifact)}`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `\uff08${error.message}\uff09` : "";
+      showError(new Error(`\u6210\u7247\u4e0b\u8f7d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5${detail}`));
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  }
   async function api(url, options = {}) {
     const response = await fetch(agentUrl(url), options);
     const contentType = response.headers.get("content-type") || "";
@@ -210,10 +274,125 @@
   function providerOptions(kind) {
     return (state.providers?.[kind] || []).map((provider) => ({
       value: provider.name,
-      label: `${provider.label}${provider.reachable === false ? " (unavailable)" : ""}`,
+      label: `${provider.label}${
+        provider.configured === false
+          ? "（未配置）"
+          : provider.reachable === false
+            ? " (unavailable)"
+            : ""
+      }`,
       local: provider.mode === "local",
       reachable: provider.reachable,
+      configured: provider.configured,
+      model: provider.model,
+      capabilities: provider.capabilities || null,
     }));
+  }
+
+  function videoOptions() {
+    return providerOptions("video").filter((option) => !option.local);
+  }
+
+  function videoOptionFor(task) {
+    const options = videoOptions();
+    const selected = task.video_provider || state.providerDefaults?.video_provider;
+    return options.find((option) => option.value === selected) || options[0] || null;
+  }
+
+  function videoCapabilities(task) {
+    const option = videoOptionFor(task);
+    if (option?.capabilities) return option.capabilities;
+    return {
+      duration_min: 4,
+      duration_max: 15,
+      default_duration: 10,
+      resolutions: ["720p", "1080p"],
+      default_resolution: "720p",
+      aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"],
+      default_aspect_ratio: "16:9",
+      max_output_count: 4,
+      supports_audio: true,
+    };
+  }
+
+  function clampNumber(value, minimum, maximum) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return minimum;
+    return Math.min(maximum, Math.max(minimum, Math.round(number)));
+  }
+
+  function ratioValue(value) {
+    if (!value || value === "adaptive") return null;
+    const parts = String(value).toLowerCase().replace("×", "x").replace("*", "x").split(/[:x]/);
+    if (parts.length !== 2) return null;
+    const width = Number(parts[0]);
+    const height = Number(parts[1]);
+    if (!width || !height) return null;
+    return width / height;
+  }
+
+  function nearestSupportedRatio(value, ratios) {
+    if (ratios.includes(value)) return value;
+    const target = ratioValue(value);
+    if (target === null) return ratios[0] || "16:9";
+    const numeric = ratios.filter((item) => item !== "adaptive" && ratioValue(item) !== null);
+    if (!numeric.length) return ratios[0] || "16:9";
+    return numeric.reduce((best, item) => (
+      Math.abs(ratioValue(item) - target) < Math.abs(ratioValue(best) - target)
+        ? item
+        : best
+    ));
+  }
+
+  function normalizeVideoTaskPatch(task, option) {
+    const capabilities = option?.capabilities;
+    if (!capabilities) return { video_provider: option?.value || task.video_provider };
+    const duration = clampNumber(
+      task.duration ?? capabilities.default_duration,
+      capabilities.duration_min,
+      capabilities.duration_max,
+    );
+    const resolutions = capabilities.resolutions || [];
+    const resolution = resolutions.includes(task.resolution)
+      ? task.resolution
+      : (capabilities.default_resolution || resolutions[0] || "720p");
+    const aspectRatios = capabilities.aspect_ratios || [];
+    const aspectRatio = nearestSupportedRatio(
+      task.aspect_ratio,
+      aspectRatios.length ? aspectRatios : ["16:9"],
+    );
+    const outputCount = clampNumber(
+      task.output_count ?? 1,
+      1,
+      capabilities.max_output_count || 1,
+    );
+    return {
+      video_provider: option.value,
+      duration,
+      resolution,
+      aspect_ratio: aspectRatio,
+      output_count: outputCount,
+    };
+  }
+
+  function resolutionLabel(value) {
+    return String(value || "").toLowerCase() === "4k" ? "4K" : value;
+  }
+
+  function boundedNumberInput(value, options, onInput) {
+    const control = document.createElement("input");
+    control.className = "task-control";
+    control.type = "number";
+    control.min = String(options.min);
+    control.max = String(options.max);
+    control.step = String(options.step || 1);
+    control.value = String(value ?? options.min);
+    control.addEventListener("change", () => {
+      const next = clampNumber(control.value, options.min, options.max);
+      control.value = String(next);
+      onInput(next);
+    });
+    return control;
   }
 
   function renderAdvancedSettings() {
@@ -412,9 +591,17 @@
     ) {
       bitableStatus.textContent = state.bitable.claim.error;
     } else if (scan.phase === "ready") {
-      bitableStatus.textContent = tasks.length
-        ? `发现 ${tasks.length} 条可处理任务，请手动选择一条。`
-        : "当前没有需求附件可读且进度符合规则的可处理任务。";
+      const analyzingCount = tasks.filter((task) => task.claimed_run_id).length;
+      const claimableCount = tasks.length - analyzingCount;
+      if (claimableCount && analyzingCount) {
+        bitableStatus.textContent = `${claimableCount} 条可处理，${analyzingCount} 条分析中。`;
+      } else if (analyzingCount) {
+        bitableStatus.textContent = `${analyzingCount} 条任务分析中，可在当前列表查看进度。`;
+      } else if (claimableCount) {
+        bitableStatus.textContent = `发现 ${claimableCount} 条可处理任务，请手动选择一条。`;
+      } else {
+        bitableStatus.textContent = "当前没有需求附件可读且进度符合规则的可处理任务。";
+      }
     }
 
     const nodes = tasks.map((task) => {
@@ -438,14 +625,32 @@
           : "未指定";
         identity.append(element("p", "bitable-task-meta", `执行人：${executors}`));
       }
+      const claimedRunId = task.claimed_run_id || (
+        state.bitable.claim.recordId === task.record_id
+          ? state.bitable.claim.runId
+          : null
+      );
+      if (claimedRunId) {
+        identity.append(
+          element("p", "bitable-task-meta", "状态：分析中"),
+        );
+      }
       const link = element("a", "", "查看需求来源");
       link.href = task.source_url;
       link.target = "_blank";
       link.rel = "noreferrer";
-      const claim = element("button", "primary", "开始分析");
+      const claim = element(
+        "button",
+        claimedRunId ? "secondary" : "primary",
+        claimedRunId ? "查看当前任务" : "开始分析",
+      );
       claim.type = "button";
-      claim.disabled = state.busy || state.bitable.claim.phase === "loading" || task.deliverable === false;
-      claim.addEventListener("click", () => claimBitableTask(task.record_id));
+      if (claimedRunId) {
+        claim.addEventListener("click", () => viewRecentRun(claimedRunId));
+      } else {
+        claim.disabled = state.busy || state.bitable.claim.phase === "loading" || task.deliverable === false;
+        claim.addEventListener("click", () => claimBitableTask(task.record_id));
+      }
       card.append(identity, link, claim);
       return card;
     });
@@ -458,6 +663,20 @@
 
   function renderRecentRuns() {
     const runs = state.bitable.recentRuns || [];
+    const signature = JSON.stringify({
+      selected: state.runId,
+      busy: state.busy,
+      runs: runs.map((run) => [
+        run.run_id,
+        run.display_text,
+        run.status,
+        run.active,
+        run.result_table_url,
+        run.rerunnable,
+      ]),
+    });
+    if (recentRunList.dataset.renderSig === signature) return;
+    recentRunList.dataset.renderSig = signature;
     const activeCount = runs.filter((run) => run.active).length;
     runHistorySummary.textContent = runs.length
       ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${runs.length} 条`
@@ -794,6 +1013,7 @@
       || category === state.bitable.activeCategory
     ) return;
     state.bitable = BitableState.selectCategory(state.bitable, category);
+    persistBitableCategory(category);
     renderBitableTasks();
     if (BitableState.activeCategoryState(state.bitable).scan.phase === "idle") {
       await scanBitableTasks();
@@ -838,7 +1058,6 @@
     }
     if (
       state.modes.bitable
-      && state.bitable.activeCategory === "animation"
       && BitableState.activeCategoryState(state.bitable).scan.phase === "idle"
     ) {
       await scanBitableTasks();
@@ -847,7 +1066,16 @@
 
   function updateActionAvailability() {
     const canReview = state.view && state.view.status === "waiting_approval";
-    const canReviewArtifacts = state.view && state.view.status === "waiting_review";
+    const canReviewArtifacts = Boolean(
+      state.view
+      && ARTIFACT_REVIEWABLE_STATUSES.has(state.view.status)
+      && !state.view.delivery
+    );
+    const canAdjustArtifacts = Boolean(
+      canReviewArtifacts
+      && state.artifactRetryTaskIds.size > 0
+      && artifactReviewFeedback.value.trim()
+    );
     const status = state.view?.status;
     const statusInfo = statusUi(status);
     const conflict = ReviewState.conflictMessage(state.review);
@@ -855,20 +1083,25 @@
     rejectButton.disabled = state.busy || !canReview;
     cancelButton.disabled = state.busy || (!canReview && !canCancelRun);
     approveButton.disabled = state.busy || !ReviewState.canApprove(state.review);
-    retryDeliveryButton.disabled = state.busy || !EXPORTABLE_RUN_STATUSES.has(state.view?.status);
+    // 交付已成功时不再显示「导出到结果表」，避免重复导出看起来像“点了没反应”。
+    const deliverySucceeded = Boolean(
+      state.view?.delivery && state.view.delivery.status === "succeeded"
+    );
+    const canExportDelivery = EXPORTABLE_RUN_STATUSES.has(status) && !deliverySucceeded;
+    retryDeliveryButton.disabled = state.busy || !canExportDelivery;
     const retryableAssetIssues = (state.view?.approval?.ingest_issue_records || [])
       .filter((record) => record.severity === "asset" && record.code === "media_download_failed");
     retryFailedAssetsButton.disabled = state.busy || !canReview || retryableAssetIssues.length === 0;
     retryFailedAssetsButton.hidden = !canReview || retryableAssetIssues.length === 0;
     confirmArtifactsButton.disabled = state.busy || !canReviewArtifacts;
-    adjustArtifactsButton.disabled = state.busy || !canReviewArtifacts;
+    adjustArtifactsButton.disabled = state.busy || !canAdjustArtifacts;
     artifactReviewFeedback.disabled = state.busy || !canReviewArtifacts;
     const terminal = TERMINAL_RUN_STATUSES.has(state.view?.status);
     rerunButton.disabled = state.busy
       || state.runMode !== "bitable"
       || !RERUNNABLE_RUN_STATUSES.has(state.view?.status);
     rerunButton.hidden = state.runMode !== "bitable" || !RERUNNABLE_RUN_STATUSES.has(status);
-    retryDeliveryButton.hidden = !EXPORTABLE_RUN_STATUSES.has(status);
+    retryDeliveryButton.hidden = !canExportDelivery;
     rejectButton.hidden = !canReview;
     approveButton.hidden = !canReview;
     cancelButton.hidden = !(canReview || canCancelRun);
@@ -897,7 +1130,11 @@
 
   function renderEvents(events) {
     const list = byId("event-list");
-    const nodes = (events || []).map((event) => {
+    const source = events || [];
+    const signature = JSON.stringify(source);
+    if (list.dataset.renderSig === signature) return;
+    list.dataset.renderSig = signature;
+    const nodes = source.map((event) => {
       const item = element("li", "event-item");
       const meta = element("div", "event-meta");
       meta.append(
@@ -923,6 +1160,16 @@
   function field(labelText, control, wide = false) {
     const wrapper = element("div", wide ? "field field-wide" : "field");
     wrapper.append(element("label", "", labelText), control);
+    return wrapper;
+  }
+
+  function videoField(labelText, control, hintText = "") {
+    const wrapper = element("div", "video-param-field", "");
+    wrapper.append(
+      element("label", "video-param-label", labelText),
+      control,
+      element("span", "video-param-hint", hintText),
+    );
     return wrapper;
   }
 
@@ -961,6 +1208,7 @@
 
   function providerPicker(task) {
     const control = document.createElement("select");
+    control.className = "task-control";
     const options = imageProviderOptions(task);
     const preferred = state.providerDefaults?.image_provider || options[0]?.value || "";
     options.forEach((option) => {
@@ -976,22 +1224,25 @@
   }
   function videoProviderPicker(task) {
     const control = document.createElement("select");
-    const options = providerOptions("video");
-    const preferred = state.providerDefaults?.video_provider || "aiport";
+    control.className = "task-control";
+    const options = videoOptions();
+    const defaultModel = state.providerDefaults?.video_provider;
+    const selected = options.some((option) => option.value === task.video_provider)
+      ? task.video_provider
+      : (options.some((option) => option.value === defaultModel)
+        ? defaultModel
+        : options[0]?.value || "");
     options.forEach((option) => {
       const node = element("option", "", option.label);
       node.value = option.value;
-      node.selected = (task.video_provider || preferred) === option.value;
+      node.selected = selected === option.value;
       control.append(node);
     });
-    if (!options.some((option) => option.value === (task.video_provider || preferred))) {
-      const node = element("option", "", `${task.video_provider} (unavailable)`);
-      node.value = task.video_provider || preferred;
-      node.selected = true;
-      control.append(node);
-    }
+    control.disabled = options.length <= 1;
     control.addEventListener("change", () => {
-      updateTask(task.task_id, { video_provider: control.value });
+      const option = options.find((item) => item.value === control.value);
+      updateTask(task.task_id, normalizeVideoTaskPatch(task, option));
+      render(state.view, { refreshTasks: true });
     });
     return control;
   }
@@ -1006,9 +1257,9 @@
       return;
     }
     const video = (providers.video || []).find((p) => p.name === defaults.video_provider);
-    const videoText = video && video.mode === "local"
-      ? (video.reachable === false ? "视频：本地 MiniMax H3（离线）" : "视频：本地 MiniMax H3（免费）")
-      : "视频：Seedance（付费）";
+    const videoText = video && video.mode !== "local"
+      ? `视频：${video.label || "Seedance 2.5"}（付费）`
+      : (video?.reachable === false ? "视频：本地 MiniMax H3（离线）" : "视频：本地 MiniMax H3（免费）");
     const imageText = defaults.image_provider === "aiport"
       ? "图片：本地 Qwen（免费）"
       : "图片：云模型（付费）";
@@ -1026,13 +1277,20 @@
 
   function ratioPicker(task) {
     const control = document.createElement("select");
-    IMAGE_ASPECT_RATIOS.forEach((ratio) => {
-      const option = element("option", "", ratio);
+    control.className = "task-control";
+    const capabilities = task.task_type === "image_to_video"
+      ? videoCapabilities(task)
+      : null;
+    const ratios = capabilities?.aspect_ratios?.length
+      ? capabilities.aspect_ratios
+      : IMAGE_ASPECT_RATIOS;
+    ratios.forEach((ratio) => {
+      const option = element("option", "", ratio === "adaptive" ? "自适应" : ratio);
       option.value = ratio;
       option.selected = task.aspect_ratio === ratio;
       control.append(option);
     });
-    if (!IMAGE_ASPECT_RATIOS.includes(task.aspect_ratio)) {
+    if (!ratios.includes(task.aspect_ratio)) {
       const option = element("option", "", task.aspect_ratio || "未选择");
       option.value = task.aspect_ratio || "";
       option.selected = true;
@@ -1044,6 +1302,58 @@
     return control;
   }
 
+  function resolutionPicker(task) {
+    const capabilities = videoCapabilities(task);
+    const control = document.createElement("select");
+    control.className = "task-control";
+    const resolutions = capabilities?.resolutions?.length
+      ? capabilities.resolutions
+      : ["720p", "1080p"];
+    resolutions.forEach((resolution) => {
+      const option = element("option", "", resolutionLabel(resolution));
+      option.value = resolution;
+      option.selected = task.resolution === resolution;
+      control.append(option);
+    });
+    if (!resolutions.includes(task.resolution)) {
+      const option = element("option", "", task.resolution || "未选择");
+      option.value = task.resolution || "";
+      option.selected = true;
+      control.append(option);
+    }
+    control.title = `可选：${resolutions.map(resolutionLabel).join("、")}`;
+    control.addEventListener("change", () => {
+      updateTask(task.task_id, { resolution: control.value });
+    });
+    return control;
+  }
+
+  function durationInput(task) {
+    const capabilities = videoCapabilities(task);
+    return boundedNumberInput(
+      task.duration ?? capabilities.default_duration,
+      {
+        min: capabilities.duration_min,
+        max: capabilities.duration_max,
+        hint: `${capabilities.duration_min}-${capabilities.duration_max} 秒`,
+      },
+      (value) => updateTask(task.task_id, { duration: value }),
+    );
+  }
+
+  function outputCountInput(task) {
+    const capabilities = videoCapabilities(task);
+    const maximum = capabilities.max_output_count || 1;
+    return boundedNumberInput(
+      task.output_count ?? 1,
+      {
+        min: 1,
+        max: maximum,
+        hint: `1-${maximum} 条候选`,
+      },
+      (value) => updateTask(task.task_id, { output_count: value }),
+    );
+  }
   function deliveryCropToggle(task) {
     const wrapper = element("label", "task-crop-toggle", "");
     const control = document.createElement("input");
@@ -1608,6 +1918,68 @@
     byId("excluded-asset-list").replaceChildren(...rows);
   }
 
+  /** 返工对比：这条新提示词怎么来的、跟改前比动了哪几句。 */
+  function reworkComparisonPanel(task) {
+    const diffApi =
+      typeof globalThis.PromptDiff === "object" ? globalThis.PromptDiff : null;
+    if (!diffApi) return null;
+    const comparison = diffApi.reworkComparison(task);
+    if (!comparison.hasRework) return null;
+
+    const box = element("div", "rework-compare");
+    const head = element("div", "rework-compare-head");
+    head.append(
+      element("strong", "", "返工对比"),
+      element(
+        "span",
+        "rework-compare-stats",
+        `新增 ${comparison.stats.added} 句 · 删除 ${comparison.stats.removed} 句 · 保留 ${comparison.stats.unchanged} 句`,
+      ),
+    );
+    box.append(head);
+
+    if (comparison.requirements.length) {
+      box.append(
+        element(
+          "div",
+          "rework-compare-label",
+          "历次返工要求（只累积、不覆盖）",
+        ),
+      );
+      const list = element("ol", "rework-compare-requirements");
+      comparison.requirements.forEach((item) => {
+        list.append(element("li", "", item));
+      });
+      box.append(list);
+    }
+
+    box.append(
+      element("div", "rework-compare-label", "改前原文（已冻结，不会被后续返工覆盖）"),
+      element("pre", "rework-compare-base", comparison.basePrompt),
+    );
+
+    if (comparison.hasChanges) {
+      box.append(element("div", "rework-compare-label", "改后差异"));
+      const diff = element("div", "rework-compare-diff");
+      comparison.segments.forEach((segment) => {
+        if (segment.type === "added") {
+          diff.append(element("span", "diff-added", segment.text));
+        } else if (segment.type === "removed") {
+          diff.append(element("span", "diff-removed", segment.text));
+        } else {
+          diff.append(element("span", "diff-same", segment.text));
+        }
+      });
+      box.append(diff);
+    } else {
+      box.append(element("div", "rework-compare-label", "改后与改前一致"));
+    }
+
+    const wrapper = element("div", "field field-wide");
+    wrapper.append(element("label", "", "返工对比"), box);
+    return wrapper;
+  }
+
   function renderTask(task) {
     const card = element("article", "task-card");
     const titleRow = element("div", "task-title-row");
@@ -1646,12 +2018,16 @@
         }, 5, "task-negative-editor"),
         true,
       ),
-      field("画面比例", ratioPicker(task)),
-      field("生成数量", textInput(task.output_count, (value) => {
-        updateTask(task.task_id, { output_count: Number(value) });
-      }, "number")),
     );
+    const reworkPanel = reworkComparisonPanel(task);
+    if (reworkPanel) grid.append(reworkPanel);
     if (task.task_type === "image_to_image") {
+      grid.append(
+        field("画面比例", ratioPicker(task)),
+        field("生成数量", textInput(task.output_count, (value) => {
+          updateTask(task.task_id, { output_count: Number(value) });
+        }, "number")),
+      );
       grid.append(field("裁剪交付", deliveryCropToggle(task), true));
       grid.append(field("图片尺寸", textInput(task.image_size, (value) => {
         updateTask(task.task_id, { image_size: value });
@@ -1675,16 +2051,17 @@
       })));
       grid.append(field("画风预设", stylePresets(task), true));
     } else {
-      grid.append(
-        field("视频时长", textInput(task.duration, (value) => {
-          updateTask(task.task_id, { duration: Number(value) });
-        }, "number")),
-        field("分辨率", textInput(task.resolution, (value) => {
-          updateTask(task.task_id, { resolution: value });
-        })),
+      const capabilities = videoCapabilities(task);
+      const modelOption = videoOptionFor(task);
+      const section = element("section", "video-param-section");
+      const heading = element("div", "video-param-heading");
+      heading.append(
+        element("span", "video-param-title", "生成参数"),
+        element("span", "video-param-model", modelOption?.label || task.video_provider || ""),
       );
-      grid.append(field("Video model", videoProviderPicker(task)));
+
       const audio = document.createElement("select");
+      audio.className = "task-control";
       [["true", "开启"], ["false", "关闭"]].forEach(([value, label]) => {
         const option = element("option", "", label);
         option.value = value;
@@ -1694,7 +2071,43 @@
       audio.addEventListener("change", () => {
         updateTask(task.task_id, { generate_audio: audio.value === "true" });
       });
-      grid.append(field("声音", audio));
+
+      const parameterGrid = element("div", "video-param-grid");
+      parameterGrid.append(
+        videoField("视频模型", videoProviderPicker(task), "切换后自动校正参数"),
+        videoField(
+          "画面比例",
+          ratioPicker(task),
+          `支持 ${capabilities.aspect_ratios.length} 种比例`,
+        ),
+        videoField(
+          "分辨率",
+          resolutionPicker(task),
+          `可选 ${capabilities.resolutions.map(resolutionLabel).join(" / ")}`,
+        ),
+        videoField(
+          "视频时长",
+          durationInput(task),
+          `${capabilities.duration_min}-${capabilities.duration_max} 秒`,
+        ),
+        videoField(
+          "生成数量",
+          outputCountInput(task),
+          `1-${capabilities.max_output_count} 条候选`,
+        ),
+        videoField("声音", audio, "按需求开启"),
+      );
+
+      const resolutionText = capabilities.resolutions.map(resolutionLabel).join(" / ");
+      section.append(heading, parameterGrid);
+      section.append(
+        element(
+          "p",
+          "task-model-capability",
+          `当前模型能力：${capabilities.duration_min}-${capabilities.duration_max} 秒 · ${resolutionText} · 最多 ${capabilities.max_output_count} 条候选`,
+        ),
+      );
+      grid.append(section);
     }
 
     const notes = element("div", "task-notes");
@@ -1707,6 +2120,49 @@
 
   function renderArtifactReview(view) {
     const artifacts = Array.isArray(view.artifacts) ? view.artifacts : [];
+    const canReviewArtifacts = Boolean(
+      ARTIFACT_REVIEWABLE_STATUSES.has(view.status) && !view.delivery
+    );
+    // 结果表链接常驻在「成片与结果」面板：只要运行已有成片或已交付，
+    // 就把共享结果表地址展示出来，避免导出后链接一闪而过。
+    const resultTableUrl = (artifacts.length > 0 || view.delivery)
+      ? (view.result_table_url || view.delivery?.result_table_url || "")
+      : "";
+    if (resultTableUrl) {
+      artifactResultLink.href = resultTableUrl;
+      artifactResultLink.hidden = false;
+    } else {
+      artifactResultLink.removeAttribute("href");
+      artifactResultLink.hidden = true;
+    }
+    const validArtifactTaskIds = new Set(
+      artifacts.map((artifact) => artifact.task_id)
+    );
+    if (
+      canReviewArtifacts
+      && artifacts.length > 0
+      && state.artifactReviewRunId !== view.run_id
+    ) {
+      const decision = view.artifact_review?.decision;
+      const restoredTaskIds = Array.isArray(decision?.task_ids)
+        ? decision.task_ids.filter((taskId) => validArtifactTaskIds.has(taskId))
+        : [];
+      state.artifactReviewRunId = view.run_id;
+      state.artifactRetryTaskIds = new Set(restoredTaskIds);
+      const restoredFeedback = view.artifact_review?.feedback;
+      if (typeof restoredFeedback === "string") {
+        artifactReviewFeedback.value = restoredFeedback.trim();
+      }
+    }
+    if (canReviewArtifacts && artifacts.length > 0) {
+      for (const taskId of [...state.artifactRetryTaskIds]) {
+        if (!validArtifactTaskIds.has(taskId)) {
+          state.artifactRetryTaskIds.delete(taskId);
+        }
+      }
+    } else if (view.delivery || TERMINAL_RUN_STATUSES.has(view.status)) {
+      state.artifactRetryTaskIds.clear();
+    }
     // 成片预览里的 <video> 重建成本高，而审批页每 1 秒轮询一次。若成片与
     // 状态都没变就跳过重绘，否则视频元素会被反复销毁重建，导致卡顿/一直加载。
     const signature = JSON.stringify({
@@ -1746,7 +2202,6 @@
         : "本次运行未生成成片，请在下方的失败原因中查看详情。";
       return;
     }
-    const canReviewArtifacts = view.status === "waiting_review";
     artifactReviewMessage.textContent = canReviewArtifacts
       ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
       : view.status === "delivery_failed"
@@ -1760,7 +2215,28 @@
       const size = typeof artifact.size === "number"
         ? `${(artifact.size / 1024 / 1024).toFixed(1)} MB`
         : "—";
-      card.append(element("figcaption", "", `${label} · ${size}`));
+      const caption = element("figcaption", "", `${label} · ${size}`);
+      if (canReviewArtifacts) {
+        const choice = element("label", "artifact-retry-choice", "");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = state.artifactRetryTaskIds.has(artifact.task_id);
+        checkbox.setAttribute("aria-label", `选择重跑任务 ${artifact.task_id}`);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) state.artifactRetryTaskIds.add(artifact.task_id);
+          else state.artifactRetryTaskIds.delete(artifact.task_id);
+          updateActionAvailability();
+        });
+        choice.append(checkbox, element("span", "", "选择此条重跑"));
+        caption.append(choice);
+      }
+      const downloadButton = document.createElement("button");
+      downloadButton.type = "button";
+      downloadButton.className = "artifact-download-button";
+      downloadButton.textContent = artifact.kind === "video" ? "\u4e0b\u8f7d\u89c6\u9891" : "\u4e0b\u8f7d\u56fe\u7247";
+      downloadButton.addEventListener("click", () => downloadArtifact(artifact, downloadButton));
+      caption.append(downloadButton);
+      card.append(caption);
       if (artifact.kind === "video") {
         const video = document.createElement("video");
         video.controls = true;
@@ -1817,12 +2293,14 @@
     byId("langsmith-warning").hidden = !view.privacy?.langsmith_tracing;
     renderEvents(view.events);
 
-    const providerNames = {
-      seedance: "Seedance",
-      chiyun: "Chiyun",
-      volcengine_portrait: "真人视频",
-      aiport: "本地模型",
-    };
+        const providerNames = {
+          "seedance2.0": "Seedance 2.0",
+          "seedance2.5": "Seedance 2.5",
+          seedance: "Seedance",
+          chiyun: "Chiyun",
+          volcengine_portrait: "真人视频",
+          aiport: "本地模型",
+        };
     const executionErrors = (view.execution_records || [])
       .filter((record) => record?.error?.message || record?.status === "timed_out")
       .map((record) => {
@@ -1977,6 +2455,7 @@
       state.review = ReviewState.createReviewState();
       state.referenceMutations = ReferenceMutationState.createState();
       state.artifactPreviewSignature = null;
+          state.artifactRetryTaskIds = new Set();
       await poll(true);
       startPolling();
       renderRecentRuns();
@@ -2003,6 +2482,7 @@
       state.referenceUploads = ReferenceUploadState.createState();
       state.referenceMutations = ReferenceMutationState.createState();
       state.artifactPreviewSignature = null;
+          state.artifactRetryTaskIds = new Set();
       await poll(true);
       startPolling();
       await loadRecentRuns();
@@ -2051,18 +2531,54 @@
   }
 
   async function submitArtifactReview(action) {
-    if (!state.runId || state.busy || state.view?.status !== "waiting_review") return;
+    if (
+      !state.runId
+      || state.busy
+      || !state.view
+      || !ARTIFACT_REVIEWABLE_STATUSES.has(state.view.status)
+      || state.view.delivery
+    ) return;
     const body = { action };
     if (action === "adjust") {
       body.feedback = artifactReviewFeedback.value;
+      body.task_ids = [...state.artifactRetryTaskIds];
       if (!body.feedback || !body.feedback.trim()) {
         showError(new Error("请填写调整意见"));
+        return;
+      }
+      if (!body.task_ids.length) {
+        showError(new Error("请至少选择一条需要重跑的任务"));
         return;
       }
     }
     setBusy(true);
     clearError();
     try {
+      if (action === "adjust" && state.runMode === "bitable") {
+        const created = await api(
+          `/api/bitable/runs/${state.runId}/rerun-selected`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
+        state.runId = created.run_id;
+        state.runMode = "bitable";
+        state.review = ReviewState.createReviewState();
+        state.referenceUploads = ReferenceUploadState.createState();
+        state.referenceMutations = ReferenceMutationState.createState();
+        state.artifactPreviewSignature = null;
+        state.artifactRetryTaskIds = new Set();
+        state.artifactReviewRunId = null;
+        artifactReviewFeedback.value = "";
+        await poll(true);
+        startPolling();
+        await loadRecentRuns();
+        renderRecentRuns();
+        document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
+        return;
+      }
       await api(`/api/runs/${state.runId}/artifact-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2101,6 +2617,7 @@
   byId("approve-button").addEventListener("click", () => submitDecision("approve"));
   confirmArtifactsButton.addEventListener("click", () => submitArtifactReview("confirm"));
   adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));
+  artifactReviewFeedback.addEventListener("input", updateActionAvailability);
   rerunButton.addEventListener("click", () => rerunBitableTask());
   retryFailedAssetsButton.addEventListener("click", async () => {
     if (!state.runId || state.busy || state.view?.status !== "waiting_approval") return;

@@ -214,10 +214,11 @@
           <div class="panel-heading">
             <h3>成片与结果</h3>
             <p id="artifact-review-message" class="mode-message">查看生成素材，确认满意后导出到多维表格「结果」列。</p>
+            <a id="artifact-result-table-link" class="result-table-link" target="_blank" rel="noreferrer" hidden>查看结果表</a>
           </div>
           <div id="artifact-list" class="artifact-list"></div>
           <div id="artifact-review-feedback-box" class="feedback-box">
-            <label for="artifact-review-feedback">调整意见（不满意时填写）</label>
+            <label for="artifact-review-feedback">返工要求（仅用于选中任务）</label>
             <textarea
               id="artifact-review-feedback"
               rows="3"
@@ -229,7 +230,7 @@
               导出到结果表
             </button>
             <button id="adjust-artifacts-button" type="button" class="secondary">
-              不满意，退回调整
+              重跑选中任务
             </button>
           </div>
         </section>
@@ -282,7 +283,7 @@
           <label for="advanced-image-provider">默认图片模型</label>
           <select id="advanced-image-provider"></select>
         </div>
-        <p class="planner-prompt-note">这里设置新任务默认模型；每个任务下方的 Video model / 出图模型才是该任务实际使用的模型。</p>
+        <p class="planner-prompt-note">这里设置新任务默认模型；每个任务下方的视频模型 / 出图模型才是该任务实际使用的模型。</p>
         <p id="advanced-settings-feedback" class="planner-prompt-feedback" aria-live="polite"></p>
         <div class="planner-prompt-actions">
           <button id="advanced-settings-save" type="button" class="primary">保存模型偏好</button>
@@ -328,7 +329,8 @@
     <script src="static/reference-upload-state.js" defer></script>
     <script src="static/api-paths.js" defer></script>
     <script src="static/planner-prompt-state.js" defer></script>
-    <script src="static/app.js?v=20260910-1" defer></script>
+    <script src="static/prompt-diff.js" defer></script>
+    <script src="static/app.js?v=20260916-prompt-diff" defer></script>
     <script src="static/effects.js?v=20260910-fx-perf" defer></script>
   </body>
 </html>
