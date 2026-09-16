@@ -10,6 +10,7 @@ from feishu_generation_agent.domain.document import (
     RequirementRequest,
     build_planning_prompt_snapshot,
 )
+from feishu_generation_agent.domain.plan import ApprovalDecision
 from feishu_generation_agent.domain.production_bitable import ProductionTaskSummary
 from feishu_generation_agent.graph.runtime import (
     RunConflict,
@@ -38,6 +39,15 @@ _ACTIVE_STATUSES = {
     "delivery_failed": TableTaskStatus.WRITEBACK_FAILED,
 }
 _SHARED_RESULT_TARGET = "__shared_production_result__"
+
+# 这些绑定状态在 _ACTIVE_STATUSES 里算「活跃」，但其实是在**等人操作**
+# （审批计划 / 审核成片），并没有真的在跑。此时复用它们会把用户静默甩回
+# 那个卡住的页面——用户体感就是「点了重跑却立刻跳到审核页，什么都没做」
+# （2026-09-16 生产事故：一条卡在待审批一天的任务挡掉了该记录所有重跑）。
+_RERUN_BLOCKING_STATUSES = {
+    TableTaskStatus.WAITING_APPROVAL,
+    TableTaskStatus.REVIEWING,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,7 +293,13 @@ class ProductionBitableService:
         return state == "owned"
 
     async def rerun(
-        self, run_id: str, *, owner_user_id: str = "prime-local"
+        self,
+        run_id: str,
+        *,
+        owner_user_id: str = "prime-local",
+        task_ids: list[str] | None = None,
+        feedback: str | None = None,
+        auto_approve: bool = False,
     ) -> str:
         source = await self._store.get_by_run(
             run_id, owner_user_id=owner_user_id
@@ -310,6 +326,11 @@ class ProductionBitableService:
             None,
         )
         if active_for_record is not None:
+            if active_for_record.status in _RERUN_BLOCKING_STATUSES:
+                raise RunConflict(
+                    f"该记录上还有一条「{active_for_record.status}」的任务，"
+                    "请先处理（审批通过或取消）它再重跑。"
+                )
             return active_for_record.run_id
         task = ProductionTaskSummary(
             record_id=source.record_id,
@@ -330,15 +351,31 @@ class ProductionBitableService:
         )
         try:
             with self._runtime_owner_scope(owner_user_id):
-                return await self._runtime.clone_run_for_approval(
+                clone_kwargs = {
+                    "run_id": rerun.run_id,
+                    "thread_id": rerun.thread_id,
+                }
+                if task_ids is not None:
+                    clone_kwargs["task_ids"] = task_ids
+                if feedback is not None:
+                    clone_kwargs["feedback"] = feedback
+                new_run_id = await self._runtime.clone_run_for_approval(
                     run_id,
                     RequirementRequest(
                         source_url=rerun.source_url,
                         trigger_type="production_bitable",
                     ),
-                    run_id=rerun.run_id,
-                    thread_id=rerun.thread_id,
+                    **clone_kwargs,
                 )
+                if auto_approve:
+                    await self._runtime.resume_run(
+                        new_run_id,
+                        ApprovalDecision(
+                            action="approve",
+                            selected_task_ids=list(task_ids or []),
+                        ),
+                    )
+                return new_run_id
         except Exception:
             await self._store.release(
                 rerun.run_id,

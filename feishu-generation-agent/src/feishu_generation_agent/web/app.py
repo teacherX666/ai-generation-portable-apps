@@ -6,12 +6,15 @@ from datetime import UTC, datetime
 import hashlib
 import hmac
 from inspect import Parameter, signature
+import json
 import logging
+import mimetypes
 import os
 from pathlib import Path
 import time
 from typing import Annotated, Any, AsyncIterator, Literal
 from urllib.parse import unquote_to_bytes, urlsplit
+from urllib.request import ProxyHandler, Request, build_opener
 
 from fastapi import (
     Depends,
@@ -42,6 +45,10 @@ from feishu_generation_agent.domain.document import (
     build_planning_prompt_snapshot,
 )
 from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
+from feishu_generation_agent.domain.video_models import (
+    VIDEO_MODELS,
+    resolve_video_model_key,
+)
 from feishu_generation_agent.graph.nodes import GraphServices
 from feishu_generation_agent.graph.runtime import (
     GraphRuntime,
@@ -223,10 +230,15 @@ def _feishu_run_model_label(settings: Settings, kind: str, providers: list[str])
         "aiport_style": "krea2_style_transfer",
     }
     video_models = {
-        "seedance": settings.seedance_model,
-        "aiport": settings.aiport_video_model,
-        "volcengine_portrait": settings.seedance_model,
+        capability.key: capability.model for capability in VIDEO_MODELS
     }
+    video_models.update(
+        {
+            "seedance": settings.seedance_model,
+            "aiport": settings.aiport_video_model,
+            "volcengine_portrait": settings.seedance_model,
+        }
+    )
     labels: list[str] = []
     for provider in providers:
         provider = str(provider or "").strip()
@@ -245,23 +257,49 @@ def _feishu_run_model_label(settings: Settings, kind: str, providers: list[str])
     return ", ".join(labels)
 
 
-async def _probe_aiport(base_url: str) -> bool:
-    """探活本地 AI Port 网关（127.0.0.1:8801）。TCP 连上即视为在线。"""
-    try:
-        parts = urlsplit(base_url)
-        host = parts.hostname or "127.0.0.1"
-        port = parts.port or 80
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=1.5
+def _effective_provider_preferences(
+    settings: Settings,
+    preferences: ProviderPreferences,
+) -> ProviderPreferences:
+    image_provider = preferences.image_provider
+    if image_provider == "aiport" and not settings.aiport_image_enabled:
+        image_provider = "seedream"
+    if settings.video_provider == "aiport":
+        video_provider = "aiport"
+    else:
+        fallback = resolve_video_model_key(
+            settings.seedance_model,
+            fallback="seedance2.5",
+        ) or "seedance2.5"
+        preferred = resolve_video_model_key(
+            preferences.video_provider,
+            fallback="",
         )
-        writer.close()
+        video_provider = preferred or fallback
+    return ProviderPreferences(
+        video_provider=video_provider,
+        image_provider=image_provider,
+    )
+
+
+async def _probe_aiport(base_url: str) -> bool:
+    """Probe the AI Port module API instead of trusting a TCP connection."""
+
+    def _probe_sync() -> bool:
+        url = base_url.rstrip("/") + "/api/modules"
         try:
-            await writer.wait_closed()
+            request = Request(url, method="GET")
+            opener = build_opener(ProxyHandler({}))
+            with opener.open(request, timeout=1.5) as response:
+                if not 200 <= int(response.status) < 300:
+                    return False
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+                modules = payload.get("modules") if isinstance(payload, dict) else None
+                return isinstance(modules, list) and bool(modules)
         except Exception:
-            pass
-        return True
-    except Exception:
-        return False
+            return False
+
+    return await asyncio.to_thread(_probe_sync)
 
 
 
@@ -326,6 +364,9 @@ def create_app(
                 delivery_writer=active_services.delivery_writer,
                 document_source=active_services.document_source,
                 vision_analyzer=active_services.vision_analyzer,
+                rework_fuser=getattr(
+                    active_services.planner, "fuse_rework_prompt", None
+                ),
             )
             try:
                 if resume:
@@ -514,12 +555,7 @@ def create_app(
             "vision": configured("claude_api_key", "claude_model"),
             "image_generation": configured("chiyun_api_key", "chiyun_model")
             or configured("ark_api_key", "seedream_model"),
-            "video_generation": (
-                configured("ark_api_key", "seedance_model")
-                or await _probe_aiport(
-                    getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
-                )
-            ),
+            "video_generation": configured("ark_api_key", "seedance_model"),
         }
         capabilities = {
             name: {
@@ -531,12 +567,13 @@ def create_app(
             for name, value in checks.items()
         }
         local_image = bool(getattr(active_settings, "aiport_image_enabled", False))
-        local_reachable = await _probe_aiport(
-            getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
-        )
-        checks["video_generation"] = (
-            checks["video_generation"]
-            or local_reachable
+        video_provider = getattr(active_settings, "video_provider", "seedance")
+        local_reachable = (
+            await _probe_aiport(
+                getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
+            )
+            if local_image or video_provider == "aiport"
+            else False
         )
         providers: dict[str, list[dict[str, Any]]] = {"image": [], "video": []}
         if local_image:
@@ -560,20 +597,27 @@ def create_app(
             providers["image"].append(
                 {"name": "seedream", "label": "Seedream 国风", "mode": "cloud", "configured": True}
             )
-        providers["video"].append(
-            {
-                "name": "aiport",
-                "label": "本地 MiniMax H3",
-                "mode": "local",
-                "configured": True,
-                "reachable": local_reachable,
-            }
-        )
-        if configured("ark_api_key", "seedance_model"):
+        if video_provider == "aiport":
             providers["video"].append(
-                {"name": "seedance", "label": "Seedance", "mode": "cloud", "configured": True}
+                {
+                    "name": "aiport",
+                    "label": "\u672c\u5730 MiniMax H3",
+                    "mode": "local",
+                    "configured": True,
+                    "reachable": local_reachable,
+                }
             )
-        preferences = await provider_preferences_from_request(request)
+        else:
+            for capability in VIDEO_MODELS:
+                providers["video"].append(
+                    capability.public_payload(
+                        configured=configured("ark_api_key", "seedance_model")
+                    )
+                )
+        preferences = _effective_provider_preferences(
+            active_settings,
+            await provider_preferences_from_request(request),
+        )
         defaults = {
             "video_provider": preferences.video_provider,
             "image_provider": preferences.image_provider,
@@ -729,6 +773,13 @@ def create_app(
             return await store.get()
         return ProviderPreferences()
 
+    def active_settings_for_request(request: Request) -> Settings:
+        if services is not None:
+            return services.settings
+        if runtime is not None:
+            return runtime.settings
+        return settings or Settings()
+
     def planner_prompt_response(
         identity: RequestIdentity,
         profile: Any | None = None,
@@ -814,7 +865,11 @@ def create_app(
 
     @app.get("/api/provider-preferences", response_model=ProviderPreferencesResponse)
     async def get_provider_preferences(request: Request) -> ProviderPreferencesResponse:
-        preferences = await provider_preferences_from_request(request)
+        active_settings = active_settings_for_request(request)
+        preferences = _effective_provider_preferences(
+            active_settings,
+            await provider_preferences_from_request(request),
+        )
         return ProviderPreferencesResponse(
             video_provider=preferences.video_provider,
             image_provider=preferences.image_provider,
@@ -825,10 +880,24 @@ def create_app(
         request: Request,
         payload: ProviderPreferencesUpdate,
     ) -> ProviderPreferencesResponse:
+        active_settings = active_settings_for_request(request)
         try:
+            video_provider = payload.video_provider
+            if active_settings.video_provider == "aiport":
+                video_provider = "aiport"
+            else:
+                video_provider = resolve_video_model_key(
+                    video_provider,
+                    fallback="",
+                )
+                if video_provider is None:
+                    raise ValueError("不支持的视频模型")
+            image_provider = payload.image_provider
+            if image_provider == "aiport" and not active_settings.aiport_image_enabled:
+                image_provider = "seedream"
             preferences = await get_provider_preference_store(request).save(
-                video_provider=payload.video_provider,
-                image_provider=payload.image_provider,
+                video_provider=video_provider,
+                image_provider=image_provider,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1125,6 +1194,41 @@ def create_app(
             raise_bitable_error(exc)
         return BitableClaimResponse(run_id=new_run_id)
 
+    @app.post(
+        "/api/bitable/runs/{run_id}/rerun-selected",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def rerun_selected_bitable_run(
+        run_id: str,
+        payload: ArtifactReviewRequest,
+        request: Request,
+    ) -> BitableClaimResponse:
+        if payload.action != "adjust":
+            raise HTTPException(status_code=422, detail="\u53ea\u652f\u6301\u8fd4\u5de5\u91cd\u8dd1")
+        if not payload.feedback or not payload.feedback.strip():
+            raise HTTPException(status_code=422, detail="\u8bf7\u586b\u5199\u8fd4\u5de5\u8981\u6c42")
+        if not payload.task_ids:
+            raise HTTPException(status_code=422, detail="\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u6761\u4efb\u52a1")
+        active = get_bitable_service(request)
+        identity = current_identity(request)
+        try:
+            runtime_for_owner = get_runtime(request)
+            await ensure_owned_run(
+                runtime_for_owner, run_id, identity.owner_user_id
+            )
+            with runtime_owner_scope(
+                runtime_for_owner, identity.owner_user_id
+            ):
+                new_run_id = await active.rerun(
+                    run_id,
+                    task_ids=payload.task_ids,
+                    feedback=payload.feedback.strip(),
+                    auto_approve=True,
+                    **owner_argument(active.rerun, identity.owner_user_id),
+                )
+        except Exception as exc:
+            raise_bitable_error(exc)
+        return BitableClaimResponse(run_id=new_run_id)
     @app.post("/api/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(payload: CreateRunRequest, request: Request) -> dict[str, str]:
         active = get_runtime(request)
@@ -1250,9 +1354,36 @@ def create_app(
                 raise_bitable_error(exc)
         try:
             with runtime_owner_scope(active, identity.owner_user_id):
-                return await active.get_run_view(run_id)
+                view = await active.get_run_view(run_id)
         except RunNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from None
+        if isinstance(view, dict) and active_bitable is not None:
+            if not view.get("result_table_url"):
+                try:
+                    with runtime_owner_scope(
+                        active, identity.owner_user_id
+                    ):
+                        result_table_url = (
+                            await active_bitable.result_table_url(
+                                run_id,
+                                **owner_argument(
+                                    active_bitable.result_table_url,
+                                    identity.owner_user_id,
+                                ),
+                            )
+                        )
+                except AttributeError:
+                    result_table_url = None
+                except Exception:
+                    _LOGGER.warning(
+                        "读取运行结果表链接失败: %s",
+                        run_id,
+                        exc_info=True,
+                    )
+                    result_table_url = None
+                if result_table_url:
+                    view["result_table_url"] = result_table_url
+        return view
 
     @app.post(
         "/api/runs/{run_id}/decision",
@@ -1555,7 +1686,9 @@ def create_app(
                 )
         except (RunNotFound, RunConflict, RunValidationError) as exc:
             raise_runtime_error(exc)
-        return FileResponse(path, media_type=mime_type)
+        suffix = mimetypes.guess_extension(mime_type) or ""
+        filename = f"feishu-{artifact_id[:12]}{suffix}"
+        return FileResponse(path, media_type=mime_type, filename=filename)
 
     asset_library_holder: dict[str, AssetLibraryStore] = {}
 

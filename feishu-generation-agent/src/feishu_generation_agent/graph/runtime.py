@@ -27,6 +27,11 @@ from feishu_generation_agent.domain.document import (
 )
 from feishu_generation_agent.domain.errors import AgentError
 from feishu_generation_agent.ports import DeliveryWriter, DocumentSource, VisionAnalyzer
+from feishu_generation_agent.domain.video_models import (
+    DEFAULT_VIDEO_MODEL_KEY,
+    normalize_video_task_payload,
+    resolve_video_model_key,
+)
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
     ArtifactReviewDecision,
@@ -46,6 +51,10 @@ from feishu_generation_agent.integrations.planner import (
     language_validation_message,
     planner_system_prompt,
     validate_plan,
+)
+from feishu_generation_agent.integrations.rework_prompt import (
+    build_rework_prompt,
+    rework_inputs,
 )
 from feishu_generation_agent.storage.files import FileStore
 from feishu_generation_agent.storage.repository import Repository
@@ -99,6 +108,7 @@ class GraphRuntime:
         delivery_writer: DeliveryWriter | None = None,
         document_source: DocumentSource | None = None,
         vision_analyzer: VisionAnalyzer | None = None,
+        rework_fuser: Any | None = None,
     ) -> None:
         self.graph = graph
         self.repository = repository
@@ -107,6 +117,9 @@ class GraphRuntime:
         self.delivery_writer = delivery_writer
         self.document_source = document_source
         self.vision_analyzer = vision_analyzer
+        # AI 融合器（`planner.fuse_rework_prompt`）。缺省 None 时重跑走安全拼接，
+        # 与图节点共用同一套语义——两条重跑路径不允许再各写一份。
+        self.rework_fuser = rework_fuser
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._run_locks: dict[str, asyncio.Lock] = {}
         self._start_lock = asyncio.Lock()
@@ -214,6 +227,8 @@ class GraphRuntime:
         *,
         run_id: str,
         thread_id: str,
+        task_ids: list[str] | None = None,
+        feedback: str | None = None,
     ) -> str:
         """Create a rerun from a prior run.
 
@@ -281,10 +296,55 @@ class GraphRuntime:
                     name=f"approval-run-{run_id}",
                 )
                 return run_id
+            selected_task_ids = list(dict.fromkeys(task_ids or []))
+            if selected_task_ids:
+                known_task_ids = {task.task_id for task in approved_plan.tasks}
+                unknown_task_ids = set(selected_task_ids) - known_task_ids
+                if unknown_task_ids:
+                    raise RunValidationError(
+                        "\u91cd\u8dd1\u4efb\u52a1\u4e0d\u5b58\u5728\uff1a"
+                        + "\u3001".join(sorted(unknown_task_ids))
+                    )
+                selected_task_id_set = set(selected_task_ids)
+                feedback_text = (feedback or "").strip()
+                updated_tasks = []
+                for task in approved_plan.tasks:
+                    if task.task_id not in selected_task_id_set:
+                        updated_tasks.append(task)
+                        continue
+                    if not feedback_text:
+                        updated_tasks.append(task)
+                        continue
+                    # 与图节点 review_artifacts 共用同一套语义：历次返工要求
+                    # 只累积不覆盖、优先 AI 融合、永不因超长失败。
+                    base_prompt, requirements = rework_inputs(task, feedback_text)
+                    prompt, _truncated = await build_rework_prompt(
+                        base_prompt,
+                        requirements,
+                        fuse=self.rework_fuser,
+                    )
+                    updated_tasks.append(
+                        task.model_copy(
+                            update={
+                                "prompt": prompt,
+                                "rework_requirements": requirements,
+                                "rework_base_prompt": base_prompt,
+                            }
+                        )
+                    )
+                approved_plan = approved_plan.model_copy(
+                    update={"tasks": updated_tasks}
+                )
             approved_plan_json = approved_plan.model_dump(mode="json")
             approved_tasks = [
                 task.model_dump(mode="json") for task in approved_plan.tasks
             ]
+            if selected_task_ids:
+                selected_task_id_set = set(selected_task_ids)
+                approved_tasks = [
+                    task for task in approved_tasks
+                    if task["task_id"] in selected_task_id_set
+                ]
 
             state = deepcopy(source_state)
             state.update(
@@ -302,6 +362,8 @@ class GraphRuntime:
                 artifacts=[],
                 delivery_record=None,
                 last_error=None,
+                artifact_review_decision=None,
+                artifact_review_feedback=None,
             )
             state.pop("error", None)
             await self.repository.create_run(
@@ -961,8 +1023,28 @@ class GraphRuntime:
             run = await self.repository.get_run(run_id)
             if run is None:
                 raise RunNotFound("运行不存在")
-            if run["status"] != "waiting_review":
-                raise RunConflict("只有等待成片确认的运行可以提交决定")
+            status = str(run["status"] or "").lower()
+            if status != "waiting_review":
+                if status not in {
+                    "succeeded",
+                    "completed_with_errors",
+                    "delivery_failed",
+                }:
+                    raise RunConflict("只有可审核的成片运行可以提交决定")
+                config = self._config(run["thread_id"])
+                snapshot = await self.graph.aget_state(config)
+                state = dict(snapshot.values or {})
+                if not state.get("artifacts"):
+                    raise RunValidationError("当前没有可审核的成片")
+                await self.graph.aupdate_state(
+                    config,
+                    {"status": "waiting_review"},
+                    as_node="verify_and_download_artifacts",
+                )
+                reopened = await self.graph.ainvoke(None, config=config)
+                if not self._has_interrupt(reopened):
+                    raise RunConflict("成片审核门禁无法重新打开")
+                await self.repository.update_run_status(run_id, "waiting_review")
             snapshot = await self.graph.aget_state(
                 self._config(run["thread_id"])
             )
@@ -1015,13 +1097,17 @@ class GraphRuntime:
         state: dict[str, Any],
         decision: ArtifactReviewDecision,
     ) -> None:
+        if len(decision.task_ids) != len(set(decision.task_ids)):
+            raise RunValidationError("重跑任务不能重复选择")
         if decision.action == "adjust" and (
             not isinstance(decision.feedback, str)
             or not decision.feedback.strip()
         ):
             raise RunValidationError("退回调整时必须填写调整意见")
-        if decision.action != "adjust" and decision.feedback is not None:
-            raise RunValidationError("确认或取消时不能携带调整意见")
+        if decision.action != "adjust" and (
+            decision.feedback is not None or decision.task_ids
+        ):
+            raise RunValidationError("确认或取消时不能携带调整意见或任务")
         if decision.action == "confirm" and not state.get("artifacts"):
             raise RunValidationError("当前没有可确认的成片")
 
@@ -1245,6 +1331,22 @@ class GraphRuntime:
             ]
             updated = dict(task.model_dump(mode="json"))
             updated.update(patch)
+            default_model_key = resolve_video_model_key(
+                getattr(self.settings, "video_provider", None),
+                fallback=resolve_video_model_key(
+                    getattr(self.settings, "seedance_model", None),
+                    fallback=DEFAULT_VIDEO_MODEL_KEY,
+                ) or DEFAULT_VIDEO_MODEL_KEY,
+            )
+            updated, policy_warnings = normalize_video_task_payload(
+                updated,
+                default_model_key=default_model_key,
+                max_output_count=self.settings.max_output_count,
+            )
+            if policy_warnings:
+                warnings = list(updated.get("warnings") or [])
+                warnings.extend(policy_warnings)
+                updated["warnings"] = list(dict.fromkeys(warnings))
             if "prompt" in patch:
                 updated["prompt_slots"] = None
                 # 只对图片任务做 token 补齐：视频 prompt 的 @图片N 必须出现在

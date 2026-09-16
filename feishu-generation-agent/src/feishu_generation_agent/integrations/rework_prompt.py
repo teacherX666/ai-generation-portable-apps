@@ -13,14 +13,21 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
+from typing import Any
 
 from feishu_generation_agent.domain.plan import (
     SEEDANCE_PROMPT_MAX_CHARS,
     _REFERENCE_TOKEN,
 )
+
+_LOGGER = logging.getLogger(__name__)
+
+#: AI 融合器的形状：`(原始提示词, 全部要求) -> 融合结果或 None`。
+ReworkFuser = Callable[[str, list[str]], Awaitable["str | None"]]
 
 #: 与历史数据兼容的标记；新流程不再把它写进提示词，仅在兜底拼接时使用。
 REWORK_MARKER = "【返工要求】"
@@ -92,6 +99,51 @@ def is_acceptable_fusion(
     if REWORK_MARKER in text:
         return False
     return reference_token_counts(text) == reference_token_counts(base_prompt)
+
+
+def rework_inputs(task: Any, feedback: str) -> tuple[str, list[str]]:
+    """从任务上取出「冻结的 base + 全部历史要求 + 本次要求」。
+
+    两条重跑路径（图节点 `review_artifacts` 与多维表格 `clone_run_for_approval`）
+    都走这里，保证「只累积不覆盖」的语义只有一份实现。
+    """
+    legacy_base, legacy_requirements = split_legacy_requirements(
+        getattr(task, "prompt", "") or ""
+    )
+    base_prompt = getattr(task, "rework_base_prompt", None) or legacy_base
+    requirements = merge_requirements(
+        getattr(task, "rework_requirements", None) or [],
+        legacy_requirements,
+        [feedback],
+    )
+    return base_prompt, requirements
+
+
+async def build_rework_prompt(
+    base_prompt: str,
+    requirements: Sequence[str],
+    *,
+    fuse: ReworkFuser | None = None,
+    max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
+) -> tuple[str, bool]:
+    """把「原始提示词 + 全部历史返工要求」变成一条可直接生成的新提示词。
+
+    优先让 AI 融合（结果必须通过契约校验）；融合器缺失、抛错或结果不合约时，
+    回退到安全拼接。两条路都不超过 `max_chars`，也都不抛错。
+    """
+    if fuse is not None:
+        try:
+            fused = await fuse(base_prompt, list(requirements))
+        except Exception:
+            _LOGGER.warning("返工提示词 AI 融合失败，回退安全拼接", exc_info=True)
+            fused = None
+        if is_acceptable_fusion(
+            fused, base_prompt=base_prompt, max_chars=max_chars
+        ):
+            return fused.strip(), False
+    return build_fallback_prompt(
+        base_prompt, requirements, max_chars=max_chars
+    )
 
 
 def build_fallback_prompt(

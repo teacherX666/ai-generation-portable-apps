@@ -1,13 +1,33 @@
 """返工提示词净化：要求只累积不覆盖、AI 融合、永不因超长失败。"""
 
-from feishu_generation_agent.domain.plan import SEEDANCE_PROMPT_MAX_CHARS
+from feishu_generation_agent.domain.plan import (
+    SEEDANCE_PROMPT_MAX_CHARS,
+    GenerationTask,
+)
 from feishu_generation_agent.integrations.rework_prompt import (
     REWORK_MARKER,
     build_fallback_prompt,
+    build_rework_prompt,
     is_acceptable_fusion,
     merge_requirements,
+    rework_inputs,
     split_legacy_requirements,
 )
+
+
+def _task(prompt: str, **updates) -> GenerationTask:
+    task = GenerationTask(
+        task_id="t1",
+        task_type="image_to_video",
+        title="任务",
+        source_block_ids=[],
+        user_intent="意图",
+        prompt=prompt,
+        aspect_ratio="16:9",
+        duration=5,
+        resolution="720p",
+    )
+    return task.model_copy(update=updates) if updates else task
 
 
 # --- 累积：这是用户最核心的诉求「说过的绝不再犯」 ---
@@ -124,3 +144,69 @@ def test_fusion_accepted_when_contract_holds() -> None:
     assert is_acceptable_fusion(
         "@图片1 中的猫缓慢行走", base_prompt="@图片1 中的猫在跑"
     )
+
+
+# --- 共享入口：两条重跑路径（图节点 / 多维表格 clone）必须走同一套语义 ---
+
+
+def test_rework_inputs_accumulates_requirements_from_task() -> None:
+    task = _task(
+        "原始画面",
+        rework_base_prompt="原始画面",
+        rework_requirements=["手不要僵"],
+    )
+    base, requirements = rework_inputs(task, "背景太暗")
+    assert base == "原始画面"
+    assert requirements == ["手不要僵", "背景太暗"]
+
+
+def test_rework_inputs_adopts_legacy_marker_segment() -> None:
+    task = _task(f"原始画面\n{REWORK_MARKER}手不要僵")
+    base, requirements = rework_inputs(task, "背景太暗")
+    assert base == "原始画面"
+    assert requirements == ["手不要僵", "背景太暗"]
+
+
+def test_rework_inputs_freezes_base_on_first_rework() -> None:
+    task = _task("原始画面")
+    base, _ = rework_inputs(task, "手不要僵")
+    assert base == "原始画面"
+    assert task.rework_base_prompt is None
+
+
+async def test_build_rework_prompt_uses_accepted_fusion() -> None:
+    async def fuse(original_prompt: str, requirements: list[str]) -> str:
+        assert requirements == ["手不要僵"]
+        return f"{original_prompt}（已融合）"
+
+    prompt, truncated = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse
+    )
+
+    assert prompt == "原始画面（已融合）"
+    assert truncated is False
+
+
+async def test_build_rework_prompt_falls_back_when_fuser_raises() -> None:
+    async def fuse(original_prompt: str, requirements: list[str]) -> str:
+        raise RuntimeError("上游 500")
+
+    prompt, _ = await build_rework_prompt("原始画面", ["手不要僵"], fuse=fuse)
+
+    assert prompt == f"原始画面\n{REWORK_MARKER}手不要僵"
+
+
+async def test_build_rework_prompt_falls_back_without_fuser() -> None:
+    prompt, _ = await build_rework_prompt("原始画面", ["手不要僵"])
+    assert prompt == f"原始画面\n{REWORK_MARKER}手不要僵"
+
+
+async def test_build_rework_prompt_rejects_fusion_that_drops_tokens() -> None:
+    async def fuse(original_prompt: str, requirements: list[str]) -> str:
+        return "丢了 @图片N 的结果"
+
+    prompt, _ = await build_rework_prompt(
+        "@图片1 中的猫在跑", ["手不要僵"], fuse=fuse
+    )
+
+    assert prompt == f"@图片1 中的猫在跑\n{REWORK_MARKER}手不要僵"

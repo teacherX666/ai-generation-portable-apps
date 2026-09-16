@@ -455,6 +455,7 @@ async def test_admin_can_read_other_users_artifact_content(
 
         owner = await client.get(url, headers=_USER_A_HEADERS)
         assert owner.status_code == 200
+        assert owner.headers["content-disposition"] == 'attachment; filename="feishu-artifact-vid.mp4"'
 
         other = await client.get(url, headers=_USER_B_HEADERS)
         assert other.status_code == 404
@@ -579,7 +580,7 @@ async def test_planner_prompt_uses_only_portal_header_user_id(tmp_path: Path) ->
     assert profile.username == "甲"
 
 
-@pytest.mark.parametrize("prompt_text", [" \t\n", "文" * 20_001])
+@pytest.mark.parametrize("prompt_text", [" \t\n", "文" * 20_001], ids=["blank", "overlong"])
 async def test_planner_prompt_rejects_blank_and_overlong_values(
     tmp_path: Path, prompt_text: str
 ) -> None:
@@ -941,6 +942,66 @@ async def test_clone_run_for_approval_reuses_approved_draft_without_generation(
     assert cloned["approval"]["selected_task_ids"] == ["task-1"]
     assert graph.resume_calls == 0
 
+
+async def test_clone_run_for_approval_applies_selected_feedback(tmp_path: Path) -> None:
+    async with _environment(tmp_path) as (client, runtime, graph, _repository):
+        created = await client.post(
+            "/api/runs", json={"source_url": "https://tenant.feishu.cn/docx/rerun-feedback"}
+        )
+        original_run_id = created.json()["run_id"]
+        original = await _wait_for_status(client, original_run_id, "waiting_approval")
+        task = original["approval"]["tasks"][0]
+        graph.states[original["thread_id"]]["approved_tasks"] = [task]
+
+        cloned_run_id = await runtime.clone_run_for_approval(
+            original_run_id,
+            RequirementRequest(source_url=original["source_url"]),
+            run_id="rerun-feedback",
+            thread_id="rerun-feedback-thread",
+            task_ids=[task["task_id"]],
+            feedback="动作再慢一点",
+        )
+        cloned = await _wait_for_status(client, cloned_run_id, "waiting_approval")
+
+    assert cloned["approval"]["selected_task_ids"] == [task["task_id"]]
+    assert "【返工要求】动作再慢一点" in cloned["approval"]["tasks"][0]["prompt"]
+
+
+async def test_clone_run_for_approval_keeps_previous_rework_requirements(
+    tmp_path: Path,
+) -> None:
+    """多维表格重跑也必须「只累积不覆盖」。
+
+    旧实现会先把提示词里已有的【返工要求】段整段删掉再追加新的，
+    于是上一轮修好的问题在下一轮必然复发。
+    """
+    async with _environment(tmp_path) as (client, runtime, graph, _repository):
+        created = await client.post(
+            "/api/runs",
+            json={"source_url": "https://tenant.feishu.cn/docx/rerun-accumulate"},
+        )
+        original_run_id = created.json()["run_id"]
+        original = await _wait_for_status(client, original_run_id, "waiting_approval")
+        task = original["approval"]["tasks"][0]
+        seeded = copy.deepcopy(task)
+        seeded["rework_base_prompt"] = task["prompt"]
+        seeded["rework_requirements"] = ["手不要僵"]
+        seeded["prompt"] = f"{task['prompt']}\n【返工要求】手不要僵"
+        graph.states[original["thread_id"]]["approved_tasks"] = [seeded]
+
+        cloned_run_id = await runtime.clone_run_for_approval(
+            original_run_id,
+            RequirementRequest(source_url=original["source_url"]),
+            run_id="rerun-accumulate",
+            thread_id="rerun-accumulate-thread",
+            task_ids=[task["task_id"]],
+            feedback="背景太暗",
+        )
+        cloned = await _wait_for_status(client, cloned_run_id, "waiting_approval")
+
+    prompt = cloned["approval"]["tasks"][0]["prompt"]
+    assert "手不要僵" in prompt
+    assert "背景太暗" in prompt
 
 async def test_clone_prefers_approved_plan_when_approved_tasks_are_missing(
     tmp_path: Path,
@@ -2969,6 +3030,15 @@ async def test_health_reports_capabilities_without_secrets(tmp_path: Path):
     body = response.json()
     assert body["ready"] is False
     assert body["capabilities"]["feishu_read"]["configured"] is False
+    assert body["defaults"]["video_provider"] == "seedance2.5"
+    assert [item["name"] for item in body["providers"]["video"]] == [
+        "seedance2.0",
+        "seedance2.5",
+    ]
+    assert body["providers"]["video"][0]["label"] == "Seedance 2.0（最高 4K）"
+    assert body["providers"]["video"][1]["label"] == "Seedance 2.5（最长 30 秒）"
+    assert "4k" in body["providers"]["video"][0]["capabilities"]["resolutions"]
+    assert "4k" not in body["providers"]["video"][1]["capabilities"]["resolutions"]
     assert "secret" not in response.text.lower()
     assert "api_key" not in response.text.lower()
 
