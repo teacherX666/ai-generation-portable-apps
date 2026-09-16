@@ -855,15 +855,15 @@ button {
   }
 }
 
-/* 返工对比：改前原文 / 历次要求 / 差异高亮 */
+/* 返工对比：改前原文 / 历次要求 / 差异高亮（浅色主题，与卡片同色系） */
 .rework-compare {
   display: flex;
   flex-direction: column;
   gap: .45rem;
-  padding: .6rem .7rem;
-  border: 1px solid #2a3a52;
-  border-radius: 8px;
-  background: #0e1626;
+  padding: .6rem .75rem;
+  border: 1px solid var(--line);
+  border-radius: .65rem;
+  background: #fcfdfb;
 }
 
 .rework-compare-head {
@@ -889,11 +889,12 @@ button {
 .rework-compare-diff {
   max-height: 14rem;
   margin: 0;
-  padding: .45rem .55rem;
+  padding: .5rem .6rem;
   overflow: auto;
-  border-radius: 6px;
-  background: #101a2b;
-  color: #c7d5e8;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  background: #fff;
+  color: var(--ink);
   font-size: .85rem;
   line-height: 1.65;
   white-space: pre-wrap;
@@ -906,20 +907,21 @@ button {
   gap: .2rem;
   margin: 0;
   padding-left: 1.2rem;
+  color: var(--ink);
   font-size: .85rem;
 }
 
 .diff-added {
-  padding: 0 .1rem;
+  padding: 0 .12rem;
   border-radius: 3px;
-  background: rgba(46, 160, 67, .28);
-  color: #b7f0c2;
+  background: #e1f1e8;
+  color: #14503c;
 }
 
 .diff-removed {
-  padding: 0 .1rem;
+  padding: 0 .12rem;
   border-radius: 3px;
-  background: rgba(220, 80, 80, .22);
-  color: #f0b7b7;
+  background: #fde4e1;
+  color: #7d241e;
   text-decoration: line-through;
 }
