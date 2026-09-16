@@ -336,6 +336,7 @@ def test_agent_state_and_graph_services_contracts_are_stable():
             "asset_library_store",
             "character_matcher",
             "seedance_video_generator",
+            "seedance_video_generators",
             "aiport_video_generator",
             "provider_preferences",
         ]
@@ -418,7 +419,8 @@ async def test_direct_graph_run_snapshots_exact_prime_prompt(
     assert planning_prompt.source == "prime"
     assert planning_prompt.version == 0
     assert planning_prompt.prompt_sha256 == (
-        "db77e6e4a995de911ca75a4013a25a4382e088578f15a3c8258b0599c6ba992f"
+        # 2026-09-16 由 #4（首轮质量）有意更新，旧值 db77e6e4…。
+        "cf9f479b950b1f61e4f310086dfc8ddf015f68013eb473052b20843f2315bf38"
     )
     assert fake_services.planner.system_prompts == [planning_prompt.prompt_text]
 

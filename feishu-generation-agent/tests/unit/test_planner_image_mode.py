@@ -134,11 +134,15 @@ def _image_plan_json(**updates: object) -> str:
 
 
 def test_video_planner_prompt_hash_is_still_frozen():
-    """图片模式不得改动视频 system prompt。"""
+    """图片模式不得改动视频 system prompt。
+
+    2026-09-16 由 #4（首轮质量）有意更新：视频契约新增四条硬规则，旧哈希
+    db77e6e4…。本次改动只落在视频契约，图片契约未被触碰。
+    """
     assert hashlib.sha256(
         planner_system_prompt().encode("utf-8")
     ).hexdigest() == (
-        "db77e6e4a995de911ca75a4013a25a4382e088578f15a3c8258b0599c6ba992f"
+        "cf9f479b950b1f61e4f310086dfc8ddf015f68013eb473052b20843f2315bf38"
     )
 
 

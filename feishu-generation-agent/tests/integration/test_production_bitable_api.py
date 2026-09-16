@@ -327,7 +327,8 @@ async def test_local_and_portal_direct_run_creation_have_explicit_snapshots(
     assert local_prompt.source == "prime"
     assert local_prompt.version == 0
     assert local_prompt.prompt_sha256 == (
-        "db77e6e4a995de911ca75a4013a25a4382e088578f15a3c8258b0599c6ba992f"
+        # 2026-09-16 由 #4（首轮质量）有意更新，旧值 db77e6e4…。
+        "cf9f479b950b1f61e4f310086dfc8ddf015f68013eb473052b20843f2315bf38"
     )
     assert portal_prompt is not None
     assert portal_prompt.owner_user_id == "user-a"
