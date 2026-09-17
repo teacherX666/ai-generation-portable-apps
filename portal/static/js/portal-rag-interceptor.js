@@ -9,8 +9,24 @@
   const MARKER = '[飞书知识库自动补充]';
   const ENDPOINT_RE = /\/api\/(?:v1\/)?(?:jobs(?:\/json)?|virtual\/jobs|real\/jobs|projects\/[^/]+\/render|runs)/;
 
+  // 这些子应用在**写提示词之前**就已经把知识库规则喂给模型了，它们的请求不该
+  // 再过一遍这道生成前检查。
+  //
+  // 2026-09-17 用户报：「我生成提示词的时候就已经用了 RAG 增强效果，但是后面
+  // 生成的时候还会触发弹窗」。根因就在飞书任务 Agent：它的 prompt 是 planner
+  // 写的，而 planner 先拿文档文本查知识库、把命中规则当上下文写进提示词
+  // （feishu-generation-agent/integrations/rag_prompt_optimizer.py）；等审批页点
+  // 「批准生成」时，POST /api/runs/{id}/decision 的 body 里带着这些**已经按知识库
+  // 写好**的 prompt，这里看到 /api/runs 就再查一次并弹「检测到飞书知识库规则」
+  // —— 重复且必然误报的第二道闸。
+  const SELF_RAG_MOUNT_PREFIXES = ['/feishu-generation-agent/'];
+
   function isGenerationRequest(url) {
-    return ENDPOINT_RE.test(String(url || ''));
+    const value = String(url || '');
+    if (SELF_RAG_MOUNT_PREFIXES.some((prefix) => value.includes(prefix))) {
+      return false;
+    }
+    return ENDPOINT_RE.test(value);
   }
 
   function firstPrompt(value) {

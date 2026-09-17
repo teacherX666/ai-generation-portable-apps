@@ -27,7 +27,7 @@
       if (doc.getElementById('portal-rag-interceptor')) return;
       const script = doc.createElement('script');
       script.id = 'portal-rag-interceptor';
-      script.src = '/js/portal-rag-interceptor.js';
+      script.src = '/js/portal-rag-interceptor.js?v=20260917-skip-self-rag';
       doc.body.appendChild(script);
     } catch (e) {
       if (attempt < 8) setTimeout(() => injectPortalRagInterceptor(iframe, attempt + 1), 250);
