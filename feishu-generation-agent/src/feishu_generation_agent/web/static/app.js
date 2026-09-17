@@ -50,6 +50,11 @@
     artifactRetryTaskIds: new Set(),
     artifactReviewRunId: null,
   };
+  // 正在看的那条运行上次见到的状态：变了才去刷新任务记录（同一状态反复轮询
+  // 时什么都不做）。切换运行时会自动重置，不会误判成「状态变了」。
+  let lastViewedRun = { runId: null, status: null };
+  // 哪些任务记录展开了「历史版本」（纯界面状态，不参与持久化）。
+  const expandedRunGroups = new Set();
   const byId = (id) => document.getElementById(id);
   const errorMessage = byId("error-message");
   const taskList = byId("task-list");
@@ -692,23 +697,32 @@
 
   function renderRecentRuns() {
     const runs = state.bitable.recentRuns || [];
+    // 同一条多维表格记录的历次尝试叠在同一条任务下（重跑不新开任务记录）。
+    const groups = BitableState.groupRecentRuns(runs);
     const signature = JSON.stringify({
       selected: state.runId,
       busy: state.busy,
-      runs: runs.map((run) => [
-        run.run_id,
-        run.display_text,
-        run.status,
-        run.active,
-        run.result_table_url,
-        run.rerunnable,
+      expanded: [...expandedRunGroups].sort(),
+      groups: groups.map((group) => [
+        group.key,
+        group.current && group.current.run_id,
+        group.current && group.current.status,
+        group.current && group.current.active,
+        group.current && group.current.result_table_url,
+        group.current && group.current.rerunnable,
+        group.history.map((run) => [run.run_id, run.status]),
       ]),
     });
     if (recentRunList.dataset.renderSig === signature) return;
     recentRunList.dataset.renderSig = signature;
     const activeCount = runs.filter((run) => run.active).length;
+    // 只有真的合并了版本才提「N 个版本」，免得单版本时多一句废话。
+    const versionNote =
+      runs.length && groups.length !== runs.length
+        ? ` · ${runs.length} 个版本`
+        : "";
     runHistorySummary.textContent = runs.length
-      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${runs.length} 条`
+      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${groups.length} 条${versionNote}`
       : "进行中与历史任务都在这里";
     const switchOptions = runs.map((run) => {
       const option = element("option", "", `${run.display_text || run.run_id} · ${statusUi(run.status).label}`);
@@ -726,55 +740,129 @@
       : "";
     currentRunSwitcher.disabled = state.busy || runs.length === 0;
 
-    const nodes = runs.map((run) => {
+    const nodes = groups.map((group) => {
+      const run = group.current;
+      if (!run) return element("p", "bitable-empty", "暂无任务记录。");
       const selected = run.run_id === state.runId;
       const row = element("article", `recent-run${selected ? " is-current" : ""}`);
       row.dataset.runId = run.run_id;
+      if (group.record_id) row.dataset.recordId = group.record_id;
       const details = element("div", "recent-run-details");
+      const versionLabel = group.versions.length > 1
+        ? ` · 共 ${group.versions.length} 版`
+        : "";
       details.append(
-        element("strong", "", run.display_text || run.run_id),
+        element("strong", "", group.display_text || run.run_id),
         element(
           "p",
           "bitable-task-meta",
-          `${run.active ? "进行中" : "历史"} · ${statusUi(run.status).label}`,
+          `${run.active ? "进行中" : "历史"} · ${statusUi(run.status).label}${versionLabel}`,
         ),
       );
-      const actions = element("div", "recent-run-actions");
-      const view = element(
-        "button",
-        selected ? "quiet-button is-current" : "quiet-button",
-        selected ? "当前查看" : "查看",
-      );
-      view.type = "button";
-      view.disabled = state.busy || selected;
-      view.addEventListener("click", () => viewRecentRun(run.run_id));
-      actions.append(view);
-      if (run.result_table_url) {
-        const link = element("a", "", "结果表");
-        link.href = run.result_table_url;
-        link.target = "_blank";
-        link.rel = "noreferrer";
-        actions.append(link);
-      }
-      if (run.rerunnable) {
-        const rerun = element("button", "quiet-button", "重跑");
-        rerun.type = "button";
-        rerun.disabled = state.busy;
-        rerun.addEventListener("click", () => rerunBitableTask(run.run_id));
-        actions.append(rerun);
-      }
-      if (!run.active) {
-        const remove = element("button", "danger", "删除");
-        remove.type = "button";
-        remove.disabled = state.busy;
-        remove.addEventListener("click", () => archiveBitableRun(run.run_id));
-        actions.append(remove);
+      const actions = runActionsFor(run, { selected });
+      if (group.history.length) {
+        const expanded = expandedRunGroups.has(group.key);
+        const toggle = element(
+          "button",
+          "quiet-button recent-run-history-toggle",
+          expanded ? `收起历史（${group.history.length}）` : `历史 ${group.history.length} 次`,
+        );
+        toggle.type = "button";
+        toggle.setAttribute("aria-expanded", String(expanded));
+        toggle.addEventListener("click", () => {
+          if (expandedRunGroups.has(group.key)) expandedRunGroups.delete(group.key);
+          else expandedRunGroups.add(group.key);
+          renderRecentRuns();
+        });
+        actions.append(toggle);
       }
       row.append(details, actions);
+
+      if (group.history.length && expandedRunGroups.has(group.key)) {
+        const historyBox = element("div", "recent-run-history");
+        group.history.forEach((older, index) => {
+          // 版本号从最老的一版数起：最新的一版是「第 N 版」。
+          const versionNo = group.versions.length - 1 - index;
+          const olderSelected = older.run_id === state.runId;
+          const olderRow = element(
+            "article",
+            `recent-run recent-run-version${olderSelected ? " is-current" : ""}`,
+          );
+          olderRow.dataset.runId = older.run_id;
+          const olderDetails = element("div", "recent-run-details");
+          olderDetails.append(
+            element(
+              "strong",
+              "",
+              `第 ${versionNo} 版 · ${statusUi(older.status).label}`,
+            ),
+            element(
+              "p",
+              "bitable-task-meta",
+              formatRecentTime(older.updated_at) || older.run_id,
+            ),
+          );
+          olderRow.append(
+            olderDetails,
+            runActionsFor(older, { selected: olderSelected }),
+          );
+          historyBox.append(olderRow);
+        });
+        row.append(historyBox);
+      }
       return row;
     });
     if (!nodes.length) nodes.push(element("p", "bitable-empty", "暂无任务记录。"));
     recentRunList.replaceChildren(...nodes);
+  }
+
+  /** 一条运行的按钮组（当前版与历史版共用，保证能力不因分组而缩水）。 */
+  function runActionsFor(run, { selected = false } = {}) {
+    const actions = element("div", "recent-run-actions");
+    const view = element(
+      "button",
+      selected ? "quiet-button is-current" : "quiet-button",
+      selected ? "当前查看" : "查看",
+    );
+    view.type = "button";
+    view.disabled = state.busy || selected;
+    view.addEventListener("click", () => viewRecentRun(run.run_id));
+    actions.append(view);
+    if (run.result_table_url) {
+      const link = element("a", "", "结果表");
+      link.href = run.result_table_url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      actions.append(link);
+    }
+    if (run.rerunnable) {
+      const rerun = element("button", "quiet-button", "重跑");
+      rerun.type = "button";
+      rerun.disabled = state.busy;
+      rerun.addEventListener("click", () => rerunBitableTask(run.run_id));
+      actions.append(rerun);
+    }
+    if (!run.active) {
+      const remove = element("button", "danger", "删除");
+      remove.type = "button";
+      remove.disabled = state.busy;
+      remove.addEventListener("click", () => archiveBitableRun(run.run_id));
+      actions.append(remove);
+    }
+    return actions;
+  }
+
+  function formatRecentTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
   }
 
   async function loadRecentRuns({ silent = false } = {}) {
@@ -798,6 +886,8 @@
       // 徽章文案取自这份新鲜状态，所以列表也要跟着重算（内容没变则不重建 DOM，
       // 免得用户正要点「开始分析」时按钮被换掉）。
       refreshTaskListIfChanged();
+      // 有新状态在自行推进就起盯守，全都在等人操作就把盯守停掉。
+      scheduleRunWatch();
     } catch (error) {
       // 后台定时刷新失败（服务重启中、飞书抖动）不该每 5 秒弹一次全局错误：
       // 用户没法对它做任何事，手动「刷新任务」仍会把错误如实报出来。
@@ -805,32 +895,51 @@
     }
   }
 
-  // 任务记录 / 任务列表徽章每 5 秒对一次账。以前只有手动刷新、切分类或任务
-  // 结束时才更新，用户看到的就是「状态不实时」。飞书表格本身不在这里重扫
-  // （那要读整张表），所以「有没有新任务」仍以「刷新任务」按钮为准。
-  const BITABLE_REFRESH_MS = 5000;
-  let bitableRefreshTimer = null;
-  let bitableRefreshInFlight = false;
+  // 任务记录 / 任务列表徽章**只在状态会自己变的时候**盯，而且只在签名变化时
+// 重画。以前是固定 5 秒刷一次整个面板 —— 而等待审批 / 等待成片审核是停在等人
+// 操作上的，状态不会自己变，那种轮询纯属白跑（用户要的是「状态更新才刷新」）。
+  const SELF_PROGRESSING_RUN_STATUSES = new Set([
+    "created",
+    "planning",
+    "running",
+    "resuming",
+    "waiting_provider",
+    "delivering",
+  ]);
+  const RUN_WATCH_INTERVAL_MS = 5000;
+  let runWatchTimer = null;
 
-  async function refreshBitablePanel() {
-    if (document.hidden || !state.modes.bitable) return;
-    if (state.busy || bitableRefreshInFlight) return;
-    bitableRefreshInFlight = true;
-    try {
-      await loadRecentRuns({ silent: true });
-    } finally {
-      bitableRefreshInFlight = false;
-    }
+  function needsRunWatch() {
+    return (state.bitable.recentRuns || []).some((run) =>
+      SELF_PROGRESSING_RUN_STATUSES.has(run.status),
+    );
+  }
+
+  function stopRunWatch() {
+    if (runWatchTimer !== null) globalThis.clearInterval(runWatchTimer);
+    runWatchTimer = null;
+  }
+
+  /** 有任务在自行推进才起盯守；全都在等人操作就彻底停掉（0 请求）。 */
+  function scheduleRunWatch() {
+    stopRunWatch();
+    if (!needsRunWatch()) return;
+    runWatchTimer = globalThis.setInterval(() => {
+      if (document.hidden) return;
+      if (!needsRunWatch()) {
+        stopRunWatch();
+        return;
+      }
+      loadRecentRuns({ silent: true });
+    }, RUN_WATCH_INTERVAL_MS);
   }
 
   function startBitableRefresh() {
-    if (bitableRefreshTimer !== null) return;
-    bitableRefreshTimer = globalThis.setInterval(refreshBitablePanel, BITABLE_REFRESH_MS);
     // 从别的标签页切回来时立刻对一次，别让用户盯着旧数据。
     // 用可选调用是刻意的：这套前端的测试跑在自制的极简 DOM 上，不一定实现
     // addEventListener；浏览器里它始终存在，缺了也只是少一次「切回来即刷新」。
     document.addEventListener?.("visibilitychange", () => {
-      if (!document.hidden) refreshBitablePanel();
+      if (!document.hidden) loadRecentRuns({ silent: true });
     });
   }
 
@@ -2034,7 +2143,7 @@
     }
 
     box.append(
-      element("div", "rework-compare-label", "改前原文（已冻结，不会被后续返工覆盖）"),
+      element("div", "rework-compare-label", "改前（上一版提示词）"),
       element("pre", "rework-compare-base", comparison.basePrompt),
     );
 
@@ -2510,6 +2619,12 @@
     try {
       const serverView = await api(`/api/runs/${requestedRunId}`);
       if (state.runId !== requestedRunId) return;
+      // 正在看的这条运行状态变了 —— 这就是「状态更新的时候刷新」：立刻对一次
+      // 任务记录（同一状态反复轮询时什么都不做）。
+      const previous = lastViewedRun;
+      const statusChanged =
+        previous.runId === requestedRunId && previous.status !== serverView.status;
+      lastViewedRun = { runId: requestedRunId, status: serverView.status };
       const previousReview = state.review;
       const nextReview = resetDraft
         ? ReviewState.mergeServerView(ReviewState.createReviewState(), serverView)
@@ -2524,8 +2639,9 @@
       if (TERMINAL_RUN_STATUSES.has(serverView.status)) {
         stopPolling();
         pollingNote.textContent = "任务已结束，可开始下一任务或重跑。";
-        await loadRecentRuns();
+        await loadRecentRuns({ silent: true });
       } else {
+        if (statusChanged) await loadRecentRuns({ silent: true });
         pollingNote.textContent = statusUi(serverView.status).action;
       }
     } catch (error) {

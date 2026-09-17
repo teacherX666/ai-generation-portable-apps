@@ -145,6 +145,52 @@ test("rescan adopts the claim fields the backend now returns", () => {
   assert.equal(state.categories.animation.tasks[0].claim_status, "待审批");
 });
 
+test("任务记录按需求分组：同一条记录的历史版本叠在同一任务下", () => {
+  const runs = [
+    { run_id: "run-3", record_id: "rec-a", display_text: "拿着吧你", status: "running", active: true },
+    { run_id: "run-2", record_id: "rec-a", display_text: "拿着吧你", status: "succeeded" },
+    { run_id: "run-1", record_id: "rec-a", display_text: "拿着吧你", status: "failed" },
+    { run_id: "run-b", record_id: "rec-b", display_text: "脱毛", status: "waiting_review" },
+  ];
+
+  const groups = BitableState.groupRecentRuns(runs);
+
+  // 重跑不再新开任务记录：rec-a 的三次尝试归到同一条任务下。
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].record_id, "rec-a");
+  assert.equal(groups[0].display_text, "拿着吧你");
+  assert.equal(groups[0].versions.length, 3);
+  // 当前版＝正在跑的那条；其余是历史版本（预览历史用）。
+  assert.equal(groups[0].current.run_id, "run-3");
+  assert.deepEqual(
+    groups[0].history.map((run) => run.run_id),
+    ["run-2", "run-1"],
+  );
+  assert.equal(groups[1].current.run_id, "run-b");
+  assert.deepEqual(groups[1].history, []);
+});
+
+test("没有 record_id 时按 run_id 各自成组（老数据不串台）", () => {
+  const groups = BitableState.groupRecentRuns([
+    { run_id: "run-1", display_text: "甲" },
+    { run_id: "run-2", display_text: "乙" },
+  ]);
+
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].record_id, null);
+  assert.equal(groups[0].current.run_id, "run-1");
+});
+
+test("没有正在跑的版本时，最新的一条就是当前版", () => {
+  const groups = BitableState.groupRecentRuns([
+    { run_id: "run-new", record_id: "rec-a", status: "succeeded" },
+    { run_id: "run-old", record_id: "rec-a", status: "failed" },
+  ]);
+
+  assert.equal(groups[0].current.run_id, "run-new");
+  assert.deepEqual(groups[0].history.map((run) => run.run_id), ["run-old"]);
+});
+
 test("task list renders the claim badge from the shared helper", () => {
   const app = readFileSync(
     join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
@@ -199,21 +245,34 @@ test("live claim badge prefers the freshly polled run status", () => {
   );
 });
 
-test("任务记录 面板定时刷新，页面不可见时不刷", () => {
+test("任务记录 只在状态会自己变的时候盯，不在状态没变时反复刷新", () => {
   const app = readFileSync(
     join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
     "utf8",
   );
 
   // 走查时用户看到的问题：任务记录只能靠手动/偶发刷新，状态长期是旧的。
-  assert.match(app, /BITABLE_REFRESH_MS/);
-  assert.match(app, /setInterval\(refreshBitablePanel/);
+  assert.match(app, /BitableState\.liveClaimBadge\(/);
   assert.match(app, /document\.hidden/);
   assert.match(app, /visibilitychange/);
-  assert.match(app, /BitableState\.liveClaimBadge\(/);
-  // 后台定时刷新失败要静默：服务重启的几秒里不能每 5 秒弹一次全局错误。
+  // 后台刷新失败要静默：服务重启的几秒里不能每 5 秒弹一次全局错误。
   assert.match(app, /loadRecentRuns\(\{ silent: true \}\)/);
   assert.match(app, /if \(!silent\) showError\(error\)/);
+
+  // 用户要求：不要定时刷新，要「状态更新的时候刷新」。
+  // 等待审批 / 等待成片审核是停在等人操作上的，状态不会自己变 —— 那时不该有任何轮询。
+  assert.match(app, /SELF_PROGRESSING_RUN_STATUSES/);
+  assert.match(app, /function needsRunWatch\(/);
+  assert.match(app, /function scheduleRunWatch\(/);
+  assert.match(app, /function stopRunWatch\(/);
+  assert.equal(
+    /setInterval\(refreshBitablePanel/.test(app),
+    false,
+    "不该再有固定节奏刷新整个面板",
+  );
+  // 正在看的那条运行状态一变，立刻对一次任务记录。
+  assert.match(app, /lastViewedRun/);
+  assert.match(app, /scheduleRunWatch\(\)/);
 });
 test("retry delivery has loading, success and failure states", () => {
   let state = BitableState.createState();
