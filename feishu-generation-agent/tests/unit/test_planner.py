@@ -26,6 +26,7 @@ from feishu_generation_agent.integrations.planner import (
     _fill_storyboard_source_block_ids,
     _normalize_generated_plan_payload,
     planner_system_prompt,
+    reconcile_storyboard_sources,
     validate_plan,
 )
 
@@ -1772,6 +1773,35 @@ def test_missing_storyboard_rows_are_filled_deterministically(
     )
     sources = payload["tasks"][0]["source_block_ids"]
     assert {"shot-1", "shot-2", "shot-3", "shot-4"} <= set(sources)
+
+
+def test_reconcile_storyboard_sources_fills_a_copied_plan(
+    storyboard_document: NormalizedDocument,
+):
+    """重跑复制旧计划时同样要补齐 —— 那条路根本没有模型参与。
+
+    实测（2026-09-17 超级大床）：重跑走 `clone_approved_plan`，缺的 3 行一直缺，
+    校验里一直挂着同 3 个 id，用户重跑多少次都一样。
+    """
+    from feishu_generation_agent.domain.plan import TaskPlan
+
+    plan = TaskPlan.model_validate(
+        json.loads(_plan_json(_video_task(source_block_ids=["shot-1"])))
+    )
+    assert any(
+        "missing source_block_ids" in issue
+        for issue in validate_plan(plan, storyboard_document, 4)
+    )
+
+    fixed = reconcile_storyboard_sources(plan, storyboard_document)
+
+    assert not any(
+        "missing source_block_ids" in issue
+        for issue in validate_plan(fixed, storyboard_document, 4)
+    )
+    assert {"shot-1", "shot-2", "shot-3", "shot-4"} <= set(
+        fixed.tasks[0].source_block_ids
+    )
 
 
 def test_validator_requires_every_content_block_in_storyboard_rows(

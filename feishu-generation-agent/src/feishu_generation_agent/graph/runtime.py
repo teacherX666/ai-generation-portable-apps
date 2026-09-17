@@ -50,6 +50,7 @@ from feishu_generation_agent.domain.reference_contract import (
 from feishu_generation_agent.integrations.planner import (
     language_validation_message,
     planner_system_prompt,
+    reconcile_storyboard_sources,
     validate_plan,
 )
 from feishu_generation_agent.integrations.rework_prompt import (
@@ -1711,7 +1712,6 @@ class GraphRuntime:
         plan: TaskPlan,
         assets: list[MediaAsset],
     ) -> None:
-        plan_json = plan.model_dump(mode="json")
         asset_json = [asset.model_dump(mode="json") for asset in assets]
         normalized = self._document_assets(state.get("normalized_document"), asset_json)
         source_document = self._document_assets(state.get("source_document"), asset_json)
@@ -1719,6 +1719,9 @@ class GraphRuntime:
         if normalized is not None:
             try:
                 document = NormalizedDocument.model_validate(normalized)
+                # 分镜行 id 确定性补齐：重跑走的是「复制上一份已批准计划」，
+                # 模型没有机会重抄，缺的行会一直缺（实测 2026-09-17 超级大床）。
+                plan = reconcile_storyboard_sources(plan, document)
                 validation_issues = [
                     record.display_message
                     for record in resolve_ingest_issue_records(document)
@@ -1736,6 +1739,8 @@ class GraphRuntime:
         revision = state.get("draft_revision")
         if not isinstance(revision, int):
             revision = state.get("document_revision", state.get("source_revision", 0))
+        # 补齐后再落盘（上面的 plan 可能已被 reconcile 过）。
+        plan_json = plan.model_dump(mode="json")
         updates: dict[str, Any] = {
             "draft_plan": plan_json,
             "task_plan": plan_json,

@@ -295,10 +295,66 @@ def _compact_json(value: Any) -> str:
     )
 
 
+def _storyboard_fills(
+    sources_list: list[list[str]],
+    requirements: dict[str, list[str]],
+) -> list[tuple[int, list[str]]]:
+    """算出「哪些任务要补哪些分镜行 id」——返回 [(任务下标, 待补 id 列表)]。
+
+    只补已经（部分）覆盖该表的任务；若整份计划只有一个视频任务、且完全没引用该表，
+    也认它就是要覆盖这张表的那个任务。
+    """
+    if not sources_list or not requirements:
+        return []
+    fills: list[tuple[int, list[str]]] = []
+    for table_id, required_ids in requirements.items():
+        relevant = {table_id, *required_ids}
+        indexes = [
+            index
+            for index, sources in enumerate(sources_list)
+            if relevant.intersection(sources)
+        ]
+        if not indexes and len(sources_list) == 1:
+            indexes = [0]
+        for index in indexes:
+            missing = [
+                block_id
+                for block_id in required_ids
+                if block_id not in sources_list[index]
+            ]
+            if missing:
+                fills.append((index, missing))
+    return fills
+
+
 def _fill_storyboard_source_block_ids(
     payload: dict[str, Any],
     document: NormalizedDocument,
 ) -> None:
+    """（dict 形态）把分镜行 id 补进 payload —— 规划时用，见 reconcile_storyboard_sources。"""
+    requirements = _storyboard_requirements(document)
+    tasks = payload.get("tasks")
+    if not requirements or not isinstance(tasks, list):
+        return
+    video_tasks = [
+        task
+        for task in tasks
+        if isinstance(task, dict) and task.get("task_type") == "image_to_video"
+    ]
+    sources_list = [
+        list(task.get("source_block_ids") or []) for task in video_tasks
+    ]
+    for index, missing in _storyboard_fills(sources_list, requirements):
+        video_tasks[index]["source_block_ids"] = [
+            *sources_list[index],
+            *missing,
+        ]
+
+
+def reconcile_storyboard_sources(
+    plan: TaskPlan,
+    document: NormalizedDocument,
+) -> TaskPlan:
     """把分镜表每一行镜头的 block id **确定性地**补进覆盖它的那个任务。
 
     2026-09-17 实测（超级大床）：分镜表 50+ 行，模型每次都会漏抄几行 → 契约校验
@@ -306,40 +362,38 @@ def _fill_storyboard_source_block_ids(
     是「模型三次返回的 JSON 均未通过校验」（其实 JSON 合法，是计划不合契约）。
 
     这些 id 我们本来就能从文档里算出来，不该让模型去枚举几十个不透明字符串。
-    只在任务已经（部分）覆盖该表时补；若整份计划只有一个 image_to_video 任务、
-    且完全没引用该表，也认它就是要覆盖这张表的那个任务。
+    规划路径（`_fill_storyboard_source_block_ids`）与**重跑复制计划**路径
+    （`GraphRuntime._persist_draft`）都走这里，保证进审批的计划一定齐。
     """
     requirements = _storyboard_requirements(document)
     if not requirements:
-        return
-    tasks = payload.get("tasks")
-    if not isinstance(tasks, list):
-        return
-    video_tasks = [
-        task
-        for task in tasks
-        if isinstance(task, dict) and task.get("task_type") == "image_to_video"
+        return plan
+    video_indexes = [
+        index
+        for index, task in enumerate(plan.tasks)
+        if task.task_type == "image_to_video"
     ]
-    for table_id, required_ids in requirements.items():
-        relevant = {table_id, *required_ids}
-        candidates = [
-            task
-            for task in video_tasks
-            if relevant.intersection(task.get("source_block_ids") or [])
-        ]
-        if not candidates and len(video_tasks) == 1:
-            candidates = video_tasks
-        for task in candidates:
-            sources = task.get("source_block_ids")
-            if not isinstance(sources, list):
-                continue
-            missing = [
-                block_id
-                for block_id in required_ids
-                if block_id not in sources
-            ]
-            if missing:
-                task["source_block_ids"] = [*sources, *missing]
+    if not video_indexes:
+        return plan
+    sources_list = [
+        list(plan.tasks[index].source_block_ids) for index in video_indexes
+    ]
+    fills = _storyboard_fills(sources_list, requirements)
+    if not fills:
+        return plan
+    tasks = list(plan.tasks)
+    for position, missing in fills:
+        index = video_indexes[position]
+        task = tasks[index]
+        tasks[index] = task.model_copy(
+            update={
+                "source_block_ids": [
+                    *task.source_block_ids,
+                    *missing,
+                ]
+            }
+        )
+    return plan.model_copy(update={"tasks": tasks})
 
 
 def _storyboard_requirements(
