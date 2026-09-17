@@ -170,7 +170,7 @@ const VIDEO_ARTIFACT = (taskId) => ({
   preview_url: `/api/runs/x/artifacts/${taskId}.mp4`,
 });
 
-function stubFetch(calls, { activeRun = true } = {}) {
+function stubFetch(calls, { activeRun = true, currentStatus = "waiting_review" } = {}) {
   return async (url) => {
     calls.push(url);
     if (url === "/api/health") {
@@ -196,11 +196,13 @@ function stubFetch(calls, { activeRun = true } = {}) {
         return jsonResponse(200, {
           run_id: "run-3",
           thread_id: "t3",
-          status: "waiting_review",
+          status: currentStatus,
           events: [],
           privacy: {},
           approval: { tasks: [] },
-          artifacts: [VIDEO_ARTIFACT("task-1")],
+          artifacts: currentStatus === "waiting_approval"
+            ? []
+            : [VIDEO_ARTIFACT("task-1")],
         });
       }
       if (runId === "run-2") {
@@ -270,6 +272,41 @@ test("历史成片横向滑条就在「成片与结果」那一栏里，不另�
   // 历史成片要能直接播；别的记录（rec-b）不能串进来。
   assert.ok(findNodes(cards[0], (node) => node.tagName === "VIDEO").length >= 1);
   assert.equal(allText(strip).includes("脱毛"), false);
+});
+
+test("切换下拉也按记录去重（重跑不再多出一项）", async () => {
+  const calls = [];
+  const app = await loadApp(stubFetch(calls));
+
+  const switcher = app.getNode("current-run-switcher");
+  assert.deepEqual(
+    switcher.children.map((option) => option.value),
+    ["run-3", "run-b"],
+    "下拉里每条记录只一项",
+  );
+});
+
+test("重跑后（审批/生成中）预览与历史仍然留着", async () => {
+  const calls = [];
+  const app = await loadApp(
+    stubFetch(calls, { currentStatus: "waiting_approval" }),
+  );
+
+  // 这就是用户说的「重跑的时候看不到预览」：新版还在审批、没有成片，
+  // 面板不能整块消失 —— 往次成片要继续看得到。
+  assert.equal(app.getNode("artifact-review").hidden, false, "预览面板要留着");
+  const strip = app.getNode("artifact-list");
+  assert.ok(allText(strip).includes("历史生成"), "历史滑条要留着");
+  assert.ok(
+    findNodes(
+      strip,
+      (node) => String(node.className || "").includes("artifact-history-card"),
+    ).length >= 1,
+  );
+  assert.ok(
+    (app.getNode("artifact-review-message").textContent || "").includes("往次成片"),
+    "要说明本次还没有成片、下面是往次成片",
+  );
 });
 
 test("状态全在等人操作时，一个请求都不发", async () => {

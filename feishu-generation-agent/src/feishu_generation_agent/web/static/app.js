@@ -715,7 +715,7 @@
     runHistorySummary.textContent = runs.length
       ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${rows.length} 条`
       : "进行中与历史任务都在这里";
-    const switchOptions = runs.map((run) => {
+    const switchOptions = rows.map((run) => {
       const option = element("option", "", `${run.display_text || run.run_id} · ${statusUi(run.status).label}`);
       option.value = run.run_id;
       return option;
@@ -2425,36 +2425,25 @@
     }
     state.artifactPreviewSignature = signature;
 
-    const showsArtifacts = [
-      "waiting_review", "delivering", "delivery_failed", "succeeded", "completed_with_errors",
-    ].includes(view.status) && artifacts.length > 0;
-    // 终态但没有任何成片（执行失败/已取消）：不隐藏整块，而是给出明确占位，
-    // 避免历史任务点进去后主区域一片空白，让用户误以为「成片预览坏了」。
-    const terminalWithoutArtifacts = (
-      ["failed", "cancelled"].includes(view.status)
-    );
-    if (!showsArtifacts && !terminalWithoutArtifacts) {
-      artifactReview.hidden = true;
-      artifactList.replaceChildren();
-      return;
-    }
+    // 预览面板**常驻**：本次还没成片（审批中 / 生成中 / 失败）也留着，
+    // 往次成片继续看得到 —— 用户明确要求「重跑的时候也能看到预览」。
     artifactReview.hidden = false;
-    artifactList.replaceChildren();
-    if (terminalWithoutArtifacts) {
-      artifactReviewFeedbackBox.hidden = true;
-      artifactReviewActions.hidden = true;
+    artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
+    artifactReviewActions.hidden = !canReviewArtifacts;
+    if (artifacts.length > 0) {
+      artifactReviewMessage.textContent = canReviewArtifacts
+        ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
+        : view.status === "delivery_failed"
+          ? "素材已生成但结果表写入失败，可继续查看素材并在底部重新写入。"
+          : "视频已生成完成，可继续查看；如需回写飞书，请点击下方「导出到结果表」。";
+    } else if (["failed", "cancelled"].includes(view.status)) {
       artifactReviewMessage.textContent = view.status === "cancelled"
         ? "本次运行已取消，未生成成片。"
         : "本次运行未生成成片，请在下方的失败原因中查看详情。";
-      return;
+    } else {
+      artifactReviewMessage.textContent =
+        "本次运行还没有成片（审批或生成中），下面是往次成片。";
     }
-    artifactReviewMessage.textContent = canReviewArtifacts
-      ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
-      : view.status === "delivery_failed"
-        ? "素材已生成但结果表写入失败，可继续查看素材并在底部重新写入。"
-        : "视频已生成完成，可继续查看；如需回写飞书，请点击下方「导出到结果表」。";
-    artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
-    artifactReviewActions.hidden = !canReviewArtifacts;
     const artifactNodes = artifacts.map((artifact) => {
       const card = element("figure", "artifact-card");
       const label = artifact.kind === "video" ? "视频" : "图片";
