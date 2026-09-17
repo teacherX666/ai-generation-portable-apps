@@ -4,7 +4,9 @@
 `【返工要求】` 段**整段删掉**，于是「上一轮刚修好的问题」在下一轮必然复发。
 本模块把「历次要求」从提示词正文里解耦出来单独累积，并保证三件事：
 
-1. 任何一次返工都不会丢掉历史要求（`merge_requirements`）；
+1. 任何一次返工都不会丢掉历史要求（`merge_requirements`），且**融合基准取「上一版」
+   而不是冻结的第一版** —— 从第一版重写一遍会让前几轮的优化在融合有遗漏时回退
+   （2026-09-17 修）；
 2. 提示词永远不超过 `SEEDANCE_PROMPT_MAX_CHARS`，且**永不抛错**
    （旧实现在超长时直接让返工失败，用户拿不到补救路径）；
 3. AI 融合结果必须先通过契约校验（长度 / 素材引用集合 / 标记）才能采用，
@@ -146,15 +148,27 @@ def is_acceptable_fusion(
 
 
 def rework_inputs(task: Any, feedback: str) -> tuple[str, list[str]]:
-    """从任务上取出「冻结的 base + 全部历史要求 + 本次要求」。
+    """从任务上取出「上一版正文 + 全部历史要求 + 本次要求」。
 
     两条重跑路径（图节点 `review_artifacts` 与多维表格 `clone_run_for_approval`）
     都走这里，保证「只累积不覆盖」的语义只有一份实现。
+
+    融合基准是**上一版**（`task.prompt` 去掉兜底尾巴后的正文），不是冻结的第一版。
+    用第一版当基准意味着每一轮都要从最初那份重写一遍：融合只要有一点遗漏，前几轮
+    已经修好的东西就回退了（2026-09-17 用户报的「甚至会把我之前的重做优化给回退」）。
+    以「上一版」为基准，之前几轮的优化天然被保留，本轮只在其上叠加。
+
+    要求清单仍然只累积不覆盖（含从兜底尾巴里救回来的旧要求）：融合器要按整份
+    清单核对，漏掉任何一条都不会被静默忘记。
     """
-    legacy_base, legacy_requirements = split_legacy_requirements(
+    previous_body, legacy_requirements = split_legacy_requirements(
         getattr(task, "prompt", "") or ""
     )
-    base_prompt = getattr(task, "rework_base_prompt", None) or legacy_base
+    base_prompt = (
+        previous_body
+        or getattr(task, "rework_base_prompt", None)
+        or ""
+    )
     requirements = merge_requirements(
         getattr(task, "rework_requirements", None) or [],
         legacy_requirements,

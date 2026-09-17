@@ -149,8 +149,10 @@ class GenerationTask(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     blocking_issues: list[str] = Field(default_factory=list)
     # 返工（重做）状态。历次返工要求**只累积、永不覆盖**，否则上一轮修好的
-    # 问题会在下一轮复发（2026-09-16 修复的缺陷）；base 冻结为「首次返工前」
-    # 的提示词，每轮都用「base + 全部历史要求」重新融合，避免逐轮改写漂移。
+    # 问题会在下一轮复发（2026-09-16 修复的缺陷）。
+    # rework_base_prompt = 首次返工**之前**那一版，只作历史锚点（老数据也靠它
+    # 显示改前原文）；融合基准实际取「上一版」（见 rework_prompt.rework_inputs），
+    # 否则每轮都从最初重写、融合一有遗漏就把前几轮的优化回退掉（2026-09-17 修）。
     # SkipJsonSchema：这两个字段由系统维护，不该出现在给规划模型的 JSON Schema
     # 契约里（模型不需要产出它们），但不影响 model_dump 持久化。
     rework_requirements: SkipJsonSchema[list[str]] = Field(default_factory=list)

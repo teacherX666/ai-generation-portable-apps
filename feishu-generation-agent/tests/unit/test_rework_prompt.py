@@ -175,6 +175,39 @@ def test_rework_inputs_freezes_base_on_first_rework() -> None:
     assert task.rework_base_prompt is None
 
 
+def test_rework_inputs_bases_on_previous_version_not_the_frozen_first() -> None:
+    """融合基准是**上一版**，不是冻结的第一版。
+
+    用第一版当基准意味着每一轮都要从最初那份重写一遍：融合只要有一点遗漏，
+    前几轮已经修好的东西就真的回退了（用户 2026-09-17 报的
+    「甚至会把我之前的重做优化给回退」）。以「上一版」为基准，之前几轮的
+    优化天然被保留下来，本轮只在其上叠加这一次的要求。
+    """
+    task = _task(
+        "第一版。手不要僵。",
+        rework_base_prompt="第一版。",
+        rework_requirements=["手不要僵"],
+    )
+    base, requirements = rework_inputs(task, "背景明亮")
+
+    assert base == "第一版。手不要僵。"
+    assert requirements == ["手不要僵", "背景明亮"]
+
+
+def test_rework_inputs_strips_the_legacy_tail_from_the_base() -> None:
+    """上一轮是兜底拼接时，正文尾巴里的【返工要求】要从基准里剥掉。
+
+    剥掉的同时那些要求必须并回清单再喂给融合器 —— 否则一剥就丢，
+    这正是 2026-09-16 修过的老 bug。
+    """
+    task = _task(f"第一版。\n{REWORK_MARKER}手不要僵")
+    base, requirements = rework_inputs(task, "背景明亮")
+
+    assert base == "第一版。"
+    assert REWORK_MARKER not in base
+    assert requirements == ["手不要僵", "背景明亮"]
+
+
 async def test_build_rework_prompt_uses_accepted_fusion() -> None:
     async def fuse(original_prompt: str, requirements: list[str]) -> str:
         assert requirements == ["手不要僵"]
