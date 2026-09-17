@@ -228,44 +228,48 @@ function stubFetch(calls, { activeRun = true } = {}) {
   };
 }
 
-test("任务记录按每次运行逐条列出，不再把历次尝试叠成一条", async () => {
+test("任务记录一条记录一行：重跑不再多出一行", async () => {
   const calls = [];
   const app = await loadApp(stubFetch(calls));
 
   const rows = app.getNode("recent-run-list").children;
-  assert.equal(rows.length, 4, "四次尝试就是四行");
+  // rec-a 的三次尝试只占一行（代表＝进行中的 run-3），rec-b 一行。
+  assert.equal(rows.length, 2, "一条记录一行");
   assert.deepEqual(
     rows.map((row) => row.dataset.runId),
-    ["run-3", "run-2", "run-1", "run-b"],
+    ["run-3", "run-b"],
   );
-  assert.equal(app.getNode("run-history-summary").textContent, "1 个进行中 · 共 4 条");
-  // 没有「历史 N 次」这种折叠开关了（「历史 · 状态」是本来就有的行内文案）。
+  assert.equal(app.getNode("run-history-summary").textContent, "1 个进行中 · 共 2 条");
+  // 也不在列表里展开历次版本（那是成片预览横向滑条的事）。
   assert.equal(
     /历史 \d+ 次/.test(allText(app.getNode("recent-run-list"))),
     false,
   );
 });
 
-test("预览区把同一条需求的往次成片摆出来，能直接看", async () => {
+test("历史成片横向滑条就在「成片与结果」那一栏里，不另开一块", async () => {
   const calls = [];
   const app = await loadApp(stubFetch(calls));
 
-  const history = app.getNode("artifact-history");
-  const text = allText(history);
-
-  assert.equal(history.hidden, false, "预览区应显示历史成片区");
-  assert.ok(text.includes("历史生成"), "要有历史生成分区");
-  // run-2 是同一条记录的上一版，它的成片要能看到。
-  assert.ok(text.includes("查看这一版"), "每个历史版本要有查看入口");
-  const cards = findNodes(history, (node) => node.className === "artifact-history-card");
-  assert.ok(cards.length >= 1, "至少渲染出上一版成片卡片");
-  // 别的记录（rec-b）不能被串进来。
-  assert.equal(text.includes("脱毛"), false);
-  // 历史成片用 <video> 呈现（用户要「能看到历史生成的视频」）。
-  assert.ok(
-    findNodes(history, (node) => node.tagName === "VIDEO").length >= 1,
-    "历史成片要能直接播",
+  const strip = app.getNode("artifact-list");
+  const cards = findNodes(
+    strip,
+    (node) => String(node.className || "").includes("artifact-history-card"),
   );
+
+  assert.ok(cards.length >= 1, "历史成片卡片要和当前成片在同一栏里");
+  assert.ok(allText(strip).includes("历史生成"), "要有历史生成的分隔标记");
+  // 不能另开一个往下的分区。
+  assert.equal(app.getNode("artifact-history").children.length, 0);
+  // 每个历史版本给一个切换入口。
+  assert.ok(
+    findNodes(cards[0], (node) => node.tagName === "BUTTON").some(
+      (node) => node.textContent === "查看这一版",
+    ),
+  );
+  // 历史成片要能直接播；别的记录（rec-b）不能串进来。
+  assert.ok(findNodes(cards[0], (node) => node.tagName === "VIDEO").length >= 1);
+  assert.equal(allText(strip).includes("脱毛"), false);
 });
 
 test("状态全在等人操作时，一个请求都不发", async () => {

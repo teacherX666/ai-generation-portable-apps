@@ -726,62 +726,31 @@ button {
 .result-table-link:hover { background: var(--brand-soft-hover); }
 .result-table-link[hidden] { display: none; }
 .artifact-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  /* 横向滑条：当前成片与历次成片并排一行，横向滚动，不再竖着堆 */
+  display: flex;
+  align-items: flex-start;
   gap: .8rem;
   margin: .8rem 0 0;
+  padding-bottom: .35rem;
+  overflow-x: auto;
 }
-/* 历史生成：同一条需求往次生成的成片，摆在当前成片下面一起看 */
-.artifact-history {
-  margin: 1.1rem 0 0;
-  padding-top: .85rem;
-  border-top: 1px solid var(--line);
-}
-.artifact-history-title {
-  margin: 0 0 .55rem;
-  font-size: .9rem;
-}
-.artifact-history-entry {
-  margin-bottom: .85rem;
-  padding: .6rem .65rem;
-  border: 1px solid var(--line);
-  border-radius: .65rem;
-  background: #fcfdfb;
-}
-.artifact-history-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: .6rem;
-  margin-bottom: .5rem;
-}
-.artifact-history-head strong { font-size: .85rem; font-weight: 600; }
-.artifact-history-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: .6rem;
-}
-.artifact-history-card {
-  margin: 0;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: .5rem;
-  background: #fff;
-}
-.artifact-history-card img,
-.artifact-history-card video {
-  display: block;
-  width: 100%;
-  max-height: 240px;
-  object-fit: contain;
-  background: #0f1512;
-}
-.artifact-history-card figcaption {
+.artifact-list > .artifact-card { flex: 0 0 240px; }
+/* 历史生成：往次成片与当前成片同栏并列，中间一个分隔标记 */
+.artifact-history-divider {
+  flex: 0 0 auto;
+  align-self: center;
   padding: .35rem .5rem;
+  border-left: 2px solid var(--line);
   color: var(--muted);
-  font-size: .76rem;
+  font-size: .78rem;
+  text-align: center;
+  writing-mode: vertical-rl;
+  letter-spacing: .12em;
 }
+.artifact-history-card { flex: 0 0 200px; background: #f6f8f5; }
+.artifact-history-card img,
+.artifact-history-card video { max-height: 200px; }
+.artifact-history-card figcaption { flex-direction: column; align-items: flex-start; }
 .artifact-card {
   margin: 0;
   overflow: hidden;

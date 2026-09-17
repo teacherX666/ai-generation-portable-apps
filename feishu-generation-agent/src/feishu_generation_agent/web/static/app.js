@@ -710,9 +710,10 @@
     if (recentRunList.dataset.renderSig === signature) return;
     recentRunList.dataset.renderSig = signature;
     const activeCount = runs.filter((run) => run.active).length;
-    // 一版一行：历次尝试不合并（用户明确要的是**预览里**看历史，不是把记录叠起来）。
+    // 一条记录一行：重跑不再多出一行。历次版本去成片预览的横向滑条里看/切。
+    const rows = BitableState.latestRunsByRecord(runs);
     runHistorySummary.textContent = runs.length
-      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${runs.length} 条`
+      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${rows.length} 条`
       : "进行中与历史任务都在这里";
     const switchOptions = runs.map((run) => {
       const option = element("option", "", `${run.display_text || run.run_id} · ${statusUi(run.status).label}`);
@@ -730,7 +731,7 @@
       : "";
     currentRunSwitcher.disabled = state.busy || runs.length === 0;
 
-    const nodes = runs.map((run) => {
+    const nodes = rows.map((run) => {
       const selected = run.run_id === state.runId;
       const row = element("article", `recent-run${selected ? " is-current" : ""}`);
       row.dataset.runId = run.run_id;
@@ -2268,7 +2269,7 @@
 
   async function ensureArtifactHistory(runIds) {
     const missing = runIds.filter((runId) => !artifactHistoryCache.has(runId));
-    if (!missing.length) return;
+    if (!missing.length) return false;
     await Promise.all(missing.map(async (runId) => {
       try {
         const sibling = await api(`/api/runs/${runId}`);
@@ -2284,100 +2285,85 @@
   }
 
   /**
-   * 成片预览里的「历史生成」：同一条需求**往次生成**的成片，直接能看/能播。
+   * 成片预览里的「历史生成」快照：同一条需求**往次生成**的成片。
    *
-   * 任务记录本身仍然一版一行 —— 用户要的是在预览里对比历次结果，不是把记录叠起来。
-   * `<video>` 重建成本高，所以按「有哪些历史版本」的签名短路，状态没变就不重画。
+   * 任务记录一条记录一行；历次版本在这里（成片与结果那一栏的横向滑条里）看和切，
+   * 不另开往下的分区 —— 那样页面会挤。产物取过一次就缓存：成片预览每秒轮询。
    */
-  async function renderArtifactHistory() {
-    const host = byId("artifact-history");
-    if (!host) return;
+  function artifactHistorySnapshot() {
     const siblings = BitableState.siblingRuns(
       state.bitable.recentRuns || [],
       state.runId,
     );
-    if (!siblings.length) {
-      if (!host.hidden) {
-        host.hidden = true;
-        host.replaceChildren();
-      }
-      host.dataset.historySig = "";
-      return;
-    }
-    const signature = JSON.stringify(
-      siblings.map((run) => [run.run_id, run.status, run.updated_at]),
+    return {
+      siblings,
+      signature: JSON.stringify(
+        siblings.map((run) => [
+          run.run_id,
+          run.status,
+          run.updated_at,
+          artifactHistoryCache.has(run.run_id),
+        ]),
+      ),
+    };
+  }
+
+  /** 一个「往次版本」卡片：和当前成片并排在同一栏，能直接播、能切过去看。 */
+  function artifactHistoryCard(run) {
+    const card = element("figure", "artifact-card artifact-history-card");
+    card.dataset.runId = run.run_id;
+    const caption = element(
+      "figcaption",
+      "",
+      `往次 · ${statusUi(run.status).label}`
+        + (run.updated_at ? ` · ${formatRecentTime(run.updated_at)}` : ""),
     );
-    if (host.dataset.historySig === signature) return;
-    await ensureArtifactHistory(siblings.map((run) => run.run_id));
-    // 等待期间可能已经切走或列表变了，落盘前再核一次。
-    if (
-      host.dataset.historySig === signature
-      || JSON.stringify(
-        BitableState.siblingRuns(state.bitable.recentRuns || [], state.runId)
-          .map((run) => [run.run_id, run.status, run.updated_at]),
-      ) !== signature
-    ) {
-      return;
-    }
-    host.hidden = false;
-    const entries = siblings.map((run) => {
-      const entry = element("div", "artifact-history-entry");
-      const head = element("div", "artifact-history-head");
-      head.append(
-        element(
-          "strong",
-          "",
-          `${statusUi(run.status).label}`
-            + (run.updated_at ? ` · ${formatRecentTime(run.updated_at)}` : ""),
-        ),
-      );
-      const open = element("button", "quiet-button", "查看这一版");
-      open.type = "button";
-      open.disabled = state.busy;
-      open.addEventListener("click", () => viewRecentRun(run.run_id));
-      head.append(open);
-      entry.append(head);
-      const artifacts = artifactHistoryCache.get(run.run_id) || [];
-      if (!artifacts.length) {
-        entry.append(element("p", "bitable-task-meta", "这一版没有成片。"));
-        return entry;
-      }
-      const list = element("div", "artifact-history-list");
-      artifacts.forEach((artifact) => {
-        const card = element("figure", "artifact-history-card");
-        card.append(
-          element("figcaption", "", artifact.kind === "video" ? "视频" : "图片"),
-        );
-        if (artifact.kind === "video") {
-          const video = document.createElement("video");
-          video.controls = true;
-          video.preload = "metadata";
-          video.playsInline = true;
-          video.muted = true;
-          video.src = agentUrl(artifact.preview_url);
-          card.prepend(video);
-        } else {
-          const image = document.createElement("img");
-          image.alt = artifact.artifact_id;
-          image.loading = "lazy";
-          image.src = agentUrl(artifact.preview_url);
-          card.prepend(image);
-        }
-        list.append(card);
-      });
-      entry.append(list);
-      return entry;
-    });
-    host.replaceChildren(
-      element("h4", "artifact-history-title", "历史生成（同一条需求的往次成片）"),
-      ...entries,
+    const open = element("button", "quiet-button", "查看这一版");
+    open.type = "button";
+    open.disabled = state.busy;
+    open.addEventListener("click", () => viewRecentRun(run.run_id));
+    caption.append(open);
+    card.append(caption);
+    const artifacts = artifactHistoryCache.get(run.run_id) || [];
+    const artifact = artifacts.find(
+      (item) => item && item.preview_url && item.kind !== "file",
     );
-    host.dataset.historySig = signature;
+    if (!artifact) {
+      card.append(element("p", "bitable-task-meta", "这一版没有成片。"));
+      return card;
+    }
+    if (artifact.kind === "video") {
+      const video = document.createElement("video");
+      video.controls = true;
+      video.preload = "metadata";
+      video.playsInline = true;
+      video.muted = true;
+      video.src = agentUrl(artifact.preview_url);
+      card.prepend(video);
+    } else {
+      const image = document.createElement("img");
+      image.alt = artifact.artifact_id;
+      image.loading = "lazy";
+      image.src = agentUrl(artifact.preview_url);
+      card.prepend(image);
+    }
+    return card;
   }
 
   function renderArtifactReview(view) {
     // 历史成片独立于当前这条的成片状态：即使这次失败/还没出片，也要能看到往次的。
-    renderArtifactHistory();
+    const history = artifactHistorySnapshot();
+    // 只在**真的有东西要拉**时才补数据并重画一次：否则会变成
+    // 「重画 → 缓存已命中 → 再重画」的微任务死循环（实测把测试跑挂了）。
+    const missingHistory = history.siblings.filter(
+      (run) => !artifactHistoryCache.has(run.run_id),
+    );
+    if (missingHistory.length) {
+      ensureArtifactHistory(missingHistory.map((run) => run.run_id)).then(() => {
+        state.artifactPreviewSignature = null;
+        if (state.view) renderArtifactReview(state.view);
+      });
+    }
     const artifacts = Array.isArray(view.artifacts) ? view.artifacts : [];
     const canReviewArtifacts = Boolean(
       ARTIFACT_REVIEWABLE_STATUSES.has(view.status) && !view.delivery
@@ -2432,6 +2418,7 @@
         artifact.kind,
         artifact.size,
       ]),
+      history: history.signature,
     });
     if (signature === state.artifactPreviewSignature) {
       return;
@@ -2468,7 +2455,7 @@
         : "视频已生成完成，可继续查看；如需回写飞书，请点击下方「导出到结果表」。";
     artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
     artifactReviewActions.hidden = !canReviewArtifacts;
-    artifactList.replaceChildren(...artifacts.map((artifact) => {
+    const artifactNodes = artifacts.map((artifact) => {
       const card = element("figure", "artifact-card");
       const label = artifact.kind === "video" ? "视频" : "图片";
       const size = typeof artifact.size === "number"
@@ -2512,7 +2499,14 @@
         card.prepend(image);
       }
       return card;
-    }));
+    });
+    const historyNodes = history.siblings.length
+      ? [
+          element("div", "artifact-history-divider", "历史生成"),
+          ...history.siblings.map((run) => artifactHistoryCard(run)),
+        ]
+      : [];
+    artifactList.replaceChildren(...artifactNodes, ...historyNodes);
   }
 
   function render(view, { refreshTasks = true } = {}) {

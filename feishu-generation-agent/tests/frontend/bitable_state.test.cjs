@@ -145,6 +145,33 @@ test("rescan adopts the claim fields the backend now returns", () => {
   assert.equal(state.categories.animation.tasks[0].claim_status, "待审批");
 });
 
+test("任务记录一条记录一行：重跑不再多出一行", () => {
+  const runs = [
+    { run_id: "run-3", record_id: "rec-a", active: true },
+    { run_id: "run-2", record_id: "rec-a" },
+    { run_id: "run-1", record_id: "rec-a" },
+    { run_id: "run-b", record_id: "rec-b" },
+    { run_id: "run-direct" },
+  ];
+
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["run-3", "run-b", "run-direct"],
+  );
+});
+
+test("同一记录里进行中的那条优先当代表", () => {
+  const runs = [
+    { run_id: "run-new", record_id: "rec-a", status: "succeeded" },
+    { run_id: "run-active", record_id: "rec-a", active: true },
+  ];
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["run-active"],
+  );
+  assert.deepEqual(BitableState.latestRunsByRecord(null), []);
+});
+
 test("同一条记录的其它尝试：给成片预览看历史用", () => {
   const runs = [
     { run_id: "run-3", record_id: "rec-a", display_text: "拿着吧你", status: "running", active: true },

@@ -231,6 +231,30 @@
   }
 
   /**
+   * 任务记录**一条记录一行**：同一条需求的历次尝试只占一行（重跑不再多出一行）。
+   *
+   * 展示的是「正在跑的那条」优先，否则最新的一条；历次版本不在这里展开 ——
+   * 它们是去成片预览的横向滑条里看/切的（用户明确要的是这个分工）。
+   * 没有 `record_id` 的（直连运行、老数据）各自成行，不猜。
+   */
+  function latestRunsByRecord(runs) {
+    const order = [];
+    const byKey = new Map();
+    (Array.isArray(runs) ? runs : []).forEach((run) => {
+      if (!run || !run.run_id) return;
+      const key = run.record_id || `run:${run.run_id}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, run);
+        order.push(key);
+        return;
+      }
+      // 同一个 key 之后又出现：进行中的那条优先当代表。
+      if (run.active && !byKey.get(key).active) byKey.set(key, run);
+    });
+    return order.map((key) => byKey.get(key));
+  }
+
+  /**
    * 同一条多维表格记录的**其它尝试**（不含当前这条）。
    *
    * 重跑会在同一个 record_id 下留下多个 run。成片预览靠它把「往次生成的片子」
@@ -357,6 +381,7 @@
     retrySucceeded,
     retryFailed,
     recentSucceeded,
+    latestRunsByRecord,
     siblingRuns,
     resetRunContext,
     runStage,
