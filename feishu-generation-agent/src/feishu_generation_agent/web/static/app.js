@@ -53,8 +53,6 @@
   // 正在看的那条运行上次见到的状态：变了才去刷新任务记录（同一状态反复轮询
   // 时什么都不做）。切换运行时会自动重置，不会误判成「状态变了」。
   let lastViewedRun = { runId: null, status: null };
-  // 哪些任务记录展开了「历史版本」（纯界面状态，不参与持久化）。
-  const expandedRunGroups = new Set();
   const byId = (id) => document.getElementById(id);
   const errorMessage = byId("error-message");
   const taskList = byId("task-list");
@@ -697,32 +695,24 @@
 
   function renderRecentRuns() {
     const runs = state.bitable.recentRuns || [];
-    // 同一条多维表格记录的历次尝试叠在同一条任务下（重跑不新开任务记录）。
-    const groups = BitableState.groupRecentRuns(runs);
     const signature = JSON.stringify({
       selected: state.runId,
       busy: state.busy,
-      expanded: [...expandedRunGroups].sort(),
-      groups: groups.map((group) => [
-        group.key,
-        group.current && group.current.run_id,
-        group.current && group.current.status,
-        group.current && group.current.active,
-        group.current && group.current.result_table_url,
-        group.current && group.current.rerunnable,
-        group.history.map((run) => [run.run_id, run.status]),
+      runs: runs.map((run) => [
+        run.run_id,
+        run.display_text,
+        run.status,
+        run.active,
+        run.result_table_url,
+        run.rerunnable,
       ]),
     });
     if (recentRunList.dataset.renderSig === signature) return;
     recentRunList.dataset.renderSig = signature;
     const activeCount = runs.filter((run) => run.active).length;
-    // 只有真的合并了版本才提「N 个版本」，免得单版本时多一句废话。
-    const versionNote =
-      runs.length && groups.length !== runs.length
-        ? ` · ${runs.length} 个版本`
-        : "";
+    // 一版一行：历次尝试不合并（用户明确要的是**预览里**看历史，不是把记录叠起来）。
     runHistorySummary.textContent = runs.length
-      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${groups.length} 条${versionNote}`
+      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${runs.length} 条`
       : "进行中与历史任务都在这里";
     const switchOptions = runs.map((run) => {
       const option = element("option", "", `${run.display_text || run.run_id} · ${statusUi(run.status).label}`);
@@ -740,83 +730,30 @@
       : "";
     currentRunSwitcher.disabled = state.busy || runs.length === 0;
 
-    const nodes = groups.map((group) => {
-      const run = group.current;
-      if (!run) return element("p", "bitable-empty", "暂无任务记录。");
+    const nodes = runs.map((run) => {
       const selected = run.run_id === state.runId;
       const row = element("article", `recent-run${selected ? " is-current" : ""}`);
       row.dataset.runId = run.run_id;
-      if (group.record_id) row.dataset.recordId = group.record_id;
+      if (run.record_id) row.dataset.recordId = run.record_id;
       const details = element("div", "recent-run-details");
-      const versionLabel = group.versions.length > 1
-        ? ` · 共 ${group.versions.length} 版`
-        : "";
       details.append(
-        element("strong", "", group.display_text || run.run_id),
+        element("strong", "", run.display_text || run.run_id),
         element(
           "p",
           "bitable-task-meta",
-          `${run.active ? "进行中" : "历史"} · ${statusUi(run.status).label}${versionLabel}`,
+          `${run.active ? "进行中" : "历史"} · ${statusUi(run.status).label}`
+            + (run.updated_at ? ` · ${formatRecentTime(run.updated_at)}` : ""),
         ),
       );
-      const actions = runActionsFor(run, { selected });
-      if (group.history.length) {
-        const expanded = expandedRunGroups.has(group.key);
-        const toggle = element(
-          "button",
-          "quiet-button recent-run-history-toggle",
-          expanded ? `收起历史（${group.history.length}）` : `历史 ${group.history.length} 次`,
-        );
-        toggle.type = "button";
-        toggle.setAttribute("aria-expanded", String(expanded));
-        toggle.addEventListener("click", () => {
-          if (expandedRunGroups.has(group.key)) expandedRunGroups.delete(group.key);
-          else expandedRunGroups.add(group.key);
-          renderRecentRuns();
-        });
-        actions.append(toggle);
-      }
-      row.append(details, actions);
-
-      if (group.history.length && expandedRunGroups.has(group.key)) {
-        const historyBox = element("div", "recent-run-history");
-        group.history.forEach((older, index) => {
-          // 版本号从最老的一版数起：最新的一版是「第 N 版」。
-          const versionNo = group.versions.length - 1 - index;
-          const olderSelected = older.run_id === state.runId;
-          const olderRow = element(
-            "article",
-            `recent-run recent-run-version${olderSelected ? " is-current" : ""}`,
-          );
-          olderRow.dataset.runId = older.run_id;
-          const olderDetails = element("div", "recent-run-details");
-          olderDetails.append(
-            element(
-              "strong",
-              "",
-              `第 ${versionNo} 版 · ${statusUi(older.status).label}`,
-            ),
-            element(
-              "p",
-              "bitable-task-meta",
-              formatRecentTime(older.updated_at) || older.run_id,
-            ),
-          );
-          olderRow.append(
-            olderDetails,
-            runActionsFor(older, { selected: olderSelected }),
-          );
-          historyBox.append(olderRow);
-        });
-        row.append(historyBox);
-      }
+      row.append(details, runActionsFor(run, { selected }));
       return row;
     });
     if (!nodes.length) nodes.push(element("p", "bitable-empty", "暂无任务记录。"));
     recentRunList.replaceChildren(...nodes);
   }
 
-  /** 一条运行的按钮组（当前版与历史版共用，保证能力不因分组而缩水）。 */
+
+  /** 一条运行的按钮组。 */
   function runActionsFor(run, { selected = false } = {}) {
     const actions = element("div", "recent-run-actions");
     const view = element(
@@ -2325,7 +2262,122 @@
     return card;
   }
 
+  // 同一条需求历次尝试的成片（run_id → artifacts）。取过一次就缓存，避免
+  // 成片预览每秒轮询时反复拉同一批数据。
+  const artifactHistoryCache = new Map();
+
+  async function ensureArtifactHistory(runIds) {
+    const missing = runIds.filter((runId) => !artifactHistoryCache.has(runId));
+    if (!missing.length) return;
+    await Promise.all(missing.map(async (runId) => {
+      try {
+        const sibling = await api(`/api/runs/${runId}`);
+        artifactHistoryCache.set(
+          runId,
+          Array.isArray(sibling?.artifacts) ? sibling.artifacts : [],
+        );
+      } catch (error) {
+        // 某一版拉不到不影响其它版本，也不该弹全局错误。
+        artifactHistoryCache.set(runId, []);
+      }
+    }));
+  }
+
+  /**
+   * 成片预览里的「历史生成」：同一条需求**往次生成**的成片，直接能看/能播。
+   *
+   * 任务记录本身仍然一版一行 —— 用户要的是在预览里对比历次结果，不是把记录叠起来。
+   * `<video>` 重建成本高，所以按「有哪些历史版本」的签名短路，状态没变就不重画。
+   */
+  async function renderArtifactHistory() {
+    const host = byId("artifact-history");
+    if (!host) return;
+    const siblings = BitableState.siblingRuns(
+      state.bitable.recentRuns || [],
+      state.runId,
+    );
+    if (!siblings.length) {
+      if (!host.hidden) {
+        host.hidden = true;
+        host.replaceChildren();
+      }
+      host.dataset.historySig = "";
+      return;
+    }
+    const signature = JSON.stringify(
+      siblings.map((run) => [run.run_id, run.status, run.updated_at]),
+    );
+    if (host.dataset.historySig === signature) return;
+    await ensureArtifactHistory(siblings.map((run) => run.run_id));
+    // 等待期间可能已经切走或列表变了，落盘前再核一次。
+    if (
+      host.dataset.historySig === signature
+      || JSON.stringify(
+        BitableState.siblingRuns(state.bitable.recentRuns || [], state.runId)
+          .map((run) => [run.run_id, run.status, run.updated_at]),
+      ) !== signature
+    ) {
+      return;
+    }
+    host.hidden = false;
+    const entries = siblings.map((run) => {
+      const entry = element("div", "artifact-history-entry");
+      const head = element("div", "artifact-history-head");
+      head.append(
+        element(
+          "strong",
+          "",
+          `${statusUi(run.status).label}`
+            + (run.updated_at ? ` · ${formatRecentTime(run.updated_at)}` : ""),
+        ),
+      );
+      const open = element("button", "quiet-button", "查看这一版");
+      open.type = "button";
+      open.disabled = state.busy;
+      open.addEventListener("click", () => viewRecentRun(run.run_id));
+      head.append(open);
+      entry.append(head);
+      const artifacts = artifactHistoryCache.get(run.run_id) || [];
+      if (!artifacts.length) {
+        entry.append(element("p", "bitable-task-meta", "这一版没有成片。"));
+        return entry;
+      }
+      const list = element("div", "artifact-history-list");
+      artifacts.forEach((artifact) => {
+        const card = element("figure", "artifact-history-card");
+        card.append(
+          element("figcaption", "", artifact.kind === "video" ? "视频" : "图片"),
+        );
+        if (artifact.kind === "video") {
+          const video = document.createElement("video");
+          video.controls = true;
+          video.preload = "metadata";
+          video.playsInline = true;
+          video.muted = true;
+          video.src = agentUrl(artifact.preview_url);
+          card.prepend(video);
+        } else {
+          const image = document.createElement("img");
+          image.alt = artifact.artifact_id;
+          image.loading = "lazy";
+          image.src = agentUrl(artifact.preview_url);
+          card.prepend(image);
+        }
+        list.append(card);
+      });
+      entry.append(list);
+      return entry;
+    });
+    host.replaceChildren(
+      element("h4", "artifact-history-title", "历史生成（同一条需求的往次成片）"),
+      ...entries,
+    );
+    host.dataset.historySig = signature;
+  }
+
   function renderArtifactReview(view) {
+    // 历史成片独立于当前这条的成片状态：即使这次失败/还没出片，也要能看到往次的。
+    renderArtifactHistory();
     const artifacts = Array.isArray(view.artifacts) ? view.artifacts : [];
     const canReviewArtifacts = Boolean(
       ARTIFACT_REVIEWABLE_STATUSES.has(view.status) && !view.delivery

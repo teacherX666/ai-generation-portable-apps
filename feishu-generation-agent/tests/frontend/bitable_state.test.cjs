@@ -145,7 +145,7 @@ test("rescan adopts the claim fields the backend now returns", () => {
   assert.equal(state.categories.animation.tasks[0].claim_status, "待审批");
 });
 
-test("任务记录按需求分组：同一条记录的历史版本叠在同一任务下", () => {
+test("同一条记录的其它尝试：给成片预览看历史用", () => {
   const runs = [
     { run_id: "run-3", record_id: "rec-a", display_text: "拿着吧你", status: "running", active: true },
     { run_id: "run-2", record_id: "rec-a", display_text: "拿着吧你", status: "succeeded" },
@@ -153,42 +153,23 @@ test("任务记录按需求分组：同一条记录的历史版本叠在同一�
     { run_id: "run-b", record_id: "rec-b", display_text: "脱毛", status: "waiting_review" },
   ];
 
-  const groups = BitableState.groupRecentRuns(runs);
-
-  // 重跑不再新开任务记录：rec-a 的三次尝试归到同一条任务下。
-  assert.equal(groups.length, 2);
-  assert.equal(groups[0].record_id, "rec-a");
-  assert.equal(groups[0].display_text, "拿着吧你");
-  assert.equal(groups[0].versions.length, 3);
-  // 当前版＝正在跑的那条；其余是历史版本（预览历史用）。
-  assert.equal(groups[0].current.run_id, "run-3");
+  // 用户要的是「预览里能看到历史生成的」——任务记录本身仍然一版一行，
+  // 这个助手只负责把同一条记录的**其它**尝试挑出来。
   assert.deepEqual(
-    groups[0].history.map((run) => run.run_id),
+    BitableState.siblingRuns(runs, "run-3").map((run) => run.run_id),
     ["run-2", "run-1"],
   );
-  assert.equal(groups[1].current.run_id, "run-b");
-  assert.deepEqual(groups[1].history, []);
+  assert.deepEqual(BitableState.siblingRuns(runs, "run-b"), []);
 });
 
-test("没有 record_id 时按 run_id 各自成组（老数据不串台）", () => {
-  const groups = BitableState.groupRecentRuns([
+test("没有 record_id 时不猜，返回空", () => {
+  const runs = [
     { run_id: "run-1", display_text: "甲" },
     { run_id: "run-2", display_text: "乙" },
-  ]);
-
-  assert.equal(groups.length, 2);
-  assert.equal(groups[0].record_id, null);
-  assert.equal(groups[0].current.run_id, "run-1");
-});
-
-test("没有正在跑的版本时，最新的一条就是当前版", () => {
-  const groups = BitableState.groupRecentRuns([
-    { run_id: "run-new", record_id: "rec-a", status: "succeeded" },
-    { run_id: "run-old", record_id: "rec-a", status: "failed" },
-  ]);
-
-  assert.equal(groups[0].current.run_id, "run-new");
-  assert.deepEqual(groups[0].history.map((run) => run.run_id), ["run-old"]);
+  ];
+  assert.deepEqual(BitableState.siblingRuns(runs, "run-1"), []);
+  assert.deepEqual(BitableState.siblingRuns(runs, "不存在"), []);
+  assert.deepEqual(BitableState.siblingRuns(null, "run-1"), []);
 });
 
 test("任务列表渲染的徽章文案来自共享助手", () => {

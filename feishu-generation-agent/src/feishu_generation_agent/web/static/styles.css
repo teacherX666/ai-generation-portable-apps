@@ -731,6 +731,57 @@ button {
   gap: .8rem;
   margin: .8rem 0 0;
 }
+/* 历史生成：同一条需求往次生成的成片，摆在当前成片下面一起看 */
+.artifact-history {
+  margin: 1.1rem 0 0;
+  padding-top: .85rem;
+  border-top: 1px solid var(--line);
+}
+.artifact-history-title {
+  margin: 0 0 .55rem;
+  font-size: .9rem;
+}
+.artifact-history-entry {
+  margin-bottom: .85rem;
+  padding: .6rem .65rem;
+  border: 1px solid var(--line);
+  border-radius: .65rem;
+  background: #fcfdfb;
+}
+.artifact-history-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6rem;
+  margin-bottom: .5rem;
+}
+.artifact-history-head strong { font-size: .85rem; font-weight: 600; }
+.artifact-history-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: .6rem;
+}
+.artifact-history-card {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  background: #fff;
+}
+.artifact-history-card img,
+.artifact-history-card video {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  background: #0f1512;
+}
+.artifact-history-card figcaption {
+  padding: .35rem .5rem;
+  color: var(--muted);
+  font-size: .76rem;
+}
 .artifact-card {
   margin: 0;
   overflow: hidden;
