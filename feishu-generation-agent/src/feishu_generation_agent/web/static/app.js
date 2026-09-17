@@ -787,7 +787,7 @@
       link.rel = "noreferrer";
       actions.append(link);
     }
-    if (!run.active) {
+    if (canDeleteRun(run)) {
       const remove = element("button", "danger", "删除");
       remove.type = "button";
       remove.disabled = state.busy;
@@ -857,6 +857,14 @@
     "delivering",
   ]);
   const RUN_WATCH_INTERVAL_MS = 5000;
+  //: 空闲时的心跳：全都在等人操作也**慢速**对一次。
+  //:
+  //: 2026-09-17 用户报「任务记录更新变得不实时了」：实测接口是新的、页面 DOM 停在
+  //: 几十分钟前 —— 因为「只在自行推进时盯守」在**别的窗口/会话**开始的任务上失效
+  //: （本页看不到任何推进中的状态，就永远不会去对），一切停下来后更是彻底不再对。
+  //: 改成：有推进中的任务 → 5 秒；空闲 → 每 3 个 tick（15 秒）对一次，仍远低于
+  //: 原来的固定 5 秒轮询。
+  const RUN_IDLE_TICKS = 3;
   let runWatchTimer = null;
 
   function needsRunWatch() {
@@ -865,21 +873,32 @@
     );
   }
 
+  /** 只有**不在跑**的运行才给删除按钮（用户 2026-09-17：生成中的任务不要有删除按钮）。
+   *
+   * 以前只看 `run.active`，而 active 只来自 active-runs 接口 —— 别的窗口/会话起的
+   * 任务在本页会显示成非 active，于是「生成中」的行也挂着删除按钮，点了会把正在跑
+   * 的任务删掉。改成按状态判断：自推进中的状态一律不给删。
+   */
+  function canDeleteRun(run) {
+    return !run.active && !SELF_PROGRESSING_RUN_STATUSES.has(run.status);
+  }
+
   function stopRunWatch() {
     if (runWatchTimer !== null) globalThis.clearInterval(runWatchTimer);
     runWatchTimer = null;
   }
 
-  /** 有任务在自行推进才起盯守；全都在等人操作就彻底停掉（0 请求）。 */
+  /** 有任务在自行推进就 5 秒盯一次；空闲降到 15 秒心跳（跨窗口也能发现新任务）。 */
   function scheduleRunWatch() {
-    stopRunWatch();
-    if (!needsRunWatch()) return;
+    if (runWatchTimer !== null) return; // 已经在盯了，别重复起
+    let idleTicks = 0;
     runWatchTimer = globalThis.setInterval(() => {
       if (document.hidden) return;
       if (!needsRunWatch()) {
-        stopRunWatch();
-        return;
+        idleTicks += 1;
+        if (idleTicks < RUN_IDLE_TICKS) return;
       }
+      idleTicks = 0;
       loadRecentRuns({ silent: true });
     }, RUN_WATCH_INTERVAL_MS);
   }
@@ -2055,6 +2074,49 @@
       rows.push(element("p", "mode-message", "暂无排除素材。"));
     }
     byId("excluded-asset-list").replaceChildren(...rows);
+    // 未覆盖的素材：给一个「排除」入口 —— 覆盖门要求「每个素材要么被引用、要么被
+    // 排除」，而以前界面没有排除入口，用户只能手改提示词才能批准（2026-09-17）。
+    const uncovered = ReviewState.uncoveredAssetRows(view).map((item) => {
+      const row = element("div", "excluded-asset-row");
+      const content = element("div", "excluded-asset-copy");
+      const exclude = element("button", "quiet-button", "排除");
+      exclude.type = "button";
+      exclude.disabled = state.busy;
+      exclude.addEventListener("click", () => excludeAsset(item.asset_id, exclude));
+      content.append(
+        element("strong", "", item.asset_id),
+        element("p", "", "计划没有用到它：排除掉才能批准；要用就把它加进某个任务的参考图。"),
+        exclude,
+      );
+      row.append(content);
+      return row;
+    });
+    byId("uncovered-asset-list").replaceChildren(
+      ...(uncovered.length
+        ? uncovered
+        : [element("p", "mode-message", "没有未使用素材。")]),
+    );
+  }
+
+  /** 把用不到的素材排除掉（覆盖门要人做这个决定，界面得给人入口）。 */
+  async function excludeAsset(assetId, button) {
+    if (state.busy || !state.runId) return;
+    setBusy(true);
+    clearError();
+    button.disabled = true;
+    try {
+      await api(`/api/runs/${state.runId}/excluded-assets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset_id: assetId }),
+      });
+      await poll(true);
+    } catch (error) {
+      showError(error);
+      button.disabled = false;
+    } finally {
+      setBusy(false);
+    }
   }
 
   /** 返工对比：这条新提示词怎么来的、跟改前比动了哪几句。 */

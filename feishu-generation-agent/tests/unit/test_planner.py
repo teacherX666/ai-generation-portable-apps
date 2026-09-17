@@ -1642,6 +1642,34 @@ def test_validator_rejects_hotpot_storyboard_without_understood_references(
     assert any("绝对秒数" in issue for issue in issues)
 
 
+def test_validator_accepts_video_frame_reference_as_the_video(
+    narrative_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """计划引用 `video-1-frame` ＝ 引用 `video-1`（抽帧别名）。
+
+    2026-09-17 超级大床实测：视频素材在 analyze_images 里被抽帧成 `video-1-frame`
+    交给规划（视频不能直接当参考图），计划引用的是帧，而校验查的是文档里的
+    `video-1` —— 于是同时报「unknown asset_id video-1-frame」和
+    「uncovered successful asset video-1」，那条记录**每次规划都过不了**。
+    """
+    video = _asset(tmp_path, "video-1", "video-1", mime_type="video/mp4")
+    document = narrative_document.model_copy(
+        update={"media_assets": [*narrative_document.media_assets, video]}
+    )
+    task = _video_task(source_block_ids=[])
+    task["reference_images"] = [
+        {"asset_id": "video-1-frame", "role": "reference"}
+    ]
+
+    issues = validate_plan(json.loads(_plan_json(task)), document, 4)
+
+    assert not any("unknown asset_id" in issue for issue in issues), issues
+    assert not any(
+        "uncovered" in issue and "video-1" in issue for issue in issues
+    ), issues
+
+
 def test_validator_rejects_latin_s_absolute_seconds(
     storyboard_document: NormalizedDocument,
 ):

@@ -170,7 +170,7 @@ const VIDEO_ARTIFACT = (taskId) => ({
   preview_url: `/api/runs/x/artifacts/${taskId}.mp4`,
 });
 
-function stubFetch(calls, { activeRun = true, currentStatus = "waiting_review" } = {}) {
+function stubFetch(calls, { activeRun = true, currentStatus = "waiting_review", generatingRun = false, uncoveredAssets = false } = {}) {
   return async (url) => {
     calls.push(url);
     if (url === "/api/health") {
@@ -186,7 +186,7 @@ function stubFetch(calls, { activeRun = true, currentStatus = "waiting_review" }
         { run_id: "run-3", record_id: "rec-a", display_text: "拿着吧你", status: "已完成", updated_at: "2026-09-17 10:20:00", artifact_count: 2 },
         { run_id: "run-2", record_id: "rec-a", display_text: "拿着吧你", status: "已完成", updated_at: "2026-09-17 09:40:00", artifact_count: 1 },
         { run_id: "run-1", record_id: "rec-a", display_text: "拿着吧你", status: "失败", updated_at: "2026-09-17 09:10:00", artifact_count: 0 },
-        { run_id: "run-b", record_id: "rec-b", display_text: "脱毛", status: "已完成", updated_at: "2026-09-17 09:00:00", artifact_count: 4 },
+        { run_id: "run-b", record_id: "rec-b", display_text: "脱毛", status: generatingRun ? "生成中" : "已完成", updated_at: "2026-09-17 09:00:00", artifact_count: 4 },
       ]);
     }
     if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
@@ -199,7 +199,17 @@ function stubFetch(calls, { activeRun = true, currentStatus = "waiting_review" }
           status: currentStatus,
           events: [],
           privacy: {},
-          approval: { tasks: [] },
+          approval: {
+            tasks: [],
+            // 未覆盖的素材：既没被引用、也没被排除 —— 批准按钮会一直是灰的。
+            media_assets: uncoveredAssets
+              ? [
+                  { asset_id: "image-4", mime_type: "image/png" },
+                  { asset_id: "image-5", mime_type: "image/png" },
+                ]
+              : [],
+            excluded_assets: [],
+          },
           artifacts: ["waiting_approval", "failed", "cancelled"].includes(currentStatus)
             ? []
             : [VIDEO_ARTIFACT("task-1")],
@@ -353,15 +363,56 @@ test("成片预览的重绘签名带上 busy（否则置灰的按钮永远回不
   assert.equal(/open\.disabled = state\.busy/.test(app), false);
 });
 
-test("状态全在等人操作时，一个请求都不发", async () => {
+test("生成中的任务不给删除按钮（只看 active 标记不可靠）", async () => {
+  // 别的窗口/会话起的任务在本页拿不到 active 标记 —— 旧代码只看 run.active，
+  // 于是「生成中」的行也挂着删除按钮，点了会把正在跑的任务删掉。
+  const app = await loadApp(stubFetch([], { generatingRun: true }));
+
+  const rows = Array.from(app.getNode("recent-run-list").children);
+  const generating = rows.find((row) => row.dataset.runId === "run-b");
+  assert.ok(generating, "测试数据里应有一个生成中的任务（run-b）");
+  assert.deepEqual(
+    findNodes(generating, (node) => node.tagName === "BUTTON").map(
+      (button) => button.textContent,
+    ),
+    ["查看"],
+    "生成中的任务只能查看，不能删",
+  );
+});
+
+test("未使用素材在审批页可以直接排除（覆盖门要人做决定，界面得给入口）", async () => {
   const calls = [];
-  // 没有进行中的运行（也就不会被自动恢复并起运行详情轮询），
-  // 剩下的全是「等待你审核 / 已完成」—— 状态不会自己变，不该有任何轮询。
+  const app = await loadApp(
+    stubFetch(calls, { currentStatus: "waiting_approval", uncoveredAssets: true }),
+  );
+
+  const list = app.getNode("uncovered-asset-list");
+  const buttons = findNodes(list, (node) => node.tagName === "BUTTON");
+  assert.deepEqual(
+    buttons.map((button) => button.textContent),
+    ["排除", "排除"],
+    "两个未覆盖素材各给一个排除入口",
+  );
+  assert.ok(allText(list).includes("image-4"));
+
+  await buttons[0].dispatch("click");
+
+  assert.ok(
+    calls.some((url) => String(url).includes("/excluded-assets")),
+    "点排除要真的调接口，实际：" + JSON.stringify(calls.slice(-3)),
+  );
+});
+
+test("空闲时降到 15 秒心跳，不再每 5 秒刷", async () => {
+  const calls = [];
+  // 没有进行中的运行（也就不会被自动恢复并起运行详情轮询）。
   const app = await loadApp(stubFetch(calls, { activeRun: false }));
 
   const before = calls.length;
   await app.tick();
   await app.tick();
-  assert.equal(calls.length, before, "等待审核 / 已完成都不会自己变，不该轮询");
-  assert.equal(app.intervalCount(), 0);
+  // 空闲 tick 不该立刻发请求（降频），但必须留一个心跳：别的窗口/会话开始的
+  // 任务本页看不到「自行推进」，没有心跳就永远刷不出来（2026-09-17 实测）。
+  assert.equal(calls.length, before, "空闲 tick 不该立刻发请求");
+  assert.equal(app.intervalCount(), 1, "要留一个慢速心跳");
 });

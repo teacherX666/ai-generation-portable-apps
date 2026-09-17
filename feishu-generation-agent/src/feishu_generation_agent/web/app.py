@@ -83,6 +83,7 @@ from feishu_generation_agent.web.schemas import (
     CreateRunRequest,
     DecisionRequest,
     PlannerPromptResponse,
+    ExcludedAssetRequest,
     PlannerPromptUpdate,
     ProviderPreferencesResponse,
     ProviderPreferencesUpdate,
@@ -1671,6 +1672,26 @@ def create_app(
         except (RunNotFound, RunConflict, RunValidationError) as exc:
             raise_runtime_error(exc)
         return {"status": "unlinked"}
+
+    @app.post(
+        "/api/runs/{run_id}/excluded-assets",
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def exclude_asset(
+        run_id: str,
+        payload: ExcludedAssetRequest,
+        request: Request,
+    ) -> dict[str, str]:
+        """把用不到的素材排除掉 —— 覆盖门要求人做这个决定，界面得给人入口。"""
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                await active.exclude_asset(run_id, asset_id=payload.asset_id)
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"status": "excluded", "asset_id": payload.asset_id}
 
     @app.get("/api/runs/{run_id}/references/{asset_id}/content")
     async def reference_content(

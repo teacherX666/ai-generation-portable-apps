@@ -39,6 +39,7 @@ from feishu_generation_agent.domain.plan import (
     GenerationTask,
     ImageReference,
     TaskPlan,
+    reconcile_asset_coverage,
     reconcile_task_asset_coverage,
 )
 from feishu_generation_agent.domain.reference_contract import (
@@ -1310,6 +1311,42 @@ class GraphRuntime:
             ]
             updated_task = self._task_with_references(task, references, assets)
             updated_plan = self._replace_task(plan, task_index, updated_task)
+            await self._persist_draft(run, state, updated_plan, assets)
+
+    async def exclude_asset(
+        self,
+        run_id: str,
+        *,
+        asset_id: str,
+    ) -> None:
+        """把一个**用不到**的素材放进 `excluded_assets`。
+
+        覆盖门要求「每个素材要么被任务引用、要么被排除」，而审批页过去只有引用的
+        增删、没有排除入口 —— 计划没引用的素材只能靠手改提示词绕开（2026-09-17
+        超级大床：image-4..image-8 未覆盖，批准按钮一直是灰的）。
+        """
+        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
+        if lock.locked():
+            raise RunConflict("运行正在更新，请稍后重试")
+        async with lock:
+            run, state = await self._waiting_state(run_id)
+            plan = self._state_plan(state)
+            referenced = {
+                reference.asset_id
+                for task in plan.tasks
+                for reference in task.reference_images
+            }
+            if asset_id in referenced:
+                raise RunValidationError(
+                    f"素材 {asset_id} 已被任务引用，不能同时排除"
+                )
+            assets = [
+                MediaAsset.model_validate(item)
+                for item in state.get("media_assets", [])
+            ]
+            updated_plan = reconcile_asset_coverage(
+                plan, removed_asset_ids={asset_id}
+            )
             await self._persist_draft(run, state, updated_plan, assets)
 
     _PATCHABLE_TASK_FIELDS = {

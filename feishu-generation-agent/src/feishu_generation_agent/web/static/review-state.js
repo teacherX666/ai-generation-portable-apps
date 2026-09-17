@@ -367,6 +367,43 @@
       });
   }
 
+  /**
+   * **没被任何任务引用、也没被排除**的素材。
+   *
+   * 覆盖门要求「每个素材要么被引用、要么被排除」，而审批页过去没有排除入口 ——
+   * 未使用的素材只能靠手改提示词绕开（2026-09-17 超级大床：批准按钮一直灰着）。
+   * 这里把它们列出来给用户一个「排除」按钮。
+   */
+  function uncoveredAssetRows(view) {
+    const approval = view?.approval || {};
+    const successful = (approval.media_assets || []).filter(
+      (asset) => asset?.download_failed !== true,
+    );
+    const referencedIds = new Set(
+      (approval.tasks || []).flatMap((task) => (
+        (task?.reference_images || []).map((reference) => reference?.asset_id)
+      )),
+    );
+    const excludedIds = new Set(
+      (approval.excluded_assets || []).map((item) => item?.asset_id),
+    );
+    // 视频抽帧素材（video-1-frame）算它原视频的别名：引用帧就等于引用了视频。
+    const isCovered = (assetId) => {
+      if (referencedIds.has(assetId) || excludedIds.has(assetId)) return true;
+      if (!String(assetId).endsWith("-frame")) return false;
+      const base = String(assetId).slice(0, -"-frame".length);
+      return referencedIds.has(base) || excludedIds.has(base);
+    };
+    return successful
+      .filter((asset) => !isCovered(asset.asset_id))
+      .map((asset) => ({
+        asset_id: asset.asset_id,
+        preview_url: asset.preview_url || null,
+        mime_type: asset.mime_type || "",
+        media_kind: mediaKind(asset.mime_type || ""),
+      }));
+  }
+
   function canApprove(state) {
     const view = draftView(state);
     return Boolean(
@@ -476,6 +513,7 @@
     discardLocalChanges,
     draftView,
     excludedAssetRows,
+    uncoveredAssetRows,
     failApprovalSubmit,
     hasDirty,
     isSubmitting,

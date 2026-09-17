@@ -618,6 +618,32 @@ def _normalize_generated_plan_payload(
     return issues
 
 
+#: 视频素材抽帧后的素材 id 后缀（见 graph/nodes.py 的 analyze_images）。
+_FRAME_SUFFIX = "-frame"
+
+
+def _register_video_frame_aliases(assets: dict[str, Any]) -> None:
+    """让「视频抽出来的那一帧」被当作原视频的别名。
+
+    视频不能直接当参考图，`analyze_images` 会把 `video-1` 抽帧成 `video-1-frame`
+    再交给规划；于是**计划引用的是帧、校验查的是文档里的原始素材** —— 不认这个别名
+    就会同时报「unknown asset_id video-1-frame」和「uncovered successful asset
+    video-1」（2026-09-17 超级大床实测，用户看到的「一直都有问题」）。
+    """
+    for asset_id, asset in list(assets.items()):
+        if str(getattr(asset, "mime_type", "")).startswith("video/"):
+            assets.setdefault(f"{asset_id}{_FRAME_SUFFIX}", asset)
+
+
+def _asset_base_id(asset_id: str, assets: dict[str, Any]) -> str:
+    """把抽帧素材归回原视频（`video-1-frame` → `video-1`），覆盖统计按原素材算。"""
+    if asset_id.endswith(_FRAME_SUFFIX):
+        base = asset_id[: -len(_FRAME_SUFFIX)]
+        if base in assets:
+            return base
+    return asset_id
+
+
 def validate_plan(
     plan: TaskPlan | dict[str, Any],
     document: NormalizedDocument,
@@ -648,6 +674,7 @@ def validate_plan(
 
     block_ids = {block.block_id for block in document.blocks}
     assets = {asset.asset_id: asset for asset in document.media_assets}
+    _register_video_frame_aliases(assets)
     storyboard_requirements = _storyboard_requirements(document)
     task_ids: set[str] = set()
     referenced_asset_ids: set[str] = set()
@@ -732,7 +759,8 @@ def validate_plan(
                 )
                 continue
             task_reference_ids.append(asset_id)
-            referenced_asset_ids.add(asset_id)
+            # 引用「视频抽出来的帧」＝引用那个视频，否则覆盖统计会把原视频记成未使用。
+            referenced_asset_ids.add(_asset_base_id(asset_id, assets))
             asset = assets.get(asset_id)
             if asset is None:
                 issues.append(
@@ -906,7 +934,7 @@ def validate_plan(
         if not isinstance(asset_id, str) or not asset_id:
             issues.append(f"{prefix}.asset_id: must be a non-empty string")
             continue
-        excluded_asset_ids.append(asset_id)
+        excluded_asset_ids.append(_asset_base_id(asset_id, assets))
         asset = assets.get(asset_id)
         if asset is None:
             issues.append(f"{prefix}.asset_id: unknown asset_id {asset_id}")
