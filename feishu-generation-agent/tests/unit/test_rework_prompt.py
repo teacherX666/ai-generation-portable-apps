@@ -42,6 +42,44 @@ INK_DROP_NEGATIVES = [
 ]
 
 
+async def test_build_rework_prompt_passes_visual_context_to_fuser() -> None:
+    """「上一版成片的实际画面」要传给融合模型 —— 它才能看到实际画成了什么。
+
+    用户要求（2026-09-17）：返工时把上一版成片直接上传视频让模型看。
+    """
+    seen: dict[str, str] = {}
+
+    async def fuse(prompt, requirements, *, visual_context=""):
+        seen["visual_context"] = visual_context
+        return {"prompt": prompt + "（已按画面修正）", "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始提示词",
+        ["不要参考人物形象"],
+        fuse=fuse,
+        visual_context="画面里出现了一个人物形象，占画面中心。",
+    )
+
+    assert seen["visual_context"] == "画面里出现了一个人物形象，占画面中心。"
+    assert "已按画面修正" in prompt
+
+
+async def test_build_rework_prompt_tolerates_legacy_fuser_without_context() -> None:
+    """老融合器只收两个参数 —— 不能因此报错（签名探测兜底）。"""
+
+    async def legacy_fuse(prompt, requirements):
+        return {"prompt": prompt + "（旧融合器）", "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始提示词",
+        ["要求"],
+        fuse=legacy_fuse,
+        visual_context="画面描述",
+    )
+
+    assert "旧融合器" in prompt
+
+
 def test_merge_negative_constraints_collapses_rewording() -> None:
     """同一句约束的换皮写法只留一条 —— 规则一条不少，只去掉重复措辞。
 

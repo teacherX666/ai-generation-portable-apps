@@ -21,6 +21,7 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from inspect import Parameter, signature
 from typing import Any
 
 from feishu_generation_agent.domain.plan import (
@@ -340,11 +341,30 @@ def parse_fusion_payload(raw: Any) -> tuple[str, list[str]] | None:
     return None
 
 
+def _accepts_visual_context(fuser: Any) -> bool:
+    """融合器接不接受 `visual_context`。
+
+    用签名探测而不是直接传：老的/测试里的融合器只收两个参数，直接传会 TypeError
+    （与 planner 里判断知识库参数是同一套做法）。
+    """
+    try:
+        parameters = signature(fuser).parameters
+    except (TypeError, ValueError):
+        return False
+    if "visual_context" in parameters:
+        return True
+    return any(
+        parameter.kind is Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
 async def build_rework_prompt(
     base_prompt: str,
     requirements: Sequence[str],
     *,
     fuse: ReworkFuser | None = None,
+    visual_context: str = "",
     max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
 ) -> tuple[str, bool, list[str]]:
     """把「原始提示词 + 全部历史返工要求」变成一条可直接生成的新提示词。
@@ -361,9 +381,18 @@ async def build_rework_prompt(
     上游抛错不重试（httpx 客户端已带 max_retries），避免真故障时把返工拖长。
     """
     if fuse is not None:
+        accepts_context = _accepts_visual_context(fuse)
         for attempt in range(1, _FUSION_ATTEMPTS + 1):
             try:
-                raw = await fuse(base_prompt, list(requirements))
+                raw = await (
+                    fuse(
+                        base_prompt,
+                        list(requirements),
+                        visual_context=visual_context,
+                    )
+                    if accepts_context
+                    else fuse(base_prompt, list(requirements))
+                )
             except Exception:
                 _LOGGER.warning(
                     "返工提示词 AI 融合调用失败，回退安全拼接", exc_info=True

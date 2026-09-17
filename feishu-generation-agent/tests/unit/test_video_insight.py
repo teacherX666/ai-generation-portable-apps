@@ -6,7 +6,79 @@ from pathlib import Path
 import pytest
 
 from feishu_generation_agent.domain.document import MediaAsset, VideoReferenceKind
-from feishu_generation_agent.integrations.video_insight import DeepSeekVideoInsight
+from feishu_generation_agent.integrations.video_insight import (
+    DeepSeekVideoInsight,
+    describe_output_videos,
+)
+
+
+class _Insight:
+    def __init__(self, summary: str, uncertainties: list[str] | None = None) -> None:
+        self.summary = summary
+        self.uncertainties = uncertainties or []
+
+
+class _Analyzer:
+    def __init__(self, summary: str = "画面里出现了一个人物形象。") -> None:
+        self.summary = summary
+        self.calls: list[str] = []
+
+    async def analyze_video(self, asset, frames=None):
+        self.calls.append(asset.asset_id)
+        if self.summary == "boom":
+            raise RuntimeError("分析失败")
+        return _Insight(self.summary, ["光照不确定"])
+
+
+def _artifact(tmp_path: Path, artifact_id: str = "art-1", kind: str = "video") -> dict:
+    path = tmp_path / f"{artifact_id}.mp4"
+    path.write_bytes(b"video")
+    return {
+        "artifact_id": artifact_id,
+        "task_id": "task-1",
+        "kind": kind,
+        "local_path": str(path),
+        "mime_type": "video/mp4",
+        "size": 5,
+        "sha256": "sha",
+        "status": "ready",
+    }
+
+
+async def test_describe_output_videos_feeds_previous_take_to_the_model(
+    tmp_path: Path,
+) -> None:
+    """返工时把上一版成片直接送模型（不抽帧），产出「实际画面」上下文。"""
+    analyzer = _Analyzer()
+
+    context = await describe_output_videos(
+        analyzer,
+        [_artifact(tmp_path), _artifact(tmp_path, "art-2", kind="image")],
+    )
+
+    assert analyzer.calls == ["art-1"]  # 只送视频，图片产物不是成片
+    assert "画面里出现了一个人物形象" in context
+    assert "不确定" in context
+
+
+async def test_describe_output_videos_is_empty_without_analyzer_or_video(
+    tmp_path: Path,
+) -> None:
+    assert await describe_output_videos(None, [_artifact(tmp_path)]) == ""
+    assert await describe_output_videos(_Analyzer(), []) == ""
+    assert (
+        await describe_output_videos(
+            _Analyzer(), [_artifact(tmp_path, kind="image")]
+        )
+        == ""
+    )
+
+
+async def test_describe_output_videos_swallows_analysis_failure(
+    tmp_path: Path,
+) -> None:
+    """分析失败不能让返工本身失败 —— 返回空上下文，返工照常。"""
+    assert await describe_output_videos(_Analyzer("boom"), [_artifact(tmp_path)]) == ""
 
 
 class _Response:

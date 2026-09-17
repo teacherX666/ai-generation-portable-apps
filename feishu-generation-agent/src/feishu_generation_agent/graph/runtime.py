@@ -61,6 +61,9 @@ from feishu_generation_agent.integrations.rework_prompt import (
     merge_requirements,
     rework_inputs,
 )
+from feishu_generation_agent.integrations.video_insight import (
+    describe_output_videos,
+)
 from feishu_generation_agent.storage.files import FileStore
 from feishu_generation_agent.storage.repository import Repository
 
@@ -114,6 +117,7 @@ class GraphRuntime:
         document_source: DocumentSource | None = None,
         vision_analyzer: VisionAnalyzer | None = None,
         rework_fuser: Any | None = None,
+        video_analyzer: Any | None = None,
     ) -> None:
         self.graph = graph
         self.repository = repository
@@ -125,6 +129,9 @@ class GraphRuntime:
         # AI 融合器（`planner.fuse_rework_prompt`）。缺省 None 时重跑走安全拼接，
         # 与图节点共用同一套语义——两条重跑路径不允许再各写一份。
         self.rework_fuser = rework_fuser
+        # 能**直接看视频**的分析器（ds4.1 多模态）：返工时把上一版成片送进去，
+        # 让融合模型看到实际画面（不抽帧）。
+        self.video_analyzer = video_analyzer
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._run_locks: dict[str, asyncio.Lock] = {}
         self._start_lock = asyncio.Lock()
@@ -327,6 +334,11 @@ class GraphRuntime:
                         base_prompt,
                         requirements,
                         fuse=self.rework_fuser,
+                        # 上一版成片直接送能看视频的模型（不抽帧）。
+                        visual_context=await describe_output_videos(
+                            self.video_analyzer,
+                            list(source_state.get("artifacts") or []),
+                        ),
                     )
                     updated_tasks.append(
                         task.model_copy(

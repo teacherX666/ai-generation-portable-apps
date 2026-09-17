@@ -368,6 +368,10 @@ def create_app(
                 rework_fuser=getattr(
                     active_services.planner, "fuse_rework_prompt", None
                 ),
+                # 返工时把上一版成片直接送能看视频的模型（不抽帧）。
+                video_analyzer=getattr(
+                    active_services, "video_analyzer", None
+                ),
             )
             try:
                 if resume:

@@ -1326,6 +1326,8 @@ class DeepSeekPlanner:
         self,
         original_prompt: str,
         requirements: list[str],
+        *,
+        visual_context: str = "",
     ) -> dict[str, Any] | None:
         """把「原始提示词 + 全部历史返工要求」融合成提示词与必避清单。
 
@@ -1348,6 +1350,15 @@ class DeepSeekPlanner:
                 "原始提示词：",
                 original_prompt,
                 "",
+                *(
+                    [
+                        "上一版成片的实际画面（模型直接看过视频，不是你猜的）：",
+                        visual_context.strip(),
+                        "",
+                    ]
+                    if visual_context.strip()
+                    else []
+                ),
                 "历次返工要求（必须全部融入，一条都不能遗漏）：",
                 *[
                     f"{index}. {item}"

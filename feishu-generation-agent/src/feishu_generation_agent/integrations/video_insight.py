@@ -46,6 +46,69 @@ _SYSTEM_PROMPT = (
 _USER_PROMPT = "这是参考视频，请按要求输出 JSON。"
 
 
+async def describe_output_videos(
+    analyzer: Any,
+    artifacts: list[Any] | None,
+    *,
+    limit: int = 1,
+) -> str:
+    """把**上一版成片**交给能看视频的模型，返回「实际画面」描述。
+
+    用户要求（2026-09-17）：返工时把上一版成片**直接上传视频**（不抽帧）让模型看到
+    实际画成了什么。以前返工只把「你打的字」喂给融合模型，它没见过成片，所以
+    「不要参考人物形象」这类要求反复不生效 —— 现在把画面描述一起给它。
+
+    没有分析器 / 没有视频产物 / 分析失败 → 返回空串（返工照常进行，不因为没有画面
+    上下文而失败）。
+    """
+    if analyzer is None or not artifacts:
+        return ""
+    videos = [
+        artifact
+        for artifact in artifacts
+        if str(_field(artifact, "kind") or "") == "video"
+    ]
+    lines: list[str] = []
+    for artifact in videos[:limit]:
+        local_path = _field(artifact, "local_path")
+        if not local_path or not Path(str(local_path)).is_file():
+            continue
+        asset = MediaAsset(
+            asset_id=str(_field(artifact, "artifact_id") or "artifact"),
+            source_block_id=str(_field(artifact, "task_id") or ""),
+            origin="generated",
+            local_path=Path(str(local_path)),
+            mime_type=str(_field(artifact, "mime_type") or "video/mp4"),
+            size=int(_field(artifact, "size") or 0),
+            sha256=str(_field(artifact, "sha256") or ""),
+        )
+        try:
+            insight = await analyzer.analyze_video(asset, [])
+        except Exception:
+            _LOGGER.warning(
+                "上一版成片分析失败，本次返工不带画面上下文 artifact=%s",
+                asset.asset_id,
+                exc_info=True,
+            )
+            continue
+        summary = (insight.summary or "").strip()
+        if not summary:
+            continue
+        suffix = (
+            "（不确定：" + "；".join(insight.uncertainties) + "）"
+            if insight.uncertainties
+            else ""
+        )
+        lines.append(f"【{asset.asset_id}】{summary}{suffix}")
+    return "\n".join(lines)
+
+
+def _field(item: Any, name: str) -> Any:
+    if isinstance(item, dict):
+        return item.get(name)
+    return getattr(item, name, None)
+
+
 class DeepSeekVideoInsight:
     """把参考视频整段交给 ds4.1 分析，返回分镜参考用的文字描述。"""
 

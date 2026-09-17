@@ -78,6 +78,9 @@ from feishu_generation_agent.ports import (
     VisionAnalyzer,
 )
 from feishu_generation_agent.storage.files import FileStore
+from feishu_generation_agent.integrations.video_insight import (
+    describe_output_videos,
+)
 from feishu_generation_agent.storage.repository import Repository
 
 from feishu_generation_agent.integrations.rag_prompt_optimizer import (
@@ -2420,6 +2423,7 @@ async def _rework_prompt_for_task(
     services: GraphServices,
     task: GenerationTask,
     feedback: str,
+    visual_context: str = "",
 ) -> tuple[str, list[str], str, bool, list[str]]:
     """算出这条任务重跑后的提示词、累积要求与负向约束。
 
@@ -2435,6 +2439,7 @@ async def _rework_prompt_for_task(
         base_prompt,
         requirements,
         fuse=getattr(services.planner, "fuse_rework_prompt", None),
+        visual_context=visual_context,
     )
     constraints = merge_negative_constraints(
         task.negative_constraints, must_avoid
@@ -2543,6 +2548,12 @@ async def review_artifacts(
 
             feedback = decision.feedback.strip()
             updated_tasks: list[GenerationTask] = []
+            # 上一版成片**直接送能看视频的模型**（不抽帧）：让融合模型"看到"实际
+            # 画成了什么，而不是只靠用户打的字（用户 2026-09-17 要求）。
+            visual_context = await describe_output_videos(
+                getattr(services, "video_analyzer", None),
+                list(state.get("artifacts") or []),
+            )
             for task in plan.tasks:
                 if task.task_id not in target_task_ids:
                     updated_tasks.append(task)
@@ -2555,7 +2566,9 @@ async def review_artifacts(
                     prompt,
                     truncated,
                     constraints,
-                ) = await _rework_prompt_for_task(services, task, feedback)
+                ) = await _rework_prompt_for_task(
+                    services, task, feedback, visual_context
+                )
                 task_updates: dict[str, Any] = {
                     "prompt": prompt,
                     "rework_requirements": requirements,
