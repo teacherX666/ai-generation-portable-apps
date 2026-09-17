@@ -329,7 +329,10 @@ class GraphRuntime:
                             update={
                                 "prompt": prompt,
                                 "rework_requirements": requirements,
-                                "rework_base_prompt": base_prompt,
+                                # 冻结锚点只写第一次；融合基准/改前是 previous。
+                                "rework_base_prompt": (
+                                    task.rework_base_prompt or base_prompt
+                                ),
                                 # 展示用的「改前」是这一版被返工前的样子。
                                 "rework_previous_prompt": task.prompt,
                                 # 融合产出的必避项并入 negative_constraints：

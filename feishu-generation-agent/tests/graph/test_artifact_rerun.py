@@ -162,6 +162,46 @@ async def test_second_rework_keeps_first_requirement(
     assert task["rework_previous_prompt"] == after_first_rework["prompt"]
 
 
+async def test_second_rework_keeps_the_original_frozen_base(
+    fake_services: GraphServices,
+) -> None:
+    """rework_base_prompt 必须一直是「首次返工前」那一版。
+
+    2026-09-17 把融合基准改成「上一版」时，调用方顺手写成
+    `"rework_base_prompt": base_prompt` —— 于是它每轮都被覆盖成上一版，
+    历史锚点（最初那一版）就没了。生产数据里能看到这个指纹：同一条记录的
+    前几版 base_len=1064，到某一版突然变成 1213（＝上一版长度）。
+    """
+    services = _fusing_services(
+        fake_services,
+        lambda base, requirements: f"{base}（已融合）",
+    )
+    graph = build_graph(services, InMemorySaver())
+    config = _config("thread-rework-frozen-base")
+    task_id = await _drive_to_review(graph, config, "run-rework-frozen-base")
+    original = graph.get_state(config).values["approved_plan"]["tasks"][0]["prompt"]
+
+    after_first = await _rework_once(graph, config, task_id)
+    await graph.ainvoke(
+        Command(
+            resume={
+                "action": "adjust",
+                "feedback": "背景太暗",
+                "task_ids": [task_id],
+            }
+        ),
+        config=config,
+    )
+    after_second = graph.get_state(config).values["approved_plan"]["tasks"][0]
+
+    # 冻结锚点：两轮之后仍然是最初那一版。
+    assert after_first["rework_base_prompt"] == original
+    assert after_second["rework_base_prompt"] == original
+    # 但「融合基准 / 改前」是上一版，本轮只在它之上叠加。
+    assert after_second["rework_previous_prompt"] == after_first["prompt"]
+    assert after_second["prompt"] == f"{after_first['prompt']}（已融合）"
+
+
 async def _drive_to_review(graph, config, run_id: str) -> str:
     """把 run 推进到成片审核暂停点，返回第一条产物的 task_id。"""
     first = await graph.ainvoke(

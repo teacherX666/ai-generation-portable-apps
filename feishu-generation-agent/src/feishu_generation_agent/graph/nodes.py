@@ -2638,7 +2638,9 @@ async def review_artifacts(
                 task_updates: dict[str, Any] = {
                     "prompt": prompt,
                     "rework_requirements": requirements,
-                    "rework_base_prompt": base_prompt,
+                    # 冻结锚点：只写第一次，往后每轮都不能覆盖。注意它与
+                    # rework_previous_prompt 分工不同——后者是融合基准/改前。
+                    "rework_base_prompt": task.rework_base_prompt or base_prompt,
                     # 展示用的「改前」是这一版被返工前的样子（不是冻结的第一版）。
                     "rework_previous_prompt": task.prompt,
                     "negative_constraints": constraints,
