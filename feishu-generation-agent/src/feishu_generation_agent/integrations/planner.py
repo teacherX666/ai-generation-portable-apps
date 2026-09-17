@@ -295,6 +295,53 @@ def _compact_json(value: Any) -> str:
     )
 
 
+def _fill_storyboard_source_block_ids(
+    payload: dict[str, Any],
+    document: NormalizedDocument,
+) -> None:
+    """把分镜表每一行镜头的 block id **确定性地**补进覆盖它的那个任务。
+
+    2026-09-17 实测（超级大床）：分镜表 50+ 行，模型每次都会漏抄几行 → 契约校验
+    「task … missing source_block_ids […]」必然失败，重试 3 次全废，而用户看到的
+    是「模型三次返回的 JSON 均未通过校验」（其实 JSON 合法，是计划不合契约）。
+
+    这些 id 我们本来就能从文档里算出来，不该让模型去枚举几十个不透明字符串。
+    只在任务已经（部分）覆盖该表时补；若整份计划只有一个 image_to_video 任务、
+    且完全没引用该表，也认它就是要覆盖这张表的那个任务。
+    """
+    requirements = _storyboard_requirements(document)
+    if not requirements:
+        return
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    video_tasks = [
+        task
+        for task in tasks
+        if isinstance(task, dict) and task.get("task_type") == "image_to_video"
+    ]
+    for table_id, required_ids in requirements.items():
+        relevant = {table_id, *required_ids}
+        candidates = [
+            task
+            for task in video_tasks
+            if relevant.intersection(task.get("source_block_ids") or [])
+        ]
+        if not candidates and len(video_tasks) == 1:
+            candidates = video_tasks
+        for task in candidates:
+            sources = task.get("source_block_ids")
+            if not isinstance(sources, list):
+                continue
+            missing = [
+                block_id
+                for block_id in required_ids
+                if block_id not in sources
+            ]
+            if missing:
+                task["source_block_ids"] = [*sources, *missing]
+
+
 def _storyboard_requirements(
     document: NormalizedDocument,
 ) -> dict[str, list[str]]:
@@ -1124,6 +1171,8 @@ class DeepSeekPlanner:
                 payload,
                 document,
             )
+            # 分镜行的 block id 由代码补齐（模型枚举不稳，实测必漏）。
+            _fill_storyboard_source_block_ids(payload, document)
             return [
                 *normalization_issues,
                 *validate_plan(
@@ -1538,12 +1587,27 @@ class DeepSeekPlanner:
         errors: list[str],
     ) -> AgentError:
         language_failure = language_validation_message(errors)
-        message_prefix = (
-            "模型三次返回的 JSON 均未通过中文规划校验："
-            f"{language_failure}"
-            if language_failure
-            else "模型三次返回的 JSON 均未通过校验"
-        )
+        # 分清两种失败：模型没吐出合法 JSON（response:/schema.），还是 JSON 合法但
+        # 计划不满足契约。以前一律报「JSON 未通过校验」，把用户往错方向带
+        # （2026-09-17 实测：超级大床连续失败，其实是契约问题）。
+        json_level = [
+            error
+            for error in errors
+            if error.startswith("response:") or error.startswith("schema.")
+        ]
+        contract_issues = [error for error in errors if error not in json_level]
+        if language_failure:
+            message_prefix = (
+                "模型三次返回的 JSON 均未通过中文规划校验："
+                f"{language_failure}"
+            )
+        elif contract_issues:
+            message_prefix = (
+                f"计划未通过契约校验（{len(errors)} 条），例如："
+                f"{contract_issues[0]}"
+            )
+        else:
+            message_prefix = "模型三次返回的 JSON 均未通过校验"
         return AgentError(
             ErrorDetail(
                 category=ErrorCategory.VALIDATION,

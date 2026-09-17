@@ -23,6 +23,7 @@ from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
 from feishu_generation_agent.domain.plan import AuditReport, TaskPlan
 from feishu_generation_agent.integrations.planner import (
     DeepSeekPlanner,
+    _fill_storyboard_source_block_ids,
     _normalize_generated_plan_payload,
     planner_system_prompt,
     validate_plan,
@@ -1746,6 +1747,31 @@ def test_validator_rejects_one_video_missing_storyboard_rows(
     assert "storyboard table table-1" in joined
     assert "missing source_block_ids" in joined
     assert "shot-2" in joined and "shot-3" in joined and "shot-4" in joined
+
+
+def test_missing_storyboard_rows_are_filled_deterministically(
+    storyboard_document: NormalizedDocument,
+):
+    """模型漏抄分镜行时由代码补齐 —— 不再要求模型枚举几十个 block id。
+
+    2026-09-17 实测（超级大床）：分镜表 50+ 行，模型每次都会漏几行，契约校验必然
+    失败、重试 3 次全废（用户看到的是「模型三次返回的 JSON 均未通过校验」，其实
+    JSON 是合法的）。这些 id 本来就能从文档算出来，不该让模型去抄。
+    """
+    payload = json.loads(_plan_json(_video_task(source_block_ids=["shot-1"])))
+    assert any(
+        "missing source_block_ids" in issue
+        for issue in validate_plan(payload, storyboard_document, 4)
+    )
+
+    _fill_storyboard_source_block_ids(payload, storyboard_document)
+
+    assert not any(
+        "missing source_block_ids" in issue
+        for issue in validate_plan(payload, storyboard_document, 4)
+    )
+    sources = payload["tasks"][0]["source_block_ids"]
+    assert {"shot-1", "shot-2", "shot-3", "shot-4"} <= set(sources)
 
 
 def test_validator_requires_every_content_block_in_storyboard_rows(
