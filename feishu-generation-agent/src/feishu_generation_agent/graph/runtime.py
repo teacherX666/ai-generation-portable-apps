@@ -1344,6 +1344,8 @@ class GraphRuntime:
                 MediaAsset.model_validate(item)
                 for item in state.get("media_assets", [])
             ]
+            if asset_id not in {asset.asset_id for asset in assets}:
+                raise RunValidationError(f"素材 {asset_id} 不存在")
             updated_plan = reconcile_asset_coverage(
                 plan, removed_asset_ids={asset_id}
             )
