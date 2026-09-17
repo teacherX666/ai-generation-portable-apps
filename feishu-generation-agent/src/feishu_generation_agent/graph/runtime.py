@@ -51,6 +51,7 @@ from feishu_generation_agent.domain.reference_contract import (
 from feishu_generation_agent.integrations.planner import (
     language_validation_message,
     planner_system_prompt,
+    reconcile_negative_constraints,
     reconcile_storyboard_sources,
     validate_plan,
 )
@@ -1796,6 +1797,8 @@ class GraphRuntime:
         if not isinstance(revision, int):
             revision = state.get("document_revision", state.get("source_revision", 0))
         # 补齐后再落盘（上面的 plan 可能已被 reconcile 过）。
+        # 「必须避免」里的重复写法也顺手清一遍（去重上线前的残留会被一直复制下去）。
+        plan = reconcile_negative_constraints(plan)
         plan_json = plan.model_dump(mode="json")
         updates: dict[str, Any] = {
             "draft_plan": plan_json,

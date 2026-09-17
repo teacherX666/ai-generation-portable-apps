@@ -27,6 +27,7 @@ from feishu_generation_agent.integrations.planner import (
     _fill_storyboard_source_block_ids,
     _normalize_generated_plan_payload,
     planner_system_prompt,
+    reconcile_negative_constraints,
     reconcile_storyboard_sources,
     validate_plan,
 )
@@ -1724,6 +1725,40 @@ def test_unused_references_are_excluded_deterministically(
     ] == ["asset-2"]
     # prompt 里的 token 一并重映射/清理掉了，不留悬空引用。
     assert "@图片2" not in payload["tasks"][0]["prompt"]
+
+
+def test_reconcile_negative_constraints_clears_legacy_duplicates() -> None:
+    """存量计划里的重复写法要能清掉（去重上线前的残留会被复制一直带下去）。
+
+    实测脱毛：57 条里有 10 条是同义换皮，而重跑是复制计划 —— 不清就永远在。
+    """
+    from feishu_generation_agent.domain.plan import GenerationTask, TaskPlan
+
+    task = GenerationTask(
+        task_id="t1",
+        task_type="image_to_video",
+        title="任务",
+        source_block_ids=[],
+        user_intent="意图",
+        prompt="镜头 1：纸船漂流。",
+        aspect_ratio="16:9",
+        duration=5,
+        resolution="720p",
+        negative_constraints=[
+            "不要出现水印、Logo、品牌特征",
+            "不得出现水印、Logo 或品牌特征",
+            "画面不得变形",
+        ],
+    )
+    plan = TaskPlan(tasks=[task], document_summary="摘要")
+
+    reconciled = reconcile_negative_constraints(plan)
+
+    # 同义换皮合并成一条，且**保留最长**的那条写法（细节不丢）。
+    assert reconciled.tasks[0].negative_constraints == [
+        "不得出现水印、Logo 或品牌特征",
+        "画面不得变形",
+    ]
 
 
 def test_validator_rejects_latin_s_absolute_seconds(

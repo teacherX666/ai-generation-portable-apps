@@ -33,6 +33,9 @@ from feishu_generation_agent.domain.reference_contract import (
     validate_image_prompt,
     validate_seedance_prompt,
 )
+from feishu_generation_agent.integrations.rework_prompt import (
+    merge_negative_constraints,
+)
 
 
 PlanningMode = Literal["video", "image"]
@@ -403,6 +406,30 @@ def reconcile_storyboard_sources(
 _UNUSED_ASSET_REASON = (
     "计划没有具体使用这张素材（未绑定到镜头或描述笼统），已自动排除"
 )
+
+
+def reconcile_negative_constraints(plan: TaskPlan) -> TaskPlan:
+    """把每条任务「必须避免」里的**重复写法**合并掉（规则一条不少，只去重复措辞）。
+
+    去重是在**返工合并**时生效的（`merge_negative_constraints`），但存量计划里仍
+    带着上线前攒下的重复 —— 实测脱毛 57 条里有 10 条是同义换皮（「不要出现水印、
+    Logo、品牌特征」的各种写法），而**重跑复制会把它们一起复制下去**，看起来就像
+    「负面约束还在叠加」。复制/编辑计划时顺手清一遍即可。
+    """
+    tasks = list(plan.tasks)
+    changed = False
+    for index, task in enumerate(tasks):
+        if not task.negative_constraints:
+            continue
+        merged = merge_negative_constraints(task.negative_constraints, [])
+        if len(merged) != len(task.negative_constraints):
+            tasks[index] = task.model_copy(
+                update={"negative_constraints": merged}
+            )
+            changed = True
+    if not changed:
+        return plan
+    return plan.model_copy(update={"tasks": tasks})
 
 
 def _exclude_unused_references(
