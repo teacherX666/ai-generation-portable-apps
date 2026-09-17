@@ -40,6 +40,11 @@ _ACTIVE_STATUSES = {
 }
 _SHARED_RESULT_TARGET = "__shared_production_result__"
 
+#: 任务记录最多列几条**任务**（每条任务自带它的全部历次尝试）。
+_RECENT_TASK_LIMIT = 10
+#: 分组前先捞多少条 run —— 要足够大，才能把最近这些任务的历次尝试都捞全。
+_RECENT_RUN_SCAN_LIMIT = 500
+
 # 这些绑定状态在 _ACTIVE_STATUSES 里算「活跃」，但其实是在**等人操作**
 # （审批计划 / 审核成片），并没有真的在跑。此时复用它们会把用户静默甩回
 # 那个卡住的页面——用户体感就是「点了重跑却立刻跳到审核页，什么都没做」
@@ -244,6 +249,13 @@ class ProductionBitableService:
                 continue
 
     async def recent_runs(self, *, owner_user_id: str = "prime-local"):
+        """最近的任务记录：**以任务为单位**，最多 `_RECENT_TASK_LIMIT` 条任务，
+        每条任务带上它的**全部**历次尝试（成片预览的历史滑条就靠这个）。
+
+        以前是「取最近 10 条 run」——任务一多，同一条任务的历史就被挤出窗口，
+        预览里只剩一两条。改成按记录分组后，外面的条数仍是 10 条**任务**，
+        任务内部的尝试不再被截断。
+        """
         location = await self._table_location()
         app_token = location.app_token or ""
         table_id = location.table_id
@@ -251,7 +263,7 @@ class ProductionBitableService:
             app_token,
             table_id,
             owner_user_id=owner_user_id,
-            limit=50,
+            limit=_RECENT_RUN_SCAN_LIMIT,
         )
         active_record_ids = {
             binding.record_id
@@ -261,14 +273,20 @@ class ProductionBitableService:
                 owner_user_id=owner_user_id,
             )
         }
+        grouped: dict[str, list] = {}
+        for binding in recent:
+            if (
+                binding.record_id in active_record_ids
+                and binding.status is not TableTaskStatus.COMPLETED
+            ):
+                continue
+            grouped.setdefault(binding.record_id, []).append(binding)
+        # recent 已按 updated_at 倒序 → 记录第一次出现的顺序就是任务的新旧顺序。
         return [
             binding
-            for binding in recent
-            if (
-                binding.record_id not in active_record_ids
-                or binding.status is TableTaskStatus.COMPLETED
-            )
-        ][:10]
+            for record_id in list(grouped)[:_RECENT_TASK_LIMIT]
+            for binding in grouped[record_id]
+        ]
 
     async def archived_runs(self, *, owner_user_id: str = "prime-local"):
         location = await self._table_location()

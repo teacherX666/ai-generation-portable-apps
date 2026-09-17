@@ -330,6 +330,79 @@ async def test_claim_refuses_a_record_that_is_already_claimed(tmp_path) -> None:
     assert first_run_id
 
 
+async def test_recent_runs_keeps_all_attempts_of_the_ten_newest_tasks(
+    tmp_path,
+) -> None:
+    """外面最多 10 条**任务**，但每条任务要带上它的**全部**历次尝试。
+
+    用户口径（2026-09-17）：「以一个任务为一个单位，所有记录都存在该任务里，
+    然后外面的任务记录条数仍然是十条」。
+
+    以前是「取最近 10 条 run」：任务一多，同一条任务的历史就被挤出窗口，
+    成片预览的历史滑条只剩一两条。现在按任务分组 —— 条数仍是 10 条任务，
+    任务内部的尝试不再被截断。
+    """
+    from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
+
+    class Bitable:
+        async def ensure_schema(self, location):
+            return object()
+
+        async def list_tasks(self, location, schema, *, include_completed):
+            return []
+
+    class Runtime:
+        async def start_run(self, request, *, run_id=None, thread_id=None):
+            return run_id
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    service = ProductionBitableService(
+        bitable=Bitable(),
+        store=store,
+        runtime=Runtime(),
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        # 12 条任务 × 每条 3 次尝试，全部已结束（模拟历史）
+        for record_index in range(12):
+            for attempt in range(3):
+                task = ProductionTaskSummary(
+                    record_id=f"rec-{record_index:02d}",
+                    display_text=f"需求 {record_index}",
+                    source_url=f"https://tenant.feishu.cn/docx/doc{record_index}",
+                    progress="已完成",
+                    task_type="动画类",
+                    snapshot=ProductionSourceSnapshot(
+                        requirement_name=f"需求 {record_index}",
+                        task_type="动画类",
+                        requirement_attachment="https://tenant.feishu.cn/docx/x",
+                    ),
+                )
+                binding = await store.claim(
+                    _location(),
+                    task,
+                    run_id=f"run-{record_index:02d}-{attempt}",
+                    thread_id=f"thread-{record_index:02d}-{attempt}",
+                    owner_user_id="prime-local",
+                )
+                await store.release(
+                    binding.run_id,
+                    status=TableTaskStatus.COMPLETED,
+                    owner_user_id="prime-local",
+                )
+        recent = await service.recent_runs()
+    finally:
+        await store.close()
+
+    record_order: list[str] = []
+    for binding in recent:
+        if binding.record_id not in record_order:
+            record_order.append(binding.record_id)
+    assert len(record_order) == 10, "外面只列 10 条任务"
+    assert len(recent) == 30, "每条任务的 3 次尝试都要在，不能被窗口截断"
+
+
 async def test_service_hides_owned_run_from_wrong_owner_mutations(
     tmp_path,
 ) -> None:
