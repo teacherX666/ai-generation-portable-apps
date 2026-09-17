@@ -1642,6 +1642,32 @@ def test_validator_rejects_hotpot_storyboard_without_understood_references(
     assert any("绝对秒数" in issue for issue in issues)
 
 
+def test_validator_rejects_latin_s_absolute_seconds(
+    storyboard_document: NormalizedDocument,
+):
+    """`0~2s` 也算绝对秒数 —— 以前只认中文「秒」，拉丁 s 漏过去了。
+
+    2026-09-17 生产：用户在返工反馈里贴了分镜时间，融合把「镜头 1（0~2s）」写进
+    提示词，校验器没拦（正则只认 秒），禁用规则形同虚设。
+    """
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)]
+    )
+    task["prompt"] = (
+        "镜头 1（0~2s）：笔尖悬停，墨珠坠落。"
+        "镜头 2（2~5s）：金线蔓延。镜头 3（5~15s）：凤凰破纸而出。"
+    )
+
+    issues = validate_plan(
+        json.loads(_plan_json(task)),
+        storyboard_document,
+        4,
+        enforce_seedance_prompt_contract=True,
+    )
+
+    assert any("绝对秒数" in issue for issue in issues)
+
+
 def test_validator_rejects_noncontinuous_reference_order(
     narrative_document: NormalizedDocument,
     tmp_path: Path,

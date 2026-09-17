@@ -91,6 +91,7 @@ from feishu_generation_agent.integrations.rag_prompt_optimizer import (
 )
 from feishu_generation_agent.integrations.rework_prompt import (
     build_rework_prompt,
+    merge_negative_constraints,
     merge_requirements,
     rework_inputs,
 )
@@ -2517,7 +2518,9 @@ async def _rework_prompt_for_task(
         requirements,
         fuse=getattr(services.planner, "fuse_rework_prompt", None),
     )
-    constraints = merge_requirements(task.negative_constraints, must_avoid)
+    constraints = merge_negative_constraints(
+        task.negative_constraints, must_avoid
+    )
     return base_prompt, requirements, prompt, truncated, constraints
 
 

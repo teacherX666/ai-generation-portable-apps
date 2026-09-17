@@ -38,6 +38,9 @@ from feishu_generation_agent.integrations.public_media import (
     PublicMediaHost,
     PublicMediaUploadError,
 )
+from feishu_generation_agent.integrations.rework_prompt import (
+    merge_negative_constraints,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -1005,12 +1008,14 @@ class SeedanceVideoGenerator:
 
         正文与参考图映射永不裁剪；只有这段反复改写的负向块会按预算收缩。
         `merge_requirements` 保序（旧→新），所以从尾部往前取、丢掉最旧的。
+
+        2026-09-17：先做一次**语义去重**（`merge_negative_constraints`）再裁剪 ——
+        存量的老任务里同一句约束会被攒成十几条换皮写法（墨滴任务实测 21 条里 10 条
+        同义），既占掉 26% 的提交篇幅，又把「不要出现的东西」反复喂给模型。
         """
-        entries = [
-            item.strip()
-            for item in (task.negative_constraints or [])
-            if isinstance(item, str) and item.strip()
-        ]
+        entries = merge_negative_constraints(
+            task.negative_constraints or [], []
+        )
         if not entries:
             return ""
         budget = SUBMIT_TOTAL_BUDGET_CHARS - len(head) - len("\n\n必须避免：")

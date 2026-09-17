@@ -30,6 +30,45 @@ from feishu_generation_agent.domain.plan import (
 
 _LOGGER = logging.getLogger(__name__)
 
+#: 判重时忽略的标点与空白。
+_NEGATIVE_NOISE = re.compile(r"[\s，。；、,.;:：!！?？()（）【】\[\]\"'“”‘’]")
+
+#: 归一词表：把「同一件事的不同说法」收敛到同一个 key。
+#:
+#: 只收**明显等价**的说法，不做语义推断；长词写在前面（先替换「半空中」再替换
+#: 「半空」）。归一只决定「算不算重复」，不改写最终保留的那条原文。
+_NEGATIVE_CANONICAL: tuple[tuple[str, str], ...] = (
+    ("不要", "不得"),
+    ("不能", "不得"),
+    ("不可", "不得"),
+    ("禁止", "不得"),
+    ("严禁", "不得"),
+    ("切勿", "不得"),
+    ("半空中", "空中"),
+    ("半空", "空中"),
+    ("正上方", "上方"),
+    ("以外位置", "非笔尖"),
+    ("其他位置", "非笔尖"),
+    ("其它位置", "非笔尖"),
+    ("生成", "出现"),
+    ("掉落", "落下"),
+    ("滴落", "落下"),
+    ("掉下", "落下"),
+    ("坠落", "落下"),
+    ("飘落", "落下"),
+    ("偏移", "偏离"),
+    ("移动", "偏离"),
+    ("偏斜", "偏离"),
+    ("飘移", "偏离"),
+    ("横向", "偏离"),
+    ("斜向", "偏离"),
+    ("任何", ""),
+    ("所有", ""),
+    ("一律", ""),
+    ("完全", ""),
+    ("彻底", ""),
+)
+
 #: AI 融合器的形状：`(原始提示词, 全部要求) -> 融合结果或 None`。
 ReworkFuser = Callable[[str, list[str]], Awaitable["str | None"]]
 
@@ -80,6 +119,103 @@ def merge_requirements(*groups: Iterable[str]) -> list[str]:
                 continue
             seen.add(item)
             merged.append(item)
+    return merged
+
+
+def negative_key(item: str) -> str:
+    """把一条「必须避免」归一成判重用的 key（**只用于判重，不改写保留的原文**）。"""
+    text = _NEGATIVE_NOISE.sub("", item)
+    for source, target in _NEGATIVE_CANONICAL:
+        text = text.replace(source, target)
+    return text
+
+
+#: 近似重复的判定阈值（字符集合 Jaccard）。
+#:
+#: 归一词表只能并掉「半空中/半空/空中」这类**逐词等价**的写法；实测墨滴任务里
+#: 「…上方或侧面生成」vs「…上方或侧面滴落」归一后相似度 0.75、「…横向或斜向偏移」
+#: vs「…横向偏移或斜向飘落」0.85 —— 这些是同一句约束的改写。0.75 是量出来的：
+#: 再低会开始吃掉**不同**规则（实测「不得出现水印或乱码文字」vs「不要出现水印、
+#: 贴纸、乱码文字或字幕」相似度 0.69，必须留在两条）。
+_SIMILARITY_THRESHOLD = 0.75
+
+
+def _similarity(left: str, right: str) -> float:
+    first, second = set(left), set(right)
+    if not first or not second:
+        return 0.0
+    return len(first & second) / len(first | second)
+
+
+def _same_subject(left: str, right: str) -> bool:
+    """只并**同一主语族**的条目（都以「墨滴…」「画面…」开头）。
+
+    不同主语的条目长得再像也不并 —— 相似度只是启发式，不能让「人物不得悬浮」
+    被「画面不得变形」吃掉。
+    """
+    return bool(left) and bool(right) and left[:2] == right[:2]
+
+
+def _digits(text: str) -> tuple[str, ...]:
+    """条目里出现的数字。"""
+    return tuple(re.findall(r"\d+", text))
+
+
+def _is_rewording(left: str, right: str) -> bool:
+    """两条是不是「同一约束的换皮写法」。
+
+    **数字不同的两条一律不算** —— 「镜头1 不得抖动」和「镜头2 不得抖动」、
+    「约束-001」「约束-002」长得几乎一样但是不同规则（实测把提交预算裁剪的用例
+    全并成一条）。
+    """
+    if not _same_subject(left, right) or _digits(left) != _digits(right):
+        return False
+    return _similarity(left, right) >= _SIMILARITY_THRESHOLD
+
+
+def merge_negative_constraints(
+    existing: Iterable[str],
+    incoming: Iterable[str],
+) -> list[str]:
+    """合并「必须避免」：同一约束的换皮写法只留一条（组内保留最完整的那条）。
+
+    2026-09-17 生产实测（墨滴任务）：每次返工都把同一句「墨滴不得凭空出现…」再写
+    一遍，7 轮攒到 **21 条 / 297 字，占提交文本 26%**，其中 10 条是同一件事 ——
+    否定句重复既稀释正向描述，又容易把「凭空出现的墨滴」反复喂给模型，正是用户说的
+    「每次改提示词那个问题就回来」。
+
+    与 `merge_requirements` 的区别：那个按**字面**去重，所以「半空中/半空/空中」
+    全都留下了。这里按归一 key（+ 同主语族近似度）合并 —— **规则一条不少，只去掉
+    重复的措辞**：合并时保留组内最长的那条原文，细节不会被并没。
+    """
+    merged: list[str] = []
+    keys: list[str] = []
+    for group in (existing, incoming):
+        for raw in group:
+            if not isinstance(raw, str):
+                continue
+            item = raw.strip()
+            if not item:
+                continue
+            key = negative_key(item)
+            position = keys.index(key) if key in keys else None
+            if position is None:
+                position = next(
+                    (
+                        index
+                        for index, existing_key in enumerate(keys)
+                        if _is_rewording(existing_key, key)
+                    ),
+                    None,
+                )
+            if position is None:
+                keys.append(key)
+                merged.append(item)
+                continue
+            # 同一条约束换个说法：保留更完整的那条，位置不动。
+            if len(item) > len(merged[position]):
+                merged[position] = item
+                keys[position] = key
     return merged
 
 

@@ -9,11 +9,116 @@ from feishu_generation_agent.integrations.rework_prompt import (
     build_fallback_prompt,
     build_rework_prompt,
     is_acceptable_fusion,
+    merge_negative_constraints,
     merge_requirements,
     parse_fusion_payload,
     rework_inputs,
     split_legacy_requirements,
 )
+
+#: 墨滴任务第 7 轮真实攒出来的「必须避免」（2026-09-17 生产快照，21 条）。
+INK_DROP_NEGATIVES = [
+    "不要出现任何 logo 或品牌特征",
+    "不要出现水印、贴纸、乱码文字或字幕",
+    "不要出现人物分身、凤凰分身或形象突变",
+    "不要出现穿模、悬空漂浮、重心失衡的动作",
+    "不要出现镜头剧烈抖动、跳帧或画面变形",
+    "不要出现与水墨写实风格不符的低质模糊与过度锐化",
+    "墨滴不得凭空出现在半空中",
+    "墨滴不得脱离笔尖正下方的下落轨迹",
+    "不得出现 logo 或品牌特征",
+    "不得出现水印或乱码文字",
+    "人物与凤凰不得分身、换形或装扮突变",
+    "人物与物体不得悬浮或穿模",
+    "画面不得变形",
+    "墨滴不得凭空出现在半空",
+    "墨滴不得脱离笔尖后横向或斜向偏移",
+    "墨滴不得从笔尖上方或侧面生成",
+    "墨滴不得凭空出现或从笔尖以外位置掉落",
+    "墨滴不得从笔尖上方或侧面滴落",
+    "墨滴不得凭空出现在空中",
+    "墨滴不得脱离笔尖后横向偏移或斜向飘落",
+    "墨滴下落轨迹不得偏离",
+]
+
+
+def test_merge_negative_constraints_collapses_rewording() -> None:
+    """同一句约束的换皮写法只留一条 —— 规则一条不少，只去掉重复措辞。
+
+    2026-09-17 实测（墨滴任务）：每轮返工都把「墨滴不得凭空出现…」再写一遍，
+    7 轮后攒到 21 条 / 297 字，占提交文本 26%，其中 10 条是同一件事。否定句重复
+    既稀释正向描述，又容易把「凭空出现的墨滴」反复喂给模型。
+    """
+    merged = merge_negative_constraints([], INK_DROP_NEGATIVES)
+
+    # 21 条 → 15 条（实测）。墨滴那一族 10 条 → 7 条：凭空出现/半空中、横向斜向偏移、
+    # 上方或侧面生成/滴落这些换皮写法都并掉了。剩下 3 对是**结构完全改写**的同义句
+    # （「脱离笔尖正下方的下落轨迹」vs「下落轨迹不得偏离」，集合相似度仅 0.47），
+    # 确定性合并做不到，硬并就得靠语义推断 —— 那会吃掉真规则，所以不做。
+    assert len(merged) <= 15, merged
+    ink_drop = [item for item in merged if item.startswith("墨滴")]
+    assert len(ink_drop) <= 7, ink_drop
+    # 一条规则都不能丢：并掉的只是措辞。
+    joined = "".join(ink_drop)
+    for keyword in ("凭空", "轨迹", "侧面"):
+        assert keyword in joined
+    # 明显不同类的规则原样保留。
+    assert "不要出现水印、贴纸、乱码文字或字幕" in merged
+    assert "人物与物体不得悬浮或穿模" in merged
+
+
+def test_merge_negative_constraints_keeps_the_longest_wording() -> None:
+    """组内保留最完整的那条写法（别把细节并没了）。"""
+    merged = merge_negative_constraints(
+        ["不得出现 logo 或品牌特征"],
+        ["不要出现任何 logo 或品牌特征"],
+    )
+
+    assert merged == ["不要出现任何 logo 或品牌特征"]
+
+
+def test_merge_negative_constraints_keeps_distinct_rules_apart() -> None:
+    """不同规则不许并 —— 相似度只是启发式，不能吃掉真规则。"""
+    merged = merge_negative_constraints(
+        ["人物与凤凰不得分身、换形或装扮突变"],
+        ["人物与物体不得悬浮或穿模"],
+    )
+
+    assert len(merged) == 2
+
+
+def test_merge_negative_constraints_keeps_numbered_rules_apart() -> None:
+    """只差数字的两条是不同规则（镜头1 vs 镜头2），不许并。"""
+    merged = merge_negative_constraints(
+        ["镜头 1 不得抖动", "约束-001 必须保持"],
+        ["镜头 2 不得抖动", "约束-002 必须保持"],
+    )
+
+    assert merged == [
+        "镜头 1 不得抖动",
+        "约束-001 必须保持",
+        "镜头 2 不得抖动",
+        "约束-002 必须保持",
+    ]
+
+
+def test_merge_negative_constraints_keeps_the_superset_wording() -> None:
+    """一条被另一条完全覆盖时，留信息量更大的那条。"""
+    merged = merge_negative_constraints(
+        ["不得出现水印或乱码文字"],
+        ["不要出现水印、贴纸、乱码文字或字幕"],
+    )
+
+    assert merged == ["不要出现水印、贴纸、乱码文字或字幕"]
+
+
+def test_merge_negative_constraints_ignores_blank_and_non_string() -> None:
+    merged = merge_negative_constraints(
+        ["", "   ", None, 42],
+        ["画面不得变形", " 画面不得变形 "],
+    )
+
+    assert merged == ["画面不得变形"]
 
 
 def _task(prompt: str, **updates) -> GenerationTask:

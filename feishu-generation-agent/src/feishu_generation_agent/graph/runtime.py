@@ -55,6 +55,7 @@ from feishu_generation_agent.integrations.planner import (
 )
 from feishu_generation_agent.integrations.rework_prompt import (
     build_rework_prompt,
+    merge_negative_constraints,
     merge_requirements,
     rework_inputs,
 )
@@ -338,7 +339,7 @@ class GraphRuntime:
                                 "rework_previous_prompt": task.prompt,
                                 # 融合产出的必避项并入 negative_constraints：
                                 # 提交时会以「必须避免：…」整块附在文本末尾。
-                                "negative_constraints": merge_requirements(
+                                "negative_constraints": merge_negative_constraints(
                                     task.negative_constraints, must_avoid
                                 ),
                             }
