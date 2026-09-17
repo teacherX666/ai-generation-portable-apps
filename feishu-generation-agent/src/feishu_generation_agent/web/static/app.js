@@ -64,6 +64,8 @@
   const retryFailedAssetsFeedback = byId("retry-failed-assets-feedback");
   const confirmArtifactsButton = byId("confirm-artifacts-button");
   const adjustArtifactsButton = byId("adjust-artifacts-button");
+  // 失败/取消的版本没有成片可勾选，用它重跑这一版（重跑入口只在预览页）。
+  const rerunArtifactsButton = byId("rerun-artifacts-button");
   const artifactReview = byId("artifact-review");
   const artifactList = byId("artifact-list");
   const artifactReviewMessage = byId("artifact-review-message");
@@ -754,7 +756,7 @@
   }
 
 
-  /** 一条运行的按钮组。 */
+  /** 一条运行的按钮组（任务记录里只留「查看 / 删除」；重跑在成片与结果页）。 */
   function runActionsFor(run, { selected = false } = {}) {
     const actions = element("div", "recent-run-actions");
     const view = element(
@@ -772,13 +774,6 @@
       link.target = "_blank";
       link.rel = "noreferrer";
       actions.append(link);
-    }
-    if (run.rerunnable) {
-      const rerun = element("button", "quiet-button", "重跑");
-      rerun.type = "button";
-      rerun.disabled = state.busy;
-      rerun.addEventListener("click", () => rerunBitableTask(run.run_id));
-      actions.append(rerun);
     }
     if (!run.active) {
       const remove = element("button", "danger", "删除");
@@ -2429,7 +2424,13 @@
     // 往次成片继续看得到 —— 用户明确要求「重跑的时候也能看到预览」。
     artifactReview.hidden = false;
     artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
-    artifactReviewActions.hidden = !canReviewArtifacts;
+    // 失败/取消没有成片可勾选，但**重跑入口只在预览页**（任务记录里已删掉），
+    // 所以这里必须给它一个「重跑这一版」，否则失败的任务没地方重跑。
+    const canRerunThisVersion = ["failed", "cancelled"].includes(view.status);
+    artifactReviewActions.hidden = !(canReviewArtifacts || canRerunThisVersion);
+    confirmArtifactsButton.hidden = !canReviewArtifacts;
+    adjustArtifactsButton.hidden = !canReviewArtifacts;
+    rerunArtifactsButton.hidden = !canRerunThisVersion;
     if (artifacts.length > 0) {
       artifactReviewMessage.textContent = canReviewArtifacts
         ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
@@ -2875,6 +2876,7 @@
   byId("approve-button").addEventListener("click", () => submitDecision("approve"));
   confirmArtifactsButton.addEventListener("click", () => submitArtifactReview("confirm"));
   adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));
+  rerunArtifactsButton.addEventListener("click", () => rerunBitableTask());
   artifactReviewFeedback.addEventListener("input", updateActionAvailability);
   rerunButton.addEventListener("click", () => rerunBitableTask());
   retryFailedAssetsButton.addEventListener("click", async () => {

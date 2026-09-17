@@ -232,6 +232,10 @@
             <button id="adjust-artifacts-button" type="button" class="secondary">
               重跑选中任务
             </button>
+            <!-- 失败/取消的运行没有成片可选，用它重跑这一版 -->
+            <button id="rerun-artifacts-button" type="button" class="secondary" hidden>
+              重跑这一版
+            </button>
           </div>
         </section>
 
@@ -330,7 +334,7 @@
     <script src="static/api-paths.js" defer></script>
     <script src="static/planner-prompt-state.js" defer></script>
     <script src="static/prompt-diff.js?v=20260916-record-versions" defer></script>
-    <script src="static/app.js?v=20260917-preview-always" defer></script>
+    <script src="static/app.js?v=20260917-rerun-in-preview" defer></script>
     <script src="static/effects.js?v=20260910-fx-perf" defer></script>
   </body>
 </html>

@@ -200,7 +200,7 @@ function stubFetch(calls, { activeRun = true, currentStatus = "waiting_review" }
           events: [],
           privacy: {},
           approval: { tasks: [] },
-          artifacts: currentStatus === "waiting_approval"
+          artifacts: ["waiting_approval", "failed", "cancelled"].includes(currentStatus)
             ? []
             : [VIDEO_ARTIFACT("task-1")],
         });
@@ -306,6 +306,25 @@ test("重跑后（审批/生成中）预览与历史仍然留着", async () => {
   assert.ok(
     (app.getNode("artifact-review-message").textContent || "").includes("往次成片"),
     "要说明本次还没有成片、下面是往次成片",
+  );
+});
+
+test("任务记录里不再有「重跑」按钮；失败的那一版到预览页去重跑", async () => {
+  const failed = await loadApp(stubFetch([], { currentStatus: "failed" }));
+  assert.equal(
+    allText(failed.getNode("recent-run-list")).includes("重跑"),
+    false,
+    "任务记录里不该再有重跑按钮",
+  );
+  // 失败/取消没有成片可选，原来的「重跑选中任务」不会出现 —— 所以要给一个
+  // 「重跑这一版」，否则失败的任务就没地方重跑了。
+  assert.equal(failed.getNode("rerun-artifacts-button").hidden, false);
+
+  const reviewing = await loadApp(stubFetch([], { currentStatus: "waiting_review" }));
+  assert.equal(
+    reviewing.getNode("rerun-artifacts-button").hidden,
+    true,
+    "能审片的运行走「重跑选中任务」，不需要这个按钮",
   );
 });
 

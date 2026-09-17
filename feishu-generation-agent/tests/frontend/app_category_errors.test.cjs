@@ -539,7 +539,13 @@ test("failed history runs explain the missing artifacts instead of hiding the pr
     "本次运行未生成成片，请在下方的失败原因中查看详情。",
   );
   assert.equal(app.getNode("artifact-review-feedback-box").hidden, true);
-  assert.equal(app.getNode("artifact-review-actions").hidden, true);
+  // 失败的那一版没有成片可勾选 → 「导出到结果表 / 重跑选中任务」仍然不出现；
+  // 但重跑入口只在预览页（任务记录里的重跑按钮已删），所以这里要保留
+  // 「重跑这一版」，否则失败的任务没地方重跑。
+  assert.equal(app.getNode("artifact-review-actions").hidden, false);
+  assert.equal(app.getNode("confirm-artifacts-button").hidden, true);
+  assert.equal(app.getNode("adjust-artifacts-button").hidden, true);
+  assert.equal(app.getNode("rerun-artifacts-button").hidden, false);
   assert.equal(
     app.getNode("validation-issues").textContent,
     "飞书应用没有权限读取该文档或素材，请检查文档分享与应用权限。",
