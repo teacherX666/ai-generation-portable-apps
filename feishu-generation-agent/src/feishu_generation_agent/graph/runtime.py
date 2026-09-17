@@ -347,6 +347,22 @@ class GraphRuntime:
                 approved_plan = approved_plan.model_copy(
                     update={"tasks": updated_tasks}
                 )
+            # 分镜行 id 确定性补齐：复制来的计划没有经过模型，缺的行会一直缺
+            # （实测 2026-09-17 超级大床：重跑多少次都报同样 3 个 id）。
+            resolved_document = self._document_assets(
+                source_state.get("normalized_document"),
+                source_state.get("media_assets")
+                if isinstance(source_state.get("media_assets"), list)
+                else [],
+            )
+            if resolved_document is not None:
+                try:
+                    approved_plan = reconcile_storyboard_sources(
+                        approved_plan,
+                        NormalizedDocument.model_validate(resolved_document),
+                    )
+                except Exception:
+                    pass
             approved_plan_json = approved_plan.model_dump(mode="json")
             approved_tasks = [
                 task.model_dump(mode="json") for task in approved_plan.tasks
