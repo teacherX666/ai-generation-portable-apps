@@ -46,6 +46,31 @@ async def test_fusion_returns_prompt_and_must_avoid() -> None:
     }
 
 
+async def test_fusion_includes_previous_take_visual_context() -> None:
+    """融合输入里必须带上「上一版成片的实际画面」—— 用户要求模型先看成片再改。"""
+    model = FakeFuseModel(_FUSED)
+    planner = DeepSeekPlanner(model)
+
+    await planner.fuse_rework_prompt(
+        "@图片1 中的猫在跑",
+        ["不要参考人物形象"],
+        visual_context="画面里出现了一个人物形象，占画面中心。",
+    )
+
+    user_content = model.requests[0][1]["content"]
+    assert "上一版成片的实际画面" in user_content
+    assert "画面里出现了一个人物形象" in user_content
+
+
+async def test_fusion_omits_visual_section_without_context() -> None:
+    model = FakeFuseModel(_FUSED)
+    planner = DeepSeekPlanner(model)
+
+    await planner.fuse_rework_prompt("@图片1 中的猫在跑", ["动作慢一点"])
+
+    assert "上一版成片的实际画面" not in model.requests[0][1]["content"]
+
+
 async def test_fusion_returns_none_when_content_is_not_json() -> None:
     planner = DeepSeekPlanner(FakeFuseModel("这就是一段普通文本"))
     assert await planner.fuse_rework_prompt("原始提示词", ["动作慢一点"]) is None
