@@ -517,6 +517,89 @@ def _exclude_unused_references(
         payload["excluded_assets"] = exclusions
 
 
+#: 视频素材被排除时写的理由（要含中文，校验器会查）。
+_VIDEO_REFERENCE_REASON = "视频素材只作为分镜参考，不作为参考图"
+
+
+def _exclude_video_references(
+    payload: dict[str, Any],
+    document: NormalizedDocument,
+) -> None:
+    """视频素材**不作为参考图**（用户口径 2026-09-17：「视频基本上都没有能作为
+    参考图的，只能作为分镜参考」）。
+
+    「参考视频抽帧冒充参考图」那条路已经删掉（见 graph/nodes.py），所以文档里的视频
+    不再有对应的图片素材；而覆盖门要求「每个素材要么被引用、要么被排除」，这里就
+    确定性地把视频从 reference_images 摘掉（prompt 里的 token 一并重映射/清理）
+    并写进 excluded_assets。
+    """
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    mime_types = {
+        asset.asset_id: asset.mime_type for asset in document.media_assets
+    }
+    video_ids = {
+        asset_id
+        for asset_id, mime_type in mime_types.items()
+        if str(mime_type).startswith("video/")
+    }
+    if not video_ids:
+        return
+    raw_exclusions = payload.get("excluded_assets")
+    exclusions = raw_exclusions if isinstance(raw_exclusions, list) else []
+    excluded_ids = {
+        item.get("asset_id")
+        for item in exclusions
+        if isinstance(item, dict)
+    }
+    changed = False
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("task_type") != "image_to_video":
+            continue
+        raw_references = task.get("reference_images")
+        if not isinstance(raw_references, list):
+            continue
+        try:
+            references = canonicalize_references(
+                [ImageReference.model_validate(item) for item in raw_references]
+            )
+        except Exception:
+            continue  # 引用本身不合法：交给校验器如实报错
+        dropped = sorted(
+            reference.asset_id
+            for reference in references
+            if reference.asset_id in video_ids
+        )
+        if not dropped:
+            continue
+        remaining = canonicalize_references(
+            [
+                reference
+                for reference in references
+                if reference.asset_id not in video_ids
+            ]
+        )
+        prompt = task.get("prompt")
+        if isinstance(prompt, str):
+            task["prompt"] = remap_prompt_references(
+                prompt, references, remaining, mime_types
+            )
+        task["reference_images"] = [
+            reference.model_dump(mode="json") for reference in remaining
+        ]
+        for asset_id in dropped:
+            if asset_id in excluded_ids:
+                continue
+            exclusions.append(
+                {"asset_id": asset_id, "reason": _VIDEO_REFERENCE_REASON}
+            )
+            excluded_ids.add(asset_id)
+        changed = True
+    if changed:
+        payload["excluded_assets"] = exclusions
+
+
 def _storyboard_requirements(
     document: NormalizedDocument,
 ) -> dict[str, list[str]]:
@@ -1376,6 +1459,8 @@ class DeepSeekPlanner:
             )
             # 分镜行的 block id 由代码补齐（模型枚举不稳，实测必漏）。
             _fill_storyboard_source_block_ids(payload, document)
+            # 视频只作分镜参考：从参考图里摘掉并排除（用户口径 2026-09-17）。
+            _exclude_video_references(payload, document)
             # 「挂了却没被具体用起来」的素材摘掉并排除（两条规则互相夹住的死结）。
             _exclude_unused_references(payload, document)
             return [

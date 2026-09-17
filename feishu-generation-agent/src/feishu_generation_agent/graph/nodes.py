@@ -1,8 +1,7 @@
 import asyncio
-import tempfile
+import logging
 from inspect import Parameter, signature
 import json
-import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -80,10 +79,6 @@ from feishu_generation_agent.ports import (
 )
 from feishu_generation_agent.storage.files import FileStore
 from feishu_generation_agent.storage.repository import Repository
-from feishu_generation_agent.integrations.video_reference import (
-    ExtractedVideoFrame,
-    extract_video_frames,
-)
 
 from feishu_generation_agent.integrations.rag_prompt_optimizer import (
     fetch_knowledge_rules,
@@ -111,6 +106,8 @@ class GraphServices:
     settings: Settings
     portrait_video_generator: Any | None = None
     production_task_store: Any | None = None
+    #: 能**直接看视频**的分析器（ds4.1 多模态）。参考视频只作分镜参考，不再抽帧。
+    video_analyzer: Any | None = None
     # 图片 provider registry：{"banana": gen, "seedream": gen, "gpt-image2": gen}。
     # 为 None 时回落到单实例 image_generator，保持存量调用方零改动。
     image_providers: Mapping[str, ImageGenerator] | None = None
@@ -652,86 +649,40 @@ async def _analyze_video_reference(
     services: GraphServices,
     document_id: str,
     video: MediaAsset,
-) -> tuple[MediaAsset | None, VideoReferenceAnalysis | None]:
-    """把文档里的参考视频转成一张可被 Seedance/火山消费的参考图。
+) -> VideoReferenceAnalysis | None:
+    """把文档里的参考视频交给**能看视频的模型**分析，产出分镜参考用的文字描述。
 
-    视频本体在火山 Bearer 模式下不可上传，所以统一抽帧：视觉模型判断这段
-    视频到底在表达「人物形象 / 运镜 / 剪辑节奏 / 场景画风」，并选出最有代表
-    性的一帧落成图片素材。判断失败时退回中间帧，保证任务不会因为没有参考图
-    而直接失败。
+    2026-09-17 用户要求：「不要抽帧，直接上传视频」+「视频基本上都没有能作为参考图
+    的，只能作为分镜参考」。实测火山 ds4.1 接受 `video_url` 且真的看懂了内容，所以
+    这里**不再抽帧、也不再伪造 `video-N-frame` 图片素材** —— 那张"参考图"会被模型
+    当成人物形象锚点，正是「让它不要参考人物形象它还是参考」的来源。
+
+    分析失败返回 None（不猜内容）：视频保持原样，只作分镜参考。
     """
-    analyzer = getattr(services.vision_analyzer, "analyze_video", None)
+    del document_id  # 兼容旧签名：不再落帧文件，用不到
+    analyzer = getattr(services, "video_analyzer", None)
+    if analyzer is None:
+        return None
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="feishu-video-ref-"
-        ) as work_dir:
-            frame_paths = await asyncio.to_thread(
-                extract_video_frames,
-                video.local_path,
-                _VIDEO_FRAME_COUNT,
-                Path(work_dir),
-            )
-            frames = [
-                ExtractedVideoFrame(index=index + 1, path=path)
-                for index, path in enumerate(frame_paths)
-            ]
-            insight: VideoReferenceAnalysis | None = None
-            if callable(analyzer):
-                try:
-                    insight = await analyzer(video, frames)
-                except Exception:
-                    _LOGGER.warning(
-                        "视频参考语义分析失败，退回中间帧 video=%s",
-                        video.asset_id,
-                        exc_info=True,
-                    )
-            if insight is None:
-                insight = VideoReferenceAnalysis(
-                    asset_id=video.asset_id,
-                    kind=VideoReferenceKind.OTHER,
-                    summary="视频参考语义未识别，已抽取中间帧作为画面参考",
-                    representative_frame_index=(len(frames) + 1) // 2,
-                    uncertainties=["视频语义分析不可用或失败，未对视频内容作猜测"],
-                )
-            chosen_index = min(
-                max(insight.representative_frame_index, 1),
-                len(frames),
-            )
-            chosen = frames[chosen_index - 1]
-            frame_content = chosen.path.read_bytes()
-            stored = services.file_store.save_input(
-                document_id,
-                f"{video.asset_id}-frame.jpg",
-                frame_content,
-            )
-            frame_asset = MediaAsset(
-                asset_id=f"{video.asset_id}-frame",
-                source_block_id=video.source_block_id,
-                origin="feishu_video_frame",
-                file_token=None,
-                local_path=stored.local_path,
-                mime_type=stored.mime_type,
-                size=stored.size,
-                sha256=stored.sha256,
-                width=stored.width,
-                height=stored.height,
-            )
-            return frame_asset, insight.model_copy(
-                update={"asset_id": frame_asset.asset_id}
-            )
+        return await analyzer.analyze_video(video, [])
     except Exception:
         _LOGGER.warning(
-            "视频参考抽帧失败，保留原始视频素材 video=%s",
+            "参考视频分析失败，本段只作分镜参考（不抽帧、不当参考图） video=%s",
             video.asset_id,
             exc_info=True,
         )
-        return None, None
+        return None
 
 
 async def _materialize_video_references(
     document: NormalizedDocument,
     services: GraphServices,
 ) -> NormalizedDocument:
+    """给文档里的参考视频补上「分镜参考」描述（不再抽帧、不再替换素材）。
+
+    视频保持 `[video:*]` 标记留在文档里，模型据此理解动作/运镜/节奏；
+    它**不会**被挂成参考图（planner 那边有确定性规则把它排除）。
+    """
     video_assets = [
         asset
         for asset in document.media_assets
@@ -740,50 +691,17 @@ async def _materialize_video_references(
     if not video_assets:
         return document
 
-    replacements: dict[str, MediaAsset] = {}
     semantics: list[VideoReferenceAnalysis] = list(document.video_semantics)
     for video in video_assets:
-        frame_asset, insight = await _analyze_video_reference(
+        insight = await _analyze_video_reference(
             services,
             document.document_id,
             video,
         )
-        if frame_asset is not None:
-            replacements[video.asset_id] = frame_asset
         if insight is not None:
             semantics.append(insight)
 
-    if not replacements:
-        return document.model_copy(update={"video_semantics": semantics})
-
-    media_assets: list[MediaAsset] = []
-    text_view = document.text_view
-    for asset in document.media_assets:
-        replacement = replacements.get(asset.asset_id)
-        if replacement is None:
-            media_assets.append(asset)
-            continue
-        media_assets.append(replacement)
-        text_view = text_view.replace(
-            f"[video:{asset.asset_id}]",
-            f"[image:{replacement.asset_id}]",
-        )
-
-    for video in video_assets:
-        replacement = replacements.get(video.asset_id)
-        if replacement is None:
-            continue
-        marker = f"[image:{replacement.asset_id}]"
-        if marker not in text_view:
-            text_view = f"{text_view}\n{marker}"
-
-    return document.model_copy(
-        update={
-            "media_assets": media_assets,
-            "text_view": text_view,
-            "video_semantics": semantics,
-        }
-    )
+    return document.model_copy(update={"video_semantics": semantics})
 
 
 def _planner_mode_argument(

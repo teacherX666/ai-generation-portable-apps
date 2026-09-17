@@ -332,6 +332,8 @@ def test_agent_state_and_graph_services_contracts_are_stable():
             "settings",
             "portrait_video_generator",
             "production_task_store",
+            # 能直接看视频的分析器（ds4.1 多模态）：参考视频只作分镜参考，不抽帧。
+            "video_analyzer",
             "image_providers",
             "asset_library_store",
             "character_matcher",

@@ -24,6 +24,7 @@ from feishu_generation_agent.domain.plan import AuditReport, TaskPlan
 from feishu_generation_agent.integrations.planner import (
     DeepSeekPlanner,
     _exclude_unused_references,
+    _exclude_video_references,
     _fill_storyboard_source_block_ids,
     _normalize_generated_plan_payload,
     planner_system_prompt,
@@ -1759,6 +1760,42 @@ def test_reconcile_negative_constraints_clears_legacy_duplicates() -> None:
         "不得出现水印、Logo 或品牌特征",
         "画面不得变形",
     ]
+
+
+def test_video_references_are_excluded_not_mounted(
+    storyboard_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """视频素材不作为参考图（只作分镜参考）。
+
+    用户口径（2026-09-17）：「视频基本上都没有能作为参考图的，只能作为分镜参考」。
+    抽帧那条路已删，所以视频不再有对应图片素材；覆盖门要求每个素材被引用或被排除，
+    这里必须确定性地把视频摘掉并写进 excluded_assets，否则批准按钮永远是灰的。
+    """
+    video = _asset(tmp_path, "video-1", "video-1", mime_type="video/mp4")
+    document = storyboard_document.model_copy(
+        update={"media_assets": [*storyboard_document.media_assets, video]}
+    )
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)],
+    )
+    task["reference_images"] = [
+        {"asset_id": "asset-1", "order": 1, "role": "reference_image"},
+        {"asset_id": "video-1", "order": 2, "role": "reference_video"},
+    ]
+    payload = json.loads(_plan_json(task))
+
+    _exclude_video_references(payload, document)
+
+    assert [
+        reference["asset_id"]
+        for reference in payload["tasks"][0]["reference_images"]
+    ] == ["asset-1"]
+    reasons = {
+        item["asset_id"]: item["reason"] for item in payload["excluded_assets"]
+    }
+    assert "video-1" in reasons
+    assert "分镜参考" in reasons["video-1"]
 
 
 def test_validator_rejects_latin_s_absolute_seconds(

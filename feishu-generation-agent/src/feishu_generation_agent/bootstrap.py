@@ -51,6 +51,10 @@ from feishu_generation_agent.integrations.character_semantic_matcher import (
     DeepSeekCharacterMatcher,
 )
 from feishu_generation_agent.integrations.seedance import SeedanceVideoGenerator
+from feishu_generation_agent.domain.video_models import (
+    VIDEO_MODELS,
+    resolve_video_model_key,
+)
 from feishu_generation_agent.integrations.seedream import SeedreamImageGenerator
 from feishu_generation_agent.integrations.aiport import AiPortImageGenerator
 from feishu_generation_agent.integrations.aiport_video import AiPortVideoGenerator
@@ -63,6 +67,7 @@ from feishu_generation_agent.integrations.volcengine_portrait import (
     VolcenginePortraitVideoGenerator,
 )
 from feishu_generation_agent.integrations.vision import ClaudeVisionAnalyzer
+from feishu_generation_agent.integrations.video_insight import DeepSeekVideoInsight
 from feishu_generation_agent.storage.files import FileStore
 from feishu_generation_agent.storage.bitable_tasks import BitableTaskStore
 from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
@@ -528,17 +533,27 @@ async def _open_application_services(
             provider_name="aiport",
             max_result_bytes=settings.max_download_bytes,
         )
-        seedance_video_generator = None
-        if capability_is_configured(settings, "generation"):
-            seedance_video_generator = SeedanceVideoGenerator(
-                provider_http,
-                base_url=settings.ark_base_url,
-                api_key=settings.ark_api_key,
-                model=settings.seedance_model,
-                public_media_host=animation_media_host,
-            )
+        seedance_video_generators = {}
+        if _nonempty(settings.ark_api_key):
+            for capability in VIDEO_MODELS:
+                seedance_video_generators[capability.key] = SeedanceVideoGenerator(
+                    provider_http,
+                    base_url=settings.ark_base_url,
+                    api_key=settings.ark_api_key,
+                    model=capability.model,
+                    capability=capability,
+                    public_media_host=animation_media_host,
+                    provider_name=capability.key,
+                )
+        default_video_model_key = resolve_video_model_key(
+            settings.video_provider,
+            fallback="seedance2.5",
+        )
+        seedance_video_generator = seedance_video_generators.get(
+            default_video_model_key or ""
+        )
         # Keep a compatibility default for older callers; task routing uses the
-        # explicitly selected provider and the two independent instances above.
+        # explicitly selected model and the two independent instances above.
         video_generator = seedance_video_generator or aiport_video_generator
         provider_preferences = await provider_preference_store.get()
         services = GraphServices(
@@ -556,6 +571,15 @@ async def _open_application_services(
                 )
                 if vision_model is not None
                 else None
+            ),
+            # 参考视频整段交给 ds4.1 看（走公开图床给链接），产出分镜参考描述。
+            # 不再抽帧冒充参考图 —— 那张"参考图"会被当成人物形象锚点。
+            video_analyzer=DeepSeekVideoInsight(
+                provider_http,
+                base_url=settings.deepseek_base_url,
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                public_media_host=UguuPublicMediaHost(provider_http),
             ),
             planner=DeepSeekPlanner(
                 planner_model, max_output_count=settings.max_output_count
@@ -583,6 +607,7 @@ async def _open_application_services(
             or None,
             video_generator=video_generator,
             seedance_video_generator=seedance_video_generator,
+            seedance_video_generators=seedance_video_generators,
             aiport_video_generator=aiport_video_generator,
             portrait_video_generator=portrait_generator,
             production_task_store=production_store if production_bitable_configured else None,
