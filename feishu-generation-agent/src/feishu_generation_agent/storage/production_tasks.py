@@ -192,6 +192,7 @@ class ProductionTaskStore:
                           maker_open_id = ?, maker_name = ?, snapshot_json = ?,
                           run_id = ?, thread_id = ?, status = ?,
                           last_error = NULL, active = 1,
+                          deleted = 0, hidden = 0,
                           updated_at = CURRENT_TIMESTAMP
                         WHERE source_app_token = ? AND source_table_id = ? AND source_record_id = ?""",
                         (*payload, app_token, location.table_id, task.record_id),

@@ -243,6 +243,55 @@ async def test_recent_history_survives_mixed_legacy_and_fresh_column_order(
         await store.close()
 
 
+async def test_reclaiming_an_archived_record_makes_it_visible_again(
+    tmp_path: Path,
+) -> None:
+    """归档过的记录被重新领取后必须回到列表。
+
+    2026-09-17 生产：超级大床的当前行被 archive 标成 `deleted=1`，而 claim 的
+    UPDATE 只设 `active=1`、**没清 `deleted`** —— 之后每次重跑都复用同一行，新尝试
+    全部继承 `deleted=1`，于是用户「一直重跑但看不到记录」（列表里只剩历史里的旧
+    尝试，当前那次永远不出现）。
+    """
+    from feishu_generation_agent.domain.bitable import TableTaskStatus
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    try:
+        binding = await store.claim(
+            _location(),
+            _task(),
+            run_id="run-1",
+            thread_id="thread-1",
+            owner_user_id="user-a",
+        )
+        await store.release(
+            binding.run_id,
+            status=TableTaskStatus.COMPLETED,
+            owner_user_id="user-a",
+        )
+        assert await store.archive("run-1") == 1
+        assert await store.list_recent("appProd", "tblProd") == []
+
+        # 重新领取（＝开始分析 / 重跑）后再结束：这一行必须重新可见。
+        await store.claim(
+            _location(),
+            _task(),
+            run_id="run-2",
+            thread_id="thread-2",
+            owner_user_id="user-a",
+        )
+        await store.release(
+            "run-2",
+            status=TableTaskStatus.COMPLETED,
+            owner_user_id="user-a",
+        )
+
+        recent = await store.list_recent("appProd", "tblProd")
+        assert [item.run_id for item in recent] == ["run-2"], recent
+    finally:
+        await store.close()
+
+
 async def test_archive_and_restore_move_recent_run_between_trash(
     tmp_path: Path,
 ) -> None:
