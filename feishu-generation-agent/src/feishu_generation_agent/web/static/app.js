@@ -2327,7 +2327,9 @@
     );
     const open = element("button", "quiet-button", "查看这一版");
     open.type = "button";
-    open.disabled = state.busy;
+    // 刻意**不**按 state.busy 置灰：它是纯导航，而终态运行不会再轮询 ——
+    // 置灰后就没有下一次重绘把它恢复，用户看到的就是「点不了」
+    // （2026-09-17 实测踩到）。busy 期间的保护由 viewRecentRun 内部负责。
     open.addEventListener("click", () => viewRecentRun(run.run_id));
     caption.append(open);
     card.append(caption);

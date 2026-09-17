@@ -348,6 +348,9 @@ test("成片预览的重绘签名带上 busy（否则置灰的按钮永远回不
   // 卡片按钮按 state.busy 置灰，而重绘只在签名变化时发生 —— 签名少了 busy，
   // 「查看这一版」会在选中运行的瞬间被置灰后再也回不来（用户报「点不了」）。
   assert.match(app, /status: view\.status,[\s\S]{0,220}?busy: state\.busy,/);
+  // 更根本的一条：历史卡片的「查看这一版」是纯导航，**不能**按 busy 置灰 ——
+  // 终态运行不会再轮询，置灰后没有任何机会恢复。
+  assert.equal(/open\.disabled = state\.busy/.test(app), false);
 });
 
 test("状态全在等人操作时，一个请求都不发", async () => {
