@@ -261,6 +261,9 @@ test("状态全在等人操作时，一个请求都不发（不再是定时刷�
   const app = await loadApp(
     stubFetch(
       {
+        // 放 recent-runs 而不是 active-runs：否则 configureModes 会把这条当成
+        // 「恢复进行中任务」并起**运行详情轮询**（那是另一条 setInterval），
+        // 断言就会因为别的原因通过 —— 这里要单独量的是任务记录的盯守。
         active: [],
         recent: [
           {
@@ -268,6 +271,12 @@ test("状态全在等人操作时，一个请求都不发（不再是定时刷�
             record_id: "rec-a",
             display_text: "等待审批",
             status: "待审批",
+          },
+          {
+            run_id: "run-done",
+            record_id: "rec-b",
+            display_text: "已完成",
+            status: "已完成",
           },
         ],
       },
@@ -278,24 +287,27 @@ test("状态全在等人操作时，一个请求都不发（不再是定时刷�
   const before = calls.length;
   await app.tick();
   await app.tick();
-  assert.equal(calls.length, before, "等待审批不会自己变，不该有任何轮询");
+  assert.equal(calls.length, before, "等待审批 / 已完成都不会自己变，不该轮询");
   assert.equal(app.intervalCount(), 0);
 });
 
-test("有任务在自行推进时才起盯守，停下来了就停", async () => {
+test("有任务在自行推进时才起盯守（接口下发的是中文状态）", async () => {
   const calls = [];
   const app = await loadApp(
     stubFetch(
       {
-        active: [
+        active: [],
+        recent: [
           {
             run_id: "run-gen",
             record_id: "rec-a",
             display_text: "生成中",
+            // 关键：tasks/recent-runs 下发的是 TableTaskStatus 的中文值。
+            // 盯守集合若只认英文运行状态，这里就永远不会盯 —— 正在生成的任务
+            // 反而看不到更新（2026-09-17 自查发现的坑）。
             status: "生成中",
           },
         ],
-        recent: [],
       },
       calls,
     ),
@@ -305,4 +317,34 @@ test("有任务在自行推进时才起盯守，停下来了就停", async () =>
   const before = calls.length;
   await app.tick();
   assert.ok(calls.length > before, "盯守期间应当对一次任务记录");
+});
+
+test("任务跑完后盯守自己停掉", async () => {
+  const calls = [];
+  const app = await loadApp(
+    stubFetch(
+      {
+        active: [],
+        recent: [
+          { run_id: "run-gen", record_id: "rec-a", status: "生成中" },
+        ],
+      },
+      calls,
+    ),
+  );
+  assert.equal(app.intervalCount(), 1);
+
+  // 下一次拉回来已经是终态：不该再有定时器。
+  const settled = await loadApp(
+    stubFetch(
+      {
+        active: [],
+        recent: [
+          { run_id: "run-gen", record_id: "rec-a", status: "已完成" },
+        ],
+      },
+      calls,
+    ),
+  );
+  assert.equal(settled.intervalCount(), 0);
 });

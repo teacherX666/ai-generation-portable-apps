@@ -899,6 +899,11 @@
 // 重画。以前是固定 5 秒刷一次整个面板 —— 而等待审批 / 等待成片审核是停在等人
 // 操作上的，状态不会自己变，那种轮询纯属白跑（用户要的是「状态更新才刷新」）。
   const SELF_PROGRESSING_RUN_STATUSES = new Set([
+    // TableTaskStatus 的中文值 —— tasks / recent-runs 两个接口下发的就是这一套。
+    "处理中",
+    "生成中",
+    "回写中",
+    // 运行时英文状态（运行详情等其它来源）。
     "created",
     "planning",
     "running",
