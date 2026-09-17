@@ -848,6 +848,28 @@ class Repository:
         await cursor.close()
         return [Artifact.model_validate_json(row[0]) for row in rows]
 
+    async def count_artifacts_by_run(self, run_ids: list[str]) -> dict[str, int]:
+        """一次查出多个 run 各有多少条成片。
+
+        任务记录要在外面显示「已成片 N 条」，逐条查会把列表拖慢。
+        """
+        ids = [run_id for run_id in run_ids if run_id]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        cursor = await self._connection.execute(
+            f"""
+                SELECT run_id, COUNT(*)
+                FROM artifacts
+                WHERE run_id IN ({placeholders})
+                GROUP BY run_id
+            """,
+            tuple(ids),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return {row[0]: int(row[1]) for row in rows}
+
     async def get_vision_cache(
         self,
         cache_key: str,

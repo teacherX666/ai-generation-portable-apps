@@ -178,15 +178,15 @@ function stubFetch(calls, { activeRun = true, currentStatus = "waiting_review" }
     }
     if (url === "/api/bitable/active-runs") {
       return jsonResponse(200, activeRun
-        ? [{ run_id: "run-3", record_id: "rec-a", display_text: "拿着吧你", status: "待确认成片" }]
+        ? [{ run_id: "run-3", record_id: "rec-a", display_text: "拿着吧你", status: "待确认成片", artifact_count: 2 }]
         : []);
     }
     if (url === "/api/bitable/recent-runs") {
       return jsonResponse(200, [
-        { run_id: "run-3", record_id: "rec-a", display_text: "拿着吧你", status: "已完成", updated_at: "2026-09-17 10:20:00" },
-        { run_id: "run-2", record_id: "rec-a", display_text: "拿着吧你", status: "已完成", updated_at: "2026-09-17 09:40:00" },
-        { run_id: "run-1", record_id: "rec-a", display_text: "拿着吧你", status: "失败", updated_at: "2026-09-17 09:10:00" },
-        { run_id: "run-b", record_id: "rec-b", display_text: "脱毛", status: "已完成", updated_at: "2026-09-17 09:00:00" },
+        { run_id: "run-3", record_id: "rec-a", display_text: "拿着吧你", status: "已完成", updated_at: "2026-09-17 10:20:00", artifact_count: 2 },
+        { run_id: "run-2", record_id: "rec-a", display_text: "拿着吧你", status: "已完成", updated_at: "2026-09-17 09:40:00", artifact_count: 1 },
+        { run_id: "run-1", record_id: "rec-a", display_text: "拿着吧你", status: "失败", updated_at: "2026-09-17 09:10:00", artifact_count: 0 },
+        { run_id: "run-b", record_id: "rec-b", display_text: "脱毛", status: "已完成", updated_at: "2026-09-17 09:00:00", artifact_count: 4 },
       ]);
     }
     if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
@@ -326,6 +326,28 @@ test("任务记录里不再有「重跑」按钮；失败的那一版到预览�
     true,
     "能审片的运行走「重跑选中任务」，不需要这个按钮",
   );
+});
+
+test("任务记录外面直接看得到已成片条数", async () => {
+  const app = await loadApp(stubFetch([]));
+  const rows = Array.from(app.getNode("recent-run-list").children);
+
+  // rec-a 的历次尝试成片数累加：2 + 1 + 0 = 3 条。
+  assert.ok(
+    allText(rows[0]).includes("已成片 3 条"),
+    "rec-a 应显示累加的成片条数，实际：" + allText(rows[0]),
+  );
+  assert.ok(allText(rows[1]).includes("已成片 4 条"));
+});
+
+test("成片预览的重绘签名带上 busy（否则置灰的按钮永远回不来）", () => {
+  const app = readFileSync(
+    join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
+    "utf8",
+  );
+  // 卡片按钮按 state.busy 置灰，而重绘只在签名变化时发生 —— 签名少了 busy，
+  // 「查看这一版」会在选中运行的瞬间被置灰后再也回不来（用户报「点不了」）。
+  assert.match(app, /status: view\.status,[\s\S]{0,220}?busy: state\.busy,/);
 });
 
 test("状态全在等人操作时，一个请求都不发", async () => {

@@ -707,6 +707,7 @@
         run.active,
         run.result_table_url,
         run.rerunnable,
+        run.artifact_count,
       ]),
     });
     if (recentRunList.dataset.renderSig === signature) return;
@@ -714,6 +715,15 @@
     const activeCount = runs.filter((run) => run.active).length;
     // 一条记录一行：重跑不再多出一行。历次版本去成片预览的横向滑条里看/切。
     const rows = BitableState.latestRunsByRecord(runs);
+    // 外面直接看得到这条任务一共出了多少条成片（历次尝试累加）。
+    const producedByRecord = new Map();
+    runs.forEach((run) => {
+      const key = run.record_id || `run:${run.run_id}`;
+      producedByRecord.set(
+        key,
+        (producedByRecord.get(key) || 0) + (Number(run.artifact_count) || 0),
+      );
+    });
     runHistorySummary.textContent = runs.length
       ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${rows.length} 条`
       : "进行中与历史任务都在这里";
@@ -739,13 +749,15 @@
       row.dataset.runId = run.run_id;
       if (run.record_id) row.dataset.recordId = run.record_id;
       const details = element("div", "recent-run-details");
+      const produced = producedByRecord.get(run.record_id || `run:${run.run_id}`) || 0;
       details.append(
         element("strong", "", run.display_text || run.run_id),
         element(
           "p",
           "bitable-task-meta",
           `${run.active ? "进行中" : "历史"} · ${statusUi(run.status).label}`
-            + (run.updated_at ? ` · ${formatRecentTime(run.updated_at)}` : ""),
+            + (run.updated_at ? ` · ${formatRecentTime(run.updated_at)}` : "")
+            + (produced ? ` · 已成片 ${produced} 条` : ""),
         ),
       );
       row.append(details, runActionsFor(run, { selected }));
@@ -2407,6 +2419,9 @@
     // 状态都没变就跳过重绘，否则视频元素会被反复销毁重建，导致卡顿/一直加载。
     const signature = JSON.stringify({
       status: view.status,
+      // busy 必须进签名：卡片上的按钮按 busy 置灰，而重绘只在签名变化时发生 ——
+      // 少了它，「查看这一版」会在选中运行的瞬间被置灰后再也回不来（实测踩到）。
+      busy: state.busy,
       artifacts: artifacts.map((artifact) => [
         artifact.artifact_id,
         artifact.preview_url,

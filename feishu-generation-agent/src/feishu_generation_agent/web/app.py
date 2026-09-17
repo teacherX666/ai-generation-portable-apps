@@ -665,6 +665,23 @@ def create_app(
             )
         return active
 
+    async def artifact_counts(request: Request, bindings: Any) -> dict[str, int]:
+        """各条运行已有多少成片 —— 任务记录在外面显示「已成片 N 条」。
+
+        取不到就返回空（任务列表不该因为计数失败而打不开）。
+        """
+        counter = getattr(
+            getattr(get_runtime(request), "repository", None),
+            "count_artifacts_by_run",
+            None,
+        )
+        if counter is None:
+            return {}
+        try:
+            return await counter([binding.run_id for binding in bindings])
+        except Exception:
+            return {}
+
     def get_bitable_service(request: Request) -> Any:
         active = getattr(request.app.state, "bitable_service", None)
         if active is None:
@@ -1001,12 +1018,14 @@ def create_app(
                 )
         except Exception as exc:
             raise_bitable_error(exc)
+        counts = await artifact_counts(request, bindings)
         return [
             {
                 "run_id": binding.run_id,
                 "record_id": binding.record_id,
                 "display_text": binding.display_text,
                 "status": binding.status.value,
+                "artifact_count": counts.get(binding.run_id, 0),
             }
             for binding in bindings
         ]
@@ -1029,6 +1048,7 @@ def create_app(
         except Exception as exc:
             raise_bitable_error(exc)
         payload: list[dict] = []
+        counts = await artifact_counts(request, bindings)
         for binding in bindings:
             try:
                 result_table_url = await active.result_table_url(
@@ -1049,6 +1069,7 @@ def create_app(
                     "display_text": binding.display_text,
                     "status": binding.status.value,
                     "updated_at": binding.updated_at,
+                    "artifact_count": counts.get(binding.run_id, 0),
                     "result_table_url": result_table_url,
                     "rerunnable": binding.status in {
                         TableTaskStatus.COMPLETED,
