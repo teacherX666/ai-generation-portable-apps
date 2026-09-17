@@ -191,7 +191,7 @@ test("没有正在跑的版本时，最新的一条就是当前版", () => {
   assert.deepEqual(groups[0].history.map((run) => run.run_id), ["run-old"]);
 });
 
-test("task list renders the claim badge from the shared helper", () => {
+test("任务列表渲染的徽章文案来自共享助手", () => {
   const app = readFileSync(
     join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
     "utf8",
@@ -199,6 +199,26 @@ test("task list renders the claim badge from the shared helper", () => {
 
   assert.match(app, /BitableState\.liveClaimBadge\(/);
   assert.match(app, /bitable-task-badge/);
+});
+
+test("返工没有改动时，面板要解释原因并给出下一步", () => {
+  const app = readFileSync(
+    join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
+    "utf8",
+  );
+
+  // 用户问过「改后与改前一致为什么会出现这种问题」——光说「一致」等于没说。
+  assert.equal(
+    /"改后与改前一致"/.test(app),
+    false,
+    "不该只有一句「改后与改前一致」",
+  );
+  assert.match(app, /本次返工没有改变提示词正文/);
+  // 要指出真实原因：上一版正文里已经写了这条要求（融合器据此判定无需改动）。
+  assert.match(app, /上一版/);
+  // 并给出可执行的下一步：重复同一句没用，应该写成禁止项或更可判定的描述。
+  assert.match(app, /禁止项/);
+  assert.match(app, /更可判定/);
 });
 
 test("live claim badge prefers the freshly polled run status", () => {
