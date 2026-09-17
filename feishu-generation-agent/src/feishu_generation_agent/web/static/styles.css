@@ -203,8 +203,12 @@ button {
 .recent-runs { margin-top: 1.1rem; border-top: 1px solid var(--line); padding-top: .85rem; }
 .recent-runs h3 { margin: 0 0 .55rem; font-size: .9rem; }
 .recent-run-list { display: grid; gap: .45rem; }
-.recent-run { display: flex; align-items: center; justify-content: space-between; gap: .7rem; padding: .7rem .75rem; border: 1px solid var(--line); border-radius: .65rem; background: #fcfdfb; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
+.recent-run { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .7rem; padding: .7rem .75rem; border: 1px solid var(--line); border-radius: .65rem; background: #fcfdfb; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
 .recent-run.is-current { border-color: color-mix(in srgb, var(--brand) 55%, var(--line)); background: color-mix(in srgb, var(--brand) 7%, white); box-shadow: inset 3px 0 0 var(--brand); }
+/* 同一条需求的历史版本叠在当前版下面（重跑不新开任务记录） */
+.recent-run-history { flex-basis: 100%; display: grid; gap: .4rem; margin-top: .15rem; padding-left: .7rem; border-left: 2px solid var(--line); }
+.recent-run-version { padding: .5rem .6rem; background: #fff; }
+.recent-run-version strong { font-size: .84rem; font-weight: 600; }
 .recent-run-details { min-width: 0; }
 .recent-run-details strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent-run-actions .is-current { color: var(--brand); background: transparent; }

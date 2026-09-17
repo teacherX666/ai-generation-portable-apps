@@ -139,6 +139,7 @@ class _ProductionService:
         return [
             SimpleNamespace(
                 run_id=run_id,
+                record_id=f"rec-{run_id}",
                 display_text=run_id,
                 status=TableTaskStatus.PROCESSING,
             )
@@ -151,7 +152,12 @@ class _ProductionService:
 
         items = [
             SimpleNamespace(
-                run_id="run-old", display_text="需求 A", status=TableTaskStatus.COMPLETED,
+                run_id="run-old",
+                # 同一条多维表格记录的历次尝试共用 record_id：前端据此把重跑
+                # 叠到同一条任务记录下。
+                record_id="rec-old",
+                display_text="需求 A",
+                status=TableTaskStatus.COMPLETED,
                 updated_at="2026-07-22T12:00:00+00:00",
             )
         ]
@@ -483,6 +489,8 @@ async def test_recent_runs_and_rerun_endpoints(tmp_path) -> None:
 
     assert recent.status_code == 200
     assert recent.json()[0]["run_id"] == "run-old"
+    # record_id 是前端把重跑叠到同一条任务记录下的依据。
+    assert recent.json()[0]["record_id"] == "rec-old"
     assert recent.json()[0]["rerunnable"] is True
     assert rerun.status_code == 202
     assert rerun.json() == {"run_id": "run-new"}

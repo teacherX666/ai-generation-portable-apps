@@ -1004,6 +1004,7 @@ def create_app(
         return [
             {
                 "run_id": binding.run_id,
+                "record_id": binding.record_id,
                 "display_text": binding.display_text,
                 "status": binding.status.value,
             }
@@ -1042,6 +1043,9 @@ def create_app(
             payload.append(
                 {
                     "run_id": binding.run_id,
+                    # 同一条多维表格记录的历次尝试共用一个 record_id：
+                    # 前端据此把它们叠在同一条任务记录下（重跑不新开一条）。
+                    "record_id": binding.record_id,
                     "display_text": binding.display_text,
                     "status": binding.status.value,
                     "updated_at": binding.updated_at,

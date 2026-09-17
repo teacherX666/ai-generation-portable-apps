@@ -230,6 +230,51 @@
     };
   }
 
+  /**
+   * 把任务记录按「多维表格记录」分组：同一条需求的所有尝试（当前版 + 历史版）
+   * 归到同一条任务下。
+   *
+   * 存储上，当前这一版在 `production_tasks`（同一条记录是原地更新），历次旧版本
+   * 在 `production_task_history`，而 `list_recent` 会把两张表 UNION 出来 ——
+   * 于是重跑在列表里看起来像「新开了一条任务记录」。分组把这件事还原成
+   * 「一条任务，下面叠着历史版本」。
+   *
+   * `record_id` 缺失（老数据、测试替身）时退回用 run_id 各自成组，不会串台。
+   */
+  function groupRecentRuns(runs) {
+    const groups = [];
+    const byKey = new Map();
+    (Array.isArray(runs) ? runs : []).forEach((run) => {
+      if (!run || !run.run_id) return;
+      const key = run.record_id || run.run_id;
+      let group = byKey.get(key);
+      if (!group) {
+        group = {
+          key,
+          record_id: run.record_id || null,
+          display_text: "",
+          versions: [],
+        };
+        byKey.set(key, group);
+        groups.push(group);
+      }
+      group.versions.push(run);
+      if (!group.display_text && run.display_text) {
+        group.display_text = run.display_text;
+      }
+    });
+    groups.forEach((group) => {
+      // 当前版：正在跑的那条优先，否则最新的一条（列表已按时间倒序）。
+      group.current =
+        group.versions.find((run) => run.active) || group.versions[0];
+      group.history = group.versions.filter((run) => run !== group.current);
+      if (!group.display_text && group.current) {
+        group.display_text = group.current.display_text || "";
+      }
+    });
+    return groups;
+  }
+
   function resetRunContext(state) {
     return {
       ...state,
@@ -336,6 +381,7 @@
     retrySucceeded,
     retryFailed,
     recentSucceeded,
+    groupRecentRuns,
     resetRunContext,
     runStage,
     runElapsedMs,
