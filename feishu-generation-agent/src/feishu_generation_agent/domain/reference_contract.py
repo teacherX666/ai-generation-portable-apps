@@ -188,6 +188,58 @@ def has_multiple_shot_markers(prompt: str) -> bool:
     return len(_SHOT_MARKER.findall(prompt)) >= 2
 
 
+def tokens_used_in_shots(prompt: str, tokens: Mapping[str, str]) -> set[str]:
+    """prompt 里**真正落在某个镜头段内**的素材 token。
+
+    与 `validate_seedance_prompt` 用同一份 `_SHOT_MARKER` 切分 —— 补齐逻辑必须
+    跟校验一致，否则补了还是过不了。
+    """
+    matches = list(_SHOT_MARKER.finditer(prompt))
+    if len(matches) < 2:
+        return {token for token in tokens.values() if token in prompt}
+    used: set[str] = set()
+    for index, match in enumerate(matches):
+        end = (
+            matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(prompt)
+        )
+        segment = prompt[match.start():end]
+        used.update(token for token in tokens.values() if token in segment)
+    return used
+
+
+def unused_reference_assets(
+    prompt: str,
+    references: list[ImageReference],
+    mime_types: Mapping[str, str],
+    *,
+    require_storyboard: bool,
+) -> list[str]:
+    """哪些素材**没有被具体用起来**（判定与 `validate_seedance_prompt` 完全一致）。
+
+    - prompt 里根本没出现它的 token；
+    - 多分镜时 token 没落在任何镜头段里（只被罗列）；
+    - 落在镜头里但没有具体主体/场景/动作/运镜描述（笼统绑定）。
+    """
+    try:
+        tokens = reference_tokens(list(references), mime_types)
+    except ValueError:
+        return []
+    shot_used = tokens_used_in_shots(prompt, tokens)
+    unused: list[str] = []
+    for asset_id, token in tokens.items():
+        if token not in prompt:
+            unused.append(asset_id)
+            continue
+        if require_storyboard and token not in shot_used:
+            unused.append(asset_id)
+            continue
+        if not _has_concrete_reference_binding(prompt, token):
+            unused.append(asset_id)
+    return unused
+
+
 def validate_seedance_prompt(
     task: Mapping[str, Any],
     mime_types: Mapping[str, str],

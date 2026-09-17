@@ -23,6 +23,7 @@ from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
 from feishu_generation_agent.domain.plan import AuditReport, TaskPlan
 from feishu_generation_agent.integrations.planner import (
     DeepSeekPlanner,
+    _exclude_unused_references,
     _fill_storyboard_source_block_ids,
     _normalize_generated_plan_payload,
     planner_system_prompt,
@@ -1668,6 +1669,61 @@ def test_validator_accepts_video_frame_reference_as_the_video(
     assert not any(
         "uncovered" in issue and "video-1" in issue for issue in issues
     ), issues
+
+
+def test_unused_references_are_excluded_deterministically(
+    storyboard_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """挂了却**没被具体用起来**的素材 → 摘掉并写进 excluded_assets。
+
+    2026-09-17 生产（超级大床 / 拿着吧你！2）：模型把素材挂在任务上、却只在开头
+    罗列（或写得笼统），于是「Seedance prompt 缺少素材引用 @图片2」「@图片2 只被
+    罗列但没有用于任何实际镜头」「@图片2 必须绑定具体主体…」；而覆盖门又要求
+    「每个素材要么被引用、要么被排除」—— 两条规则互相夹住，三次重试全废、run
+    直接失败。
+
+    这些素材**本来就没有被具体使用**，摘掉不改变生成内容，只让计划自洽。
+    """
+    second = _asset(tmp_path, "asset-2", "image-2")
+    document = storyboard_document.model_copy(
+        update={"media_assets": [*storyboard_document.media_assets, second]}
+    )
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)],
+    )
+    task["reference_images"] = [
+        {"asset_id": "asset-1", "order": 1, "role": "reference_image"},
+        {"asset_id": "asset-2", "order": 2, "role": "reference_image"},
+    ]
+    # @图片2 只出现在开头（镜头段之外），而且绑定是笼统的「画面风格」。
+    task["prompt"] = task["prompt"].replace(
+        "参考 @图片1 中的蓝色纸船。",
+        "参考 @图片1 中的蓝色纸船，同时参考 @图片2 的画面风格。",
+        1,
+    )
+    payload = json.loads(_plan_json(task))
+
+    before = validate_plan(
+        payload, document, 4, enforce_seedance_prompt_contract=True
+    )
+    assert any("@图片2" in issue for issue in before), before
+
+    _exclude_unused_references(payload, document)
+
+    after = validate_plan(
+        payload, document, 4, enforce_seedance_prompt_contract=True
+    )
+    assert not any("@图片2" in issue for issue in after), after
+    assert [
+        reference["asset_id"]
+        for reference in payload["tasks"][0]["reference_images"]
+    ] == ["asset-1"]
+    assert [
+        item["asset_id"] for item in payload["excluded_assets"]
+    ] == ["asset-2"]
+    # prompt 里的 token 一并重映射/清理掉了，不留悬空引用。
+    assert "@图片2" not in payload["tasks"][0]["prompt"]
 
 
 def test_validator_rejects_latin_s_absolute_seconds(

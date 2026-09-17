@@ -18,6 +18,7 @@ from feishu_generation_agent.domain.errors import (
 )
 from feishu_generation_agent.domain.plan import (
     AuditReport,
+    ExcludedAsset,
     ImageReference,
     TaskPlan,
     SEEDANCE_PROMPT_MAX_CHARS,
@@ -27,6 +28,8 @@ from feishu_generation_agent.domain.reference_contract import (
     has_multiple_shot_markers,
     reference_tokens,
     remap_asset_id_tokens,
+    remap_prompt_references,
+    unused_reference_assets,
     validate_image_prompt,
     validate_seedance_prompt,
 )
@@ -394,6 +397,97 @@ def reconcile_storyboard_sources(
             }
         )
     return plan.model_copy(update={"tasks": tasks})
+
+
+#: 自动排除「没被具体使用」的素材时写的理由（要含中文，校验器会查）。
+_UNUSED_ASSET_REASON = (
+    "计划没有具体使用这张素材（未绑定到镜头或描述笼统），已自动排除"
+)
+
+
+def _exclude_unused_references(
+    payload: dict[str, Any],
+    document: NormalizedDocument,
+) -> None:
+    """把「挂了却没被具体用起来」的素材摘掉，并写进 `excluded_assets`。
+
+    2026-09-17 生产（超级大床 / 拿着吧你！2）：模型把素材挂在任务上、却只在开头
+    罗列（或写得笼统），于是同时踩中
+      「Seedance prompt 缺少素材引用 @图片N」
+      「@图片N 只被罗列但没有用于任何实际镜头」
+      「@图片N 必须绑定具体主体、场景、动作、运镜或声音」
+    而覆盖门又要求「每个素材要么被引用、要么被排除」—— 两条规则互相夹住，模型三次
+    重试全废，run 直接失败（用户「一直重跑但每次都失败」）。
+
+    这些素材**本来就没有被具体使用**，所以摘掉不改变生成内容，只让计划自洽：
+    从参考图里移除（prompt 里的 token 用 `remap_prompt_references` 一并重映射/
+    清理）+ 写进 `excluded_assets`（理由写明，审批页「排除素材」里看得到）。
+    """
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    mime_types = {
+        asset.asset_id: asset.mime_type for asset in document.media_assets
+    }
+    raw_exclusions = payload.get("excluded_assets")
+    exclusions = raw_exclusions if isinstance(raw_exclusions, list) else []
+    excluded_ids = {
+        item.get("asset_id")
+        for item in exclusions
+        if isinstance(item, dict)
+    }
+    changed = False
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("task_type") != "image_to_video":
+            continue
+        prompt = task.get("prompt")
+        raw_references = task.get("reference_images")
+        if not isinstance(prompt, str) or not isinstance(raw_references, list):
+            continue
+        try:
+            references = canonicalize_references(
+                [ImageReference.model_validate(item) for item in raw_references]
+            )
+        except Exception:
+            continue  # 引用本身不合法：交给校验器如实报错
+        unused = set(
+            unused_reference_assets(
+                prompt,
+                references,
+                mime_types,
+                require_storyboard=True,
+            )
+        )
+        if not unused:
+            continue
+        kept = [
+            reference
+            for reference in references
+            if reference.asset_id not in unused
+        ]
+        if not kept:
+            # 一张都没用上：别把视频任务悄悄变成纯文生视频，交给校验器报错。
+            continue
+        remaining = canonicalize_references(kept)
+        task["prompt"] = remap_prompt_references(
+            prompt, references, remaining, mime_types
+        )
+        task["reference_images"] = [
+            reference.model_dump(mode="json") for reference in remaining
+        ]
+        for asset_id in sorted(unused):
+            if asset_id in excluded_ids:
+                continue
+            exclusions.append(
+                {
+                    "asset_id": asset_id,
+                    "reason": _UNUSED_ASSET_REASON,
+                }
+            )
+            excluded_ids.add(asset_id)
+        changed = True
+    if changed:
+        payload["excluded_assets"] = exclusions
 
 
 def _storyboard_requirements(
@@ -1255,6 +1349,8 @@ class DeepSeekPlanner:
             )
             # 分镜行的 block id 由代码补齐（模型枚举不稳，实测必漏）。
             _fill_storyboard_source_block_ids(payload, document)
+            # 「挂了却没被具体用起来」的素材摘掉并排除（两条规则互相夹住的死结）。
+            _exclude_unused_references(payload, document)
             return [
                 *normalization_issues,
                 *validate_plan(
