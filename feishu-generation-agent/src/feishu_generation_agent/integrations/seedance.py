@@ -25,7 +25,11 @@ from feishu_generation_agent.domain.errors import (
     ErrorCategory,
     ErrorDetail,
 )
-from feishu_generation_agent.domain.plan import GenerationTask, ImageReference, SEEDANCE_PROMPT_MAX_CHARS
+from feishu_generation_agent.domain.plan import GenerationTask, ImageReference, SEEDANCE_PROMPT_SUBMIT_MAX_CHARS
+from feishu_generation_agent.domain.video_models import (
+    VIDEO_MODEL_BY_ID,
+    VideoModelCapability,
+)
 from feishu_generation_agent.domain.reference_contract import (
     canonicalize_references,
     remap_prompt_references,
@@ -37,6 +41,14 @@ from feishu_generation_agent.integrations.public_media import (
 
 
 _LOGGER = logging.getLogger(__name__)
+
+#: 提交文本（正文 + 参考图映射 + 「必须避免」块）的总字符预算。
+#:
+#: 上游实测口径：合计 2007 字能过、2088 字被拒 `generation_prompt_too_long`；
+#: 本地旧闸门是 2048 —— 比上游松，于是 2008~2048 这段灰区会放过去、由上游报错
+#: （2026-09-17 用户正是撞在这个灰区）。取 1900 留出余量，只裁「跨轮反复改写的
+#: 负向块」，正文与参考图映射永不裁剪。
+SUBMIT_TOTAL_BUDGET_CHARS = 1900
 
 
 _IMAGE_MIME_TYPES = frozenset(
@@ -81,9 +93,11 @@ class SeedanceVideoGenerator:
         base_url: str | None,
         api_key: str | SecretStr | None,
         model: str | None,
+        capability: VideoModelCapability | None = None,
         max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
         max_input_bytes: int = _DEFAULT_MAX_INPUT_BYTES,
         max_total_input_bytes: int = _DEFAULT_MAX_TOTAL_INPUT_BYTES,
+        enforce_total_input_bytes: bool = True,
         public_media_host: PublicMediaHost | None = None,
         provider_name: str = "seedance",
         image_url_resolver: Callable[[GenerationTask, Any, MediaAsset, bytes], Awaitable[str]] | None = None,
@@ -135,14 +149,22 @@ class SeedanceVideoGenerator:
             raise self._configuration_error(
                 "max_total_input_bytes", "cause=less_than_single_limit"
             )
+        if not isinstance(enforce_total_input_bytes, bool):
+            raise self._configuration_error(
+                "enforce_total_input_bytes", "cause=not_bool"
+            )
 
         self._http_client = http_client
         self._base_url = f"https://{parsed.netloc}/api/v3"
         self._api_key = SecretStr(secret.strip())
         self._model = model.strip()
+        self._capability = capability or VIDEO_MODEL_BY_ID.get(self._model)
+        if self._capability is not None and self._capability.model != self._model:
+            raise self._configuration_error("model", "cause=capability_mismatch")
         self._max_response_bytes = max_response_bytes
         self._max_input_bytes = max_input_bytes
         self._max_total_input_bytes = max_total_input_bytes
+        self._enforce_total_input_bytes = enforce_total_input_bytes
         self._timeout = httpx.Timeout(120, connect=10)
         self._public_media_host = public_media_host
         self._provider_name = provider_name
@@ -625,10 +647,10 @@ class SeedanceVideoGenerator:
         self._validate_video_parameters(task)
         references = sorted(task.reference_images, key=lambda item: item.order)
         prompt_length = len(self._prompt(task, references))
-        if prompt_length > SEEDANCE_PROMPT_MAX_CHARS:
+        if prompt_length > SEEDANCE_PROMPT_SUBMIT_MAX_CHARS:
             raise self._validation_error(
                 task.task_id,
-                f"Seedance 提示词过长（{prompt_length} 字，上限 {SEEDANCE_PROMPT_MAX_CHARS} 字），请精简后重试",
+                f"Seedance 提示词过长（{prompt_length} 字，上限 {SEEDANCE_PROMPT_SUBMIT_MAX_CHARS} 字），请精简后重试",
                 "cause=prompt_too_long",
             )
         if not references and not assets:
@@ -736,7 +758,10 @@ class SeedanceVideoGenerator:
                     "cause=content_mismatch",
                 )
             total_size += file_stat.st_size
-            if total_size > self._max_total_input_bytes:
+            if (
+                self._enforce_total_input_bytes
+                and total_size > self._max_total_input_bytes
+            ):
                 raise self._document_error(
                     asset.asset_id,
                     "参考图片总量超过大小限制",
@@ -761,19 +786,31 @@ class SeedanceVideoGenerator:
                 "Seedance 只接受图生视频任务",
                 "cause=unsupported_task_type",
             )
+        duration_min = self._capability.duration_min if self._capability else 4
+        duration_max = self._capability.duration_max if self._capability else 15
+        aspect_ratios = (
+            self._capability.aspect_ratios
+            if self._capability
+            else _ASPECT_RATIOS
+        )
+        resolutions = (
+            self._capability.resolutions
+            if self._capability
+            else _RESOLUTIONS
+        )
         if (
             not isinstance(task.duration, int)
             or isinstance(task.duration, bool)
-            or not 4 <= task.duration <= 15
+            or not duration_min <= task.duration <= duration_max
         ):
             raise self._validation_error(
                 task.task_id, "视频时长无效", "cause=invalid_duration"
             )
-        if task.aspect_ratio not in _ASPECT_RATIOS:
+        if task.aspect_ratio not in aspect_ratios:
             raise self._validation_error(
                 task.task_id, "视频比例无效", "cause=invalid_aspect_ratio"
             )
-        if task.resolution not in _RESOLUTIONS:
+        if task.resolution not in resolutions:
             raise self._validation_error(
                 task.task_id, "视频分辨率无效", "cause=invalid_resolution"
             )
@@ -950,9 +987,50 @@ class SeedanceVideoGenerator:
                 for index, reference in enumerate(references, start=1)
             )
         )
-        if task.negative_constraints:
-            lines.append("必须避免：" + "；".join(task.negative_constraints))
+        block = SeedanceVideoGenerator._negative_block(task, "\n\n".join(lines))
+        if block:
+            lines.append("必须避免：" + block)
         return "\n\n".join(lines)
+
+    @staticmethod
+    def _negative_block(task: GenerationTask, head: str) -> str:
+        """按总预算裁剪「必须避免」整块，保留**最新**的条目。
+
+        negative_constraints 是跨轮累积的：每轮返工的融合都会按全部历史要求重新
+        派生一份 must_avoid 并进来（同一批要求的反复改写），于是它随返工轮数线性
+        膨胀 —— 实测同一条记录：5 轮 40 条/686 字 → 6 轮 46 条/779 字 → 7 轮
+        51 条/868 字。而正文本身已接近 1500，两者相加在 7 轮时顶穿上游上限，
+        上游直接回 `generation_prompt_too_long`（真人通道实测：合计 2007 字过、
+        2088 字被拒）。
+
+        正文与参考图映射永不裁剪；只有这段反复改写的负向块会按预算收缩。
+        `merge_requirements` 保序（旧→新），所以从尾部往前取、丢掉最旧的。
+        """
+        entries = [
+            item.strip()
+            for item in (task.negative_constraints or [])
+            if isinstance(item, str) and item.strip()
+        ]
+        if not entries:
+            return ""
+        budget = SUBMIT_TOTAL_BUDGET_CHARS - len(head) - len("\n\n必须避免：")
+        kept: list[str] = []
+        used = 0
+        for entry in reversed(entries):
+            cost = len(entry) + (1 if kept else 0)
+            if kept and used + cost > budget:
+                break
+            kept.append(entry)
+            used += cost
+        kept.reverse()
+        if len(kept) != len(entries):
+            _LOGGER.warning(
+                "提交文本超预算，「必须避免」条目已从 %d 条裁到 %d 条以塞进 %d 字上限",
+                len(entries),
+                len(kept),
+                SUBMIT_TOTAL_BUDGET_CHARS,
+            )
+        return "；".join(kept)
 
     @staticmethod
     def _error(
