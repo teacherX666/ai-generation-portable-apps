@@ -96,9 +96,16 @@
     };
   }
 
-  /** 取任务的「改前原文」：优先冻结字段，退回老正文里的标记段。 */
+  /**
+   * 取任务的「改前原文」，按新鲜度依次退回：
+   *   1. `rework_previous_prompt` —— 上一版提示词（用户要看「这次改了什么」）；
+   *   2. `rework_base_prompt` —— 冻结的第一版（老数据只有这个）；
+   *   3. 老正文里的 `【返工要求】` 标记段。
+   */
   function reworkBasePrompt(task) {
     const item = task || {};
+    const previous = asText(item.rework_previous_prompt).trim();
+    if (previous) return previous;
     const frozen = asText(item.rework_base_prompt).trim();
     if (frozen) return frozen;
     const current = asText(item.prompt);

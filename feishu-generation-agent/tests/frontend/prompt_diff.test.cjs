@@ -99,3 +99,39 @@ test("reworkComparison 忽略空白要求项", () => {
   });
   assert.deepEqual(result.requirements, ["动作再慢一点"]);
 });
+
+test("返工对比的「改前」是上一版提示词，不是最初那一版", () => {
+  // 用户要的是「这次返工改了什么」，而不是「跟第一版差多少」。
+  // rework_base_prompt 冻结的是第一版（融合的基准，不能动），
+  // 显示用的「改前」要取 rework_previous_prompt。
+  const result = PromptDiff.reworkComparison({
+    prompt: "第一版画面。手不要僵。背景明亮。",
+    rework_base_prompt: "第一版画面。",
+    rework_previous_prompt: "第一版画面。手不要僵。",
+    rework_requirements: ["手不要僵", "背景明亮"],
+  });
+
+  assert.equal(result.basePrompt, "第一版画面。手不要僵。");
+  assert.equal(result.hasRework, true);
+  // 差异里只应该出现这次新加的那句，上一轮加的不该再被标成新增。
+  assert.deepEqual(result.segments, [
+    { type: "same", text: "第一版画面。手不要僵。" },
+    { type: "added", text: "背景明亮。" },
+  ]);
+  assert.equal(
+    result.segments.some(
+      (segment) => segment.type === "added" && segment.text.includes("手不要僵"),
+    ),
+    false,
+    "上一轮的要求不该重复出现在本次差异里",
+  );
+});
+
+test("没有 rework_previous_prompt 时退回冻结的第一版", () => {
+  const result = PromptDiff.reworkComparison({
+    prompt: "第一版画面。动作再慢一点。",
+    rework_base_prompt: "第一版画面。",
+    rework_requirements: ["动作再慢一点"],
+  });
+  assert.equal(result.basePrompt, "第一版画面。");
+});

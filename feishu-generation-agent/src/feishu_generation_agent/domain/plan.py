@@ -155,6 +155,11 @@ class GenerationTask(BaseModel):
     # 契约里（模型不需要产出它们），但不影响 model_dump 持久化。
     rework_requirements: SkipJsonSchema[list[str]] = Field(default_factory=list)
     rework_base_prompt: SkipJsonSchema[str | None] = None
+    # 审批页「返工对比」的改前原文 = **上一版**提示词（这一版被返工前的样子），
+    # 用户要看的是「这次改了什么」，而不是「跟第一版差多少」。
+    # 注意它与 rework_base_prompt 分工不同：base 是融合的输入基准（冻结在首次
+    # 返工前），不能拿它做展示，否则第二次返工的差异里会把上一轮的要求又标一遍。
+    rework_previous_prompt: SkipJsonSchema[str | None] = None
 
     @field_validator("resolution", mode="before")
     @classmethod

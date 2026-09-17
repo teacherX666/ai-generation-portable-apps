@@ -1002,6 +1002,11 @@ async def test_clone_run_for_approval_keeps_previous_rework_requirements(
     prompt = cloned["approval"]["tasks"][0]["prompt"]
     assert "手不要僵" in prompt
     assert "背景太暗" in prompt
+    # 冻结基准仍是第一版（融合的输入，不能动）……
+    assert cloned["approval"]["tasks"][0]["rework_base_prompt"] == task["prompt"]
+    # ……但「改前原文」要指向**上一版**（这一版还没返工时的提示词），
+    # 审批页才能看到「这次改了什么」。
+    assert cloned["approval"]["tasks"][0]["rework_previous_prompt"] == seeded["prompt"]
 
 async def test_clone_prefers_approved_plan_when_approved_tasks_are_missing(
     tmp_path: Path,

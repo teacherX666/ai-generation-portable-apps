@@ -2639,6 +2639,8 @@ async def review_artifacts(
                     "prompt": prompt,
                     "rework_requirements": requirements,
                     "rework_base_prompt": base_prompt,
+                    # 展示用的「改前」是这一版被返工前的样子（不是冻结的第一版）。
+                    "rework_previous_prompt": task.prompt,
                     "negative_constraints": constraints,
                 }
                 if truncated:

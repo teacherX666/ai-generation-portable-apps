@@ -136,6 +136,7 @@ async def test_second_rework_keeps_first_requirement(
         ),
         config=config,
     )
+    after_first_rework = graph.get_state(config).values["approved_plan"]["tasks"][0]
     second_review = (
         await graph.ainvoke(
             Command(
@@ -156,6 +157,9 @@ async def test_second_rework_keeps_first_requirement(
     assert "背景太暗" in task["prompt"]
     assert task["rework_requirements"] == ["手不要僵", "背景太暗"]
     assert task["rework_base_prompt"] == plan["tasks"][0]["prompt"]
+    # 「改前原文」是**上一版**（第一次返工后的提示词），不是最初那一版：
+    # 审批页要看到的是「这次改了什么」。
+    assert task["rework_previous_prompt"] == after_first_rework["prompt"]
 
 
 async def _drive_to_review(graph, config, run_id: str) -> str:
