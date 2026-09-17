@@ -32,11 +32,8 @@ from feishu_generation_agent.integrations.planner import (
 def test_planner_system_prompt_prime_hash_is_frozen() -> None:
     prime = planner_system_prompt()
 
-    # 2026-09-16 有意变更（#4 首轮质量）：视频契约新增四条硬规则 —— 谁动谁不动、
-    # 屏幕只露背面、眼神不得发光，以及它们背后的通则「易被放大的描述必须显式
-    # 写禁止项」。旧哈希 db77e6e4…（改前提示词）。
     assert hashlib.sha256(prime.encode("utf-8")).hexdigest() == (
-        "cf9f479b950b1f61e4f310086dfc8ddf015f68013eb473052b20843f2315bf38"
+        "db77e6e4a995de911ca75a4013a25a4382e088578f15a3c8258b0599c6ba992f"
     )
 
 
