@@ -280,6 +280,7 @@ def _effective_provider_preferences(
     return ProviderPreferences(
         video_provider=video_provider,
         image_provider=image_provider,
+        planning_pipeline=preferences.planning_pipeline,
     )
 
 
@@ -895,6 +896,7 @@ def create_app(
         return ProviderPreferencesResponse(
             video_provider=preferences.video_provider,
             image_provider=preferences.image_provider,
+            planning_pipeline=preferences.planning_pipeline,
         )
 
     @app.put("/api/provider-preferences", response_model=ProviderPreferencesResponse)
@@ -920,6 +922,7 @@ def create_app(
             preferences = await get_provider_preference_store(request).save(
                 video_provider=video_provider,
                 image_provider=image_provider,
+                planning_pipeline=payload.planning_pipeline,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -930,9 +933,11 @@ def create_app(
             # 持有同一引用，改它即可让图执行层的路由立即生效，无需重启服务。
             current.video_provider = preferences.video_provider
             current.image_provider = preferences.image_provider
+            current.planning_pipeline = preferences.planning_pipeline
         return ProviderPreferencesResponse(
             video_provider=preferences.video_provider,
             image_provider=preferences.image_provider,
+            planning_pipeline=preferences.planning_pipeline,
         )
 
     def raise_bitable_error(exc: Exception) -> None:

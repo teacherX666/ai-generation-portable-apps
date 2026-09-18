@@ -121,6 +121,8 @@
   const advancedSettingsModal = byId("advanced-settings-modal");
   const advancedVideoProvider = byId("advanced-video-provider");
   const advancedImageProvider = byId("advanced-image-provider");
+  // 规划方式（高级设置里手动切）：text = 逐张看图描述后规划；multimodal = 原图/视频一起交给模型。
+  const advancedPlanningPipeline = byId("advanced-planning-pipeline");
   const advancedSettingsSave = byId("advanced-settings-save");
   const advancedSettingsFeedback = byId("advanced-settings-feedback");
   const TERMINAL_RUN_STATUSES = new Set([
@@ -422,6 +424,11 @@
     }
     advancedVideoProvider.value = preferences.video_provider;
     advancedImageProvider.value = preferences.image_provider;
+    if (advancedPlanningPipeline) {
+      advancedPlanningPipeline.value = preferences.planning_pipeline === "multimodal"
+        ? "multimodal"
+        : "text";
+    }
     advancedSettingsFeedback.textContent = "";
     advancedSettingsFeedback.className = "planner-prompt-feedback";
   }
@@ -460,6 +467,9 @@
         body: JSON.stringify({
           video_provider: advancedVideoProvider.value,
           image_provider: advancedImageProvider.value,
+          planning_pipeline: advancedPlanningPipeline
+            ? advancedPlanningPipeline.value
+            : "text",
         }),
       });
       state.providerPreferences = payload;

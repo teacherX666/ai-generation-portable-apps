@@ -43,8 +43,11 @@ class VideoModelCapability:
 VIDEO_MODELS: tuple[VideoModelCapability, ...] = (
     VideoModelCapability(
         key="seedance2.0",
-        model="ep-20260912121738-vtd78",
-        label="Seedance 2.0 Mini",
+        # 用户 2026-09-18：「模型列表里本来是 2.0，结果变成了 2.0 mini，我要之前的 2.0」。
+        # 原来填的是 endpoint `ep-20260912121738-vtd78`（现在 /models 里已查不到，
+        # 而且标签写着 Mini）。改回**真正的 2.0 模型 id**。
+        model="doubao-seedance-2-0-260128",
+        label="Seedance 2.0（最高 4K）",
         duration_min=4,
         duration_max=15,
         default_duration=10,

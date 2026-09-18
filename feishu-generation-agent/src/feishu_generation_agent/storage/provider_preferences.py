@@ -8,8 +8,11 @@ from pathlib import Path
 # web/app.py 会就地改写共享对象，让图执行层的路由无需重启即可生效。
 @dataclass(slots=True)
 class ProviderPreferences:
-    video_provider: str = "aiport"
+    video_provider: str = "seedance2.5"
     image_provider: str = "aiport"
+    #: 规划流水线：`text`（现状）或 `multimodal`（一次调用把原图/视频交给 ds4.1）。
+    #: 用户 2026-09-18 要求「前端加个入口放在高级设置里，手动切」—— 走同一套偏好。
+    planning_pipeline: str = "text"
 
 
 class ProviderPreferenceStore:
@@ -33,8 +36,9 @@ class ProviderPreferenceStore:
             except (OSError, ValueError):
                 return ProviderPreferences()
         return ProviderPreferences(
-            video_provider=str(data.get("video_provider") or "aiport"),
+            video_provider=str(data.get("video_provider") or "seedance2.5"),
             image_provider=str(data.get("image_provider") or "aiport"),
+            planning_pipeline=str(data.get("planning_pipeline") or "text"),
         )
 
     async def save(
@@ -42,10 +46,12 @@ class ProviderPreferenceStore:
         *,
         video_provider: str,
         image_provider: str,
+        planning_pipeline: str = "text",
     ) -> ProviderPreferences:
         preferences = ProviderPreferences(
             video_provider=video_provider.strip(),
             image_provider=image_provider.strip(),
+            planning_pipeline=planning_pipeline.strip() or "text",
         )
         if not preferences.video_provider or not preferences.image_provider:
             raise ValueError("provider must not be blank")

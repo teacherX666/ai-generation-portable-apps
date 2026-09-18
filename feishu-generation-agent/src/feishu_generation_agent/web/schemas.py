@@ -146,11 +146,14 @@ class ProviderPreferencesUpdate(BaseModel):
 
     video_provider: str = Field(min_length=1)
     image_provider: str = Field(min_length=1)
+    #: 规划流水线：text（现状）或 multimodal（一次调用把原图/视频交给 ds4.1）。
+    planning_pipeline: Literal["text", "multimodal"] = "text"
 
 
 class ProviderPreferencesResponse(BaseModel):
     video_provider: str
     image_provider: str
+    planning_pipeline: Literal["text", "multimodal"] = "text"
 
 
 class BitableClaimResponse(BaseModel):

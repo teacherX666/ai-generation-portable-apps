@@ -1073,11 +1073,13 @@ async def plan_requirements(
             else []
         )
         # 多模态规划：文本 + **原始图片/视频**一次交给模型（实测比纯文本流程稳得多）。
+        # 开关以「前端高级设置里的偏好」为准，环境变量只作兜底（用户 2026-09-18）。
+        pipeline = getattr(services.settings, "planning_pipeline", "text")
+        preferences = getattr(services, "provider_preferences", None)
+        if preferences is not None:
+            pipeline = getattr(preferences, "planning_pipeline", None) or pipeline
         media_parts: list[dict[str, Any]] = []
-        if (
-            getattr(services.settings, "planning_pipeline", "text") == "multimodal"
-            and mode != "image"
-        ):
+        if pipeline == "multimodal" and mode != "image":
             media_parts = await _planning_media_parts(document, services)
         # 知识库必须在 planner **之前**查：命中的规则当上下文喂给 planner，
         # 让它一次就把经验写进提示词。旧做法是写完再改写提示词（且逐任务调导演台），

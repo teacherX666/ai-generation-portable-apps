@@ -290,8 +290,14 @@
           <select id="advanced-video-provider"></select>
           <label for="advanced-image-provider">默认图片模型</label>
           <select id="advanced-image-provider"></select>
+          <label for="advanced-planning-pipeline">规划方式</label>
+          <select id="advanced-planning-pipeline">
+            <option value="text">逐张看图描述后规划（现有）</option>
+            <option value="multimodal">原图/视频一起交给模型规划（更快更准）</option>
+          </select>
         </div>
         <p class="planner-prompt-note">这里设置新任务默认模型；每个任务下方的视频模型 / 出图模型才是该任务实际使用的模型。</p>
+        <p class="planner-prompt-note">规划方式：默认「逐张看图描述后规划」；切到「原图/视频一起交给模型规划」后，规划只调一次模型、直接看原图，失败会自动回退到现有方式。</p>
         <p id="advanced-settings-feedback" class="planner-prompt-feedback" aria-live="polite"></p>
         <div class="planner-prompt-actions">
           <button id="advanced-settings-save" type="button" class="primary">保存模型偏好</button>
