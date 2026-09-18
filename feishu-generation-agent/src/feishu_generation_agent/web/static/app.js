@@ -844,7 +844,13 @@
 
   function formatRecentTime(value) {
     if (!value) return "";
-    const date = new Date(value);
+    // 后端给的是带时区的 ISO 串；万一拿到没有时区的裸串（历史数据 / 别的接口），
+    // 按 UTC 解析 —— 否则会被当成本地时间，显示的时间比真实时间早 8 小时。
+    let text = String(value);
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(text)) {
+      text = `${text.replace(" ", "T")}Z`;
+    }
+    const date = new Date(text);
     if (Number.isNaN(date.getTime())) return "";
     return date.toLocaleString("zh-CN", {
       month: "2-digit",

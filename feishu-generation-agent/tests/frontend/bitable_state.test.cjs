@@ -160,6 +160,45 @@ test("任务记录一条记录一行：重跑不再多出一行", () => {
   );
 });
 
+test("任务记录按时间倒序（最新的在最上面）", () => {
+  // 用户 2026-09-18：「历史记录的顺序没按时间顺序」—— 以前完全按接口顺序透传。
+  const runs = [
+    { run_id: "run-old", record_id: "rec-a", updated_at: "2026-09-18T01:00:00+00:00" },
+    { run_id: "run-new", record_id: "rec-b", updated_at: "2026-09-18T05:00:00+00:00" },
+    { run_id: "run-mid", record_id: "rec-c", updated_at: "2026-09-18T03:00:00+00:00" },
+  ];
+
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["run-new", "run-mid", "run-old"],
+  );
+});
+
+test("同一秒的几条保持原顺序（不来回跳）", () => {
+  const runs = [
+    { run_id: "a", record_id: "rec-a", updated_at: "2026-09-18T05:00:00+00:00" },
+    { run_id: "b", record_id: "rec-b", updated_at: "2026-09-18T05:00:00+00:00" },
+  ];
+
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["a", "b"],
+  );
+});
+
+test("没有时区的裸时间串按 UTC 解析（否则显示早 8 小时）", () => {
+  const runs = [
+    { run_id: "naive", record_id: "rec-a", updated_at: "2026-09-18 06:00:00" },
+    { run_id: "aware", record_id: "rec-b", updated_at: "2026-09-18T05:00:00+00:00" },
+  ];
+
+  // 06:00 UTC 晚于 05:00 UTC；裸串若被当本地时间就会被排到后面。
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["naive", "aware"],
+  );
+});
+
 test("同一记录里进行中的那条优先当代表", () => {
   const runs = [
     { run_id: "run-new", record_id: "rec-a", status: "succeeded" },

@@ -217,6 +217,25 @@ def _iso_timestamp(value: str) -> float:
         return 0.0
 
 
+def _iso_utc_string(value: str) -> str:
+    """把多维表格的裸 UTC 时间串转成**带时区**的 ISO 串再返回。
+
+    以前直接返回 `2026-09-18 06:07:37`（UTC 但没有时区标记），前端 `new Date(...)`
+    会当**本地时间**解析 —— 界面显示的时间比真实时间早 8 小时，而且跟事件时间对不上，
+    用户看到的就是「时间是乱的」（用户 2026-09-18）。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.isoformat()
+
+
 def _feishu_run_model_label(settings: Settings, kind: str, providers: list[str]) -> str:
     image_models = {
         "banana": settings.banana_model,
@@ -1035,6 +1054,9 @@ def create_app(
                 "record_id": binding.record_id,
                 "display_text": binding.display_text,
                 "status": binding.status.value,
+                # 带上时间（带时区）：前端按时间倒序排历史记录，缺了这个字段就只能
+                # 保持接口顺序，看起来就是乱序的（用户 2026-09-18）。
+                "updated_at": _iso_utc_string(getattr(binding, "updated_at", "")),
                 "artifact_count": counts.get(binding.run_id, 0),
             }
             for binding in bindings
@@ -1078,7 +1100,7 @@ def create_app(
                     "record_id": binding.record_id,
                     "display_text": binding.display_text,
                     "status": binding.status.value,
-                    "updated_at": binding.updated_at,
+                    "updated_at": _iso_utc_string(getattr(binding, "updated_at", "")),
                     "artifact_count": counts.get(binding.run_id, 0),
                     "result_table_url": result_table_url,
                     "rerunnable": binding.status in {
@@ -1087,6 +1109,12 @@ def create_app(
                     },
                 }
             )
+        # 按时间倒序（最新的在最上面）—— 以前直接透传多维表格返回的顺序，
+        # 界面上的历史记录看起来就是乱序的。
+        payload.sort(
+            key=lambda item: _iso_timestamp(item.get("updated_at") or ""),
+            reverse=True,
+        )
         return payload
 
     @app.get("/api/bitable/archived-runs")
@@ -1111,9 +1139,13 @@ def create_app(
                     "run_id": binding.run_id,
                     "display_text": binding.display_text,
                     "status": binding.status.value,
-                    "updated_at": binding.updated_at,
+                    "updated_at": _iso_utc_string(getattr(binding, "updated_at", "")),
                 }
             )
+        payload.sort(
+            key=lambda item: _iso_timestamp(item.get("updated_at") or ""),
+            reverse=True,
+        )
         return payload
 
     @app.post("/api/bitable/runs/{run_id}/archive")

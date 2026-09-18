@@ -237,6 +237,21 @@
    * 它们是去成片预览的横向滑条里看/切的（用户明确要的是这个分工）。
    * 没有 `record_id` 的（直连运行、老数据）各自成行，不猜。
    */
+  /**
+   * 时间戳：带时区的 ISO 串直接用；万一拿到没有时区的裸串（历史数据 / 别的接口），
+   * 按 UTC 解析 —— 否则会被当成本地时间，比真实时间早 8 小时。
+   */
+  function runTimestamp(run) {
+    const raw = run && run.updated_at ? String(run.updated_at) : "";
+    if (!raw) return 0;
+    let text = raw;
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(text)) {
+      text = `${text.replace(" ", "T")}Z`;
+    }
+    const parsed = Date.parse(text);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
   function latestRunsByRecord(runs) {
     const order = [];
     const byKey = new Map();
@@ -251,7 +266,22 @@
       // 同一个 key 之后又出现：进行中的那条优先当代表。
       if (run.active && !byKey.get(key).active) byKey.set(key, run);
     });
-    return order.map((key) => byKey.get(key));
+    // 按时间**倒序**（最新的在最上面）：以前完全按接口返回的顺序，接口顺序一变
+    // 界面上看起来就是乱序（用户 2026-09-18：「历史记录的顺序没按时间顺序」）。
+    // 时间相同保持原顺序（稳定排序），避免同一秒的几条每次刷新都在跳。
+    return order
+      .map((key) => byKey.get(key))
+      .map((run, index) => ({ run, index }))
+      .sort((left, right) => {
+        const leftAt = runTimestamp(left.run);
+        const rightAt = runTimestamp(right.run);
+        // 有一边没有时间戳（进行中的 run 接口以前不带 updated_at）就保持原顺序 ——
+        // 不能把"没有时间"当成最旧或最新，否则列表会莫名其妙地跳。
+        if (!leftAt || !rightAt) return left.index - right.index;
+        const diff = rightAt - leftAt;
+        return diff !== 0 ? diff : left.index - right.index;
+      })
+      .map((entry) => entry.run);
   }
 
   /**
