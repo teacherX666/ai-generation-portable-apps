@@ -1466,6 +1466,8 @@
 
   //: 模型审片结果（按 run 缓存，切回来不用重新看片 —— 每次看片都是一次真实模型调用）。
   const takeFindingsCache = new Map();
+  //: 审片请求进行中（只用来禁用按钮，避免重复点）。
+  let takeFindingsScanning = false;
 
   /** 成片预览里的「模型审片」：自动列疑似穿帮，可一键采纳成返工反馈。 */
   function renderTakeFindings(view) {
@@ -1476,7 +1478,12 @@
     const videos = (view.artifacts || []).filter(
       (artifact) => artifact.kind === "video",
     );
-    if (takeFindingsScan) takeFindingsScan.disabled = state.busy;
+    // 只在自己正在看片时禁用 —— **不跟 state.busy 走**：setBusy(false) 之后不一定
+    // 会再渲染（有"变了才重绘"的签名门），按钮会永久卡在禁用状态
+    //（用户 2026-09-18：「让模型看一遍找问题还是点不了」）。
+    if (takeFindingsScan) {
+      takeFindingsScan.disabled = takeFindingsScanning === true;
+    }
     const findings = takeFindingsCache.get(view.run_id);
     if (!findings) {
       takeFindingsSummary.textContent = videos.length
@@ -1521,7 +1528,8 @@
   }
 
   async function scanTakeFindings() {
-    if (!state.runId) return;
+    if (!state.runId || takeFindingsScanning) return;
+    takeFindingsScanning = true;
     if (takeFindingsScan) takeFindingsScan.disabled = true;
     if (takeFindingsSummary) {
       takeFindingsSummary.textContent = "模型正在看片…（一般十几秒）";
@@ -1534,6 +1542,7 @@
         takeFindingsSummary.textContent = error.message || "看片失败";
       }
     } finally {
+      takeFindingsScanning = false;
       if (takeFindingsScan) takeFindingsScan.disabled = false;
       if (state.view) renderTakeFindings(state.view);
     }
