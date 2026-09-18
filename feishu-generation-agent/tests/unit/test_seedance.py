@@ -16,7 +16,12 @@ from pydantic import SecretStr
 from feishu_generation_agent.domain.artifact import ProviderSubmission
 from feishu_generation_agent.domain.document import MediaAsset
 from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
-from feishu_generation_agent.domain.plan import GenerationTask, ImageReference
+from feishu_generation_agent.domain.plan import (
+    GenerationTask,
+    ImageReference,
+    SEEDANCE_PROMPT_MAX_CHARS,
+    SEEDANCE_PROMPT_SUBMIT_MAX_CHARS,
+)
 from feishu_generation_agent.integrations.public_media import PublicMediaUploadError
 from feishu_generation_agent.integrations.seedance import SeedanceVideoGenerator
 
@@ -354,7 +359,8 @@ async def test_submit_preserves_explicit_reference_order_and_official_payload(
     assert body["watermark"] is False
     assert body["content"][0]["type"] == "text"
     assert "镜头一" in body["content"][0]["text"]
-    assert "不要添加字幕" in body["content"][0]["text"]
+    # 负向块会按概念合并（同义写法只留一条），所以断言"意思还在"而不是原始措辞。
+    assert "字幕" in body["content"][0]["text"]
     image_parts = body["content"][1:]
     assert [part["role"] for part in image_parts] == [
         "reference_image",
@@ -805,6 +811,69 @@ async def test_submit_enforces_single_and_total_input_limits_without_read_bytes(
         assert caught.value.detail.category == ErrorCategory.DOCUMENT
         assert requests == []
 
+
+@pytest.mark.asyncio
+async def test_submit_allows_raw_total_over_limit_when_references_are_remapped(
+    tmp_path: Path,
+) -> None:
+    assets = _assets(tmp_path)
+    requests: list[httpx.Request] = []
+
+    async def resolve(
+        task: GenerationTask,
+        reference: ImageReference,
+        asset: MediaAsset,
+        content: bytes,
+    ) -> str:
+        del task, reference, content
+        return f"asset://{asset.asset_id}"
+
+    async with _recording_client(requests) as client:
+        generator = SeedanceVideoGenerator(
+            client,
+            base_url="https://ark.fictional.test/api/v3",
+            api_key="fictional-key",
+            model="fictional-model",
+            max_input_bytes=max(asset.size for asset in assets),
+            max_total_input_bytes=sum(asset.size for asset in assets) - 1,
+            enforce_total_input_bytes=False,
+            image_url_resolver=resolve,
+        )
+        submission = await generator.submit(_video_task(), assets)
+
+    assert submission.status == "queued"
+    payload = json.loads(requests[0].content)
+    assert [
+        item["image_url"]["url"]
+        for item in payload["content"]
+        if item["type"] == "image_url"
+    ] == ["asset://asset-blue", "asset://asset-green"]
+
+
+@pytest.mark.asyncio
+async def test_submit_allows_final_prompt_over_planning_limit(tmp_path: Path) -> None:
+    assets = _assets(tmp_path)
+    task = _video_task().model_copy(update={"prompt": "a" * 1490})
+    requests: list[httpx.Request] = []
+
+    async with _recording_client(requests) as client:
+        generator = SeedanceVideoGenerator(
+            client,
+            base_url="https://ark.fictional.test/api/v3",
+            api_key="fictional-key",
+            model="fictional-model",
+        )
+        final_prompt = generator._prompt(
+            task,
+            sorted(task.reference_images, key=lambda item: item.order),
+        )
+        assert len(task.prompt) <= SEEDANCE_PROMPT_MAX_CHARS
+        assert len(final_prompt) > SEEDANCE_PROMPT_MAX_CHARS
+        assert len(final_prompt) <= SEEDANCE_PROMPT_SUBMIT_MAX_CHARS
+        submission = await generator.submit(task, assets)
+
+    assert submission.status == "queued"
+    assert requests
 
 @pytest.mark.asyncio
 async def test_submit_detects_file_replacement_between_check_and_open(

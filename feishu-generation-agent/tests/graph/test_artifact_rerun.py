@@ -300,10 +300,16 @@ async def test_rework_falls_back_when_fusion_adds_reference_token(
     assert "【返工要求】手不要僵" in task["prompt"]
 
 
-async def test_rework_merges_must_avoid_into_negative_constraints(
+async def test_rework_keeps_requirements_in_body_not_in_constraints(
     fake_services: GraphServices,
 ) -> None:
-    """融合产出的必避项要进 negative_constraints（提交时附在末尾的硬约束块）。"""
+    """返工**不再往负向约束里加东西**（用户口径 2026-09-17：「不要在约束里加东西，
+    直接描述在正文就行」）。
+
+    以前融合顺带产出的 must_avoid 会并进 negative_constraints，一轮一轮堆下去 ——
+    否定句堆太多会把"不要出现的东西"反复喂给模型、反而加深印象。现在要求由融合写进
+    正文，约束只做存量合并+限量清理。
+    """
     services = _fusing_services(
         fake_services,
         lambda base, requirements: {
@@ -317,5 +323,8 @@ async def test_rework_merges_must_avoid_into_negative_constraints(
 
     task = await _rework_once(graph, config, task_id)
 
-    assert "老头d 不得跑出起跑线" in task["negative_constraints"]
-    assert "眼睛不得发光" in task["negative_constraints"]
+    # 要求进正文
+    assert "已按返工要求融合" in task["prompt"]
+    # 约束里不再出现融合产出的必避项
+    assert "老头d 不得跑出起跑线" not in task["negative_constraints"]
+    assert "眼睛不得发光" not in task["negative_constraints"]

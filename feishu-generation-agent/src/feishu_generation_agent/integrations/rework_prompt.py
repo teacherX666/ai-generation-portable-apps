@@ -174,23 +174,97 @@ def _is_rewording(left: str, right: str) -> bool:
     return _similarity(left, right) >= _SIMILARITY_THRESHOLD
 
 
+#: 「必须避免」最多留几条 —— 否定句堆太多会把"不要出现的东西"反复喂给模型，
+#: 反而加深它的印象（用户 2026-09-17 的原话）。超过就保留**最新的**几条：
+#: 负向块保序（旧→新），最新的才对应这一轮要改的问题；而「无水印 / 无 Logo /
+#: 画面稳定」这类通用风格约束**提示词正文里本来就写着**，丢了也不会漏。
+_NEGATIVE_MAX_ITEMS = 10
+
+#: 概念词表：把「同一件事的不同说法」映射到同一个概念标签。
+#:
+#: 比相似度可靠得多 —— 实测脱毛那条 57 项里，「墨滴不得脱离笔尖正下方的下落轨迹」
+#: 与「墨滴下落轨迹不得偏离」集合相似度只有 0.47，但概念集合互为子集，就是同一件事。
+_NEGATIVE_CONCEPTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("凭空", "半空", "空中", "以外", "其他位置", "其它位置"), "来源"),
+    (("笔尖", "笔锋", "正下方"), "笔尖"),
+    (("轨迹", "偏离", "偏移", "横向", "斜向", "飘落"), "轨迹"),
+    (("上方", "侧面"), "侧面"),
+    (("水印",), "水印"),
+    (("logo", "品牌"), "标识"),
+    (("乱码", "字幕", "文字", "贴纸"), "文字"),
+    (("分身", "换形", "装扮", "形象突变"), "主体一致"),
+    (("悬浮", "穿模", "重心", "漂浮"), "物理合理"),
+    (("变形", "抖动", "跳帧", "稳定"), "画面稳定"),
+    (("模糊", "锐化", "画质", "低质"), "画质"),
+    (("声音", "配乐", "音效"), "声音"),
+    (("人物", "真人"), "真人"),
+)
+
+#: 主语与概念的切分点。
+_NEGATIVE_SUBJECT_SPLIT = re.compile(
+    r"不得|不要|不能|不可|禁止|严禁|切勿|必须|应当|应该"
+)
+
+
+def _negative_subject(item: str) -> str:
+    """取主语（前 4 个字），用于限定只在同一主语内合并。
+
+    在**归一后的 key** 上取：「不要出现任何 logo…」先变成「不得出现logo…」，
+    这样它和「不得出现 logo 或品牌特征」才落在同一个主语上。
+    以否定词开头（没有主语）时退回 key 的前 4 个字，避免把「不要添加字幕」和
+    「不要改变纸船颜色」当成同一主语。
+    """
+    key = negative_key(item)
+    head = _NEGATIVE_SUBJECT_SPLIT.split(key, maxsplit=1)[0]
+    return (head or key)[:4]
+
+
+def _negative_concepts(item: str) -> frozenset[str]:
+    lowered = item.lower()
+    return frozenset(
+        label
+        for words, label in _NEGATIVE_CONCEPTS
+        if any(word in lowered for word in words)
+    )
+
+
+def _negative_is_same_rule(left: str, right: str) -> bool:
+    """两条是不是同一件事：主语相同 + 概念集合互为子集。
+
+    **两边都得命中概念词表**才算：空集合是任何集合的子集，不加这条守卫会把
+    「不要添加字幕」和「不要改变纸船颜色」并成一条（实测踩到）。
+    """
+    if _negative_subject(left) != _negative_subject(right):
+        return False
+    left_concepts = _negative_concepts(left)
+    right_concepts = _negative_concepts(right)
+    if left_concepts and right_concepts:
+        return (
+            left_concepts <= right_concepts or right_concepts <= left_concepts
+        )
+    # 有一边没命中概念词表：退回相似度判重（含「数字不同就不算同一条」的守卫，
+    # 否则「约束-001」「约束-002」会被并成一条）。
+    return _is_rewording(negative_key(left), negative_key(right))
+
+
 def merge_negative_constraints(
     existing: Iterable[str],
     incoming: Iterable[str],
+    *,
+    max_items: int = _NEGATIVE_MAX_ITEMS,
 ) -> list[str]:
-    """合并「必须避免」：同一约束的换皮写法只留一条（组内保留最完整的那条）。
+    """合并「必须避免」：同一件事只留一条，并**限制总条数**。
 
-    2026-09-17 生产实测（墨滴任务）：每次返工都把同一句「墨滴不得凭空出现…」再写
-    一遍，7 轮攒到 **21 条 / 297 字，占提交文本 26%**，其中 10 条是同一件事 ——
-    否定句重复既稀释正向描述，又容易把「凭空出现的墨滴」反复喂给模型，正是用户说的
-    「每次改提示词那个问题就回来」。
+    用户报（2026-09-17）：「负面约束还是会叠加一堆导致反复强调某个不能出现的东西而
+    加深他的印象」。实测脱毛那条 **57 条 / 925 字**，其中大量是同一件事的换皮
+    （相似度抓不住，但概念集合互为子集）。
 
-    与 `merge_requirements` 的区别：那个按**字面**去重，所以「半空中/半空/空中」
-    全都留下了。这里按归一 key（+ 同主语族近似度）合并 —— **规则一条不少，只去掉
-    重复的措辞**：合并时保留组内最长的那条原文，细节不会被并没。
+    两件事一起做：
+    1. **按概念合并**：主语相同 + 概念集合互为子集 → 同一件事，保留最长写法；
+    2. **限量**：超过 `max_items` 时只留最新的（否定句堆太多本身就是负向提示的反效果，
+       而通用风格约束正文里已经写着）。
     """
     merged: list[str] = []
-    keys: list[str] = []
     for group in (existing, incoming):
         for raw in group:
             if not isinstance(raw, str):
@@ -198,26 +272,29 @@ def merge_negative_constraints(
             item = raw.strip()
             if not item:
                 continue
-            key = negative_key(item)
-            position = keys.index(key) if key in keys else None
+            position = next(
+                (
+                    index
+                    for index, kept in enumerate(merged)
+                    if _negative_is_same_rule(kept, item)
+                ),
+                None,
+            )
             if position is None:
-                position = next(
-                    (
-                        index
-                        for index, existing_key in enumerate(keys)
-                        if _is_rewording(existing_key, key)
-                    ),
-                    None,
-                )
-            if position is None:
-                keys.append(key)
                 merged.append(item)
                 continue
-            # 同一条约束换个说法：保留更完整的那条，位置不动。
             if len(item) > len(merged[position]):
                 merged[position] = item
-                keys[position] = key
-    return merged
+    if len(merged) <= max_items:
+        return merged
+    dropped = merged[: len(merged) - max_items]
+    _LOGGER.warning(
+        "「必须避免」超过 %d 条，已丢弃最旧 %d 条（通用风格约束正文里有）：%s",
+        max_items,
+        len(dropped),
+        "；".join(item[:30] for item in dropped[:6]),
+    )
+    return merged[len(dropped):]
 
 
 def reference_token_counts(text: str) -> Counter[str]:

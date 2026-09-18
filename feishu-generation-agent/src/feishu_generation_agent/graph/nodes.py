@@ -2431,19 +2431,19 @@ async def _rework_prompt_for_task(
     （`GraphRuntime.clone_run_for_approval`）保持完全一致的语义：
     要求只累积不覆盖、优先 AI 融合、永不因超长失败。
 
-    融合顺带产出的「必须避免」清单并入 `negative_constraints`——那条通道会以
-    「必须避免：…」整块附在提交文本末尾，比埋在正文中段的否定句更容易被执行。
+    **负向约束不再往里加东西**（用户口径 2026-09-17：「不要在约束里加东西，直接描述
+    在正文就行」）：融合已经把这次的要求写进正文了，再把 `must_avoid` 并进
+    `negative_constraints` 只会让它一轮一轮堆下去 —— 而否定句堆太多会把"不要出现的
+    东西"反复喂给模型、反而加深印象。这里只对**存量**做一次合并 + 限量清理。
     """
     base_prompt, requirements = rework_inputs(task, feedback)
-    prompt, truncated, must_avoid = await build_rework_prompt(
+    prompt, truncated, _must_avoid = await build_rework_prompt(
         base_prompt,
         requirements,
         fuse=getattr(services.planner, "fuse_rework_prompt", None),
         visual_context=visual_context,
     )
-    constraints = merge_negative_constraints(
-        task.negative_constraints, must_avoid
-    )
+    constraints = merge_negative_constraints(task.negative_constraints, [])
     return base_prompt, requirements, prompt, truncated, constraints
 
 

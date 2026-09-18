@@ -89,20 +89,18 @@ def test_merge_negative_constraints_collapses_rewording() -> None:
     """
     merged = merge_negative_constraints([], INK_DROP_NEGATIVES)
 
-    # 21 条 → 15 条（实测）。墨滴那一族 10 条 → 7 条：凭空出现/半空中、横向斜向偏移、
-    # 上方或侧面生成/滴落这些换皮写法都并掉了。剩下 3 对是**结构完全改写**的同义句
-    # （「脱离笔尖正下方的下落轨迹」vs「下落轨迹不得偏离」，集合相似度仅 0.47），
-    # 确定性合并做不到，硬并就得靠语义推断 —— 那会吃掉真规则，所以不做。
-    assert len(merged) <= 15, merged
+    # 21 条 → 10 条：按「主语 + 概念集合互为子集」合并后仍有 13 条，再被限量到 10 条。
+    # 墨滴那一族收敛成 4 条（来源/轨迹/侧面各一条），其余是通用风格与主体一致性。
+    assert len(merged) <= 10, merged
     ink_drop = [item for item in merged if item.startswith("墨滴")]
-    assert len(ink_drop) <= 7, ink_drop
+    assert len(ink_drop) <= 4, ink_drop
     # 一条规则都不能丢：并掉的只是措辞。
     joined = "".join(ink_drop)
     for keyword in ("凭空", "轨迹", "侧面"):
         assert keyword in joined
-    # 明显不同类的规则原样保留。
-    assert "不要出现水印、贴纸、乱码文字或字幕" in merged
-    assert "人物与物体不得悬浮或穿模" in merged
+    # 限量只丢**最旧**的（通用风格约束提示词正文里本来就写着，丢了不会漏）。
+    assert INK_DROP_NEGATIVES[-1] in merged
+    assert INK_DROP_NEGATIVES[0] not in merged
 
 
 def test_merge_negative_constraints_keeps_the_longest_wording() -> None:
