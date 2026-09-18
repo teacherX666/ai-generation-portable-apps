@@ -329,15 +329,34 @@ class GraphRuntime:
                     # 与图节点 review_artifacts 共用同一套语义：历次返工要求
                     # 只累积不覆盖、优先 AI 融合、永不因超长失败。
                     base_prompt, requirements = rework_inputs(task, feedback_text)
+                    # 上一版成片直接送能看视频的模型（不抽帧）。
+                    visual_context = await describe_output_videos(
+                        self.video_analyzer,
+                        list(source_state.get("artifacts") or []),
+                    )
+                    # 把"模型看了什么"记进事件，否则用户看不出返工到底有没有看片
+                    #（用户 2026-09-18：「这样看不出问题啊」）。
+                    try:
+                        text = " ".join((visual_context or "").split())
+                        await self.repository.append_event(
+                            run_id,
+                            "clone_approved_plan",
+                            "running",
+                            (
+                                f"已让模型看过上一版成片，融合时带上画面：{text[:300]}"
+                                if text
+                                else "本次返工没带上一版画面（没有成片文件，或看片失败）"
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOGGER.warning(
+                            "记录画面上下文事件失败 run=%s", run_id, exc_info=True
+                        )
                     prompt, _truncated, _must_avoid = await build_rework_prompt(
                         base_prompt,
                         requirements,
                         fuse=self.rework_fuser,
-                        # 上一版成片直接送能看视频的模型（不抽帧）。
-                        visual_context=await describe_output_videos(
-                            self.video_analyzer,
-                            list(source_state.get("artifacts") or []),
-                        ),
+                        visual_context=visual_context,
                     )
                     updated_tasks.append(
                         task.model_copy(

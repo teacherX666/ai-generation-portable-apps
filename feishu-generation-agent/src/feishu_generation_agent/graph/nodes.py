@@ -2696,6 +2696,32 @@ async def _rework_prompt_for_task(
     return base_prompt, requirements, prompt, truncated, constraints
 
 
+async def _record_visual_context(
+    services: GraphServices,
+    run_id: str,
+    visual_context: str,
+) -> None:
+    """把「模型看过的上一版画面」记进运行事件。
+
+    用户 2026-09-18：「融合返工要求没有上传前一次的生成视频吗，这样看不出问题啊」——
+    看片其实一直在做，但过程完全不可见。现在把"看了什么"写进事件，用户能直接核对。
+    """
+    try:
+        text = " ".join((visual_context or "").split())
+        await services.repository.append_event(
+            run_id,
+            "review_artifacts",
+            "running",
+            (
+                f"已让模型看过上一版成片，融合时带上画面：{text[:300]}"
+                if text
+                else "本次返工没带上一版画面（没有成片文件，或看片失败）"
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("记录画面上下文事件失败 run=%s", run_id, exc_info=True)
+
+
 def _artifact_review_payload(state: AgentState) -> dict[str, Any]:
     payload = {
         "action": "review_artifacts",
@@ -2802,6 +2828,9 @@ async def review_artifacts(
             visual_context = await describe_output_videos(
                 getattr(services, "video_analyzer", None),
                 list(state.get("artifacts") or []),
+            )
+            await _record_visual_context(
+                services, state.get("run_id", "unknown-run"), visual_context
             )
             for task in plan.tasks:
                 if task.task_id not in target_task_ids:
