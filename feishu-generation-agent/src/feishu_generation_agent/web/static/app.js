@@ -575,6 +575,15 @@
     renderRecentRuns();
   }
 
+  //: 上次真正重绘时的服务端数据签名（没变就不重绘）。
+  let lastRenderedSignature = null;
+  //: 停在待审批/待审核时的轮询降频。
+  let pollTicks = 0;
+  const PARKED_POLL_EVERY = 5;
+  const PARKED_STATUSES = new Set(["waiting_approval", "waiting_review"]);
+  function isParkedStatus(status) {
+    return PARKED_STATUSES.has(status);
+  }
   //: 任务列表有挂起的重建（重建时用户正在输入 → 推迟到失焦）。
   let pendingTaskRefresh = false;
 
@@ -2790,7 +2799,57 @@
     updateActionAvailability();
   }
 
+  /**
+   * 服务端数据的"有意义签名"：只取会改变界面的字段。
+   *
+   * 刻意**不含** updated_at / 运行时长这类每秒都在变的字段 —— 那些由
+   * `renderRunDuration` 单独更新，否则每秒都会判定为"变了"、白白重绘整页
+   * （用户 2026-09-18：「前端轮询效率太低了，就改成变化的时候才更新不行吗」）。
+   */
+  function runViewSignature(view) {
+    if (!view) return "";
+    return JSON.stringify({
+      // 带上 run 身份：切换任务时一定重绘（不用在每处切任务的地方手动重置）。
+      run: view.run_id || view.thread_id || "",
+      status: view.status,
+      events: (view.events || []).map(
+        (event) => [event.node, event.status, event.summary, event.created_at],
+      ),
+      approval: view.approval,
+      artifacts: view.artifacts,
+      execution_records: view.execution_records,
+      delivery: view.delivery,
+      last_error: view.last_error,
+      vision_issues: view.vision_issues,
+      artifact_review_decision: view.artifact_review_decision,
+    });
+  }
+
+  /** 数据没变时唯一要动的界面元素：运行时长。 */
+  function renderRunDuration(view) {
+    const target = byId("run-duration");
+    if (!target) return;
+    const elapsed = BitableState.runElapsedBreakdown(view);
+    if (elapsed.systemMs === null) {
+      target.textContent = "—";
+      return;
+    }
+    const human =
+      elapsed.humanMs > 0 ? ` + 人工等待 ${formatDuration(elapsed.humanMs)}` : "";
+    target.textContent = `${formatDuration(elapsed.systemMs)}${human}`;
+  }
+
   async function poll(force = false, resetDraft = false) {
+    // 任务停在"等人操作"（待审批 / 待审核）时没什么可等的，降频到每 5 秒请求一次；
+    // 生成中仍保持每秒。配合上面的签名判断，停在审批页时界面几乎完全静止。
+    pollTicks += 1;
+    if (
+      !force &&
+      isParkedStatus(state.view?.status) &&
+      pollTicks % PARKED_POLL_EVERY !== 0
+    ) {
+      return;
+    }
     if (!state.runId || (state.busy && !force)) return;
     const requestedRunId = state.runId;
     try {
@@ -2812,7 +2871,15 @@
         taskList.childElementCount > 0,
       );
       state.review = nextReview;
-      render(ReviewState.draftView(state.review), { refreshTasks });
+      // 只有服务端数据**真的变了**才整体重绘；没变就只更新运行时长。
+      // （以前每秒无条件 render，既浪费又把用户正在编辑的内容卷进去。）
+      const signature = runViewSignature(serverView);
+      if (resetDraft || signature !== lastRenderedSignature) {
+        lastRenderedSignature = signature;
+        render(ReviewState.draftView(state.review), { refreshTasks });
+      } else {
+        renderRunDuration(serverView);
+      }
       if (TERMINAL_RUN_STATUSES.has(serverView.status)) {
         stopPolling();
         pollingNote.textContent = "任务已结束，可开始下一任务或重跑。";
