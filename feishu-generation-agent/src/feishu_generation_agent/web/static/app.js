@@ -1470,17 +1470,19 @@
   /** 成片预览里的「模型审片」：自动列疑似穿帮，可一键采纳成返工反馈。 */
   function renderTakeFindings(view) {
     if (!takeFindings) return;
+    // 只要有 run 就显示这个区块 —— 以前没有成片时整块隐藏，用户根本找不到入口
+    // （「让模型看一遍找问题点不了」）。没成片时按钮照样可点，会说明原因。
+    takeFindings.hidden = false;
     const videos = (view.artifacts || []).filter(
       (artifact) => artifact.kind === "video",
     );
-    takeFindings.hidden = videos.length === 0;
-    if (videos.length === 0) return;
     if (takeFindingsScan) takeFindingsScan.disabled = state.busy;
     const findings = takeFindingsCache.get(view.run_id);
     if (!findings) {
-      takeFindingsSummary.textContent =
-        "点右边按钮，让模型看一遍这一版成片，自动列出疑似穿帮"
-        + "（穿模 / 悬浮 / 多余肢体 / 动作跳变 / 口型对不上 / 道具突变…）。";
+      takeFindingsSummary.textContent = videos.length
+        ? "点右边按钮，让模型看一遍这一版成片，自动列出疑似穿帮"
+          + "（穿模 / 悬浮 / 多余肢体 / 动作跳变 / 口型对不上 / 道具突变…）。"
+        : "这一版还没有成片，生成完成后就能让模型审片找穿帮。";
       takeFindingsList.replaceChildren();
       return;
     }
