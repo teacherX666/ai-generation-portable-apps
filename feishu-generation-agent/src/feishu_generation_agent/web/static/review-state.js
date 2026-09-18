@@ -496,8 +496,13 @@
     hasRenderedTasks,
   ) {
     if (!hasRenderedTasks) return true;
-    return taskEditorIdentity(draftView(previousState))
-      !== taskEditorIdentity(draftView(nextState));
+    // 用户有未保存修改时**绝不重建**编辑器 —— 重建会连同输入内容和光标一起冲掉。
+    // （旧行为靠 draftView 比对"恰好"覆盖了冲突场景，但代价是用户一敲字就判定为
+    // "变了"，配合每秒轮询就变成"改提示词一直被刷新打断"。）
+    if (hasDirty(nextState)) return false;
+    // 只比**服务端**数据：以前比 draftView（含本地草稿），本地任何改动都会触发重建。
+    return taskEditorIdentity(previousState?.serverView)
+      !== taskEditorIdentity(nextState?.serverView);
   }
 
   return {

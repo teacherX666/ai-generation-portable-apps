@@ -575,8 +575,34 @@
     renderRecentRuns();
   }
 
-  function stopPolling() {
-    if (state.pollTimer !== null) globalThis.clearInterval(state.pollTimer);
+  //: 任务列表有挂起的重建（重建时用户正在输入 → 推迟到失焦）。
+  let pendingTaskRefresh = false;
+
+  function taskEditorFocused() {
+    const active = document.activeElement;
+    if (!active || !taskList.contains(active)) return false;
+    return (
+      active.tagName === "TEXTAREA" ||
+      active.tagName === "INPUT" ||
+      active.isContentEditable === true
+    );
+  }
+
+  // 失焦后把挂起的重建补上：轮询每秒一次，正常情况下下一次就会生效；
+  // 但如果服务端已经没变化（shouldRefreshTaskEditor 返回 false），就得靠这里补。
+  taskList.addEventListener("focusout", () => {
+    if (!pendingTaskRefresh) return;
+    pendingTaskRefresh = false;
+    globalThis.setTimeout(() => {
+      if (taskEditorFocused()) {
+        pendingTaskRefresh = true;
+        return;
+      }
+      render(state.view, { refreshTasks: true });
+    }, 0);
+  });
+
+  function stopPolling() {    if (state.pollTimer !== null) globalThis.clearInterval(state.pollTimer);
     state.pollTimer = null;
   }
 
@@ -2750,7 +2776,15 @@
     visionIssueBox.hidden = visionIssues.length === 0;
     renderCoverage(view);
     if (refreshTasks) {
-      taskList.replaceChildren(...(view.approval.tasks || []).map(renderTask));
+      // 正在编辑提示词/素材时**绝不重建**任务列表：replaceChildren 会销毁输入框，
+      // 正在敲的内容和光标都会丢（用户 2026-09-18：「改提示词会被经常打断」）。
+      // 挂起这次刷新，等失焦后再补上。
+      if (taskEditorFocused()) {
+        pendingTaskRefresh = true;
+      } else {
+        taskList.replaceChildren(...(view.approval.tasks || []).map(renderTask));
+        pendingTaskRefresh = false;
+      }
     }
     renderArtifactReview(view);
     updateActionAvailability();

@@ -68,6 +68,45 @@ test("task editor refreshes only when the effective server plan changes", () => 
   );
 });
 
+test("本地输入不会触发任务编辑器重建（否则每秒轮询会冲掉正在敲的字）", () => {
+  // 用户报 2026-09-18：「一直在刷新导致我现在改提示词会被经常打断」。
+  // 根因：判定用的是 draftView（含本地草稿），一敲字就算"变了"→ 每秒
+  // replaceChildren 重建整个任务列表 → 输入与光标被冲掉。
+  const initial = ReviewState.mergeServerView(
+    ReviewState.createReviewState(),
+    view(),
+  );
+  const typing = ReviewState.patchTask(initial, "task-1", {
+    prompt: "正在输入的半句提示词",
+  });
+  const sameServer = ReviewState.mergeServerView(typing, view());
+
+  assert.equal(
+    ReviewState.shouldRefreshTaskEditor(initial, typing, true),
+    false,
+  );
+  assert.equal(
+    ReviewState.shouldRefreshTaskEditor(typing, sameServer, true),
+    false,
+  );
+});
+
+test("服务端计划真的变了、且本地没有未保存修改时才重建", () => {
+  const initial = ReviewState.mergeServerView(
+    ReviewState.createReviewState(),
+    view(),
+  );
+  const changed = ReviewState.mergeServerView(
+    initial,
+    view({ revision: 8, taskOnePrompt: "新的服务端提示词" }),
+  );
+
+  assert.equal(
+    ReviewState.shouldRefreshTaskEditor(initial, changed, true),
+    true,
+  );
+});
+
 test("dirty conflict does not replace the current task editor", () => {
   let current = ReviewState.mergeServerView(
     ReviewState.createReviewState(),
