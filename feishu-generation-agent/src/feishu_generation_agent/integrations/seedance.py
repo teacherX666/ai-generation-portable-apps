@@ -307,7 +307,9 @@ class SeedanceVideoGenerator:
         provider_task_id = self._official_task_id(body.get("id"), "submit")
         status = self._status(body.get("status", "queued"), "submit")
         if status in _TERMINAL_FAILURE_STATUSES:
-            raise self._terminal_status_error("submit", status)
+            raise self._terminal_status_error(
+                "submit", status, provider_error=body.get("error")
+            )
         result_items = (
             [self._video_result(body, operation="submit")]
             if status in {"success", "succeeded"}
@@ -364,7 +366,13 @@ class SeedanceVideoGenerator:
                 status=status,
             )
         if status in _TERMINAL_FAILURE_STATUSES:
-            raise self._terminal_status_error("poll", status)
+            # 任务失败时火山的 body 里带 `error.code/message`（例如
+            # `InvalidParameter: input media detect failed: invalid_media`）。
+            # 以前只报「视频任务未成功完成（poll_http_failed）」，用户根本不知道
+            # 是参考素材无效 —— 现在把原因带出来（用户 2026-09-18）。
+            raise self._terminal_status_error(
+                "poll", status, provider_error=body.get("error")
+            )
         if status not in {"succeeded", "success"}:
             raise self._provider_error(
                 "Seedance 返回了未知任务状态",
@@ -1183,11 +1191,34 @@ class SeedanceVideoGenerator:
             )
         )
 
-    def _terminal_status_error(self, operation: str, status: str) -> AgentError:
-        return self._provider_error(
-            "Seedance 视频任务未成功完成",
-            f"operation={operation}; status={status}",
+    def _terminal_status_error(
+        self,
+        operation: str,
+        status: str,
+        *,
+        provider_error: object = None,
+    ) -> AgentError:
+        code = message = None
+        if isinstance(provider_error, dict):
+            raw_code = provider_error.get("code")
+            raw_message = provider_error.get("message")
+            code = raw_code if isinstance(raw_code, str) and raw_code else None
+            if isinstance(raw_message, str) and raw_message:
+                message = _redact_secret_like(" ".join(raw_message.split())[:200])
+        text = "Seedance 视频任务未成功完成"
+        if message:
+            text = f"{text}：{message}"
+        detail = "; ".join(
+            part
+            for part in (
+                f"operation={operation}",
+                f"status={status}",
+                f"provider_code={code}" if code else None,
+                f"provider_message={message}" if message else None,
+            )
+            if part is not None
         )
+        return self._provider_error(text, detail)
 
     def _invalid_result(self, operation: str, cause: str) -> AgentError:
         return self._provider_error(

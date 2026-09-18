@@ -2182,6 +2182,37 @@ def _should_switch_to_portrait(
     return bool(_REAL_PERSON_REJECTION.search(text))
 
 
+async def _without_video_references(
+    assets: list[MediaAsset],
+    run_id: str,
+    services: GraphServices,
+) -> list[MediaAsset]:
+    """视频素材不能当参考图（Seedance 会判 `invalid_media`）。
+
+    用户 2026-09-18：在审批页上传了一个视频当参考素材 → 提交后火山回
+    `InvalidParameter: input media detect failed: invalid_media`，界面只显示
+    `poll_http_failed`，完全看不出原因。文档里的视频在规划阶段已经摘掉，但
+    **手动上传的视频**、以及**旧计划克隆过来的任务**会漏过来 —— 这里执行前兜一层。
+    """
+    videos = [asset for asset in assets if asset.mime_type.startswith("video/")]
+    if not videos:
+        return assets
+    await services.repository.append_event(
+        run_id,
+        "execute_selected_tasks",
+        "running",
+        "参考素材里的视频不能用于生成（Seedance 不接受视频作为参考图），已自动跳过",
+    )
+    _LOGGER.warning(
+        "跳过视频参考素材 run=%s assets=%s",
+        run_id,
+        [asset.asset_id for asset in videos],
+    )
+    return [
+        asset for asset in assets if not asset.mime_type.startswith("video/")
+    ]
+
+
 async def _execute_one_task(
     services: GraphServices,
     run_id: str,
@@ -2538,7 +2569,9 @@ async def execute_selected_tasks(
         records: list[ExecutionRecord] = []
         artifacts: list[Artifact] = []
         for task in plan.tasks:
-            assets = _task_assets(task, document)
+            assets = await _without_video_references(
+                _task_assets(task, document), run_id, services
+            )
             unit_results = await asyncio.gather(
                 *(
                     _execute_one_task(services, run_id, unit, assets)

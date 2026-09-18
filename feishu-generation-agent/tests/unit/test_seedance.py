@@ -1252,11 +1252,18 @@ async def test_poll_preserves_custom_provider_identity_while_running() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["failed", "cancelled", "canceled", "expired"])
-async def test_poll_terminal_status_is_non_retryable_and_redacted(
+async def test_poll_terminal_status_is_non_retryable_and_reports_reason(
     status: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    raw_secret = "provider-raw-secret-must-not-leak"
+    """任务失败时把火山的 code/message 带出来（用户 2026-09-18：「为什么还是用不了
+    参考视频」—— 实际原因 `InvalidParameter: invalid_media` 以前完全看不到，界面只报
+    `poll_http_failed`）。
+
+    旧口径是「供应商 message 一律不外泄」，只留 sanitized code；现在两个都记，
+    消息做截断 + 密钥脱敏（见下一条用例）。
+    """
+    upstream_message = "input media detect failed: invalid_media"
 
     def poll(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -1264,7 +1271,10 @@ async def test_poll_terminal_status_is_non_retryable_and_redacted(
             json={
                 "id": "task-ark-fictional-123",
                 "status": status,
-                "error": {"message": raw_secret},
+                "error": {
+                    "code": "InvalidParameter",
+                    "message": upstream_message,
+                },
             },
         )
 
@@ -1277,8 +1287,31 @@ async def test_poll_terminal_status_is_non_retryable_and_redacted(
     assert caught.value.detail.category == ErrorCategory.PROVIDER_TERMINAL
     assert caught.value.detail.retryable is False
     assert status in caught.value.detail.technical_detail
-    assert raw_secret not in str(caught.value.detail)
-    assert raw_secret not in caplog.text
+    assert upstream_message in caught.value.detail.message
+    assert "provider_code=InvalidParameter" in caught.value.detail.technical_detail
+
+
+@pytest.mark.asyncio
+async def test_poll_terminal_status_redacts_key_like_reason() -> None:
+    def poll(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "task-ark-fictional-123",
+                "status": "failed",
+                "error": {
+                    "code": "AuthenticationError",
+                    "message": "bad key ark-REDACTED",
+                },
+            },
+        )
+
+    generator, client = _generator_for_handler(poll)
+    async with client:
+        with pytest.raises(AgentError) as caught:
+            await generator.poll(_submission())
+
+    assert "ark-REDACTED" not in str(caught.value.detail)
 
 
 @pytest.mark.asyncio
