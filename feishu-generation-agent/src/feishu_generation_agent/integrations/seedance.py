@@ -5,6 +5,7 @@ from io import BytesIO
 import json
 import logging
 import os
+import re
 import stat
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -44,6 +45,13 @@ from feishu_generation_agent.integrations.rework_prompt import (
 
 
 _LOGGER = logging.getLogger(__name__)
+
+#: 供应商错误消息里像密钥的片段要抹掉（错误文本会进日志与界面）。
+_SECRET_LIKE = re.compile(r"\b(?:ark|sk)-[A-Za-z0-9._-]{8,}")
+
+
+def _redact_secret_like(text: str) -> str:
+    return _SECRET_LIKE.sub("<已隐藏>", text)
 
 #: 提交文本（正文 + 参考图映射 + 「必须避免」块）的总字符预算。
 #:
@@ -393,11 +401,14 @@ class SeedanceVideoGenerator:
                 follow_redirects=False,
             ) as response:
                 if not 200 <= response.status_code < 300:
-                    provider_code = await self._safe_provider_error_code(response)
+                    provider_code, provider_message = (
+                        await self._safe_provider_error_reason(response)
+                    )
                     raise self._http_error(
                         operation,
                         response.status_code,
                         provider_code=provider_code,
+                        provider_message=provider_message,
                     )
                 declared_size = response.headers.get("content-length")
                 if declared_size is not None:
@@ -446,20 +457,37 @@ class SeedanceVideoGenerator:
         return payload
 
     @staticmethod
+    @staticmethod
     async def _safe_provider_error_code(response: httpx.Response) -> str | None:
+        code, _message = await SeedanceVideoGenerator._safe_provider_error_reason(
+            response
+        )
+        return code
+
+    @staticmethod
+    async def _safe_provider_error_reason(
+        response: httpx.Response,
+    ) -> tuple[str | None, str | None]:
+        """从供应商的拒绝响应里取出 `(code, message)`。
+
+        用户 2026-09-18：「Seedance 2.5 生成服务拒绝了请求（submit_http_400）」——
+        以前只留了 HTTP 状态码，火山的错误码和消息都没落盘，排查只能猜。现在两个都取，
+        消息会进 technical_detail（`provider_message=`）并附在用户可见的失败原因后面。
+        """
         raw = bytearray()
         async for chunk in response.aiter_bytes():
             if len(raw) + len(chunk) > 65_536:
-                return None
+                return None, None
             raw.extend(chunk)
         try:
             payload = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
+            return None, None
         if not isinstance(payload, dict):
-            return None
+            return None, None
         error = payload.get("error")
-        code = error.get("code") if isinstance(error, dict) else payload.get("code")
+        source = error if isinstance(error, dict) else payload
+        code = source.get("code")
         if (
             not isinstance(code, str)
             or not code
@@ -469,8 +497,14 @@ class SeedanceVideoGenerator:
                 for character in code
             )
         ):
-            return None
-        return code
+            code = None
+        message = source.get("message")
+        if isinstance(message, str):
+            message = " ".join(message.split())[:200]
+            message = _redact_secret_like(message)
+        else:
+            message = None
+        return code, message or None
 
     def _video_result(
         self,
@@ -1099,6 +1133,7 @@ class SeedanceVideoGenerator:
         status_code: int,
         *,
         provider_code: str | None = None,
+        provider_message: str | None = None,
     ) -> AgentError:
         if status_code in {401, 403}:
             category = ErrorCategory.PERMISSION
@@ -1116,6 +1151,9 @@ class SeedanceVideoGenerator:
             category = ErrorCategory.PROVIDER_TERMINAL
             message = "Seedance 拒绝了请求"
             retryable = False
+        if provider_message:
+            # 供应商自己的说明比我们的猜测有用得多（用户 2026-09-18 要求记录原因）。
+            message = f"{message}：{provider_message}"
         return AgentError(
             ErrorDetail(
                 category=category,
@@ -1126,6 +1164,7 @@ class SeedanceVideoGenerator:
                         f"operation={operation}",
                         f"status={status_code}",
                         f"provider_code={provider_code}" if provider_code else None,
+                        f"provider_message={provider_message}" if provider_message else None,
                     )
                     if part is not None
                 ),

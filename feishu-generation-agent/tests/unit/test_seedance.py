@@ -1521,17 +1521,23 @@ async def test_poll_maps_http_status_without_leaking_body_or_key(
 
 
 @pytest.mark.asyncio
-async def test_submit_preserves_safe_provider_error_code_without_response_message(
+async def test_submit_records_provider_code_and_message_but_redacts_secrets(
     tmp_path: Path,
 ) -> None:
-    raw_secret = "private upstream detail must not leak"
+    """拒绝原因要记下来（用户 2026-09-18 要求），但密钥类片段必须抹掉。
+
+    旧行为是「只留 sanitized code、供应商 message 一律不外泄」—— 结果是
+    「生成服务拒绝了请求（submit_http_400）」这种没法排查的提示。现在两个都记，
+    消息做截断/折叠空白/密钥脱敏。
+    """
+    upstream_message = "The parameter duration is not valid for this model."
     generator, client = _generator_for_handler(
         lambda request: httpx.Response(
             400,
             json={
                 "error": {
                     "code": "InvalidParameter",
-                    "message": raw_secret,
+                    "message": upstream_message,
                 }
             },
         )
@@ -1541,8 +1547,33 @@ async def test_submit_preserves_safe_provider_error_code_without_response_messag
         with pytest.raises(AgentError) as caught:
             await generator.submit(_video_task(), _assets(tmp_path))
 
-    assert "provider_code=InvalidParameter" in caught.value.detail.technical_detail
-    assert raw_secret not in str(caught.value.detail)
+    detail = caught.value.detail
+    assert "provider_code=InvalidParameter" in detail.technical_detail
+    assert upstream_message in detail.technical_detail
+    assert upstream_message in detail.message  # 界面也要看得到
+
+
+@pytest.mark.asyncio
+async def test_submit_redacts_key_like_text_from_provider_message(
+    tmp_path: Path,
+) -> None:
+    generator, client = _generator_for_handler(
+        lambda request: httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": "AuthenticationError",
+                    "message": "bad key ark-REDACTED",
+                }
+            },
+        )
+    )
+
+    async with client:
+        with pytest.raises(AgentError) as caught:
+            await generator.submit(_video_task(), _assets(tmp_path))
+
+    assert "ark-REDACTED" not in str(caught.value.detail)
 
 
 @pytest.mark.asyncio

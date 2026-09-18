@@ -1009,6 +1009,8 @@ async def test_provider_rejection_exposes_only_safe_actionable_error(
     assert result["status"] == "failed"
     assert error == {
         "category": "provider_terminal_error",
+        # 这条 fake 的 technical_detail 里没有 provider_message，所以保持中文泛化文案；
+        # 有供应商原话时会追加在后面（见 test_provider_rejection_appends_provider_reason）。
         "message": "生成服务拒绝了请求",
         "retryable": False,
         "code": "submit_invalidparameter.policyviolation",
@@ -2464,6 +2466,8 @@ async def test_provider_rejection_exposes_only_safe_actionable_error(
     assert result["status"] == "failed"
     assert error == {
         "category": "provider_terminal_error",
+        # 这条 fake 的 technical_detail 里没有 provider_message，所以保持中文泛化文案；
+        # 有供应商原话时会追加在后面（见 test_provider_rejection_appends_provider_reason）。
         "message": "生成服务拒绝了请求",
         "retryable": False,
         "code": "submit_invalidparameter.policyviolation",

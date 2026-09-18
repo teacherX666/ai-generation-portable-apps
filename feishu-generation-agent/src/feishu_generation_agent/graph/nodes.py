@@ -1508,9 +1508,15 @@ async def check_source_revision(
 
 def _execution_error(exc: BaseException) -> dict[str, object]:
     safe = _safe_error(exc).detail
+    # 供应商自己给的说明比我们的泛化文案有用得多（用户 2026-09-18 要求记录拒绝原因），
+    # 所以有就**追加**在中文泛化文案后面；没有则保持原样 —— 不能直接把 message 换成
+    # 适配层的文案，某些包装路径下那是「The workflow node could not be completed」这种
+    # 英文内部话术，反而更看不懂。
+    reason = _execution_provider_reason(safe.technical_detail)
+    base = _safe_execution_message(safe.category)
     result: dict[str, object] = {
         "category": safe.category.value,
-        "message": _safe_execution_message(safe.category),
+        "message": f"{base}：{reason}" if reason else base,
         "retryable": safe.retryable,
     }
     if isinstance(exc, AgentError):
@@ -1518,6 +1524,17 @@ def _execution_error(exc: BaseException) -> dict[str, object]:
         if code is not None:
             result["code"] = code
     return result
+
+
+def _execution_provider_reason(technical_detail: str) -> str | None:
+    """从 technical_detail 里取出 `provider_message=`（供应商原话，已脱敏）。"""
+    for part in technical_detail.split(";"):
+        key, separator, value = part.strip().partition("=")
+        if separator and key.strip() == "provider_message":
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned[:200]
+    return None
 
 
 def _safe_execution_message(category: ErrorCategory) -> str:
