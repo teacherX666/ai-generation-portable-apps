@@ -575,6 +575,9 @@
     renderRecentRuns();
   }
 
+  //: 上一次请求是「我们自己 PATCH 保存」引起的 —— 下一次轮询要认领这个变化，
+  //: 不能当成别人改了（否则会弹「服务端计划已更新」并重建任务列表，打断输入）。
+  let selfSavedPending = false;
   //: 上次真正重绘时的服务端数据签名（没变就不重绘）。
   let lastRenderedSignature = null;
   //: 停在待审批/待审核时的轮询降频。
@@ -1646,7 +1649,12 @@
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ patch }),
-      }).then(() => poll(false)).catch((error) => showError(error));
+      }).then(() => {
+        // 这是我们自己刚保存的：告诉下一次轮询"这个变化是自己造成的"，
+        // 别当成别人改了而弹冲突/重建任务列表。
+        selfSavedPending = true;
+        return poll(false);
+      }).catch((error) => showError(error));
     }, 600));
   }
 
@@ -2869,6 +2877,12 @@
       const statusChanged =
         previous.runId === requestedRunId && previous.status !== serverView.status;
       lastViewedRun = { runId: requestedRunId, status: serverView.status };
+      // 自己刚保存的变化：先认领（对齐服务端身份），这样下面的身份比对相等、
+      // 不会弹冲突也不会重建任务列表。
+      if (selfSavedPending) {
+        selfSavedPending = false;
+        state.review = ReviewState.adoptSelfSavedView(state.review, serverView);
+      }
       const previousReview = state.review;
       const nextReview = resetDraft
         ? ReviewState.mergeServerView(ReviewState.createReviewState(), serverView)

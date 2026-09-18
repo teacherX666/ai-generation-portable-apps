@@ -490,6 +490,27 @@
     }));
   }
 
+  /**
+   * 采纳「**自己刚保存的**」服务端视图。
+   *
+   * 热保存链路：打字（600ms 防抖）→ PATCH 到服务端 → 立刻 poll()。这一步会让服务端
+   * 计划"变"一次 —— 如果不认领，下一秒轮询就把它当成**别人改了**：弹
+   * 「服务端计划已更新」并重建任务列表，用户正在敲的字和光标一起被冲掉。
+   * 用户 2026-09-18：「怎么一直服务端计划更新啊，我改提示词一直被打断」就是这个。
+   *
+   * 只对齐 `serverView` / `serverIdentity`，**保留**本地草稿与已选任务。
+   */
+  function adoptSelfSavedView(state, view) {
+    if (!state || !state.serverView) return adoptServerView(view);
+    return {
+      ...state,
+      serverView: clone(view),
+      serverIdentity: serverIdentity(view),
+      conflict: "",
+      pendingServerView: null,
+    };
+  }
+
   function shouldRefreshTaskEditor(
     previousState,
     nextState,
@@ -523,6 +544,7 @@
     hasDirty,
     isSubmitting,
     mergeServerView,
+    adoptSelfSavedView,
     patchTask,
     referenceMutationDirective,
     selectedTaskIds,

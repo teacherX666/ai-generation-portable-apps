@@ -91,6 +91,37 @@ test("本地输入不会触发任务编辑器重建（否则每秒轮询会冲�
   );
 });
 
+test("自己刚保存的变化被认领：不弹「服务端计划已更新」，也不重建", () => {
+  // 用户报 2026-09-18：「怎么一直服务端计划更新啊，我改提示词一直被打断」。
+  // 热保存链路：打字（600ms 防抖）→ PATCH 到服务端 → 立刻 poll()；不认领这次变化，
+  // 下一秒轮询就把它当成"别人改了"，弹冲突并重建任务列表。
+  const initial = ReviewState.mergeServerView(
+    ReviewState.createReviewState(),
+    view(),
+  );
+  const typing = ReviewState.patchTask(initial, "task-1", {
+    prompt: "本地正在敲的字",
+  });
+  const serverAfterSave = view({
+    revision: 8,
+    taskOnePrompt: "本地正在敲的字",
+  });
+
+  const adopted = ReviewState.adoptSelfSavedView(typing, serverAfterSave);
+
+  assert.equal(adopted.conflict, "");
+  assert.equal(adopted.pendingServerView, null);
+  assert.deepEqual(adopted.selectedTaskIds, typing.selectedTaskIds);
+  assert.equal(
+    ReviewState.mergeServerView(adopted, serverAfterSave).conflict,
+    "",
+  );
+  assert.equal(
+    ReviewState.shouldRefreshTaskEditor(typing, adopted, true),
+    false,
+  );
+});
+
 test("服务端计划真的变了、且本地没有未保存修改时才重建", () => {
   const initial = ReviewState.mergeServerView(
     ReviewState.createReviewState(),
