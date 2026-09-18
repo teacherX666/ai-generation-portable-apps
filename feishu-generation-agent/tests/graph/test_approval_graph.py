@@ -1062,9 +1062,14 @@ async def test_generation_success_does_not_auto_deliver(
     assert result["delivery_record"] is None
 
 
-async def test_approve_replans_if_source_revision_changed(
+async def test_approve_still_generates_when_source_revision_changed(
     fake_services: GraphServices,
 ):
+    """审批后文档改了也照样生成（用户口径 2026-09-18：「点击开始生成就是生成视频了，
+    不要乱规划哦」）。
+
+    以前这里会作废审批、清空已选任务、回到 ingest_source 重新规划。
+    """
     graph = build_graph(fake_services, InMemorySaver())
     config = _config("thread-stale")
     first = await graph.ainvoke(
@@ -1087,11 +1092,10 @@ async def test_approve_replans_if_source_revision_changed(
         config=config,
     )
 
-    assert _interrupt_payload(result)["document_revision"] == 8
-    assert result["approval_decision"] is None
-    assert result["approved_tasks"] == []
-    _assert_no_paid_side_effects(fake_services)
-    assert await fake_services.repository.count_operations() == 0
+    # 不再重新规划、审批不作废
+    assert result["approval_decision"] is not None
+    assert result["approved_tasks"]
+    assert fake_services.document_source.ingest_calls == 1
     events = await fake_services.repository.list_events("run-stale")
     assert ("check_source_revision", "source_changed") in [
         (event["node"], event["status"]) for event in events

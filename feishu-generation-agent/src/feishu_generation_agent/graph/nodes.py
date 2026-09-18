@@ -1385,10 +1385,18 @@ async def revalidate_approval(
             not isinstance(approval_revision, int)
             or isinstance(approval_revision, bool)
             or approval_revision < 0
-            or approval_revision != _document_revision(state)
         ):
             raise _validation_error(
-                "审批时的文档版本与当前不一致，请刷新页面后重新审批"
+                "审批状态已失效，请刷新页面后重新审批"
+            )
+        if approval_revision != _document_revision(state):
+            # 用户口径（2026-09-18）：「点击开始生成就是生成视频了，不要乱规划哦」。
+            # 版本不一致不再拦住生成，只记一条提示 —— 审批就是审批，直接出片。
+            await services.repository.append_event(
+                state.get("run_id", "unknown-run"),
+                "revalidate_approval",
+                "source_changed",
+                "审批与文档版本不一致，仍按已审批的计划生成",
             )
         draft = TaskPlan.model_validate(_draft_plan(state))
         decision = ApprovalDecision.model_validate(
@@ -1482,21 +1490,15 @@ async def check_source_revision(
             raise _validation_error()
         current_revision = await services.document_source.get_revision(source_url)
         if current_revision != approval_revision:
+            # 用户口径（2026-09-18）：「点击开始生成就是生成视频了，不要乱规划哦」。
+            # 以前这里会**作废审批、清空已选任务、回到 ingest_source 重新规划** ——
+            # 用户看到的就是"点了开始生成，结果又变回待审批"。现在只记一条提示，
+            # 仍然按**你已经审批过的计划**生成。
             await services.repository.append_event(
                 state.get("run_id", "unknown-run"),
                 "check_source_revision",
                 "source_changed",
-                "Source revision changed; approval cleared",
-            )
-            return Command(
-                update={
-                    "approval_decision": None,
-                    "approval_revision": None,
-                    "approved_tasks": [],
-                    "approved_plan": None,
-                    "status": "running",
-                },
-                goto="ingest_source",
+                "文档在审批后有改动，仍按已审批的计划生成",
             )
         return Command(
             update={"status": "approved"}, goto="execute_selected_tasks"

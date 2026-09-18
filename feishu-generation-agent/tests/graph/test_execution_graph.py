@@ -193,10 +193,28 @@ def _assert_zero_generation(services: GraphServices) -> None:
 
 
 @pytest.mark.asyncio
-async def test_source_revision_change_clears_approval_and_interrupts_again(
+async def test_source_revision_change_still_generates(
     fake_services: GraphServices,
 ) -> None:
-    graph = build_graph(fake_services, InMemorySaver())
+    """审批后文档改了也照样生成（用户口径 2026-09-18：「点击开始生成就是生成视频了，
+    不要乱规划哦」）。
+
+    以前这里会作废审批、清空已选任务、回到 ingest_source 重新规划 —— 用户看到的是
+    「点了开始生成，结果又变回待审批」。
+    """
+    video = _ScriptedGenerator(
+        "seedance",
+        submit_error=AgentError(
+            ErrorDetail(
+                category=ErrorCategory.TRANSIENT,
+                message="Seedance 服务暂时不可用，请稍后重试",
+                technical_detail="operation=submit; status=503",
+                retryable=True,
+            )
+        ),
+    )
+    services = replace(fake_services, video_generator=video)
+    graph = build_graph(services, InMemorySaver())
     thread_id = "thread-source-changed"
     config = _config(thread_id)
     first = await graph.ainvoke(
@@ -204,8 +222,8 @@ async def test_source_revision_change_clears_approval_and_interrupts_again(
         config=config,
     )
     approved_plan = _interrupt_payload(first)["draft_plan"]
-    fake_services.document_source.document = (
-        fake_services.document_source.document.model_copy(
+    services.document_source.document = (
+        services.document_source.document.model_copy(
             update={"revision": 8}
         )
     )
@@ -221,15 +239,13 @@ async def test_source_revision_change_clears_approval_and_interrupts_again(
         config=config,
     )
 
-    payload = _interrupt_payload(result)
-    assert payload["document_revision"] == 8
-    assert result["approval_decision"] is None
-    assert result["approved_tasks"] == []
-    assert fake_services.document_source.ingest_calls == 2
-    assert fake_services.document_source.revision_calls == 1
-    _assert_zero_generation(fake_services)
-    assert await fake_services.repository.count_operations() == 0
-    events = await fake_services.repository.list_events("run-source-changed")
+    # 不再重新 ingest、审批也不作废
+    assert services.document_source.ingest_calls == 1
+    assert result["approval_decision"] is not None
+    assert result["approved_tasks"]
+    # 而是**直接去生成**了
+    assert video.submit_calls >= 1
+    events = await services.repository.list_events("run-source-changed")
     assert ("check_source_revision", "source_changed") in [
         (event["node"], event["status"]) for event in events
     ]
@@ -1650,10 +1666,28 @@ def _assert_zero_generation(services: GraphServices) -> None:
 
 
 @pytest.mark.asyncio
-async def test_source_revision_change_clears_approval_and_interrupts_again(
+async def test_source_revision_change_still_generates(
     fake_services: GraphServices,
 ) -> None:
-    graph = build_graph(fake_services, InMemorySaver())
+    """审批后文档改了也照样生成（用户口径 2026-09-18：「点击开始生成就是生成视频了，
+    不要乱规划哦」）。
+
+    以前这里会作废审批、清空已选任务、回到 ingest_source 重新规划 —— 用户看到的是
+    「点了开始生成，结果又变回待审批」。
+    """
+    video = _ScriptedGenerator(
+        "seedance",
+        submit_error=AgentError(
+            ErrorDetail(
+                category=ErrorCategory.TRANSIENT,
+                message="Seedance 服务暂时不可用，请稍后重试",
+                technical_detail="operation=submit; status=503",
+                retryable=True,
+            )
+        ),
+    )
+    services = replace(fake_services, video_generator=video)
+    graph = build_graph(services, InMemorySaver())
     thread_id = "thread-source-changed"
     config = _config(thread_id)
     first = await graph.ainvoke(
@@ -1661,8 +1695,8 @@ async def test_source_revision_change_clears_approval_and_interrupts_again(
         config=config,
     )
     approved_plan = _interrupt_payload(first)["draft_plan"]
-    fake_services.document_source.document = (
-        fake_services.document_source.document.model_copy(
+    services.document_source.document = (
+        services.document_source.document.model_copy(
             update={"revision": 8}
         )
     )
@@ -1678,15 +1712,13 @@ async def test_source_revision_change_clears_approval_and_interrupts_again(
         config=config,
     )
 
-    payload = _interrupt_payload(result)
-    assert payload["document_revision"] == 8
-    assert result["approval_decision"] is None
-    assert result["approved_tasks"] == []
-    assert fake_services.document_source.ingest_calls == 2
-    assert fake_services.document_source.revision_calls == 1
-    _assert_zero_generation(fake_services)
-    assert await fake_services.repository.count_operations() == 0
-    events = await fake_services.repository.list_events("run-source-changed")
+    # 不再重新 ingest、审批也不作废
+    assert services.document_source.ingest_calls == 1
+    assert result["approval_decision"] is not None
+    assert result["approved_tasks"]
+    # 而是**直接去生成**了
+    assert video.submit_calls >= 1
+    events = await services.repository.list_events("run-source-changed")
     assert ("check_source_revision", "source_changed") in [
         (event["node"], event["status"]) for event in events
     ]
