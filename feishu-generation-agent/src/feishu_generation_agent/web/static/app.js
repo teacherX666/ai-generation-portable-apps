@@ -2492,6 +2492,12 @@
   // 同一条需求历次尝试的成片（run_id → artifacts）。取过一次就缓存，避免
   // 成片预览每秒轮询时反复拉同一批数据。
   const artifactHistoryCache = new Map();
+  //: 每次生成**自己的**时间（来自 /api/runs/{id}）。
+  //:
+  //: 不能用 recent-runs 的 updated_at —— 那是**多维表格记录行**的更新时间，一条记录
+  //: 一行，同一记录的历次尝试全是同一个时间（用户 2026-09-18：「所有日期都一样，
+  //: 没有按照顺序来，跟生成的时机完全不一样」）。
+  const runTimeCache = new Map();
 
   async function ensureArtifactHistory(runIds) {
     const missing = runIds.filter((runId) => !artifactHistoryCache.has(runId));
@@ -2503,11 +2509,25 @@
           runId,
           Array.isArray(sibling?.artifacts) ? sibling.artifacts : [],
         );
+        runTimeCache.set(runId, {
+          created_at: sibling?.created_at,
+          updated_at: sibling?.updated_at,
+        });
       } catch (error) {
         // 某一版拉不到不影响其它版本，也不该弹全局错误。
         artifactHistoryCache.set(runId, []);
+        runTimeCache.set(runId, {});
       }
     }));
+  }
+
+  /** 历次尝试的展示/排序时间：优先**每次生成自己的**时间，取不到才退回表格行时间。 */
+  function siblingDisplayTime(run) {
+    const cached = runTimeCache.get(run.run_id);
+    const value =
+      (cached && (cached.updated_at || cached.created_at)) || run.updated_at;
+    const parsed = BitableState.parseServerTime(value);
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
   /**
@@ -2520,7 +2540,16 @@
     const siblings = BitableState.siblingRuns(
       state.bitable.recentRuns || [],
       state.runId,
-    );
+    )
+      // 按**每次生成自己的**时间倒序：表格行的时间对同一记录全都一样，排不出先后。
+      .map((run, index) => ({ run, index }))
+      .sort((left, right) => {
+        const leftMs = siblingDisplayTime(left.run);
+        const rightMs = siblingDisplayTime(right.run);
+        if (leftMs !== rightMs) return rightMs - leftMs;
+        return left.index - right.index;
+      })
+      .map((entry) => entry.run);
     return {
       siblings,
       signature: JSON.stringify(
@@ -2529,6 +2558,7 @@
           run.status,
           run.updated_at,
           artifactHistoryCache.has(run.run_id),
+          runTimeCache.get(run.run_id)?.updated_at || "",
         ]),
       ),
     };
@@ -2538,11 +2568,15 @@
   function artifactHistoryCard(run) {
     const card = element("figure", "artifact-card artifact-history-card");
     card.dataset.runId = run.run_id;
+    const cachedTime = runTimeCache.get(run.run_id);
+    const displayTime =
+      (cachedTime && (cachedTime.updated_at || cachedTime.created_at))
+      || run.updated_at;
     const caption = element(
       "figcaption",
       "",
       `往次 · ${statusUi(run.status).label}`
-        + (run.updated_at ? ` · ${formatRecentTime(run.updated_at)}` : ""),
+        + (displayTime ? ` · ${formatRecentTime(displayTime)}` : ""),
     );
     const open = element("button", "quiet-button", "查看这一版");
     open.type = "button";
