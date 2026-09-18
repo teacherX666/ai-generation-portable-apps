@@ -851,16 +851,11 @@
   }
 
   function formatRecentTime(value) {
-    if (!value) return "";
-    // 后端给的是带时区的 ISO 串；万一拿到没有时区的裸串（历史数据 / 别的接口），
-    // 按 UTC 解析 —— 否则会被当成本地时间，显示的时间比真实时间早 8 小时。
-    let text = String(value);
-    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(text)) {
-      text = `${text.replace(" ", "T")}Z`;
-    }
-    const date = new Date(text);
-    if (Number.isNaN(date.getTime())) return "";
-    return date.toLocaleString("zh-CN", {
+    // 统一走 BitableState.parseServerTime：没有时区的裸串按 UTC 解析，
+    // 否则会被当成本地时间，显示比真实时间早 8 小时（用户 2026-09-18：「时间还是不对」）。
+    const parsed = BitableState.parseServerTime(value);
+    if (!Number.isFinite(parsed)) return "";
+    return new Date(parsed).toLocaleString("zh-CN", {
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
@@ -1014,10 +1009,10 @@
   }
 
   function formatArchivedTime(value) {
-    if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "";
-    return date.toLocaleString("zh-CN", {
+    // 同 formatRecentTime：没有时区的裸串按 UTC 解析，避免早 8 小时。
+    const parsed = BitableState.parseServerTime(value);
+    if (!Number.isFinite(parsed)) return "";
+    return new Date(parsed).toLocaleString("zh-CN", {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",

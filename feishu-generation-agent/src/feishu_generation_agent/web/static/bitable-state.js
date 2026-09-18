@@ -242,13 +242,7 @@
    * 按 UTC 解析 —— 否则会被当成本地时间，比真实时间早 8 小时。
    */
   function runTimestamp(run) {
-    const raw = run && run.updated_at ? String(run.updated_at) : "";
-    if (!raw) return 0;
-    let text = raw;
-    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(text)) {
-      text = `${text.replace(" ", "T")}Z`;
-    }
-    const parsed = Date.parse(text);
+    const parsed = parseServerTime(run && run.updated_at);
     return Number.isNaN(parsed) ? 0 : parsed;
   }
 
@@ -341,10 +335,26 @@
     return null;
   }
 
+  /**
+   * 解析服务端时间：带时区的 ISO 直接用；**没有时区的裸串按 UTC** 解析。
+   *
+   * 后端以前返回 `2026-09-18 06:07:37`（UTC 但没有时区标记），JS 会当本地时间 →
+   * 显示比真实时间早 8 小时、耗时也算错（用户 2026-09-18：「时间还是不对」）。
+   * 后端已改成带时区输出，这里再兜一层，历史数据/别的接口也不会再踩。
+   */
+  function parseServerTime(value) {
+    const raw = value === null || value === undefined ? "" : String(value).trim();
+    if (!raw) return NaN;
+    const text = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(raw)
+      ? `${raw.replace(" ", "T")}Z`
+      : raw;
+    return Date.parse(text);
+  }
+
   function runElapsedMs(view, now = Date.now()) {
     if (!view || typeof view !== "object") return null;
-    const started = Date.parse(view.created_at);
-    const finished = Date.parse(view.updated_at);
+    const started = parseServerTime(view.created_at);
+    const finished = parseServerTime(view.updated_at);
     if (!Number.isFinite(started)) return null;
     const end = TERMINAL_RUN_STATUSES.has(view.status) && Number.isFinite(finished)
       ? finished
@@ -373,8 +383,8 @@
     for (let index = 0; index < events.length; index += 1) {
       const current = events[index] || {};
       const previous = index > 0 ? events[index - 1] || {} : null;
-      const currentMs = Date.parse(current.created_at);
-      const previousMs = previous ? Date.parse(previous.created_at) : NaN;
+      const currentMs = parseServerTime(current.created_at);
+      const previousMs = previous ? parseServerTime(previous.created_at) : NaN;
       const gap =
         Number.isFinite(currentMs) && Number.isFinite(previousMs)
           ? Math.max(0, currentMs - previousMs)
@@ -412,6 +422,7 @@
     retryFailed,
     recentSucceeded,
     latestRunsByRecord,
+    parseServerTime,
     siblingRuns,
     resetRunContext,
     runStage,
