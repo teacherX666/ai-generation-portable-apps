@@ -1421,6 +1421,7 @@ class DeepSeekPlanner:
         mode: PlanningMode = "video",
         character_context: str | None = None,
         knowledge_context: str | None = None,
+        media_parts: list[dict[str, Any]] | None = None,
     ) -> TaskPlan:
         image_mode = mode == "image"
         if exact_system_prompt is not None:
@@ -1458,9 +1459,21 @@ class DeepSeekPlanner:
                 "不要产出一个之后再改；与文档要求冲突时以知识库为准，"
                 "并在计划里说明依据。"
             )
+        # 多模态规划（用户 2026-09-17 批准）：把**原始图片/视频**直接放进用户消息，
+        # 模型就不用靠视觉描述去猜"哪张图是第几个素材、对应哪个镜头" —— 实测同一份
+        # 文档：纯文本流程 3 次重试全废（编号/顺序契约），多模态一次 29.6s 成功。
+        user_message: dict[str, Any] = {"role": "user", "content": user_content}
+        if media_parts:
+            user_message = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_content},
+                    *media_parts,
+                ],
+            }
         messages = [
             {"role": "system", "content": effective_system_prompt},
-            {"role": "user", "content": user_content},
+            user_message,
         ]
 
         def validate_payload(payload: dict[str, Any]) -> list[str]:

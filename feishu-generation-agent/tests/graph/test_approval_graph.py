@@ -334,6 +334,8 @@ def test_agent_state_and_graph_services_contracts_are_stable():
             "production_task_store",
             # 能直接看视频的分析器（ds4.1 多模态）：参考视频只作分镜参考，不抽帧。
             "video_analyzer",
+            # 公开图床：多模态规划把原图/视频传上去拿链接给模型看。
+            "public_media_host",
             "image_providers",
             "asset_library_store",
             "character_matcher",

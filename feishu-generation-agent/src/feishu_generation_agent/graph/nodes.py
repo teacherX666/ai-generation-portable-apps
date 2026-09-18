@@ -78,6 +78,10 @@ from feishu_generation_agent.ports import (
     VisionAnalyzer,
 )
 from feishu_generation_agent.storage.files import FileStore
+from feishu_generation_agent.integrations.planning_media import (
+    MediaUploadCache,
+    build_planning_media_parts,
+)
 from feishu_generation_agent.integrations.video_insight import (
     describe_output_videos,
 )
@@ -111,6 +115,8 @@ class GraphServices:
     production_task_store: Any | None = None
     #: 能**直接看视频**的分析器（ds4.1 多模态）。参考视频只作分镜参考，不再抽帧。
     video_analyzer: Any | None = None
+    #: 公开图床（多模态规划要把原图/视频传上去拿 https 链接给模型看）。
+    public_media_host: Any | None = None
     # 图片 provider registry：{"banana": gen, "seedream": gen, "gpt-image2": gen}。
     # 为 None 时回落到单实例 image_generator，保持存量调用方零改动。
     image_providers: Mapping[str, ImageGenerator] | None = None
@@ -938,6 +944,112 @@ async def analyze_images(
     return await _run_node(state, "analyze_images", services, operation)
 
 
+async def _planning_media_parts(
+    document: NormalizedDocument,
+    services: GraphServices,
+) -> list[dict[str, Any]]:
+    """多模态规划要带的媒体（按文档顺序，链接走 sha256 缓存）。"""
+    host = getattr(services, "public_media_host", None)
+    if host is None:
+        return []
+    cache = MediaUploadCache(
+        Path(services.settings.data_dir) / "media-upload-cache.json"
+    )
+    return await build_planning_media_parts(
+        list(document.media_assets),
+        public_media_host=host,
+        cache=cache,
+    )
+
+
+async def _plan_with_optional_fallback(
+    services: GraphServices,
+    document: NormalizedDocument,
+    descriptions: list[VisionDescription],
+    state: AgentState,
+    planning_prompt: str | None,
+    mode: str,
+    resolved_characters: list[Any],
+    knowledge_context: str | None,
+    media_parts: list[dict[str, Any]],
+) -> Any:
+    """多模态规划；失败且允许时自动回退到纯文本（懒补图片视觉描述）。
+
+    回退路径等价于改造前的行为 —— 保证「切到多模态」不会比现在更差。
+    """
+    planner = services.planner
+    common = {
+        **_planner_prompt_argument(planner, planning_prompt),
+        **_planner_mode_argument(planner, mode),
+        **_character_context_argument(planner, resolved_characters),
+        **_knowledge_context_argument(planner, knowledge_context),
+    }
+    try:
+        return await planner.plan(
+            document,
+            descriptions,
+            state.get("planner_feedback"),
+            **common,
+            **_planning_media_argument(planner, media_parts),
+        )
+    except AgentError:
+        fallback = (
+            media_parts
+            and getattr(services.settings, "planning_fallback_to_text", True)
+        )
+        if not fallback:
+            raise
+        _LOGGER.warning("多模态规划失败，回退纯文本流程（懒补图片视觉描述）")
+        lazy_descriptions = await _describe_images(document, services)
+        return await planner.plan(
+            document,
+            lazy_descriptions,
+            state.get("planner_feedback"),
+            **common,
+        )
+
+
+def _planning_media_argument(
+    planner: Any,
+    media_parts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """只在 planner 支持 `media_parts` 时才传（与其它可选参数同一套签名探测）。"""
+    if not media_parts:
+        return {}
+    if "media_parts" not in signature(planner.plan).parameters:
+        return {}
+    return {"media_parts": media_parts}
+
+
+async def _describe_images(
+    document: NormalizedDocument,
+    services: GraphServices,
+) -> list[VisionDescription]:
+    """逐张图片做视觉描述（回退路径与现有流程共用）。"""
+    analyzer = services.vision_analyzer
+    if analyzer is None:
+        return []
+    assets = [
+        asset
+        for asset in document.media_assets
+        if asset.mime_type.startswith("image/")
+        and asset.download_error is None
+    ]
+    semaphore = asyncio.Semaphore(_VISION_MAX_CONCURRENCY)
+
+    async def analyze_one(asset: MediaAsset) -> VisionDescription | Exception:
+        async with semaphore:
+            try:
+                return await analyzer.analyze(asset)
+            except Exception as exc:  # noqa: BLE001
+                return exc
+
+    outcomes = await asyncio.gather(*(analyze_one(asset) for asset in assets))
+    return [
+        outcome for outcome in outcomes if isinstance(outcome, VisionDescription)
+    ]
+
+
 async def plan_requirements(
     state: AgentState,
     config: RunnableConfig,
@@ -960,20 +1072,27 @@ async def plan_requirements(
             if mode == "image"
             else []
         )
+        # 多模态规划：文本 + **原始图片/视频**一次交给模型（实测比纯文本流程稳得多）。
+        media_parts: list[dict[str, Any]] = []
+        if (
+            getattr(services.settings, "planning_pipeline", "text") == "multimodal"
+            and mode != "image"
+        ):
+            media_parts = await _planning_media_parts(document, services)
         # 知识库必须在 planner **之前**查：命中的规则当上下文喂给 planner，
         # 让它一次就把经验写进提示词。旧做法是写完再改写提示词（且逐任务调导演台），
         # 既和 planner 打架，又要多花 N 次调用。
         knowledge_context = await _knowledge_context_for_plan(document, services)
-        plan = await services.planner.plan(
+        plan = await _plan_with_optional_fallback(
+            services,
             document,
             descriptions,
-            state.get("planner_feedback"),
-            **_planner_prompt_argument(services.planner, planning_prompt),
-            **_planner_mode_argument(services.planner, mode),
-            **_character_context_argument(
-                services.planner, resolved_characters
-            ),
-            **_knowledge_context_argument(services.planner, knowledge_context),
+            state,
+            planning_prompt,
+            mode,
+            resolved_characters,
+            knowledge_context,
+            media_parts,
         )
         plan_json = _json_model(plan)
         updates: AgentState = {

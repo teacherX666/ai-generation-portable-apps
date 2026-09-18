@@ -124,4 +124,6 @@ def test_planning_no_longer_rewrites_prompts_afterwards():
 
     assert "optimize_plan_prompts" not in source
     assert "fetch_knowledge_rules" in source
-    assert "_knowledge_context_argument(services.planner, knowledge_context)" in source
+    # 知识库上下文仍然只在 planner 那一次调用里下发（调用点搬进了
+    # _plan_with_optional_fallback，参数名不变）。
+    assert "_knowledge_context_argument(planner, knowledge_context)" in source

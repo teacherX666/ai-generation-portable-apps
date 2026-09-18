@@ -521,6 +521,56 @@ class RateLimitFailure(RuntimeError):
     status_code = 429
 
 
+async def test_plan_puts_raw_media_into_the_same_call(
+    storyboard_document: NormalizedDocument,
+):
+    """多模态规划：原始图片/视频作为 content parts 放进**同一次**规划调用。
+
+    用户 2026-09-17 批准：一次调用把文本 + 原图 + 视频交给 ds4.1，模型就不用靠视觉
+    描述去猜「哪张图是第几个素材、对应哪个镜头」。
+    """
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)]
+    )
+    model = FakeDeepSeekModel([_plan_json(task)])
+    planner = DeepSeekPlanner(model, max_output_count=4)
+    media_parts = [
+        {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}},
+        {"type": "video_url", "video_url": {"url": "https://example.invalid/b.mp4"}},
+    ]
+
+    plan = await planner.plan(
+        storyboard_document,
+        [],
+        feedback=None,
+        media_parts=media_parts,
+    )
+
+    assert len(plan.tasks) == 1
+    # 只调用一次，且用户消息是 content 列表（文本在前，媒体在后）
+    assert model.calls == 1
+    user_message = model.requests[0][1]
+    assert isinstance(user_message["content"], list)
+    assert user_message["content"][0]["type"] == "text"
+    assert user_message["content"][1:] == media_parts
+
+
+async def test_plan_without_media_keeps_plain_text_message(
+    storyboard_document: NormalizedDocument,
+    vision_descriptions: list[VisionDescription],
+):
+    """不带媒体时仍是纯文本消息 —— 默认行为不变。"""
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)]
+    )
+    model = FakeDeepSeekModel([_plan_json(task)])
+    planner = DeepSeekPlanner(model, max_output_count=4)
+
+    await planner.plan(storyboard_document, vision_descriptions, feedback=None)
+
+    assert isinstance(model.requests[0][1]["content"], str)
+
+
 async def test_storyboard_rows_become_one_video_task(
     storyboard_document: NormalizedDocument,
     vision_descriptions: list[VisionDescription],

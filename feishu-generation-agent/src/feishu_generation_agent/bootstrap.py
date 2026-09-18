@@ -581,6 +581,7 @@ async def _open_application_services(
                 model=settings.deepseek_model,
                 public_media_host=UguuPublicMediaHost(provider_http),
             ),
+            public_media_host=UguuPublicMediaHost(provider_http),
             planner=DeepSeekPlanner(
                 planner_model, max_output_count=settings.max_output_count
             ),

@@ -74,8 +74,8 @@ class Settings(BaseSettings):
     lark_output_owner_open_id: str | None = None
     lark_output_folder_token: str | None = None
     deepseek_api_key: SecretStr | None = None
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-v4-pro"
+    deepseek_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    deepseek_model: str = "deepseek-v4-1-flash-260910"
     claude_api_key: SecretStr | None = None
     claude_base_url: str | None = None
     claude_model: str | None = None
@@ -121,6 +121,17 @@ class Settings(BaseSettings):
     # RAG prompt optimization service (rag-assistant /api/rag/preflight).
     # Set to an empty string to disable automatic prompt optimization.
     rag_preflight_url: str = "http://127.0.0.1:8900"
+
+    #: 规划流水线：
+    #: - `text`（默认，现状）：图片逐张视觉描述 → 纯文本规划；
+    #: - `multimodal`：一次调用把文本 + **原始图片/视频**交给 ds4.1 规划。
+    #:
+    #: 2026-09-17 实测同一份文档：text 流程三次重试全废（参考图顺序/镜头编号契约），
+    #: multimodal 一次 29.6s 成功且每张图都指派到了具体分镜。默认仍是 text ——
+    #: 不改变现有工作流，确认效果后再切。
+    planning_pipeline: Literal["text", "multimodal"] = "text"
+    #: multimodal 失败时是否自动回退到 text（回退时会懒补图片视觉描述）。
+    planning_fallback_to_text: bool = True
 
     @field_validator("asset_base_url")
     @classmethod
