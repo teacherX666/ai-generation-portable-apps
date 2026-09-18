@@ -1149,9 +1149,41 @@ def create_app(
         cached = _take_findings_cache.get(cache_key)
         if cached is not None:
             return cached
-        findings = await analyze_artifacts(
-            getattr(active, "video_analyzer", None), artifacts or []
-        )
+        # 视图里的产物**不含 local_path**（接口刻意不暴露本地路径）——
+        # 用内容接口同一套解析拿到真实文件。
+        videos = [
+            item
+            for item in (artifacts or [])
+            if isinstance(item, dict) and item.get("kind") == "video"
+        ]
+        findings: dict | None = None
+        for item in videos[:1]:
+            try:
+                with runtime_owner_scope(active, identity.owner_user_id):
+                    path, mime_type = await active.get_artifact_file(
+                        run_id, str(item.get("artifact_id"))
+                    )
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning(
+                    "审片：解析成片文件失败 run=%s artifact=%s",
+                    run_id,
+                    item.get("artifact_id"),
+                    exc_info=True,
+                )
+                continue
+            findings = await analyze_artifacts(
+                getattr(active, "video_analyzer", None),
+                [{**item, "local_path": str(path), "mime_type": mime_type}],
+            )
+            break
+        if findings is None:
+            findings = {
+                "available": False,
+                "reason": "这一版没有可分析的成片文件",
+                "summary": "",
+                "problems": [],
+                "uncertainties": [],
+            }
         if len(_take_findings_cache) > 40:
             _take_findings_cache.clear()
         _take_findings_cache[cache_key] = findings
