@@ -45,6 +45,44 @@ _SYSTEM_PROMPT = (
 
 _USER_PROMPT = "这是参考视频，请按要求输出 JSON。"
 
+#: 「审片模式」：看的是**自己生成的成片**，要顺带把可疑的穿帮挑出来。
+#:
+#: 用户要求（2026-09-18）：「现在重做他会不会自动看视频分析穿帮镜头啊，还是必须要我
+#: 自己找问题」—— 以前只让它"描述画面"，它不会主动报问题。现在明确要求列 problems。
+_TAKE_SYSTEM_PROMPT = (
+    "你在看一段 **AI 生成的成片**。请像审片一样输出 JSON：\n"
+    '{"summary":"画面实际是什么（主体/动作顺序/镜头/节奏/光线）",'
+    '"problems":[{"at":"0:03","issue":"手部穿模","why":"为什么算问题"}],'
+    '"uncertainties":["看不清或不确定的点"]}\n'
+    "problems 只写**真正可疑的穿帮与不连贯**：肢体穿模、人物悬浮、多余肢体或手指异常、"
+    "动作跳变或瞬移、口型与台词对不上、道具或服装突变、画面闪烁变形、"
+    "文字或屏幕内容乱码、主体一致性漂移。没有就返回空数组，不要硬凑；"
+    "每条都要给出大致时间点（分:秒）。"
+)
+
+_TAKE_USER_PROMPT = "这是成片，请按要求输出 JSON。"
+
+
+def _clean_problems(value: Any) -> list[dict[str, str]]:
+    """把模型返回的 problems 洗成 [{at, issue, why}]（丢掉空项与非法项）。"""
+    if not isinstance(value, list):
+        return []
+    cleaned: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        issue = str(item.get("issue") or "").strip()
+        if not issue:
+            continue
+        cleaned.append(
+            {
+                "at": str(item.get("at") or "").strip(),
+                "issue": issue[:120],
+                "why": str(item.get("why") or "").strip()[:200],
+            }
+        )
+    return cleaned
+
 
 async def describe_output_videos(
     analyzer: Any,
@@ -52,11 +90,14 @@ async def describe_output_videos(
     *,
     limit: int = 1,
 ) -> str:
-    """把**上一版成片**交给能看视频的模型，返回「实际画面」描述。
+    """把**上一版成片**交给能看视频的模型，返回「实际画面 + 疑似穿帮」描述。
 
     用户要求（2026-09-17）：返工时把上一版成片**直接上传视频**（不抽帧）让模型看到
     实际画成了什么。以前返工只把「你打的字」喂给融合模型，它没见过成片，所以
     「不要参考人物形象」这类要求反复不生效 —— 现在把画面描述一起给它。
+
+    2026-09-18 起改成**审片模式**：顺带列出可疑的穿帮（穿模/悬浮/跳变/口型…），
+    融合时一并带上，模型才知道"上一版到底哪里不对"。
 
     没有分析器 / 没有视频产物 / 分析失败 → 返回空串（返工照常进行，不因为没有画面
     上下文而失败）。
@@ -83,7 +124,7 @@ async def describe_output_videos(
             sha256=str(_field(artifact, "sha256") or ""),
         )
         try:
-            insight = await analyzer.analyze_video(asset, [])
+            findings = await analyze_take(analyzer, asset)
         except Exception:
             _LOGGER.warning(
                 "上一版成片分析失败，本次返工不带画面上下文 artifact=%s",
@@ -91,16 +132,109 @@ async def describe_output_videos(
                 exc_info=True,
             )
             continue
-        summary = (insight.summary or "").strip()
+        summary = str(findings.get("summary") or "").strip()
         if not summary:
             continue
         suffix = (
-            "（不确定：" + "；".join(insight.uncertainties) + "）"
-            if insight.uncertainties
+            "（不确定：" + "；".join(findings["uncertainties"]) + "）"
+            if findings.get("uncertainties")
             else ""
         )
         lines.append(f"【{asset.asset_id}】{summary}{suffix}")
+        problems = findings.get("problems") or []
+        if problems:
+            lines.append(
+                "疑似穿帮："
+                + "；".join(
+                    " ".join(
+                        part
+                        for part in (item.get("at"), item.get("issue"))
+                        if part
+                    )
+                    for item in problems
+                )
+            )
     return "\n".join(lines)
+
+
+async def analyze_take(analyzer: Any, asset: MediaAsset) -> dict[str, Any]:
+    """像审片一样看**成片**：`{summary, problems, uncertainties}`。
+
+    分析器不支持审片模式（老实现 / 测试替身）时退回普通描述，`problems` 为空。
+    """
+    if hasattr(analyzer, "analyze_take"):
+        return await analyzer.analyze_take(asset)
+    insight = await analyzer.analyze_video(asset, [])
+    return {
+        "summary": getattr(insight, "summary", "") or "",
+        "problems": [],
+        "uncertainties": list(getattr(insight, "uncertainties", []) or []),
+    }
+
+
+async def analyze_artifacts(
+    analyzer: Any,
+    artifacts: list[Any] | None,
+    *,
+    limit: int = 1,
+) -> dict[str, Any]:
+    """审一遍成片，返回给界面用的 `{available, summary, problems, uncertainties}`。
+
+    用户要求（2026-09-18）：「现在重做他会不会自动看视频分析穿帮镜头啊，还是必须要我
+    自己找问题」—— 这个函数就是「自动找问题」的入口：审批/成片确认页点一下就能拿到
+    疑似穿帮清单，再一键采纳成返工反馈。
+    """
+    if analyzer is None:
+        return {
+            "available": False,
+            "reason": "没有配置能看视频的模型",
+            "summary": "",
+            "problems": [],
+            "uncertainties": [],
+        }
+    videos = [
+        artifact
+        for artifact in (artifacts or [])
+        if str(_field(artifact, "kind") or "") == "video"
+    ]
+    for artifact in videos[:limit]:
+        local_path = _field(artifact, "local_path")
+        if not local_path or not Path(str(local_path)).is_file():
+            continue
+        asset = MediaAsset(
+            asset_id=str(_field(artifact, "artifact_id") or "artifact"),
+            source_block_id=str(_field(artifact, "task_id") or ""),
+            origin="generated",
+            local_path=Path(str(local_path)),
+            mime_type=str(_field(artifact, "mime_type") or "video/mp4"),
+            size=int(_field(artifact, "size") or 0),
+            sha256=str(_field(artifact, "sha256") or ""),
+        )
+        try:
+            findings = await analyze_take(analyzer, asset)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("审片失败 artifact=%s", asset.asset_id, exc_info=True)
+            return {
+                "available": False,
+                "reason": f"看片失败：{type(exc).__name__}",
+                "summary": "",
+                "problems": [],
+                "uncertainties": [],
+            }
+        return {
+            "available": True,
+            "artifact_id": asset.asset_id,
+            "summary": str(findings.get("summary") or ""),
+            "problems": findings.get("problems") or [],
+            "uncertainties": findings.get("uncertainties") or [],
+        }
+    return {
+        "available": False,
+        "reason": "这一版没有可分析的成片文件",
+        "summary": "",
+        "problems": [],
+        "uncertainties": [],
+    }
 
 
 def _field(item: Any, name: str) -> Any:
@@ -131,6 +265,12 @@ class DeepSeekVideoInsight:
         self._public_media_host = public_media_host
         self._timeout = timeout
 
+    async def analyze_take(self, asset: MediaAsset) -> dict[str, Any]:
+        """审片模式：看**成片**，返回 `{summary, problems, uncertainties}`。"""
+        return await self._analyze(
+            asset, _TAKE_SYSTEM_PROMPT, _TAKE_USER_PROMPT
+        )
+
     async def analyze_video(
         self,
         asset: MediaAsset,
@@ -138,6 +278,31 @@ class DeepSeekVideoInsight:
     ) -> VideoReferenceAnalysis:
         """`frames` 参数仅为兼容旧调用点保留 —— 本实现**不抽帧**。"""
         del frames
+        data = await self._analyze(asset, _SYSTEM_PROMPT, _USER_PROMPT)
+        try:
+            kind = VideoReferenceKind(str(data.get("kind") or "other").strip())
+        except ValueError:
+            kind = VideoReferenceKind.OTHER
+        summary = data.get("summary")
+        uncertainties = data.get("uncertainties")
+        return VideoReferenceAnalysis(
+            asset_id=asset.asset_id,
+            kind=kind,
+            summary=summary.strip() if isinstance(summary, str) else "",
+            uncertainties=[
+                item.strip()
+                for item in (uncertainties if isinstance(uncertainties, list) else [])
+                if isinstance(item, str) and item.strip()
+            ],
+        )
+
+    async def _analyze(
+        self,
+        asset: MediaAsset,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> dict[str, Any]:
+        """上传整段视频 → 交给模型 → 返回解析后的 JSON 对象（两种模式共用）。"""
         if asset.download_error is not None:
             raise RuntimeError(f"视频素材读取失败：{asset.asset_id}")
         try:
@@ -159,11 +324,11 @@ class DeepSeekVideoInsight:
         payload = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": _USER_PROMPT},
+                        {"type": "text", "text": user_prompt},
                         {"type": "video_url", "video_url": {"url": url}},
                     ],
                 },
@@ -194,7 +359,8 @@ class DeepSeekVideoInsight:
         return self._parse(asset.asset_id, raw)
 
     @staticmethod
-    def _parse(asset_id: str, raw: Any) -> VideoReferenceAnalysis:
+    def _parse(asset_id: str, raw: Any) -> dict[str, Any]:
+        """解析模型返回的 JSON：`{summary, problems, uncertainties, kind?}`。"""
         if not isinstance(raw, str):
             raise RuntimeError(f"参考视频分析返回为空：{asset_id}")
         try:
@@ -203,19 +369,15 @@ class DeepSeekVideoInsight:
             raise RuntimeError(f"参考视频分析返回不是 JSON：{asset_id}") from exc
         if not isinstance(data, dict):
             raise RuntimeError(f"参考视频分析返回不是对象：{asset_id}")
-        try:
-            kind = VideoReferenceKind(str(data.get("kind") or "other").strip())
-        except ValueError:
-            kind = VideoReferenceKind.OTHER
         summary = data.get("summary")
         uncertainties = data.get("uncertainties")
-        return VideoReferenceAnalysis(
-            asset_id=asset_id,
-            kind=kind,
-            summary=summary.strip() if isinstance(summary, str) else "",
-            uncertainties=[
+        return {
+            "kind": data.get("kind"),
+            "summary": summary.strip() if isinstance(summary, str) else "",
+            "problems": _clean_problems(data.get("problems")),
+            "uncertainties": [
                 item.strip()
                 for item in (uncertainties if isinstance(uncertainties, list) else [])
                 if isinstance(item, str) and item.strip()
             ],
-        )
+        }

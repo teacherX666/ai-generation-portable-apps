@@ -221,6 +221,16 @@
             <a id="artifact-result-table-link" class="result-table-link" target="_blank" rel="noreferrer" hidden>查看结果表</a>
           </div>
           <div id="artifact-list" class="artifact-list"></div>
+          <div id="take-findings" class="take-findings" hidden>
+            <div class="take-findings-head">
+              <strong>模型审片</strong>
+              <button id="take-findings-scan" type="button" class="secondary">
+                让模型看一遍找问题
+              </button>
+            </div>
+            <p id="take-findings-summary" class="bitable-task-meta"></p>
+            <ul id="take-findings-list" class="take-findings-list"></ul>
+          </div>
           <div id="artifact-review-feedback-box" class="feedback-box">
             <label for="artifact-review-feedback">返工要求（仅用于选中任务）</label>
             <textarea
@@ -339,7 +349,7 @@
 
     <script src="static/reference-mutation-state.js" defer></script>
     <script src="static/review-state.js?v=20260917-uncovered-assets" defer></script>
-    <script src="static/bitable-state.js?v=20260917-history-strip" defer></script>
+    <script src="static/bitable-state.js?v=20260918-take-findings" defer></script>
     <script src="static/reference-upload-state.js" defer></script>
     <script src="static/api-paths.js" defer></script>
     <script src="static/planner-prompt-state.js" defer></script>

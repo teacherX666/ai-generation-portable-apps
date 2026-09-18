@@ -90,10 +90,16 @@ from feishu_generation_agent.web.schemas import (
     ReferenceListRequest,
     TaskPatchRequest,
 )
+from feishu_generation_agent.integrations.video_insight import (
+    analyze_artifacts,
+)
 
 ProductionCategory = Literal["animation", "portrait", "image"]
 _MAX_IDENTITY_LENGTH = 255
 _LOGGER = logging.getLogger(__name__)
+#: 审片结果缓存：`(run_id, 产物签名) -> findings`。同一条成片只让模型看一次
+#: （每次审片都是一次真实模型调用）。超量直接清空，不做 LRU。
+_take_findings_cache: dict[tuple[str, str], dict] = {}
 _WORKSPACE_STYLESHEET_LINK = (
     '<link rel="stylesheet" href="static/styles.css">'
 )
@@ -1116,6 +1122,40 @@ def create_app(
             reverse=True,
         )
         return payload
+
+    @app.get("/api/runs/{run_id}/take-findings")
+    async def get_take_findings(run_id: str, request: Request) -> dict:
+        """让能看视频的模型审一遍这一版的成片，返回疑似穿帮清单。
+
+        用户要求（2026-09-18）：「现在重做他会不会自动看视频分析穿帮镜头啊，还是必须
+        要我自己找问题」—— 审批/成片确认页点一下就能拿到清单，再一键采纳成返工反馈。
+        按 (run_id, 产物签名) 缓存，同一条成片只审一次（每次审片都是一次真实模型调用）。
+        """
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+        except RunNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        with runtime_owner_scope(active, identity.owner_user_id):
+            view = await active.get_run_view(run_id)
+        artifacts = view.get("artifacts") if isinstance(view, dict) else []
+        signature = "|".join(
+            str(item.get("artifact_id") or item.get("sha256") or "")
+            for item in (artifacts or [])
+            if isinstance(item, dict)
+        )
+        cache_key = (run_id, signature)
+        cached = _take_findings_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        findings = await analyze_artifacts(
+            getattr(active, "video_analyzer", None), artifacts or []
+        )
+        if len(_take_findings_cache) > 40:
+            _take_findings_cache.clear()
+        _take_findings_cache[cache_key] = findings
+        return findings
 
     @app.get("/api/bitable/archived-runs")
     async def list_archived_bitable_runs(request: Request) -> list[dict]:

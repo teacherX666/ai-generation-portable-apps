@@ -73,6 +73,11 @@
   const artifactReviewFeedbackBox = byId("artifact-review-feedback-box");
   const artifactReviewActions = byId("artifact-review-actions");
   const artifactReviewFeedback = byId("artifact-review-feedback");
+  // 模型审片（自动找穿帮）：用户 2026-09-18 要求「不要让我自己找问题」。
+  const takeFindings = byId("take-findings");
+  const takeFindingsScan = byId("take-findings-scan");
+  const takeFindingsSummary = byId("take-findings-summary");
+  const takeFindingsList = byId("take-findings-list");
   const conflictBox = byId("review-conflict");
   const conflictText = byId("review-conflict-text");
   const permissionGuide = byId("permission-guide");
@@ -1459,6 +1464,85 @@
     return control;
   }
 
+  //: 模型审片结果（按 run 缓存，切回来不用重新看片 —— 每次看片都是一次真实模型调用）。
+  const takeFindingsCache = new Map();
+
+  /** 成片预览里的「模型审片」：自动列疑似穿帮，可一键采纳成返工反馈。 */
+  function renderTakeFindings(view) {
+    if (!takeFindings) return;
+    const videos = (view.artifacts || []).filter(
+      (artifact) => artifact.kind === "video",
+    );
+    takeFindings.hidden = videos.length === 0;
+    if (videos.length === 0) return;
+    if (takeFindingsScan) takeFindingsScan.disabled = state.busy;
+    const findings = takeFindingsCache.get(view.run_id);
+    if (!findings) {
+      takeFindingsSummary.textContent =
+        "点右边按钮，让模型看一遍这一版成片，自动列出疑似穿帮"
+        + "（穿模 / 悬浮 / 多余肢体 / 动作跳变 / 口型对不上 / 道具突变…）。";
+      takeFindingsList.replaceChildren();
+      return;
+    }
+    takeFindingsSummary.textContent = findings.available
+      ? findings.summary || "（模型没给出画面描述）"
+      : findings.reason || "看片失败";
+    const problems = findings.problems || [];
+    if (findings.available && problems.length === 0) {
+      takeFindingsList.replaceChildren(
+        element("li", "take-finding", "模型没发现明显穿帮。"),
+      );
+      return;
+    }
+    takeFindingsList.replaceChildren(
+      ...problems.map((problem) => {
+        const row = element("li", "take-finding");
+        row.append(element("span", "take-finding-at", problem.at || "—"));
+        row.append(element("span", "take-finding-issue", problem.issue));
+        if (problem.why) {
+          row.append(element("span", "take-finding-why", problem.why));
+        }
+        const adopt = element("button", "take-finding-adopt", "采纳");
+        adopt.type = "button";
+        adopt.addEventListener("click", () => {
+          if (!artifactReviewFeedback) return;
+          const line =
+            `穿帮：${problem.at ? `${problem.at} ` : ""}${problem.issue}`;
+          const current = artifactReviewFeedback.value.trim();
+          artifactReviewFeedback.value = current ? `${current}\n${line}` : line;
+          artifactReviewFeedback.focus();
+        });
+        row.append(adopt);
+        return row;
+      }),
+    );
+  }
+
+  async function scanTakeFindings() {
+    if (!state.runId) return;
+    if (takeFindingsScan) takeFindingsScan.disabled = true;
+    if (takeFindingsSummary) {
+      takeFindingsSummary.textContent = "模型正在看片…（一般十几秒）";
+    }
+    try {
+      const findings = await api(`/api/runs/${state.runId}/take-findings`);
+      takeFindingsCache.set(state.runId, findings);
+    } catch (error) {
+      if (takeFindingsSummary) {
+        takeFindingsSummary.textContent = error.message || "看片失败";
+      }
+    } finally {
+      if (takeFindingsScan) takeFindingsScan.disabled = false;
+      if (state.view) renderTakeFindings(state.view);
+    }
+  }
+
+  if (takeFindingsScan) {
+    takeFindingsScan.addEventListener("click", () => {
+      scanTakeFindings();
+    });
+  }
+
   function renderProviderStatus() {
     const bar = byId("provider-status-bar");
     if (!bar) return;
@@ -2812,6 +2896,7 @@
       }
     }
     renderArtifactReview(view);
+    renderTakeFindings(view);
     updateActionAvailability();
   }
 
