@@ -1506,6 +1506,11 @@
     takeFindingsList.replaceChildren(
       ...problems.map((problem) => {
         const row = element("li", "take-finding");
+        // 「违背要求」是用户最在意的一类（提示词写了但没做到），单独标出来。
+        if (problem.kind === "违背要求") {
+          row.classList.add("is-violation");
+          row.append(element("span", "take-finding-kind", "违背要求"));
+        }
         row.append(element("span", "take-finding-at", problem.at || "—"));
         row.append(element("span", "take-finding-issue", problem.issue));
         if (problem.why) {
@@ -1515,8 +1520,9 @@
         adopt.type = "button";
         adopt.addEventListener("click", () => {
           if (!artifactReviewFeedback) return;
-          const line =
-            `穿帮：${problem.at ? `${problem.at} ` : ""}${problem.issue}`;
+          const line = problem.kind === "违背要求"
+            ? `没按要求：${problem.issue}`
+            : `穿帮：${problem.at ? `${problem.at} ` : ""}${problem.issue}`;
           const current = artifactReviewFeedback.value.trim();
           artifactReviewFeedback.value = current ? `${current}\n${line}` : line;
           artifactReviewFeedback.focus();

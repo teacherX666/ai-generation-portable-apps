@@ -1156,6 +1156,14 @@ def create_app(
             for item in (artifacts or [])
             if isinstance(item, dict) and item.get("kind") == "video"
         ]
+        # 把当初的生成提示词一起给模型，让它**逐条核对**要求做到了没有
+        #（用户 2026-09-18：「没有抓住关键点，比如提示词明确了第 1 根枝桠三只绿色小鸟」）。
+        tasks = (view.get("approval") or {}).get("tasks") or []
+        task_prompt = ""
+        for task in tasks:
+            if isinstance(task, dict) and str(task.get("prompt") or "").strip():
+                task_prompt = str(task["prompt"])
+                break
         findings: dict | None = None
         for item in videos[:1]:
             try:
@@ -1174,6 +1182,7 @@ def create_app(
             findings = await analyze_artifacts(
                 getattr(active, "video_analyzer", None),
                 [{**item, "local_path": str(path), "mime_type": mime_type}],
+                prompt=task_prompt,
             )
             break
         if findings is None:

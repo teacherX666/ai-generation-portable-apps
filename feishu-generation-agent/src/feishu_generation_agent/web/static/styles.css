@@ -1015,3 +1015,14 @@ button {
 .take-finding-adopt {
   margin-left: auto;
 }
+.take-finding-kind {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  white-space: nowrap;
+}
+.take-finding.is-violation .take-finding-issue {
+  font-weight: 600;
+}

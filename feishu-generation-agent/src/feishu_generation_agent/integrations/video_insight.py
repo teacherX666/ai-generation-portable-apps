@@ -49,15 +49,25 @@ _USER_PROMPT = "这是参考视频，请按要求输出 JSON。"
 #:
 #: 用户要求（2026-09-18）：「现在重做他会不会自动看视频分析穿帮镜头啊，还是必须要我
 #: 自己找问题」—— 以前只让它"描述画面"，它不会主动报问题。现在明确要求列 problems。
+#:
+#: 2026-09-18 追加：用户反馈「这个看的效果跟我想的不一样，没有抓住关键点，比如我的提示词
+#: 明确了第 1 根枝桠三只绿色小鸟…结果最后效果不一样」—— 光列通用穿帮不够，必须**对照
+#: 提示词逐条核对**（数量/颜色/位置/镜头/动作），把"要求了但没做到"的单独标出来。
 _TAKE_SYSTEM_PROMPT = (
-    "你在看一段 **AI 生成的成片**。请像审片一样输出 JSON：\n"
+    "你在看一段 **AI 生成的成片**，同时会给你**当初写的生成提示词**。"
+    "请像审片一样输出 JSON：\n"
     '{"summary":"画面实际是什么（主体/动作顺序/镜头/节奏/光线）",'
-    '"problems":[{"at":"0:03","issue":"手部穿模","why":"为什么算问题"}],'
+    '"problems":[{"at":"0:03","issue":"问题是什么","why":"为什么算问题",'
+    '"kind":"违背要求|穿帮"}],'
     '"uncertainties":["看不清或不确定的点"]}\n'
-    "problems 只写**真正可疑的穿帮与不连贯**：肢体穿模、人物悬浮、多余肢体或手指异常、"
-    "动作跳变或瞬移、口型与台词对不上、道具或服装突变、画面闪烁变形、"
-    "文字或屏幕内容乱码、主体一致性漂移。没有就返回空数组，不要硬凑；"
-    "每条都要给出大致时间点（分:秒）。"
+    "**先逐条核对提示词**：主体数量、颜色、各自位置（哪根枝桠 / 画面哪个方位）、"
+    "镜头运动、动作顺序 —— 凡是提示词**明确要求**而画面没做到、做错或做反的，"
+    "每条列进 problems 并把 kind 写成「违背要求」，issue 里写清"
+    "「要求 X，实际 Y」。\n"
+    "然后列画面本身的穿帮（肢体穿模、人物悬浮、多余肢体或手指异常、动作跳变或瞬移、"
+    "口型与台词对不上、道具或服装突变、画面闪烁变形、文字或屏幕内容乱码、"
+    "主体一致性漂移），kind 写成「穿帮」。\n"
+    "没有就返回空数组，不要硬凑；每条都要给出大致时间点（分:秒）。"
 )
 
 _TAKE_USER_PROMPT = "这是成片，请按要求输出 JSON。"
@@ -77,8 +87,9 @@ def _clean_problems(value: Any) -> list[dict[str, str]]:
         cleaned.append(
             {
                 "at": str(item.get("at") or "").strip(),
-                "issue": issue[:120],
+                "issue": issue[:200],
                 "why": str(item.get("why") or "").strip()[:200],
+                "kind": "违背要求" if str(item.get("kind") or "").strip() == "违背要求" else "穿帮",
             }
         )
     return cleaned
@@ -157,13 +168,24 @@ async def describe_output_videos(
     return "\n".join(lines)
 
 
-async def analyze_take(analyzer: Any, asset: MediaAsset) -> dict[str, Any]:
+async def analyze_take(
+    analyzer: Any,
+    asset: MediaAsset,
+    prompt: str = "",
+) -> dict[str, Any]:
     """像审片一样看**成片**：`{summary, problems, uncertainties}`。
+
+    给了 `prompt`（当初的生成提示词）就要求它**逐条核对**要求做到了没有 ——
+    用户 2026-09-18：「没有抓住关键点，比如我的提示词明确了第 1 根枝桠三只绿色小鸟…
+    结果最后效果不一样」。
 
     分析器不支持审片模式（老实现 / 测试替身）时退回普通描述，`problems` 为空。
     """
     if hasattr(analyzer, "analyze_take"):
-        return await analyzer.analyze_take(asset)
+        try:
+            return await analyzer.analyze_take(asset, prompt)
+        except TypeError:
+            return await analyzer.analyze_take(asset)
     insight = await analyzer.analyze_video(asset, [])
     return {
         "summary": getattr(insight, "summary", "") or "",
@@ -177,6 +199,7 @@ async def analyze_artifacts(
     artifacts: list[Any] | None,
     *,
     limit: int = 1,
+    prompt: str = "",
 ) -> dict[str, Any]:
     """审一遍成片，返回给界面用的 `{available, summary, problems, uncertainties}`。
 
@@ -211,7 +234,7 @@ async def analyze_artifacts(
             sha256=str(_field(artifact, "sha256") or ""),
         )
         try:
-            findings = await analyze_take(analyzer, asset)
+            findings = await analyze_take(analyzer, asset, prompt)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("审片失败 artifact=%s", asset.asset_id, exc_info=True)
             return {
@@ -265,11 +288,24 @@ class DeepSeekVideoInsight:
         self._public_media_host = public_media_host
         self._timeout = timeout
 
-    async def analyze_take(self, asset: MediaAsset) -> dict[str, Any]:
-        """审片模式：看**成片**，返回 `{summary, problems, uncertainties}`。"""
-        return await self._analyze(
-            asset, _TAKE_SYSTEM_PROMPT, _TAKE_USER_PROMPT
-        )
+    async def analyze_take(
+        self, asset: MediaAsset, prompt: str = ""
+    ) -> dict[str, Any]:
+        """审片模式：看**成片**，返回 `{summary, problems, uncertainties}`。
+
+        给了 `prompt`（当初的生成提示词）就要求它**逐条核对**要求有没有做到 ——
+        否则它只会报通用穿帮，抓不到"提示词写了但没做到"这类最关键的问题。
+        """
+        user_prompt = _TAKE_USER_PROMPT
+        requirement = (prompt or "").strip()
+        if requirement:
+            user_prompt = (
+                "这是成片。**当初写的生成提示词**如下：\n"
+                f"{requirement[:4000]}\n\n"
+                "请按要求输出 JSON，重点核对提示词里明确写了的"
+                "数量、颜色、各自位置、镜头运动与动作顺序。"
+            )
+        return await self._analyze(asset, _TAKE_SYSTEM_PROMPT, user_prompt)
 
     async def analyze_video(
         self,

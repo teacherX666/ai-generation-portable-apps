@@ -79,6 +79,38 @@ async def test_analyze_artifacts_survives_analyzer_failure(tmp_path: Path) -> No
     assert "看片失败" in findings["reason"]
 
 
+async def test_analyze_artifacts_passes_requirement_prompt(tmp_path: Path) -> None:
+    """审片要把当初的提示词一起给模型，否则抓不到「要求了但没做到」。"""
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def analyze_take(self, asset, prompt: str = "") -> dict:
+            self.prompts.append(prompt)
+            return {"summary": "画面", "problems": [], "uncertainties": []}
+
+    analyzer = _Recorder()
+    await analyze_artifacts(
+        analyzer, [_artifact(tmp_path)], prompt="第 1 根枝桠上有三只绿色小鸟"
+    )
+
+    assert analyzer.prompts == ["第 1 根枝桠上有三只绿色小鸟"]
+
+
+def test_parse_keeps_violation_kind() -> None:
+    """「要求了但没做到」要能和普通穿帮区分开（用户最在意的就是这类）。"""
+    raw = (
+        '{"summary":"画面", "problems":['
+        '{"at":"0:03","issue":"要求第 1 根枝桠三只绿鸟，实际只有两只",'
+        '"why":"数量不对","kind":"违背要求"}]}'
+    )
+
+    data = DeepSeekVideoInsight._parse("artifact-1", raw)
+
+    assert data["problems"][0]["kind"] == "违背要求"
+
+
 def test_parse_cleans_and_caps_problems() -> None:
     raw = (
         '{"summary":" 画面 ", "problems":['
@@ -91,6 +123,11 @@ def test_parse_cleans_and_caps_problems() -> None:
 
     assert data["summary"] == "画面"
     assert data["problems"] == [
-        {"at": "0:03", "issue": "手部穿模", "why": "手指穿过纸箱"},
+        {
+            "at": "0:03",
+            "issue": "手部穿模",
+            "why": "手指穿过纸箱",
+            "kind": "穿帮",
+        },
     ]
     assert data["uncertainties"] == ["结尾"]
