@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from inspect import Parameter, signature
 import json
 from collections.abc import Awaitable, Callable, Mapping
@@ -1741,6 +1742,20 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
             break
     model_key = preferred_key or default_key
 
+    # 显式指定走真人类通道（自动切换用）：Seedance 拒绝真人素材时，任务会被改写成
+    # `video_provider="volcengine_portrait"` 再重跑一次。
+    if (
+        explicit_provider == "volcengine_portrait"
+        and services.portrait_video_generator is not None
+    ):
+        return (
+            "volcengine_portrait",
+            services.portrait_video_generator.for_run(
+                run_id,
+                model_key=model_key,
+            ),
+        )
+
     if (
         model_key
         and services.portrait_video_generator is not None
@@ -2133,6 +2148,38 @@ async def _finish_submit_phase(
     ), []
 
 
+#: 供应商拒绝里表示「输入图含真人」的措辞（火山原文是英文）。
+_REAL_PERSON_REJECTION = re.compile(
+    r"may contain real person|real person|contains?\s+real\s+human|真人",
+    re.IGNORECASE,
+)
+
+
+def _should_switch_to_portrait(
+    exc: BaseException,
+    provider: str,
+    services: GraphServices,
+) -> bool:
+    """这次拒绝是不是「输入图疑似真人」，且值得自动改走真人类通道。
+
+    用户 2026-09-18：Seedance 对真人素材是合规红线（换模型没用），真人素材本来就要走
+    私域虚拟人像（`asset://`）通道 —— 所以这里自动切一次。
+    """
+    if provider == "volcengine_portrait":
+        return False  # 已经在真人通道上了，别再切
+    if getattr(services, "portrait_video_generator", None) is None:
+        return False  # 没配真人通道，切不了
+    detail = getattr(exc, "detail", None)
+    text = " ".join(
+        str(part)
+        for part in (
+            getattr(detail, "message", ""),
+            getattr(detail, "technical_detail", ""),
+        )
+    )
+    return bool(_REAL_PERSON_REJECTION.search(text))
+
+
 async def _execute_one_task(
     services: GraphServices,
     run_id: str,
@@ -2257,9 +2304,38 @@ async def _execute_one_task(
             )
         )
         try:
-            immediate = await generator.submit(
-                task, assets, submission_id=client_id
-            )
+            try:
+                immediate = await generator.submit(
+                    task, assets, submission_id=client_id
+                )
+            except AgentError as exc:
+                if not _should_switch_to_portrait(exc, provider, services):
+                    raise
+                # 用户 2026-09-18：Seedance 因「输入图疑似真人」拒绝时**自动改走
+                # 真人类通道**（真人素材在 Seedance 侧是合规红线，换模型没用）。
+                # 清掉按旧 provider 建的提交意图，再把任务改写成真人类重跑一次。
+                await services.repository.delete_task_operations(
+                    run_id, task.task_id
+                )
+                await services.repository.append_event(
+                    run_id,
+                    "execute_selected_tasks",
+                    "running",
+                    "Seedance 拒绝真人素材，已自动改走真人类通道",
+                )
+                _LOGGER.warning(
+                    "Seedance 拒绝真人素材，自动改走真人类通道 run=%s task=%s",
+                    run_id,
+                    task.task_id,
+                )
+                return await _execute_one_task(
+                    services,
+                    run_id,
+                    task.model_copy(
+                        update={"video_provider": "volcengine_portrait"}
+                    ),
+                    assets,
+                )
             official_id = immediate.provider_task_id
             if immediate.provider != provider:
                 raise _provider_terminal_error("供应商任务身份不一致")
