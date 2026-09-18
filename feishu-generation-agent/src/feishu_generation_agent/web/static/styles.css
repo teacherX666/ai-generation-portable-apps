@@ -1026,3 +1026,8 @@ button {
 .take-finding.is-violation .take-finding-issue {
   font-weight: 600;
 }
+#copy-document-title {
+  margin-top: 6px;
+  font-size: 12px;
+  padding: 2px 8px;
+}

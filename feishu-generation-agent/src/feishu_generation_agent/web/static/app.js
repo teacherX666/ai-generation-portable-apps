@@ -78,6 +78,8 @@
   const takeFindingsScan = byId("take-findings-scan");
   const takeFindingsSummary = byId("take-findings-summary");
   const takeFindingsList = byId("take-findings-list");
+  // 文档名旁边的一键复制（用户 2026-09-18 要求：需求文档名很长，要能直接复制）。
+  const copyDocumentTitle = byId("copy-document-title");
   const conflictBox = byId("review-conflict");
   const conflictText = byId("review-conflict-text");
   const permissionGuide = byId("permission-guide");
@@ -1552,6 +1554,62 @@
   if (takeFindingsScan) {
     takeFindingsScan.addEventListener("click", () => {
       scanTakeFindings();
+    });
+  }
+
+  /** 复制当前文档名（局域网 http 下没有 clipboard API，退回 execCommand）。 */
+  async function copyCurrentDocumentTitle() {
+    const title = String(
+      state.view?.approval?.document_title
+      || byId("document-title")?.textContent
+      || "",
+    ).trim();
+    if (!title) return;
+    let ok = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(title);
+        ok = true;
+      }
+    } catch (error) {
+      ok = false;
+    }
+    if (!ok) {
+      try {
+        const helper = document.createElement("textarea");
+        helper.value = title;
+        helper.setAttribute("readonly", "");
+        helper.style.position = "fixed";
+        helper.style.opacity = "0";
+        document.body.append(helper);
+        helper.select();
+        ok = document.execCommand("copy");
+        helper.remove();
+      } catch (error) {
+        ok = false;
+      }
+    }
+    if (!copyDocumentTitle) return;
+    if (!ok) {
+      // 两条路都失败（浏览器禁了剪贴板）：直接把标题选中，用户 Ctrl+C 就行。
+      const titleNode = byId("document-title");
+      if (titleNode && globalThis.getSelection) {
+        const range = document.createRange();
+        range.selectNodeContents(titleNode);
+        const selection = globalThis.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+    copyDocumentTitle.textContent = ok ? "已复制 ✓" : "已选中，Ctrl+C";
+    globalThis.setTimeout(() => {
+      if (copyDocumentTitle) copyDocumentTitle.textContent = "复制文档名";
+    }, 1800);
+  }
+
+  if (copyDocumentTitle) {
+    copyDocumentTitle.addEventListener("click", () => {
+      copyCurrentDocumentTitle();
     });
   }
 
