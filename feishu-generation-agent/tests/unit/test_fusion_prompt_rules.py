@@ -12,11 +12,21 @@ from feishu_generation_agent.integrations.planner import (
 )
 
 #: 上限：既保证例子放得下，又不至于把每次调用的 token 撑到撞 TPM 限流（2026-09-18）。
-_MAX_FUSION_PROMPT_CHARS = 1000
+_MAX_FUSION_PROMPT_CHARS = 1080
 
 
 def test_fusion_prompt_stays_small_enough_for_rate_limits() -> None:
     assert len(_REWORK_FUSION_SYSTEM_PROMPT) <= _MAX_FUSION_PROMPT_CHARS
+
+
+def test_fusion_prompt_forbids_inventing_content() -> None:
+    """2026-09-18 线上事故：毛衣那条被编出「毛线不得从枝桠上取」。
+
+    原文没有、用户要求没有、知识库也没有 —— 用户以为几个任务的提示词串在一起了。
+    """
+    assert "不许编造" in _REWORK_FUSION_SYSTEM_PROMPT
+    assert "毛线不得从枝桠上取" in _REWORK_FUSION_SYSTEM_PROMPT
+    assert "纯属编造" in _REWORK_FUSION_SYSTEM_PROMPT
 
 
 def test_fusion_prompt_asks_for_in_place_edits() -> None:
