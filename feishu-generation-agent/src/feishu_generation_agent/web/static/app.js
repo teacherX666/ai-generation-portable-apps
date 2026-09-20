@@ -1278,6 +1278,23 @@
     }
   }
 
+  //: 正在提交重跑/调整请求。
+  //:
+  //: **刻意不用 setBusy** —— 这些请求在后端要"看上一版成片 + 融合返工要求"，
+  //: 可能等一分钟；setBusy 会把整个界面锁死（用户 2026-09-18：
+  //: 「重跑的时候其它按钮都点不了」）。这里只禁用触发按钮本身。
+  let rerunRequesting = false;
+
+  function setRerunRequesting(value) {
+    rerunRequesting = value;
+    if (pollingNote) {
+      pollingNote.textContent = value
+        ? "正在提交重跑：模型要先看上一版成片再融合要求，可能要等一分钟…"
+        : "";
+    }
+    updateActionAvailability();
+  }
+
   function updateActionAvailability() {
     const canReview = state.view && state.view.status === "waiting_approval";
     const canReviewArtifacts = Boolean(
@@ -1308,12 +1325,15 @@
     retryFailedAssetsButton.disabled = state.busy || !canReview || retryableAssetIssues.length === 0;
     retryFailedAssetsButton.hidden = !canReview || retryableAssetIssues.length === 0;
     confirmArtifactsButton.disabled = state.busy || !canReviewArtifacts;
-    adjustArtifactsButton.disabled = state.busy || !canAdjustArtifacts;
+    adjustArtifactsButton.disabled = state.busy || rerunRequesting || !canAdjustArtifacts;
     artifactReviewFeedback.disabled = state.busy || !canReviewArtifacts;
     const terminal = TERMINAL_RUN_STATUSES.has(state.view?.status);
-    rerunButton.disabled = state.busy
+    rerunButton.disabled = state.busy || rerunRequesting
       || state.runMode !== "bitable"
       || !RERUNNABLE_RUN_STATUSES.has(state.view?.status);
+    if (rerunArtifactsButton) {
+      rerunArtifactsButton.disabled = rerunRequesting;
+    }
     rerunButton.hidden = state.runMode !== "bitable" || !RERUNNABLE_RUN_STATUSES.has(status);
     retryDeliveryButton.hidden = !canExportDelivery;
     rejectButton.hidden = !canReview;
@@ -3129,8 +3149,8 @@
   }
 
   async function rerunBitableTask(runId = state.runId) {
-    if (!runId || state.busy) return;
-    setBusy(true);
+    if (!runId || state.busy || rerunRequesting) return;
+    setRerunRequesting(true);
     clearError();
     try {
       const created = await api(`/api/bitable/runs/${encodeURIComponent(runId)}/rerun`, {
@@ -3151,7 +3171,7 @@
       showError(error);
       await loadRecentRuns();
     } finally {
-      setBusy(false);
+      setRerunRequesting(false);
       renderRecentRuns();
     }
   }
@@ -3211,7 +3231,7 @@
         return;
       }
     }
-    setBusy(true);
+    setRerunRequesting(true);
     clearError();
     try {
       if (action === "adjust" && state.runMode === "bitable") {
@@ -3248,7 +3268,7 @@
     } catch (error) {
       showError(error);
     } finally {
-      setBusy(false);
+      setRerunRequesting(false);
     }
   }
 
