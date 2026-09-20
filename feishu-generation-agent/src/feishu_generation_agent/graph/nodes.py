@@ -2182,35 +2182,152 @@ def _should_switch_to_portrait(
     return bool(_REAL_PERSON_REJECTION.search(text))
 
 
+#: 火山对参考图的硬限制（素材/生成同源）：每边 300~6000px，宽高比 0.4~2.5。
+#:
+#: 用户 2026-09-18 实测报错：「expected the height to be at least 300px, but received
+#: a 384x254px image」—— 文档里的横幅/小图（高 228~254px）被当参考图提交，整单被拒。
+_REFERENCE_MIN_SIDE = 300
+_REFERENCE_MAX_SIDE = 6000
+_REFERENCE_MIN_ASPECT = 0.4
+_REFERENCE_MAX_ASPECT = 2.5
+
+
+def _reference_size_problem(asset: MediaAsset) -> str | None:
+    """参考图尺寸不符合火山要求时返回原因，符合则返回 None。"""
+    if not asset.mime_type.startswith("image/"):
+        return None
+    width = int(getattr(asset, "width", 0) or 0)
+    height = int(getattr(asset, "height", 0) or 0)
+    if width <= 0 or height <= 0:
+        return None  # 拿不到尺寸就不拦，交给供应商判断
+    if width < _REFERENCE_MIN_SIDE or height < _REFERENCE_MIN_SIDE:
+        return f"尺寸 {width}x{height} 小于 {_REFERENCE_MIN_SIDE}px"
+    if width > _REFERENCE_MAX_SIDE or height > _REFERENCE_MAX_SIDE:
+        return f"尺寸 {width}x{height} 超过 {_REFERENCE_MAX_SIDE}px"
+    ratio = width / height
+    if ratio < _REFERENCE_MIN_ASPECT or ratio > _REFERENCE_MAX_ASPECT:
+        return f"宽高比 {ratio:.2f} 超出 {_REFERENCE_MIN_ASPECT}~{_REFERENCE_MAX_ASPECT}"
+    return None
+
+
+def _upscale_reference(asset: MediaAsset) -> MediaAsset | None:
+    """把过小的参考图**等比放大**到合规尺寸（不裁切、不拉伸）。
+
+    用户口径（2026-09-18）：「不要拦截，能不能帮我自动等比例放大」—— 火山要求参考图
+    每边 ≥300px，文档里的横幅（384x254）以前会让整单被拒，现在直接放大后再提交。
+    放大失败（文件损坏等）返回 None，由调用方决定丢弃。
+    """
+    width = int(getattr(asset, "width", 0) or 0)
+    height = int(getattr(asset, "height", 0) or 0)
+    if width <= 0 or height <= 0:
+        return None
+    scale = max(
+        _REFERENCE_MIN_SIDE / width,
+        _REFERENCE_MIN_SIDE / height,
+    )
+    if scale <= 1:
+        return None
+    target_width = max(_REFERENCE_MIN_SIDE, round(width * scale))
+    target_height = max(_REFERENCE_MIN_SIDE, round(height * scale))
+    # 放大后也不能超过上限：超过就整体缩回去（仍保持比例）。
+    overflow = max(
+        target_width / _REFERENCE_MAX_SIDE,
+        target_height / _REFERENCE_MAX_SIDE,
+        1,
+    )
+    target_width = max(_REFERENCE_MIN_SIDE, round(target_width / overflow))
+    target_height = max(_REFERENCE_MIN_SIDE, round(target_height / overflow))
+    source = Path(str(asset.local_path))
+    target = source.with_name(f"{source.stem}-upscaled.png")
+    try:
+        with Image.open(source) as image:
+            image.convert("RGB").resize(
+                (target_width, target_height), Image.Resampling.LANCZOS
+            ).save(target, format="PNG")
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning(
+            "参考图放大失败 asset=%s path=%s", asset.asset_id, source, exc_info=True
+        )
+        return None
+    content = target.read_bytes()
+    return asset.model_copy(
+        update={
+            "local_path": target,
+            "mime_type": "image/png",
+            "size": len(content),
+            "width": target_width,
+            "height": target_height,
+            "sha256": sha256(content).hexdigest(),
+        }
+    )
+
+
+async def _without_unusable_references(
+    assets: list[MediaAsset],
+    run_id: str,
+    services: GraphServices,
+) -> list[MediaAsset]:
+    """执行前整理参考素材：过小的图**等比放大**，视频**摘掉**，都记一条事件。
+
+    以前这两种都会让整单被火山拒（`invalid_media` / `submit_invalidparameter`），
+    用户只看到一句「生成服务拒绝了请求」。现在：能修的修（放大 ✓）、修不了的跳过
+    并写清原因（用户 2026-09-18：「不要拦截，能不能帮我自动等比例放大」）。
+    """
+    videos = [asset for asset in assets if asset.mime_type.startswith("video/")]
+    undersized = [
+        asset
+        for asset in assets
+        if _reference_size_problem(asset) is not None
+    ]
+    if not videos and not undersized:
+        return assets
+    notes: list[str] = []
+    if videos:
+        notes.append(
+            "视频不能作为参考图（Seedance 不接受视频输入）："
+            + "、".join(asset.asset_id for asset in videos)
+        )
+    replacements: dict[str, MediaAsset] = {}
+    dropped = {asset.asset_id for asset in videos}
+    for asset in undersized:
+        problem = _reference_size_problem(asset) or ""
+        if "宽高比" in problem:
+            # 比例问题放大也改不了（比例不随缩放变化），照旧提交交给供应商判断。
+            notes.append(f"{asset.asset_id} {problem}（放大改不了比例，仍按原样提交）")
+            continue
+        fixed = _upscale_reference(asset)
+        if fixed is None:
+            dropped.add(asset.asset_id)
+            notes.append(f"{asset.asset_id} {problem}，且放大失败，已跳过")
+            continue
+        replacements[asset.asset_id] = fixed
+        notes.append(
+            f"{asset.asset_id} {problem} → 已等比放大到 "
+            f"{fixed.width}x{fixed.height}"
+        )
+    if notes:
+        await services.repository.append_event(
+            run_id,
+            "execute_selected_tasks",
+            "running",
+            "参考素材已自动整理：" + "；".join(notes),
+        )
+        _LOGGER.warning("整理参考素材 run=%s notes=%s", run_id, notes)
+    result: list[MediaAsset] = []
+    for asset in assets:
+        if asset.asset_id in dropped:
+            continue
+        result.append(replacements.get(asset.asset_id, asset))
+    return result
+
+
 async def _without_video_references(
     assets: list[MediaAsset],
     run_id: str,
     services: GraphServices,
 ) -> list[MediaAsset]:
-    """视频素材不能当参考图（Seedance 会判 `invalid_media`）。
-
-    用户 2026-09-18：在审批页上传了一个视频当参考素材 → 提交后火山回
-    `InvalidParameter: input media detect failed: invalid_media`，界面只显示
-    `poll_http_failed`，完全看不出原因。文档里的视频在规划阶段已经摘掉，但
-    **手动上传的视频**、以及**旧计划克隆过来的任务**会漏过来 —— 这里执行前兜一层。
-    """
-    videos = [asset for asset in assets if asset.mime_type.startswith("video/")]
-    if not videos:
-        return assets
-    await services.repository.append_event(
-        run_id,
-        "execute_selected_tasks",
-        "running",
-        "参考素材里的视频不能用于生成（Seedance 不接受视频作为参考图），已自动跳过",
-    )
-    _LOGGER.warning(
-        "跳过视频参考素材 run=%s assets=%s",
-        run_id,
-        [asset.asset_id for asset in videos],
-    )
-    return [
-        asset for asset in assets if not asset.mime_type.startswith("video/")
-    ]
+    """兼容旧调用点：只摘视频（新代码用 `_without_unusable_references`）。"""
+    return await _without_unusable_references(assets, run_id, services)
 
 
 async def _execute_one_task(
@@ -2569,7 +2686,7 @@ async def execute_selected_tasks(
         records: list[ExecutionRecord] = []
         artifacts: list[Artifact] = []
         for task in plan.tasks:
-            assets = await _without_video_references(
+            assets = await _without_unusable_references(
                 _task_assets(task, document), run_id, services
             )
             unit_results = await asyncio.gather(

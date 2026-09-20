@@ -23,7 +23,14 @@ class _Services:
         self.repository = _Repository()
 
 
-def _asset(tmp_path: Path, asset_id: str, mime: str) -> MediaAsset:
+def _asset(
+    tmp_path: Path,
+    asset_id: str,
+    mime: str,
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> MediaAsset:
     suffix = ".mp4" if mime.startswith("video/") else ".png"
     path = tmp_path / f"{asset_id}{suffix}"
     path.write_bytes(b"x")
@@ -35,7 +42,81 @@ def _asset(tmp_path: Path, asset_id: str, mime: str) -> MediaAsset:
         mime_type=mime,
         size=1,
         sha256=f"sha-{asset_id}",
+        width=width,
+        height=height,
     )
+
+
+def _png(tmp_path: Path, asset_id: str, width: int, height: int) -> MediaAsset:
+    """写一张真实的小 PNG（放大逻辑要走 Pillow，假的字节流会失败）。"""
+    from PIL import Image as _Image
+
+    path = tmp_path / f"{asset_id}.png"
+    _Image.new("RGB", (width, height), (200, 120, 90)).save(path, format="PNG")
+    return MediaAsset(
+        asset_id=asset_id,
+        source_block_id="b1",
+        origin="feishu",
+        local_path=path,
+        mime_type="image/png",
+        size=path.stat().st_size,
+        sha256=f"sha-{asset_id}",
+        width=width,
+        height=height,
+    )
+
+
+async def test_too_small_image_is_upscaled_not_dropped(tmp_path: Path) -> None:
+    """火山要求参考图每边 ≥300px；用户口径（2026-09-18）：「不要拦截，自动等比例放大」。
+
+    实测报错：「expected the height to be at least 300px, but received a 384x254px
+    image」—— 文档里的横幅被当参考图提交，整单被拒。
+    """
+    from feishu_generation_agent.graph.nodes import _without_unusable_references
+
+    services = _Services()
+    assets = [
+        _png(tmp_path, "image-ok", 1440, 2560),
+        _png(tmp_path, "banner-small", 384, 254),
+    ]
+
+    kept = await _without_unusable_references(assets, "run-1", services)
+
+    # 一张都不丢
+    assert [asset.asset_id for asset in kept] == ["image-ok", "banner-small"]
+    fixed = kept[1]
+    assert fixed.local_path != assets[1].local_path  # 用了放大后的副本
+    assert fixed.height >= 300 and fixed.width >= 300
+    # 比例保持（384:254 ≈ 1.512）
+    assert abs(fixed.width / fixed.height - 384 / 254) < 0.02
+    summary = services.repository.events[0][2]
+    assert "banner-small" in summary and "等比放大" in summary
+
+
+async def test_extreme_aspect_ratio_is_not_blocked(tmp_path: Path) -> None:
+    """比例问题放大也改不了，照旧提交，交给供应商判断（用户要求不要拦截）。"""
+    from feishu_generation_agent.graph.nodes import _without_unusable_references
+
+    services = _Services()
+    assets = [_png(tmp_path, "wide", 1900, 228)]
+
+    kept = await _without_unusable_references(assets, "run-1", services)
+
+    assert [asset.asset_id for asset in kept] == ["wide"]
+    assert kept[0].height >= 300  # 高度被抬到下限
+
+
+async def test_unknown_size_is_not_blocked(tmp_path: Path) -> None:
+    """拿不到尺寸就不要乱拦，交给供应商判断。"""
+    from feishu_generation_agent.graph.nodes import _without_unusable_references
+
+    services = _Services()
+    assets = [_asset(tmp_path, "image-1", "image/png")]
+
+    kept = await _without_unusable_references(assets, "run-1", services)
+
+    assert [asset.asset_id for asset in kept] == ["image-1"]
+    assert services.repository.events == []
 
 
 async def test_video_reference_is_dropped_with_an_event(tmp_path: Path) -> None:
