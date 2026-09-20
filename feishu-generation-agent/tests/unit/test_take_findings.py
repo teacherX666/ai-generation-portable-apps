@@ -2,11 +2,22 @@
 
 from pathlib import Path
 
+import pytest
+
 from feishu_generation_agent.domain.document import MediaAsset
+from feishu_generation_agent.integrations import video_insight
 from feishu_generation_agent.integrations.video_insight import (
     DeepSeekVideoInsight,
     analyze_artifacts,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_take_cache():
+    """看片缓存按 sha256 跨调用复用，测试之间必须清掉，否则互相污染。"""
+    video_insight._TAKE_CACHE.clear()
+    yield
+    video_insight._TAKE_CACHE.clear()
 
 
 class _TakeAnalyzer:
@@ -33,6 +44,40 @@ def _artifact(tmp_path: Path) -> dict:
         "size": path.stat().st_size,
         "sha256": "sha-1",
     }
+
+
+async def test_same_take_is_only_watched_once(tmp_path: Path) -> None:
+    """同一段成片只让模型看一次（看一次 ≈ 40k token，2026-09-18 用户要求省额度）。
+
+    审片和返工融合看的是同一段视频；以前各看一遍，用户点完审片再重跑就白烧 40k。
+    """
+    analyzer = _TakeAnalyzer({"summary": "画面", "problems": [], "uncertainties": []})
+    artifact = _artifact(tmp_path)
+
+    await analyze_artifacts(analyzer, [artifact])
+    await analyze_artifacts(analyzer, [artifact])
+
+    assert analyzer.calls == 1  # 第二次命中缓存
+
+
+async def test_take_cache_not_used_when_prompt_changes(tmp_path: Path) -> None:
+    """带提示词逐条核对的结果**不缓存** —— 换了提示词结论会变。"""
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def analyze_take(self, asset, prompt: str = "") -> dict:
+            self.calls += 1
+            return {"summary": "画面", "problems": [], "uncertainties": []}
+
+    analyzer = _Recorder()
+    artifact = _artifact(tmp_path)
+
+    await analyze_artifacts(analyzer, [artifact], prompt="要求A")
+    await analyze_artifacts(analyzer, [artifact], prompt="要求B")
+
+    assert analyzer.calls == 2
 
 
 async def test_analyze_artifacts_returns_problems(tmp_path: Path) -> None:

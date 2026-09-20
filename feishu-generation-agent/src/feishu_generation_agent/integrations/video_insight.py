@@ -168,6 +168,15 @@ async def describe_output_videos(
     return "\n".join(lines)
 
 
+#: 看片结果缓存：`sha256 -> findings`。
+#:
+#: 看一整段成片 ≈ 40k token（实测），而**审片**和**返工融合**看的是同一段视频 ——
+#: 以前各看一遍，用户点完审片再重跑就白烧 40k（2026-09-18：「减少规划频率，提高规划
+#: 质量保证」）。按文件 sha256 缓存，同一段成片只让模型看一次。
+_TAKE_CACHE: dict[str, dict[str, Any]] = {}
+_TAKE_CACHE_LIMIT = 24
+
+
 async def analyze_take(
     analyzer: Any,
     asset: MediaAsset,
@@ -179,19 +188,35 @@ async def analyze_take(
     用户 2026-09-18：「没有抓住关键点，比如我的提示词明确了第 1 根枝桠三只绿色小鸟…
     结果最后效果不一样」。
 
+    结果按 `asset.sha256` 缓存：同一段成片只让模型看一次（省 ~40k token）。
+    带 prompt 的核对结果**不缓存**（它跟具体提示词绑定，换了提示词结论会变）。
+
     分析器不支持审片模式（老实现 / 测试替身）时退回普通描述，`problems` 为空。
     """
+    cache_key = ""
+    if not (prompt or "").strip() and asset.sha256:
+        cache_key = asset.sha256
+        cached = _TAKE_CACHE.get(cache_key)
+        if cached is not None:
+            _LOGGER.info("看片命中缓存，跳过模型调用 asset=%s", asset.asset_id)
+            return cached
     if hasattr(analyzer, "analyze_take"):
         try:
-            return await analyzer.analyze_take(asset, prompt)
+            findings = await analyzer.analyze_take(asset, prompt)
         except TypeError:
-            return await analyzer.analyze_take(asset)
-    insight = await analyzer.analyze_video(asset, [])
-    return {
-        "summary": getattr(insight, "summary", "") or "",
-        "problems": [],
-        "uncertainties": list(getattr(insight, "uncertainties", []) or []),
-    }
+            findings = await analyzer.analyze_take(asset)
+    else:
+        insight = await analyzer.analyze_video(asset, [])
+        findings = {
+            "summary": getattr(insight, "summary", "") or "",
+            "problems": [],
+            "uncertainties": list(getattr(insight, "uncertainties", []) or []),
+        }
+    if cache_key:
+        if len(_TAKE_CACHE) >= _TAKE_CACHE_LIMIT:
+            _TAKE_CACHE.clear()
+        _TAKE_CACHE[cache_key] = findings
+    return findings
 
 
 async def analyze_artifacts(

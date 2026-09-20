@@ -6,10 +6,19 @@ from pathlib import Path
 import pytest
 
 from feishu_generation_agent.domain.document import MediaAsset, VideoReferenceKind
+from feishu_generation_agent.integrations import video_insight
 from feishu_generation_agent.integrations.video_insight import (
     DeepSeekVideoInsight,
     describe_output_videos,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_take_cache():
+    """看片缓存按 sha256 跨调用复用，测试之间必须清掉，否则互相污染。"""
+    video_insight._TAKE_CACHE.clear()
+    yield
+    video_insight._TAKE_CACHE.clear()
 
 
 class _Insight:
