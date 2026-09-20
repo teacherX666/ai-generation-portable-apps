@@ -193,9 +193,12 @@ async def analyze_take(
 
     分析器不支持审片模式（老实现 / 测试替身）时退回普通描述，`problems` 为空。
     """
-    cache_key = ""
-    if not (prompt or "").strip() and asset.sha256:
-        cache_key = asset.sha256
+    # 缓存键优先用内容 sha256；**运行视图里的产物没有 sha256**（只有 artifact_id），
+    # 退回用 asset_id —— 它同样能保证"同一段成片只分析一次"。2026-09-18 实测：
+    # 只认 sha256 时键恒为空 → 缓存从未命中 → 每次重跑都重新看片 40k → 撞 429 →
+    # 融合失败 → 提示词连续两轮不变（用户：「为什么连续两次没有修改我的提示词了」）。
+    cache_key = (asset.sha256 or asset.asset_id or "").strip()
+    if not (prompt or "").strip() and cache_key:
         cached = _TAKE_CACHE.get(cache_key)
         if cached is not None:
             _LOGGER.info("看片命中缓存，跳过模型调用 asset=%s", asset.asset_id)

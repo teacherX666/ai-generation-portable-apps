@@ -60,6 +60,21 @@ async def test_same_take_is_only_watched_once(tmp_path: Path) -> None:
     assert analyzer.calls == 1  # 第二次命中缓存
 
 
+async def test_cache_works_without_sha256(tmp_path: Path) -> None:
+    """运行视图里的产物**没有 sha256**（只有 artifact_id）—— 这时也必须能命中缓存。
+
+    2026-09-18 实测：只认 sha256 时键恒为空 → 缓存从未命中 → 每次重跑都重新看片 40k
+    → 撞 429 → 融合失败 → 提示词连续两轮不变。
+    """
+    analyzer = _TakeAnalyzer({"summary": "画面", "problems": [], "uncertainties": []})
+    artifact = {**_artifact(tmp_path), "sha256": ""}
+
+    await analyze_artifacts(analyzer, [artifact])
+    await analyze_artifacts(analyzer, [artifact])
+
+    assert analyzer.calls == 1
+
+
 async def test_take_cache_not_used_when_prompt_changes(tmp_path: Path) -> None:
     """带提示词逐条核对的结果**不缓存** —— 换了提示词结论会变。"""
 
