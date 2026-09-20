@@ -2693,6 +2693,20 @@
   function renderArtifactReview(view) {
     // 历史成片独立于当前这条的成片状态：即使这次失败/还没出片，也要能看到往次的。
     const history = artifactHistorySnapshot();
+    // 当前 run 可能**还没进最近列表**（刚重跑出来的新版）—— siblingRuns 需要先在
+    // 列表里找到自己、拿到 record_id，否则直接返回空 → "往次成片"整块消失
+    //（用户 2026-09-18：「为什么在审核界面看不到往次成片」）。
+    // 补拉一次列表并重绘；每个 run 只补一次，避免列表里始终没有它时死循环。
+    const knownRuns = state.bitable.recentRuns || [];
+    const currentKnown = knownRuns.some((run) => run?.run_id === state.runId);
+    // 列表为空时**也要**补拉（那正是最需要的时候）；每个 run 只补一次，避免死循环。
+    if (!currentKnown && state.historyRefetchRunId !== state.runId) {
+      state.historyRefetchRunId = state.runId;
+      loadRecentRuns({ silent: true }).then(() => {
+        state.artifactPreviewSignature = null;
+        if (state.view) render(state.view);
+      });
+    }
     // 只在**真的有东西要拉**时才补数据并重画一次：否则会变成
     // 「重画 → 缓存已命中 → 再重画」的微任务死循环（实测把测试跑挂了）。
     const missingHistory = history.siblings.filter(
