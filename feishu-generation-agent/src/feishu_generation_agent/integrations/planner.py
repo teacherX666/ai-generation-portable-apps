@@ -1422,6 +1422,7 @@ class DeepSeekPlanner:
         character_context: str | None = None,
         knowledge_context: str | None = None,
         media_parts: list[dict[str, Any]] | None = None,
+        history_context: str | None = None,
     ) -> TaskPlan:
         image_mode = mode == "image"
         if exact_system_prompt is not None:
@@ -1447,6 +1448,17 @@ class DeepSeekPlanner:
                 "画面出现上述角色时，必须把对应 asset_id 挂进 reference_images"
                 "（role=reference_image），并在 prompt 中沿用该角色的既有形象，"
                 "不要用文档里的普通图片替代。"
+            )
+        if history_context:
+            # 用户 2026-09-18 选的第 2 条：把**这条需求历次返工被要求改的地方**喂进规划，
+            # 让重新规划时直接避开上次被挑出来的问题 —— 少一轮"生成完才发现不对"。
+            # 不增加任何模型调用（这些要求本来就在我们自己的数据里）。
+            user_content = (
+                f"{user_content}\n\n"
+                "【这条需求以前返工被要求改过的地方（这次规划要直接做到，不要再犯）】\n"
+                f"{history_context}\n"
+                "以上是同一个需求在以往几版里被明确要求修的问题。请在本轮规划里就"
+                "写进对应镜头（写成可判定的画面描述），不要等生成完再被挑出来。"
             )
         if knowledge_context:
             # 知识库经验要在**写 prompt 之前**给到模型，让它一次写对；

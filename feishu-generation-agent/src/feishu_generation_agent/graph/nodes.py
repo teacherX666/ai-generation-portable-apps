@@ -963,6 +963,36 @@ async def _planning_media_parts(
     )
 
 
+async def _history_context_for_plan(
+    state: AgentState,
+    *,
+    limit: int = 12,
+) -> str | None:
+    """把这条需求**历次返工被要求改的地方**整理成规划上下文。
+
+    用户 2026-09-18 选的第 2 条：「一次规划能把更多的信息上传然后效果更好，视频就不会
+    再多次生成」。这些要求本来就在我们自己的数据里（计划任务的 `rework_requirements`），
+    喂给 planner **不增加任何模型调用**。
+
+    只在重新规划（退回修改）时才有内容 —— 全新需求没有历史，返回 None。
+    """
+    collected: list[str] = []
+    for plan_key in ("draft_plan", "approved_plan"):
+        plan = state.get(plan_key)
+        if not isinstance(plan, dict):
+            continue
+        for task in plan.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            for item in task.get("rework_requirements") or []:
+                text = str(item).strip()
+                if text and text not in collected:
+                    collected.append(text)
+    if not collected:
+        return None
+    return "\n".join(f"- {item}" for item in collected[-limit:])
+
+
 async def _plan_with_optional_fallback(
     services: GraphServices,
     document: NormalizedDocument,
@@ -973,6 +1003,7 @@ async def _plan_with_optional_fallback(
     resolved_characters: list[Any],
     knowledge_context: str | None,
     media_parts: list[dict[str, Any]],
+    history_context: str | None = None,
 ) -> Any:
     """多模态规划；失败且允许时自动回退到纯文本（懒补图片视觉描述）。
 
@@ -984,6 +1015,7 @@ async def _plan_with_optional_fallback(
         **_planner_mode_argument(planner, mode),
         **_character_context_argument(planner, resolved_characters),
         **_knowledge_context_argument(planner, knowledge_context),
+        **_history_context_argument(planner, history_context),
     }
     try:
         return await planner.plan(
@@ -1008,6 +1040,18 @@ async def _plan_with_optional_fallback(
             state.get("planner_feedback"),
             **common,
         )
+
+
+def _history_context_argument(
+    planner: Any,
+    history_context: str | None,
+) -> dict[str, Any]:
+    """只在 planner 支持 `history_context` 时才传（与其它可选参数同一套签名探测）。"""
+    if not history_context:
+        return {}
+    if "history_context" not in signature(planner.plan).parameters:
+        return {}
+    return {"history_context": history_context}
 
 
 def _planning_media_argument(
@@ -1096,6 +1140,8 @@ async def plan_requirements(
             resolved_characters,
             knowledge_context,
             media_parts,
+            # 这条需求历次返工被要求改的地方（重新规划时才有）—— 免费，不增加调用。
+            await _history_context_for_plan(state),
         )
         plan_json = _json_model(plan)
         updates: AgentState = {
