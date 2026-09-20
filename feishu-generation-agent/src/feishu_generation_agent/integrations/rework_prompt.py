@@ -436,6 +436,40 @@ def _accepts_visual_context(fuser: Any) -> bool:
     )
 
 
+def _ensure_requirements_in_body(
+    fused: str,
+    must_avoid: Sequence[str] | None,
+    *,
+    max_chars: int,
+) -> str:
+    """把只出现在「必须避免」里的要求**补写进正文**。
+
+    用户 2026-09-18：「为什么我返工要求这么多他却不改一点提示词」—— 融合把
+    「绝对不能露出手机屏幕」这类**否定式要求**全放进了 `must_avoid`、正文一个字不改；
+    而调用方已按用户口径（「不要在约束里加东西，直接描述在正文就行」）**不再把
+    must_avoid 并进负向约束** —— 结果这些要求彻底丢了。
+
+    这里兜一层：正文里没提到的，作为正文句子补上去（不加「禁止项」小标题，
+    直接描述）。
+    """
+    missing: list[str] = []
+    for raw in must_avoid or []:
+        item = str(raw).strip().rstrip("。；;")
+        if not item or item in fused:
+            continue
+        if item not in missing:
+            missing.append(item)
+    if not missing:
+        return fused
+    addition = "；".join(missing) + "。"
+    room = max_chars - len(fused.rstrip()) - 1
+    if room <= 0:
+        return fused
+    if len(addition) > room:
+        addition = addition[: max(0, room - 1)].rstrip("；;，, ") + "。"
+    return f"{fused.rstrip()}\n{addition}"
+
+
 async def build_rework_prompt(
     base_prompt: str,
     requirements: Sequence[str],
@@ -488,6 +522,9 @@ async def build_rework_prompt(
                 fused, base_prompt=base_prompt, max_chars=max_chars
             )
             if reason is None:
+                fused = _ensure_requirements_in_body(
+                    fused, must_avoid, max_chars=max_chars
+                )
                 return fused, False, must_avoid
             _LOGGER.warning(
                 "返工提示词融合结果不合契约（第 %d/%d 次尝试）：%s",

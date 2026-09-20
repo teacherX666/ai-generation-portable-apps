@@ -397,7 +397,13 @@ async def test_build_rework_prompt_rejects_fusion_that_drops_tokens() -> None:
 # --- 双通道：融合时顺带产出「必须避免」清单，写进 negative_constraints ---
 
 
-async def test_build_rework_prompt_returns_must_avoid_from_fusion() -> None:
+async def test_build_rework_prompt_writes_must_avoid_into_the_body() -> None:
+    """只出现在「必须避免」里的要求必须补进正文。
+
+    用户 2026-09-18：「为什么我返工要求这么多他却不改一点提示词」—— 融合把否定式要求
+    全放进 must_avoid、正文一个字不改；而调用方已不再把 must_avoid 并进负向约束，
+    不补进正文就等于这些要求彻底丢了。
+    """
     async def fuse(original_prompt: str, requirements: list[str]) -> dict:
         return {
             "prompt": f"{original_prompt}（已融合）",
@@ -408,9 +414,26 @@ async def test_build_rework_prompt_returns_must_avoid_from_fusion() -> None:
         "原始画面", ["不要让红衣服老头跑出去"], fuse=fuse
     )
 
-    assert prompt == "原始画面（已融合）"
+    assert prompt.startswith("原始画面（已融合）")
+    assert "红衣服老头不得跑出起跑线" in prompt
+    assert "眼睛不得发光" in prompt
     assert truncated is False
     assert must_avoid == ["红衣服老头不得跑出起跑线", "眼睛不得发光"]
+
+
+async def test_build_rework_prompt_does_not_duplicate_must_avoid_in_body() -> None:
+    """正文里已经写了的要求，不要再追加一遍。"""
+    async def fuse(original_prompt: str, requirements: list[str]) -> dict:
+        return {
+            "prompt": f"{original_prompt}（已融合，眼睛不得发光）",
+            "must_avoid": ["眼睛不得发光"],
+        }
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始画面", ["眼睛别发光"], fuse=fuse
+    )
+
+    assert prompt.count("眼睛不得发光") == 1
 
 
 async def test_build_rework_prompt_keeps_prompt_when_must_avoid_is_malformed() -> None:
@@ -519,7 +542,8 @@ async def test_build_rework_prompt_retries_rejected_fusion_until_accepted() -> N
     )
 
     assert len(calls) == 2
-    assert prompt == "@图片1 中的猫在跑（已融合）"
+    assert prompt.startswith("@图片1 中的猫在跑（已融合）")
+    assert "手不得僵" in prompt  # 只出现在 must_avoid 里的要求补进了正文
     assert REWORK_MARKER not in prompt
     assert truncated is False
     assert must_avoid == ["手不得僵"]
