@@ -369,15 +369,9 @@ def fusion_rejection_reason(
     added = fused_tokens - base_tokens
     if added:
         return "融合结果多出素材引用：" + "、".join(sorted(added))
-    # 结构校验：用户 2026-09-18 反复要求「不要越叠越多，就地在正文里改」。
-    # 只靠提示词约束模型不够（实测照旧追加），这里硬卡两条。
-    base_shots = _SHOT_MARKER.findall(base_prompt or "")
-    fused_shots = _SHOT_MARKER.findall(text)
-    if base_shots and fused_shots != base_shots:
-        return (
-            "融合结果改动了镜头结构（原文 "
-            f"{len(base_shots)} 个镜头，结果 {len(fused_shots)} 个）"
-        )
+    # 结构校验（用户 2026-09-18 反复要求「不要越叠越多」）：只拦**结尾新增汇总段**。
+    # 刻意不校验镜头数量 —— 融合有时会合理地合并/拆分句子，误判会让返工整轮白跑
+    #（回退成"正文不变"），比放过更糟。
     if _SUMMARY_BLOCK.search(text) and not _SUMMARY_BLOCK.search(base_prompt or ""):
         return "融合结果在结尾新增了汇总段（要求必须就地并进原句）"
     return None

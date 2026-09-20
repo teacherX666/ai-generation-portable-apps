@@ -1,86 +1,32 @@
-"""融合提示词：按提示词工程指南重写后的契约。
+"""融合提示词：**保持原来的那版**（用户 2026-09-18：「你这改的什么玩意啊，我之前不是这个
+效果的」）。
 
-用户 2026-09-18：「现在的融合提示词感觉还是得改好几版都搞不到正确的答案，能不能去网上
-找那些收藏高的 skill 融合提示词」，并要求「不要越叠越多，就地在正文里改」。
+今天从 943bc88 起连改了 6 版融合提示词，效果反而变差。这版是从 95d9530 恢复的原文 ——
+它本来就有「口语必须改写成具体、可执行、可判定的物理描述，不能照抄口语」，也就是用户想要
+的"帮我设计优化"。
 
-这里同时锁住三件事：① 规则（就地改、不许新增段落、禁汇总段）② few-shot 例子
-③ 提示词不能太长（曾因撑到 1417 字撞上 TPM 限流，导致融合失败、退回"原样贴末尾"）。
+所以这个文件只做一件事：**守住原版的关键条款**，防止再被"多加几条规则"改跑。
 """
 
 from feishu_generation_agent.integrations.planner import (
     _REWORK_FUSION_SYSTEM_PROMPT,
 )
 
-#: 上限：既保证例子放得下，又不至于把每次调用的 token 撑到撞 TPM 限流（2026-09-18）。
-#: 限流本身已有退避重试兜底，所以这里允许到 1300。
-_MAX_FUSION_PROMPT_CHARS = 1300
 
-
-def test_fusion_prompt_stays_small_enough_for_rate_limits() -> None:
-    assert len(_REWORK_FUSION_SYSTEM_PROMPT) <= _MAX_FUSION_PROMPT_CHARS
-
-
-def test_fusion_prompt_treats_requirements_as_intent() -> None:
-    """用户 2026-09-18：「镜头之间切换平滑、逻辑表现流畅…其实是想让他帮我设计优化
-    提示词，结果他直接放原文里」。
-
-    所以必须明确：抽象意图**不要照抄**，要落到具体镜头上。
-    """
-    assert "把要求当「意图」，不要照抄" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "一个字都不要出现在正文里" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "落到具体镜头上" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "同一机位轴线与光线方向" in _REWORK_FUSION_SYSTEM_PROMPT
-    # 示例里要演示"意图被落成可执行描述"
-    assert "承接上一镜的视线高度" in _REWORK_FUSION_SYSTEM_PROMPT
-
-
-def test_fusion_prompt_forbids_inventing_content() -> None:
-    """2026-09-18 线上事故：毛衣那条被编出「毛线不得从枝桠上取」。
-
-    原文没有、用户要求没有、知识库也没有 —— 用户以为几个任务的提示词串在一起了。
-    """
-    assert "不引入新元素" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "毛线不得从枝桠上取" in _REWORK_FUSION_SYSTEM_PROMPT
-    # 但不能因为"别编造"就把"展开意图"也禁掉
-    assert "允许" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "把上面的「意图」展开成更具体的画面" in _REWORK_FUSION_SYSTEM_PROMPT
-
-
-def test_fusion_prompt_asks_for_in_place_edits() -> None:
-    assert "就地修订器" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "不许新增段落" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "镜头数量和镜头编号完全一致" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "错误输出（禁止）" in _REWORK_FUSION_SYSTEM_PROMPT
-
-
-def test_fusion_prompt_forbids_negative_lists() -> None:
-    assert "否定式要求改写成画面描述" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "手机不得瞬间出现在地面" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "沿重力弧线" in _REWORK_FUSION_SYSTEM_PROMPT
-
-
-def test_fusion_prompt_applies_official_seedance_guidance() -> None:
-    """Seedance 官方指南：一个镜头一个主要动作 + 标准运镜 + 别越写越长 + 安全词。"""
-    assert "一个镜头只保留" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "固定机位/推近/拉远" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "总长度与原文接近" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "真实人名、品牌名、暴力或政治敏感词" in _REWORK_FUSION_SYSTEM_PROMPT
-
-
-def test_fusion_prompt_has_a_worked_example() -> None:
-    """格式敏感的任务必须给例子（提示词工程指南：few-shot 是关键）。"""
-    assert "输入原文：「镜头1" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "正确输出" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "镜头数不变" in _REWORK_FUSION_SYSTEM_PROMPT
-    assert "错误输出（禁止）" in _REWORK_FUSION_SYSTEM_PROMPT
-
-
-def test_fusion_prompt_still_keeps_the_hard_rules() -> None:
-    """原有硬性要求不能被重写挤掉。"""
-    for rule in (
-        "@图片N / @视频N / @音频N 令牌原样保留",
-        "保留原文全部信息",
-        "新旧要求冲突时以新的为准",
-        "只输出这个 JSON",
+def test_fusion_prompt_keeps_the_original_clauses() -> None:
+    """原版的 7 条硬性要求，一条都不能少。"""
+    for clause in (
+        "保留原始提示词里的全部画面信息",
+        "@图片N / @视频N / @音频N 引用令牌都必须原样",
+        "能写成正向画面描述的写进 prompt，只能写成禁止项的放进 must_avoid",
+        "必须改写成具体、可执行、可判定的物理描述，不能照抄口语",
+        "若新旧要求冲突，以更新的要求为准",
+        "不要输出「【返工要求】」这类标记",
+        "prompt 不超过",
     ):
-        assert rule in _REWORK_FUSION_SYSTEM_PROMPT
+        assert clause in _REWORK_FUSION_SYSTEM_PROMPT
+
+
+def test_fusion_prompt_does_not_grow_back() -> None:
+    """防止再被"多加几条规则"撑长（撑长会撞 TPM 限流，2026-09-18 实测）。"""
+    assert len(_REWORK_FUSION_SYSTEM_PROMPT) <= 700
