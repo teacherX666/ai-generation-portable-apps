@@ -199,6 +199,20 @@ test("没有时区的裸时间串按 UTC 解析（否则显示早 8 小时）", 
   );
 });
 
+test("同一记录里优先用有成片的那次当代表（否则点进去看不到片）", () => {
+  // 用户 2026-09-18：「我的宿舍的任务怎么找不到了」—— 同一条记录里"失败的那次"比
+  // "成功有片的那次"晚 7 秒，于是当了代表，点进去没有成片，看着像任务没了。
+  const runs = [
+    { run_id: "failed-newer", record_id: "rec-a", status: "failed", artifact_count: 0 },
+    { run_id: "ok-older", record_id: "rec-a", status: "succeeded", artifact_count: 1 },
+  ];
+
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["ok-older"],
+  );
+});
+
 test("同一记录里进行中的那条优先当代表", () => {
   const runs = [
     { run_id: "run-new", record_id: "rec-a", status: "succeeded" },

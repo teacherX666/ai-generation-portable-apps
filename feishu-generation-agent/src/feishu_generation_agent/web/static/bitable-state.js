@@ -257,8 +257,21 @@
         order.push(key);
         return;
       }
-      // 同一个 key 之后又出现：进行中的那条优先当代表。
-      if (run.active && !byKey.get(key).active) byKey.set(key, run);
+      // 同一个 key 之后又出现，按"对用户更有用"的顺序挑代表：
+      // ① 进行中的那条（正在跑，最该看）② **有成片的**（点进去能看片）
+      // ③ 保持先出现的那条。
+      //
+      // 用户 2026-09-18：「我的宿舍的任务怎么找不到了」—— 同一条记录里"失败的那次"
+      // 比"成功有片的那次"晚 7 秒，就当了代表，点进去看不到成片，看着像任务没了。
+      const current = byKey.get(key);
+      if (run.active && !current.active) {
+        byKey.set(key, run);
+        return;
+      }
+      if (current.active) return;
+      const runHasArtifacts = Number(run.artifact_count) > 0;
+      const currentHasArtifacts = Number(current.artifact_count) > 0;
+      if (runHasArtifacts && !currentHasArtifacts) byKey.set(key, run);
     });
     // 按时间**倒序**（最新的在最上面）：以前完全按接口返回的顺序，接口顺序一变
     // 界面上看起来就是乱序（用户 2026-09-18：「历史记录的顺序没按时间顺序」）。
