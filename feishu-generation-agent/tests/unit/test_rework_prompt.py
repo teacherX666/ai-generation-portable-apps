@@ -521,6 +521,48 @@ def test_fusion_rejection_reason_names_each_violation() -> None:
     )
 
 
+async def test_build_rework_prompt_retries_after_rate_limit(monkeypatch) -> None:
+    """融合被限流（429 TPM）时要退避重试，不能连发重试然后直接贴末尾。
+
+    2026-09-18 线上实测：deepseek-v4-1-flash 报
+    `429 ModelAccountTpmRateLimitExceeded`，三次连发全撞上限 → 用户看到的是
+    「正文完全不改、结尾多一坨」。
+    """
+    from feishu_generation_agent.integrations import rework_prompt as module
+
+    monkeypatch.setattr(module, "_RATE_LIMIT_BACKOFF_SECONDS", 0.01)
+    calls: list[int] = []
+
+    async def fuse(original_prompt: str, requirements: list[str]) -> dict:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("Error code: 429 - ModelAccountTpmRateLimitExceeded")
+        return {"prompt": f"{original_prompt}（已融合）", "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse
+    )
+
+    assert len(calls) == 2  # 限流后重试成功
+    assert prompt.startswith("原始画面（已融合）")
+
+
+async def test_build_rework_prompt_falls_back_on_non_rate_limit_error() -> None:
+    """非限流的错误照旧立刻回退（不浪费时间等）。"""
+    calls: list[int] = []
+
+    async def fuse(original_prompt: str, requirements: list[str]) -> dict:
+        calls.append(1)
+        raise RuntimeError("model does not exist")
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse
+    )
+
+    assert len(calls) == 1
+    assert "手不要僵" in prompt  # 安全拼接把要求带上了
+
+
 async def test_build_rework_prompt_retries_rejected_fusion_until_accepted() -> None:
     """偶发不合契约时应当重试，而不是一次失败就整段贴。
 

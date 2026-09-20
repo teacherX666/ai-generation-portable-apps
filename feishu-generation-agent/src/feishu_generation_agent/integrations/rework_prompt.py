@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections import Counter
@@ -309,6 +310,21 @@ def reference_token_counts(text: str) -> Counter[str]:
 #: 用户看到的是「返工要求又变成直接贴在提示词末尾」。偶发失败应该重试。
 _FUSION_ATTEMPTS = 3
 
+#: 融合被限流（429 / TPM 超限）时的退避基数：第 N 次失败等 N×这个秒数再试。
+#:
+#: 2026-09-18 线上实测：融合模型 deepseek-v4-1-flash 报
+#: `429 ModelAccountTpmRateLimitExceeded`，三次重试**连发**全撞上限 → 直接走
+#: "把要求原样贴末尾"的兜底（用户看到的就是"正文完全不改、结尾多一坨"）。
+_RATE_LIMIT_BACKOFF_SECONDS = 20.0
+
+#: 判定"这次失败是限流"的关键词（langchain/openai 的报错文案）。
+_RATE_LIMIT_MARKERS = ("429", "rate limit", "ratelimit", "tpm", "too many requests")
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in _RATE_LIMIT_MARKERS)
+
 
 def fusion_rejection_reason(
     fused: str | None,
@@ -507,7 +523,18 @@ async def build_rework_prompt(
                     if accepts_context
                     else fuse(base_prompt, list(requirements))
                 )
-            except Exception:
+            except Exception as exc:
+                if _is_rate_limited(exc) and attempt < _FUSION_ATTEMPTS:
+                    # 连发重试只会继续撞 TPM 上限，等一下再来（2026-09-18 线上 429）。
+                    delay = _RATE_LIMIT_BACKOFF_SECONDS * attempt
+                    _LOGGER.warning(
+                        "返工提示词融合被限流，%.0f 秒后重试（第 %d/%d 次）",
+                        delay,
+                        attempt,
+                        _FUSION_ATTEMPTS,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 _LOGGER.warning(
                     "返工提示词 AI 融合调用失败，回退安全拼接", exc_info=True
                 )
