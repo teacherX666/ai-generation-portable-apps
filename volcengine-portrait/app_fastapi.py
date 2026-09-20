@@ -48,6 +48,17 @@ if _restored_files:
     legacy.FILES.update(_restored_files)
     print(f"Restored {len(_restored_files)} download file mapping(s)", flush=True)
 
+# 队列持久化恢复：stdlib 在 main() 里跑 recover_backlog()，uvicorn 路径不会
+# 执行 main()——不补的话生产（fastapi 引擎）重启后排队任务永不恢复、
+# 运行中任务的 activity 记录永远停在 running（2026-09-09 对齐 seedance/nano）。
+try:
+    _recovered_queued, _recovered_interrupted = legacy.recover_backlog()
+    if _recovered_queued or _recovered_interrupted:
+        print(f"Backlog recovered: {_recovered_queued} re-queued, "
+              f"{_recovered_interrupted} marked interrupted", flush=True)
+except Exception as exc:
+    print(f"Backlog recovery failed (will retry on next start): {exc}", flush=True)
+
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response as FastResponse

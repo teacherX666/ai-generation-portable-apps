@@ -46,6 +46,7 @@ _DEFAULT_TRUSTED_CLI_HASHES = frozenset({
     # from lf3-static.bytednsdoc.com CDN, installs to DREAMINA_INSTALL_DIR (~/.local/bin),
     # openclaw injection is a no-op without /root/.openclaw. Used for server deployment.
     "c9c5966b216e2f38d88f8419031cc2e865f07ef1d8dfce2eed2802ca43c0e422",
+    "ca746cd3023dba406753b31422a785104f9763e7de99ff387d3e095537e226f3",
 })
 
 
@@ -62,6 +63,35 @@ def _trusted_cli_hashes() -> frozenset[str]:
         extras = {h.strip().lower() for h in override.split(",") if h.strip()}
         return _DEFAULT_TRUSTED_CLI_HASHES | frozenset(extras)
     return _DEFAULT_TRUSTED_CLI_HASHES
+
+
+def _resolve_bash() -> str:
+    """Locate a bash executable for running the Dreamina install script."""
+    which = shutil.which("bash")
+    if which:
+        return which
+    for candidate in (
+        r"D:\Git\bin\bash.exe",
+        r"D:\Git\usr\bin\bash.exe",
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+    ):
+        if Path(candidate).exists():
+            return candidate
+    return "bash"
+
+
+def _dreamina_bin() -> str:
+    resolved = shutil.which("dreamina")
+    if resolved:
+        return resolved
+    candidate = Path.home() / "bin" / "dreamina.exe"
+    if candidate.exists():
+        return str(candidate)
+    return "dreamina"
+
 
 # ---- Client IP helpers ----
 
@@ -324,19 +354,68 @@ def cleanup_old_uploads():
             f.unlink(missing_ok=True)
 
 
-def run_cmd(args: list[str], timeout: int = 30, env_override: dict | None = None) -> dict[str, Any]:
+def run_cmd(args: list[str], timeout: int = 30, env_override: dict | None = None, cancel_check=None) -> dict[str, Any]:
     try:
+        if args and args[0] == "dreamina":
+            resolved = shutil.which("dreamina")
+            if not resolved:
+                candidate = Path.home() / "bin" / "dreamina.exe"
+                if candidate.exists():
+                    resolved = str(candidate)
+            if resolved:
+                args = [resolved] + list(args[1:])
         env = None
         if env_override:
             env = os.environ.copy()
             env.update(env_override)
+        if cancel_check is not None:
+            proc = subprocess.Popen(
+                args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=env, **_POPEN_EXTRA,
+            )
+            deadline = time.monotonic() + max(1, int(timeout or 1))
+            while True:
+                if cancel_check():
+                    proc.terminate()
+                    try:
+                        stdout_b, stderr_b = proc.communicate(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        stdout_b, stderr_b = proc.communicate()
+                    return {
+                        "returncode": -2,
+                        "stdout": (stdout_b or b"").decode("utf-8", errors="replace").strip(),
+                        "stderr": "cancelled",
+                    }
+                if proc.poll() is not None:
+                    stdout_b, stderr_b = proc.communicate()
+                    return {
+                        "returncode": proc.returncode,
+                        "stdout": (stdout_b or b"").decode("utf-8", errors="replace").strip(),
+                        "stderr": (stderr_b or b"").decode("utf-8", errors="replace").strip(),
+                    }
+                if time.monotonic() >= deadline:
+                    proc.terminate()
+                    try:
+                        stdout_b, stderr_b = proc.communicate(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        stdout_b, stderr_b = proc.communicate()
+                    return {
+                        "returncode": -1,
+                        "stdout": (stdout_b or b"").decode("utf-8", errors="replace").strip(),
+                        "stderr": "timeout",
+                    }
+                time.sleep(0.2)
         result = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout, env=env
+            args, capture_output=True, timeout=timeout, env=env
         )
+        stdout = (result.stdout or b"").decode("utf-8", errors="replace").strip()
+        stderr = (result.stderr or b"").decode("utf-8", errors="replace").strip()
         return {
             "returncode": result.returncode,
-            "stdout": result.stdout.strip(),
-            "stderr": result.stderr.strip(),
+            "stdout": stdout,
+            "stderr": stderr,
         }
     except subprocess.TimeoutExpired:
         return {"returncode": -1, "stdout": "", "stderr": "timeout"}
@@ -1414,7 +1493,7 @@ def _execute_task_impl(job_id: str, task_type: str, args: list[str], params: dic
             if _job_cancel_requested(job_id):
                 add_event(f"子任务 {index}/{total} 取消")
                 return
-            result = run_cmd(args, timeout=params.get("timeout", 600), env_override=env_override)
+            result = run_cmd(args, timeout=params.get("timeout", 600), env_override=env_override, cancel_check=lambda: _job_cancel_requested(job_id))
             add_cli_log(args, result)
             stdout_text = result.get("stdout", "") + result.get("stderr", "")
             if "ExceedConcurrencyLimit" in stdout_text or "ret=1310" in stdout_text:
@@ -1643,7 +1722,7 @@ def download_if_needed(submit_id: str, data: dict, task_type: str, job_id: str, 
     while True:
         query_args = ["dreamina", "query_result", f"--submit_id={submit_id}",
                       f"--download_dir={dl_dir}"]
-        r = run_cmd(query_args, timeout=60, env_override=env_override)
+        r = run_cmd(query_args, timeout=60, env_override=env_override, cancel_check=lambda: _job_cancel_requested(job_id))
         if on_cli_log:
             try:
                 on_cli_log(query_args, r)
@@ -2265,9 +2344,9 @@ class Handler(SimpleHTTPRequestHandler):
                 if env:
                     proc_env.update(env)
                 LOGIN_PROC = subprocess.Popen(
-                    ["dreamina", "login"],
+                    [_dreamina_bin(), "login"],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, start_new_session=True, env=proc_env,
+                    text=True, encoding="utf-8", errors="replace", start_new_session=True, env=proc_env,
                     **_POPEN_EXTRA,
                 )
             except FileNotFoundError:
@@ -2440,7 +2519,7 @@ class Handler(SimpleHTTPRequestHandler):
             # Feed the verified bytes to bash on stdin — no shell interpolation
             # of the payload, no cache reuse issues.
             proc = subprocess.Popen(
-                ["bash"],
+                [_resolve_bash()],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=False,
                 **_POPEN_EXTRA,
@@ -2471,9 +2550,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             try:
                 LOGIN_PROC = subprocess.Popen(
-                    ["dreamina", "login"],
+                    [_dreamina_bin(), "login"],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, start_new_session=True,
+                    text=True, encoding="utf-8", errors="replace", start_new_session=True,
                     **_POPEN_EXTRA,
                 )
             except FileNotFoundError:
@@ -2522,9 +2601,9 @@ class Handler(SimpleHTTPRequestHandler):
         with LOGIN_LOCK:
             try:
                 LOGIN_PROC = subprocess.Popen(
-                    ["dreamina", "login"],
+                    [_dreamina_bin(), "login"],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, start_new_session=True,
+                    text=True, encoding="utf-8", errors="replace", start_new_session=True,
                     **_POPEN_EXTRA,
                 )
             except FileNotFoundError:

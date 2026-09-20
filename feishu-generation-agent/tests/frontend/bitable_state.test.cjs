@@ -32,6 +32,16 @@ const tasks = [
   },
 ];
 
+test("app persists and restores the selected bitable category", () => {
+  const app = readFileSync(
+    join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
+    "utf8",
+  );
+
+  assert.match(app, /feishu-agent\.active-category/);
+  assert.match(app, /BitableState\.createState\(initialBitableCategory\(\)\)/);
+  assert.match(app, /persistBitableCategory\(category\)/);
+});
 test("scan start, success and failure preserve explicit UI phases", () => {
   let state = BitableState.createState();
   state = BitableState.scanStarted(state, "animation");
@@ -48,7 +58,7 @@ test("scan start, success and failure preserve explicit UI phases", () => {
   assert.deepEqual(state.categories.animation.tasks, tasks);
 });
 
-test("claim success removes the task and conflict keeps it retryable", () => {
+test("claim success keeps the task marked as processing", () => {
   let state = BitableState.scanSucceeded(BitableState.createState(), "animation", tasks);
   state = BitableState.claimStarted(state, "rec-1", "animation");
   assert.deepEqual(state.claim, {
@@ -67,9 +77,284 @@ test("claim success removes the task and conflict keeps it retryable", () => {
   state = BitableState.claimSucceeded(state, "run-1");
   assert.equal(state.claim.phase, "ready");
   assert.equal(state.claim.runId, "run-1");
-  assert.deepEqual(state.categories.animation.tasks, []);
+  assert.equal(state.categories.animation.tasks.length, 1);
+  assert.equal(state.categories.animation.tasks[0].claimed_run_id, "run-1");
+  assert.equal(state.categories.animation.tasks[0].claim_status, "processing");
 });
 
+test("rescan keeps a claimed task when the backend excludes active runs", () => {
+  let state = BitableState.scanSucceeded(BitableState.createState(), "portrait", tasks);
+  state = BitableState.claimStarted(state, "rec-1", "portrait");
+  state = BitableState.claimSucceeded(state, "run-portrait");
+  state = BitableState.scanSucceeded(state, "portrait", []);
+
+  assert.equal(state.categories.portrait.tasks.length, 1);
+  assert.equal(state.categories.portrait.tasks[0].record_id, "rec-1");
+  assert.equal(state.categories.portrait.tasks[0].claimed_run_id, "run-portrait");
+});
+
+test("createState accepts a persisted category", () => {
+  assert.equal(BitableState.createState("portrait").activeCategory, "portrait");
+  assert.equal(BitableState.createState("invalid").activeCategory, "animation");
+});
+
+test("claim badge labels follow the persisted claim status", () => {
+  assert.equal(BitableState.claimBadge({ record_id: "rec-1" }), null);
+  assert.equal(BitableState.claimBadge(null), null);
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "processing" }),
+    { label: "分析中", tone: "busy" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "处理中" }),
+    { label: "处理中", tone: "busy" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "待审批" }),
+    { label: "待审批", tone: "attention" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "待确认成片" }),
+    { label: "待确认成片", tone: "attention" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1", claim_status: "回写失败" }),
+    { label: "回写失败", tone: "danger" },
+  );
+  assert.deepEqual(
+    BitableState.claimBadge({ claimed_run_id: "run-1" }),
+    { label: "分析中", tone: "busy" },
+  );
+});
+
+test("rescan adopts the claim fields the backend now returns", () => {
+  let state = BitableState.scanSucceeded(
+    BitableState.createState(),
+    "animation",
+    tasks,
+  );
+  state = BitableState.claimStarted(state, "rec-1", "animation");
+  state = BitableState.claimSucceeded(state, "run-local");
+  // 后端现在会把已领取的记录一起带回来（带真实状态），服务端数据优先。
+  state = BitableState.scanSucceeded(state, "animation", [
+    { ...tasks[0], claimed_run_id: "run-local", claim_status: "待审批" },
+  ]);
+
+  assert.equal(state.categories.animation.tasks.length, 1);
+  assert.equal(state.categories.animation.tasks[0].claimed_run_id, "run-local");
+  assert.equal(state.categories.animation.tasks[0].claim_status, "待审批");
+});
+
+test("任务记录一条记录一行：重跑不再多出一行", () => {
+  const runs = [
+    { run_id: "run-3", record_id: "rec-a", active: true },
+    { run_id: "run-2", record_id: "rec-a" },
+    { run_id: "run-1", record_id: "rec-a" },
+    { run_id: "run-b", record_id: "rec-b" },
+    { run_id: "run-direct" },
+  ];
+
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["run-3", "run-b", "run-direct"],
+  );
+});
+
+test("任务记录按时间倒序（最新的在最上面）", () => {
+  // 用户 2026-09-18：「历史记录的顺序没按时间顺序」—— 以前完全按接口顺序透传。
+  const runs = [
+    { run_id: "run-old", record_id: "rec-a", updated_at: "2026-09-18T01:00:00+00:00" },
+    { run_id: "run-new", record_id: "rec-b", updated_at: "2026-09-18T05:00:00+00:00" },
+    { run_id: "run-mid", record_id: "rec-c", updated_at: "2026-09-18T03:00:00+00:00" },
+  ];
+
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["run-new", "run-mid", "run-old"],
+  );
+});
+
+test("同一秒的几条保持原顺序（不来回跳）", () => {
+  const runs = [
+    { run_id: "a", record_id: "rec-a", updated_at: "2026-09-18T05:00:00+00:00" },
+    { run_id: "b", record_id: "rec-b", updated_at: "2026-09-18T05:00:00+00:00" },
+  ];
+
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["a", "b"],
+  );
+});
+
+test("没有时区的裸时间串按 UTC 解析（否则显示早 8 小时）", () => {
+  const runs = [
+    { run_id: "naive", record_id: "rec-a", updated_at: "2026-09-18 06:00:00" },
+    { run_id: "aware", record_id: "rec-b", updated_at: "2026-09-18T05:00:00+00:00" },
+  ];
+
+  // 06:00 UTC 晚于 05:00 UTC；裸串若被当本地时间就会被排到后面。
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["naive", "aware"],
+  );
+});
+
+test("同一记录里优先用有成片的那次当代表（否则点进去看不到片）", () => {
+  // 用户 2026-09-18：「我的宿舍的任务怎么找不到了」—— 同一条记录里"失败的那次"比
+  // "成功有片的那次"晚 7 秒，于是当了代表，点进去没有成片，看着像任务没了。
+  const runs = [
+    { run_id: "failed-newer", record_id: "rec-a", status: "failed", artifact_count: 0 },
+    { run_id: "ok-older", record_id: "rec-a", status: "succeeded", artifact_count: 1 },
+  ];
+
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["ok-older"],
+  );
+});
+
+test("同一记录里进行中的那条优先当代表", () => {
+  const runs = [
+    { run_id: "run-new", record_id: "rec-a", status: "succeeded" },
+    { run_id: "run-active", record_id: "rec-a", active: true },
+  ];
+  assert.deepEqual(
+    BitableState.latestRunsByRecord(runs).map((run) => run.run_id),
+    ["run-active"],
+  );
+  assert.deepEqual(BitableState.latestRunsByRecord(null), []);
+});
+
+test("同一条记录的其它尝试：给成片预览看历史用", () => {
+  const runs = [
+    { run_id: "run-3", record_id: "rec-a", display_text: "拿着吧你", status: "running", active: true },
+    { run_id: "run-2", record_id: "rec-a", display_text: "拿着吧你", status: "succeeded" },
+    { run_id: "run-1", record_id: "rec-a", display_text: "拿着吧你", status: "failed" },
+    { run_id: "run-b", record_id: "rec-b", display_text: "脱毛", status: "waiting_review" },
+  ];
+
+  // 用户要的是「预览里能看到历史生成的」——任务记录本身仍然一版一行，
+  // 这个助手只负责把同一条记录的**其它**尝试挑出来。
+  assert.deepEqual(
+    BitableState.siblingRuns(runs, "run-3").map((run) => run.run_id),
+    ["run-2", "run-1"],
+  );
+  assert.deepEqual(BitableState.siblingRuns(runs, "run-b"), []);
+});
+
+test("没有 record_id 时不猜，返回空", () => {
+  const runs = [
+    { run_id: "run-1", display_text: "甲" },
+    { run_id: "run-2", display_text: "乙" },
+  ];
+  assert.deepEqual(BitableState.siblingRuns(runs, "run-1"), []);
+  assert.deepEqual(BitableState.siblingRuns(runs, "不存在"), []);
+  assert.deepEqual(BitableState.siblingRuns(null, "run-1"), []);
+});
+
+test("任务列表渲染的徽章文案来自共享助手", () => {
+  const app = readFileSync(
+    join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
+    "utf8",
+  );
+
+  assert.match(app, /BitableState\.liveClaimBadge\(/);
+  assert.match(app, /bitable-task-badge/);
+});
+
+test("返工没有改动时，面板要解释原因并给出下一步", () => {
+  const app = readFileSync(
+    join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
+    "utf8",
+  );
+
+  // 用户问过「改后与改前一致为什么会出现这种问题」——光说「一致」等于没说。
+  assert.equal(
+    /"改后与改前一致"/.test(app),
+    false,
+    "不该只有一句「改后与改前一致」",
+  );
+  assert.match(app, /本次返工没有改变提示词正文/);
+  // 要指出真实原因：上一版正文里已经写了这条要求（融合器据此判定无需改动）。
+  assert.match(app, /上一版/);
+  // 并给出可执行的下一步：重复同一句没用，应该写成禁止项或更可判定的描述。
+  assert.match(app, /禁止项/);
+  assert.match(app, /更可判定/);
+});
+
+test("live claim badge prefers the freshly polled run status", () => {
+  const task = {
+    record_id: "rec-1",
+    claimed_run_id: "run-1",
+    claim_status: "处理中",
+  };
+
+  // 轮询到的新鲜运行状态优先：徽章要跟着运行走，而不是停在领取那一刻。
+  assert.deepEqual(
+    BitableState.liveClaimBadge(task, "run-1", {
+      label: "等待你审核",
+      tone: "attention",
+    }),
+    { label: "等待你审核", tone: "attention" },
+  );
+  assert.deepEqual(
+    BitableState.liveClaimBadge(task, "run-1", {
+      label: "正在生成内容",
+      tone: "running",
+    }),
+    { label: "正在生成内容", tone: "busy" },
+  );
+  assert.deepEqual(
+    BitableState.liveClaimBadge(task, "run-1", {
+      label: "生成完成",
+      tone: "success",
+    }),
+    { label: "生成完成", tone: "done" },
+  );
+  // 没有新鲜状态时退回任务自带的 claim_status。
+  assert.deepEqual(
+    BitableState.liveClaimBadge(task, "run-1", null),
+    { label: "处理中", tone: "busy" },
+  );
+  // 未领取的任务没有徽章。
+  assert.equal(
+    BitableState.liveClaimBadge({ record_id: "rec-2" }, null, {
+      label: "等待你审核",
+      tone: "attention",
+    }),
+    null,
+  );
+});
+
+test("任务记录 只在状态会自己变的时候盯，不在状态没变时反复刷新", () => {
+  const app = readFileSync(
+    join(__dirname, "../../src/feishu_generation_agent/web/static/app.js"),
+    "utf8",
+  );
+
+  // 走查时用户看到的问题：任务记录只能靠手动/偶发刷新，状态长期是旧的。
+  assert.match(app, /BitableState\.liveClaimBadge\(/);
+  assert.match(app, /document\.hidden/);
+  assert.match(app, /visibilitychange/);
+  // 后台刷新失败要静默：服务重启的几秒里不能每 5 秒弹一次全局错误。
+  assert.match(app, /loadRecentRuns\(\{ silent: true \}\)/);
+  assert.match(app, /if \(!silent\) showError\(error\)/);
+
+  // 用户要求：不要定时刷新，要「状态更新的时候刷新」。
+  // 等待审批 / 等待成片审核是停在等人操作上的，状态不会自己变 —— 那时不该有任何轮询。
+  assert.match(app, /SELF_PROGRESSING_RUN_STATUSES/);
+  assert.match(app, /function needsRunWatch\(/);
+  assert.match(app, /function scheduleRunWatch\(/);
+  assert.match(app, /function stopRunWatch\(/);
+  assert.equal(
+    /setInterval\(refreshBitablePanel/.test(app),
+    false,
+    "不该再有固定节奏刷新整个面板",
+  );
+  // 正在看的那条运行状态一变，立刻对一次任务记录。
+  assert.match(app, /lastViewedRun/);
+  assert.match(app, /scheduleRunWatch\(\)/);
+});
 test("retry delivery has loading, success and failure states", () => {
   let state = BitableState.createState();
   state = BitableState.retryStarted(state, "run-1");
@@ -141,8 +426,13 @@ test("category tabs keep independent scan results", () => {
   );
 });
 
-test("claim success removes a task only from its category", () => {
+test("claim success retains the task only in its own category", () => {
   let state = BitableState.createState();
+  state = BitableState.scanSucceeded(
+    state,
+    "animation",
+    [{ record_id: "rec-animation" }],
+  );
   state = BitableState.scanSucceeded(
     state,
     "portrait",
@@ -151,8 +441,14 @@ test("claim success removes a task only from its category", () => {
   state = BitableState.claimStarted(state, "rec-portrait", "portrait");
   state = BitableState.claimSucceeded(state, "run-portrait");
 
-  assert.deepEqual(state.categories.portrait.tasks, []);
-  assert.deepEqual(state.categories.animation.tasks, []);
+  assert.equal(state.categories.portrait.tasks.length, 1);
+  assert.equal(
+    state.categories.portrait.tasks[0].claimed_run_id,
+    "run-portrait",
+  );
+  assert.equal(state.categories.animation.tasks.length, 1);
+  assert.equal(state.categories.animation.tasks[0].record_id, "rec-animation");
+  assert.equal(state.categories.animation.tasks[0].claimed_run_id, undefined);
   assert.equal(state.claim.category, "portrait");
 });
 

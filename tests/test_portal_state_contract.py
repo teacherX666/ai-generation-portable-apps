@@ -26,10 +26,17 @@ class PortalStateContractTests(unittest.TestCase):
             1,
         )
 
-    def test_job_status_uses_one_controller_and_poll(self):
+    def test_job_status_uses_one_controller_with_sse_and_poll_fallback(self):
         source = ENHANCEMENTS.read_text(encoding="utf-8")
         self.assertEqual(source.count("// === Portal job status controller ==="), 1)
-        self.assertEqual(source.count("setInterval(refresh, POLL_MS)"), 1)
+        # 主通道：单条 SSE 连接，事件到达时防抖刷新
+        self.assertEqual(source.count("const FALLBACK_POLL_MS = 15000;"), 1)
+        self.assertEqual(source.count("new EventSource('/api/platform/history/events')"), 1)
+        self.assertEqual(source.count("statusRefreshTimer = window.setTimeout(refresh, 250)"), 1)
+        # 兜底通道：SSE 报错回落定时轮询，重连成功（open）停掉，避免状态静默停更
+        self.assertEqual(source.count("fallbackPollTimer = window.setInterval(refresh, FALLBACK_POLL_MS)"), 1)
+        self.assertEqual(source.count("window.clearInterval(fallbackPollTimer)"), 1)
+        self.assertEqual(source.count("historyEventSource.addEventListener('error'"), 1)
         self.assertEqual(source.count("/api/platform/history?limit=200&days=30"), 1)
         self.assertEqual(source.count("/api/platform/queue"), 1)
         self.assertNotIn("// === Running-task indicators", source)

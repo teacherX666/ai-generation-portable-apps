@@ -23,8 +23,13 @@ from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
 from feishu_generation_agent.domain.plan import AuditReport, TaskPlan
 from feishu_generation_agent.integrations.planner import (
     DeepSeekPlanner,
+    _exclude_unused_references,
+    _exclude_video_references,
+    _fill_storyboard_source_block_ids,
     _normalize_generated_plan_payload,
     planner_system_prompt,
+    reconcile_negative_constraints,
+    reconcile_storyboard_sources,
     validate_plan,
 )
 
@@ -33,7 +38,7 @@ def test_planner_system_prompt_prime_hash_is_frozen() -> None:
     prime = planner_system_prompt()
 
     assert hashlib.sha256(prime.encode("utf-8")).hexdigest() == (
-        "fc009b4bb8351502a9412b88a5554a8567a9aa9a633eba588fb673b513f16db1"
+        "db77e6e4a995de911ca75a4013a25a4382e088578f15a3c8258b0599c6ba992f"
     )
 
 
@@ -516,6 +521,56 @@ class RateLimitFailure(RuntimeError):
     status_code = 429
 
 
+async def test_plan_puts_raw_media_into_the_same_call(
+    storyboard_document: NormalizedDocument,
+):
+    """多模态规划：原始图片/视频作为 content parts 放进**同一次**规划调用。
+
+    用户 2026-09-17 批准：一次调用把文本 + 原图 + 视频交给 ds4.1，模型就不用靠视觉
+    描述去猜「哪张图是第几个素材、对应哪个镜头」。
+    """
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)]
+    )
+    model = FakeDeepSeekModel([_plan_json(task)])
+    planner = DeepSeekPlanner(model, max_output_count=4)
+    media_parts = [
+        {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}},
+        {"type": "video_url", "video_url": {"url": "https://example.invalid/b.mp4"}},
+    ]
+
+    plan = await planner.plan(
+        storyboard_document,
+        [],
+        feedback=None,
+        media_parts=media_parts,
+    )
+
+    assert len(plan.tasks) == 1
+    # 只调用一次，且用户消息是 content 列表（文本在前，媒体在后）
+    assert model.calls == 1
+    user_message = model.requests[0][1]
+    assert isinstance(user_message["content"], list)
+    assert user_message["content"][0]["type"] == "text"
+    assert user_message["content"][1:] == media_parts
+
+
+async def test_plan_without_media_keeps_plain_text_message(
+    storyboard_document: NormalizedDocument,
+    vision_descriptions: list[VisionDescription],
+):
+    """不带媒体时仍是纯文本消息 —— 默认行为不变。"""
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)]
+    )
+    model = FakeDeepSeekModel([_plan_json(task)])
+    planner = DeepSeekPlanner(model, max_output_count=4)
+
+    await planner.plan(storyboard_document, vision_descriptions, feedback=None)
+
+    assert isinstance(model.requests[0][1]["content"], str)
+
+
 async def test_storyboard_rows_become_one_video_task(
     storyboard_document: NormalizedDocument,
     vision_descriptions: list[VisionDescription],
@@ -647,6 +702,22 @@ async def test_planner_removes_video_only_image_size_without_model_retry(
 
     assert model.calls == 1
     assert plan.tasks[0].image_size is None
+
+
+def test_generated_video_plan_cannot_override_runtime_provider_or_default_count(
+    narrative_document: NormalizedDocument,
+) -> None:
+    task = _video_task()
+    task["video_provider"] = "seedance"
+    task["output_count"] = 4
+    payload = json.loads(_plan_json(task))
+
+    issues = _normalize_generated_plan_payload(payload, narrative_document)
+
+    assert issues == []
+    normalized = payload["tasks"][0]
+    assert normalized["video_provider"] is None
+    assert normalized["output_count"] == 1
 
 
 def test_generated_plan_normalization_filters_unknown_sources_and_remaps_asset_tokens(
@@ -1624,6 +1695,185 @@ def test_validator_rejects_hotpot_storyboard_without_understood_references(
     assert any("绝对秒数" in issue for issue in issues)
 
 
+def test_validator_accepts_video_frame_reference_as_the_video(
+    narrative_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """计划引用 `video-1-frame` ＝ 引用 `video-1`（抽帧别名）。
+
+    2026-09-17 超级大床实测：视频素材在 analyze_images 里被抽帧成 `video-1-frame`
+    交给规划（视频不能直接当参考图），计划引用的是帧，而校验查的是文档里的
+    `video-1` —— 于是同时报「unknown asset_id video-1-frame」和
+    「uncovered successful asset video-1」，那条记录**每次规划都过不了**。
+    """
+    video = _asset(tmp_path, "video-1", "video-1", mime_type="video/mp4")
+    document = narrative_document.model_copy(
+        update={"media_assets": [*narrative_document.media_assets, video]}
+    )
+    task = _video_task(source_block_ids=[])
+    task["reference_images"] = [
+        {"asset_id": "video-1-frame", "role": "reference"}
+    ]
+
+    issues = validate_plan(json.loads(_plan_json(task)), document, 4)
+
+    assert not any("unknown asset_id" in issue for issue in issues), issues
+    assert not any(
+        "uncovered" in issue and "video-1" in issue for issue in issues
+    ), issues
+
+
+def test_unused_references_are_excluded_deterministically(
+    storyboard_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """挂了却**没被具体用起来**的素材 → 摘掉并写进 excluded_assets。
+
+    2026-09-17 生产（超级大床 / 拿着吧你！2）：模型把素材挂在任务上、却只在开头
+    罗列（或写得笼统），于是「Seedance prompt 缺少素材引用 @图片2」「@图片2 只被
+    罗列但没有用于任何实际镜头」「@图片2 必须绑定具体主体…」；而覆盖门又要求
+    「每个素材要么被引用、要么被排除」—— 两条规则互相夹住，三次重试全废、run
+    直接失败。
+
+    这些素材**本来就没有被具体使用**，摘掉不改变生成内容，只让计划自洽。
+    """
+    second = _asset(tmp_path, "asset-2", "image-2")
+    document = storyboard_document.model_copy(
+        update={"media_assets": [*storyboard_document.media_assets, second]}
+    )
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)],
+    )
+    task["reference_images"] = [
+        {"asset_id": "asset-1", "order": 1, "role": "reference_image"},
+        {"asset_id": "asset-2", "order": 2, "role": "reference_image"},
+    ]
+    # @图片2 只出现在开头（镜头段之外），而且绑定是笼统的「画面风格」。
+    task["prompt"] = task["prompt"].replace(
+        "参考 @图片1 中的蓝色纸船。",
+        "参考 @图片1 中的蓝色纸船，同时参考 @图片2 的画面风格。",
+        1,
+    )
+    payload = json.loads(_plan_json(task))
+
+    before = validate_plan(
+        payload, document, 4, enforce_seedance_prompt_contract=True
+    )
+    assert any("@图片2" in issue for issue in before), before
+
+    _exclude_unused_references(payload, document)
+
+    after = validate_plan(
+        payload, document, 4, enforce_seedance_prompt_contract=True
+    )
+    assert not any("@图片2" in issue for issue in after), after
+    assert [
+        reference["asset_id"]
+        for reference in payload["tasks"][0]["reference_images"]
+    ] == ["asset-1"]
+    assert [
+        item["asset_id"] for item in payload["excluded_assets"]
+    ] == ["asset-2"]
+    # prompt 里的 token 一并重映射/清理掉了，不留悬空引用。
+    assert "@图片2" not in payload["tasks"][0]["prompt"]
+
+
+def test_reconcile_negative_constraints_clears_legacy_duplicates() -> None:
+    """存量计划里的重复写法要能清掉（去重上线前的残留会被复制一直带下去）。
+
+    实测脱毛：57 条里有 10 条是同义换皮，而重跑是复制计划 —— 不清就永远在。
+    """
+    from feishu_generation_agent.domain.plan import GenerationTask, TaskPlan
+
+    task = GenerationTask(
+        task_id="t1",
+        task_type="image_to_video",
+        title="任务",
+        source_block_ids=[],
+        user_intent="意图",
+        prompt="镜头 1：纸船漂流。",
+        aspect_ratio="16:9",
+        duration=5,
+        resolution="720p",
+        negative_constraints=[
+            "不要出现水印、Logo、品牌特征",
+            "不得出现水印、Logo 或品牌特征",
+            "画面不得变形",
+        ],
+    )
+    plan = TaskPlan(tasks=[task], document_summary="摘要")
+
+    reconciled = reconcile_negative_constraints(plan)
+
+    # 同义换皮合并成一条，且**保留最长**的那条写法（细节不丢）。
+    assert reconciled.tasks[0].negative_constraints == [
+        "不得出现水印、Logo 或品牌特征",
+        "画面不得变形",
+    ]
+
+
+def test_video_references_are_excluded_not_mounted(
+    storyboard_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """视频素材不作为参考图（只作分镜参考）。
+
+    用户口径（2026-09-17）：「视频基本上都没有能作为参考图的，只能作为分镜参考」。
+    抽帧那条路已删，所以视频不再有对应图片素材；覆盖门要求每个素材被引用或被排除，
+    这里必须确定性地把视频摘掉并写进 excluded_assets，否则批准按钮永远是灰的。
+    """
+    video = _asset(tmp_path, "video-1", "video-1", mime_type="video/mp4")
+    document = storyboard_document.model_copy(
+        update={"media_assets": [*storyboard_document.media_assets, video]}
+    )
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)],
+    )
+    task["reference_images"] = [
+        {"asset_id": "asset-1", "order": 1, "role": "reference_image"},
+        {"asset_id": "video-1", "order": 2, "role": "reference_video"},
+    ]
+    payload = json.loads(_plan_json(task))
+
+    _exclude_video_references(payload, document)
+
+    assert [
+        reference["asset_id"]
+        for reference in payload["tasks"][0]["reference_images"]
+    ] == ["asset-1"]
+    reasons = {
+        item["asset_id"]: item["reason"] for item in payload["excluded_assets"]
+    }
+    assert "video-1" in reasons
+    assert "分镜参考" in reasons["video-1"]
+
+
+def test_validator_rejects_latin_s_absolute_seconds(
+    storyboard_document: NormalizedDocument,
+):
+    """`0~2s` 也算绝对秒数 —— 以前只认中文「秒」，拉丁 s 漏过去了。
+
+    2026-09-17 生产：用户在返工反馈里贴了分镜时间，融合把「镜头 1（0~2s）」写进
+    提示词，校验器没拦（正则只认 秒），禁用规则形同虚设。
+    """
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)]
+    )
+    task["prompt"] = (
+        "镜头 1（0~2s）：笔尖悬停，墨珠坠落。"
+        "镜头 2（2~5s）：金线蔓延。镜头 3（5~15s）：凤凰破纸而出。"
+    )
+
+    issues = validate_plan(
+        json.loads(_plan_json(task)),
+        storyboard_document,
+        4,
+        enforce_seedance_prompt_contract=True,
+    )
+
+    assert any("绝对秒数" in issue for issue in issues)
+
+
 def test_validator_rejects_noncontinuous_reference_order(
     narrative_document: NormalizedDocument,
     tmp_path: Path,
@@ -1730,6 +1980,60 @@ def test_validator_rejects_one_video_missing_storyboard_rows(
     assert "storyboard table table-1" in joined
     assert "missing source_block_ids" in joined
     assert "shot-2" in joined and "shot-3" in joined and "shot-4" in joined
+
+
+def test_missing_storyboard_rows_are_filled_deterministically(
+    storyboard_document: NormalizedDocument,
+):
+    """模型漏抄分镜行时由代码补齐 —— 不再要求模型枚举几十个 block id。
+
+    2026-09-17 实测（超级大床）：分镜表 50+ 行，模型每次都会漏几行，契约校验必然
+    失败、重试 3 次全废（用户看到的是「模型三次返回的 JSON 均未通过校验」，其实
+    JSON 是合法的）。这些 id 本来就能从文档算出来，不该让模型去抄。
+    """
+    payload = json.loads(_plan_json(_video_task(source_block_ids=["shot-1"])))
+    assert any(
+        "missing source_block_ids" in issue
+        for issue in validate_plan(payload, storyboard_document, 4)
+    )
+
+    _fill_storyboard_source_block_ids(payload, storyboard_document)
+
+    assert not any(
+        "missing source_block_ids" in issue
+        for issue in validate_plan(payload, storyboard_document, 4)
+    )
+    sources = payload["tasks"][0]["source_block_ids"]
+    assert {"shot-1", "shot-2", "shot-3", "shot-4"} <= set(sources)
+
+
+def test_reconcile_storyboard_sources_fills_a_copied_plan(
+    storyboard_document: NormalizedDocument,
+):
+    """重跑复制旧计划时同样要补齐 —— 那条路根本没有模型参与。
+
+    实测（2026-09-17 超级大床）：重跑走 `clone_approved_plan`，缺的 3 行一直缺，
+    校验里一直挂着同 3 个 id，用户重跑多少次都一样。
+    """
+    from feishu_generation_agent.domain.plan import TaskPlan
+
+    plan = TaskPlan.model_validate(
+        json.loads(_plan_json(_video_task(source_block_ids=["shot-1"])))
+    )
+    assert any(
+        "missing source_block_ids" in issue
+        for issue in validate_plan(plan, storyboard_document, 4)
+    )
+
+    fixed = reconcile_storyboard_sources(plan, storyboard_document)
+
+    assert not any(
+        "missing source_block_ids" in issue
+        for issue in validate_plan(fixed, storyboard_document, 4)
+    )
+    assert {"shot-1", "shot-2", "shot-3", "shot-4"} <= set(
+        fixed.tasks[0].source_block_ids
+    )
 
 
 def test_validator_requires_every_content_block_in_storyboard_rows(

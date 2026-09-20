@@ -265,7 +265,11 @@ async def test_service_lists_active_production_run_for_browser_restore(tmp_path)
     assert [(item.run_id, item.status.value) for item in active] == [
         (run_id, "处理中")
     ]
-    assert scanned_after_claim == []
+    # #1：已领取的记录不能从列表里消失，否则用户一点「开始分析」这条记录就
+    # 再也看不见了（要重新进审批页才能找回来）。它应该带着领取信息回来。
+    assert [item.record_id for item in scanned_after_claim] == ["rec-no-maker"]
+    assert scanned_after_claim[0].claimed_run_id == run_id
+    assert scanned_after_claim[0].claim_status is TableTaskStatus.PROCESSING
 
 
 async def test_service_keeps_scan_global_while_active_runs_are_owner_scoped(
@@ -294,9 +298,109 @@ async def test_service_keeps_scan_global_while_active_runs_are_owner_scoped(
         assert (
             await service.active_runs(owner_user_id="user-b")
         ) == []
-        assert await service.scan() == []
+        scanned = await service.scan()
+        assert [item.record_id for item in scanned] == ["rec-no-maker"]
+        assert scanned[0].claimed_run_id == run_id
     finally:
         await store.close()
+
+
+async def test_claim_refuses_a_record_that_is_already_claimed(tmp_path) -> None:
+    """列表现在会带回已领取的记录，所以领取入口必须自己挡住重复领取。"""
+
+    class Bitable:
+        async def ensure_schema(self, location):
+            return object()
+
+        async def list_tasks(self, location, schema, *, include_completed):
+            return [_task()]
+
+    service, store = await _production_service(
+        tmp_path,
+        bitable=Bitable(),
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+    )
+    try:
+        first_run_id = await service.claim("rec-no-maker")
+        with pytest.raises(RunConflict, match="当前不可领取"):
+            await service.claim("rec-no-maker")
+    finally:
+        await store.close()
+
+    assert first_run_id
+
+
+async def test_recent_runs_keeps_all_attempts_of_the_ten_newest_tasks(
+    tmp_path,
+) -> None:
+    """外面最多 10 条**任务**，但每条任务要带上它的**全部**历次尝试。
+
+    用户口径（2026-09-17）：「以一个任务为一个单位，所有记录都存在该任务里，
+    然后外面的任务记录条数仍然是十条」。
+
+    以前是「取最近 10 条 run」：任务一多，同一条任务的历史就被挤出窗口，
+    成片预览的历史滑条只剩一两条。现在按任务分组 —— 条数仍是 10 条任务，
+    任务内部的尝试不再被截断。
+    """
+    from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
+
+    class Bitable:
+        async def ensure_schema(self, location):
+            return object()
+
+        async def list_tasks(self, location, schema, *, include_completed):
+            return []
+
+    class Runtime:
+        async def start_run(self, request, *, run_id=None, thread_id=None):
+            return run_id
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    service = ProductionBitableService(
+        bitable=Bitable(),
+        store=store,
+        runtime=Runtime(),
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        # 12 条任务 × 每条 3 次尝试，全部已结束（模拟历史）
+        for record_index in range(12):
+            for attempt in range(3):
+                task = ProductionTaskSummary(
+                    record_id=f"rec-{record_index:02d}",
+                    display_text=f"需求 {record_index}",
+                    source_url=f"https://tenant.feishu.cn/docx/doc{record_index}",
+                    progress="已完成",
+                    task_type="动画类",
+                    snapshot=ProductionSourceSnapshot(
+                        requirement_name=f"需求 {record_index}",
+                        task_type="动画类",
+                        requirement_attachment="https://tenant.feishu.cn/docx/x",
+                    ),
+                )
+                binding = await store.claim(
+                    _location(),
+                    task,
+                    run_id=f"run-{record_index:02d}-{attempt}",
+                    thread_id=f"thread-{record_index:02d}-{attempt}",
+                    owner_user_id="prime-local",
+                )
+                await store.release(
+                    binding.run_id,
+                    status=TableTaskStatus.COMPLETED,
+                    owner_user_id="prime-local",
+                )
+        recent = await service.recent_runs()
+    finally:
+        await store.close()
+
+    record_order: list[str] = []
+    for binding in recent:
+        if binding.record_id not in record_order:
+            record_order.append(binding.record_id)
+    assert len(record_order) == 10, "外面只列 10 条任务"
+    assert len(recent) == 30, "每条任务的 3 次尝试都要在，不能被窗口截断"
 
 
 async def test_service_hides_owned_run_from_wrong_owner_mutations(
@@ -430,7 +534,7 @@ async def test_terminal_runtime_status_releases_shared_production_lock(
         await store.close()
 
 
-async def test_service_rerun_archives_original_binding_and_lists_it_as_recent(tmp_path) -> None:
+async def test_service_rerun_keeps_successful_original_visible_while_active(tmp_path) -> None:
     from feishu_generation_agent.domain.bitable import TableTaskStatus
     from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
 
@@ -470,6 +574,8 @@ async def test_service_rerun_archives_original_binding_and_lists_it_as_recent(tm
     assert rerun_id != original_run_id
     assert original is not None
     assert original.status is TableTaskStatus.COMPLETED
+    # A successful rerun must not overwrite the original task: the completed
+    # original stays visible as a separate history entry while the rerun runs.
     assert [item.run_id for item in recent] == [original_run_id]
     assert len(runtime.clone_calls) == 1
     cloned_from, cloned_run_id, cloned_thread_id = runtime.clone_calls[0]
@@ -477,6 +583,112 @@ async def test_service_rerun_archives_original_binding_and_lists_it_as_recent(tm
     assert cloned_run_id == rerun_id
     assert cloned_thread_id != original.thread_id
 
+
+async def test_service_rerun_selected_task_creates_branch_and_auto_approves(
+    tmp_path,
+) -> None:
+    from feishu_generation_agent.domain.bitable import TableTaskStatus
+    from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_kwargs = None
+            self.resume_calls = []
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, source_run_id, request, **kwargs):
+            self.clone_kwargs = (source_run_id, request, kwargs)
+            return kwargs["run_id"]
+
+        async def resume_run(self, run_id, decision):
+            self.resume_calls.append((run_id, decision))
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.COMPLETED)
+
+        rerun_id = await service.rerun(
+            original_run_id,
+            task_ids=["task-1"],
+            feedback="动作再慢一点",
+            auto_approve=True,
+        )
+        original = await store.get_by_run(original_run_id)
+    finally:
+        await store.close()
+
+    assert rerun_id != original_run_id
+    assert original is not None
+    assert original.status is TableTaskStatus.COMPLETED
+    assert runtime.clone_kwargs is not None
+    _source, _request, clone_kwargs = runtime.clone_kwargs
+    assert clone_kwargs["task_ids"] == ["task-1"]
+    assert clone_kwargs["feedback"] == "动作再慢一点"
+    assert len(runtime.resume_calls) == 1
+    resumed_run_id, decision = runtime.resume_calls[0]
+    assert resumed_run_id == rerun_id
+    assert decision.action == "approve"
+    assert decision.selected_task_ids == ["task-1"]
+
+
+async def test_service_rerun_selected_waits_for_user_approval(tmp_path) -> None:
+    """不带 auto_approve 时，重跑必须停在审批页等人放行。"""
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_kwargs = None
+            self.resume_calls = []
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, source_run_id, request, **kwargs):
+            self.clone_kwargs = (source_run_id, request, kwargs)
+            return kwargs["run_id"]
+
+        async def resume_run(self, run_id, decision):
+            self.resume_calls.append((run_id, decision))
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.COMPLETED)
+
+        rerun_id = await service.rerun(
+            original_run_id,
+            task_ids=["task-1"],
+            feedback="动作再慢一点",
+        )
+    finally:
+        await store.close()
+
+    assert rerun_id != original_run_id
+    assert runtime.clone_kwargs is not None
+    _source, _request, clone_kwargs = runtime.clone_kwargs
+    assert clone_kwargs["task_ids"] == ["task-1"]
+    assert clone_kwargs["feedback"] == "动作再慢一点"
+    assert runtime.resume_calls == []
 
 async def test_service_rerun_returns_existing_active_run_for_same_record(tmp_path) -> None:
     from feishu_generation_agent.domain.bitable import TableTaskStatus
@@ -518,6 +730,92 @@ async def test_service_rerun_returns_existing_active_run_for_same_record(tmp_pat
     assert runtime.clone_calls == 1
 
 
+async def test_service_rerun_conflicts_when_active_run_waits_for_human(
+    tmp_path,
+) -> None:
+    """记录上卡着一条等人的任务时，重跑必须明确报错。
+
+    旧行为是静默返回那条卡住的任务 id，用户点「重跑」后被直接甩回它所在的
+    审批/审片页面，看起来就是「重跑没生效」。
+    """
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_calls = 0
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, *args, **kwargs):
+            self.clone_calls += 1
+            return kwargs["run_id"]
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.FAILED)
+        parked_run_id = await service.rerun(original_run_id)
+        # 那条重跑出来的任务停在「待审批」等人处理（生产现场就是这样卡了一天）
+        await store.set_status(parked_run_id, TableTaskStatus.WAITING_APPROVAL)
+
+        with pytest.raises(RunConflict) as excinfo:
+            await service.rerun(original_run_id)
+    finally:
+        await store.close()
+
+    assert "待审批" in str(excinfo.value)
+    assert runtime.clone_calls == 1
+
+
+async def test_service_rerun_reuses_active_run_that_is_still_working(
+    tmp_path,
+) -> None:
+    """真正在跑的任务仍然复用（连点两次重跑不该起两个）。"""
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_calls = 0
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, *args, **kwargs):
+            self.clone_calls += 1
+            return kwargs["run_id"]
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.FAILED)
+        working_run_id = await service.rerun(original_run_id)
+        await store.set_status(working_run_id, TableTaskStatus.GENERATING)
+
+        reused_run_id = await service.rerun(original_run_id)
+    finally:
+        await store.close()
+
+    assert reused_run_id == working_run_id
+    assert runtime.clone_calls == 1
+
+
 async def test_service_rejects_rerun_of_non_animation_task(tmp_path) -> None:
     from feishu_generation_agent.domain.bitable import TableTaskStatus
     from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
@@ -550,3 +848,132 @@ async def test_service_rejects_rerun_of_non_animation_task(tmp_path) -> None:
             await service.rerun(binding.run_id)
     finally:
         await store.close()
+
+
+async def test_service_successful_rerun_keeps_both_completed_tasks(tmp_path) -> None:
+    from feishu_generation_agent.domain.bitable import TableTaskStatus
+    from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
+    import asyncio
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_calls: list[tuple[str, str, str]] = []
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, source_run_id, request, *, run_id, thread_id):
+            self.clone_calls.append((source_run_id, run_id, thread_id))
+            return run_id
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.COMPLETED)
+        await asyncio.sleep(1.1)
+
+        rerun_id = await service.rerun(original_run_id)
+        await store.release(rerun_id, status=TableTaskStatus.COMPLETED)
+        await asyncio.sleep(1.1)
+
+        recent = await service.recent_runs()
+    finally:
+        await store.close()
+
+    assert rerun_id != original_run_id
+    assert [item.run_id for item in recent] == [rerun_id, original_run_id]
+
+
+async def test_service_recent_runs_keeps_successful_record_with_active_rerun(tmp_path) -> None:
+    from feishu_generation_agent.domain.bitable import TableTaskStatus
+    from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
+    import asyncio
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_calls = []
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, source_run_id, request, *, run_id, thread_id):
+            self.clone_calls.append((source_run_id, run_id, thread_id))
+            return run_id
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.COMPLETED)
+        await asyncio.sleep(1.1)
+
+        rerun_id = await service.rerun(original_run_id)
+        recent = await service.recent_runs()
+        active = await service.active_runs()
+    finally:
+        await store.close()
+
+    assert rerun_id != original_run_id
+    assert [item.run_id for item in recent] == [original_run_id]
+    assert [item.run_id for item in active] == [rerun_id]
+
+
+async def test_service_failed_rerun_overwrites_and_hides_failed_original(tmp_path) -> None:
+    from feishu_generation_agent.domain.bitable import TableTaskStatus
+    from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
+    import asyncio
+
+    class Bitable:
+        async def ensure_schema(self, location): return object()
+        async def list_tasks(self, location, schema, *, include_completed): return [_task()]
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.clone_calls = []
+
+        async def start_run(self, request, *, run_id=None, thread_id=None): return run_id
+
+        async def clone_run_for_approval(self, source_run_id, request, *, run_id, thread_id):
+            self.clone_calls.append((source_run_id, run_id, thread_id))
+            return run_id
+
+    store = await ProductionTaskStore.open(tmp_path / "production.sqlite3")
+    runtime = Runtime()
+    service = ProductionBitableService(
+        bitable=Bitable(), store=store, runtime=runtime,
+        sources={"animation": ProductionTaskSource(_location(), "动画类")},
+        include_completed_for_test=True,
+    )
+    try:
+        original_run_id = await service.claim("rec-no-maker")
+        await store.release(original_run_id, status=TableTaskStatus.FAILED)
+        await asyncio.sleep(1.1)
+
+        rerun_id = await service.rerun(original_run_id)
+        recent = await service.recent_runs()
+        active = await service.active_runs()
+    finally:
+        await store.close()
+
+    assert rerun_id != original_run_id
+    # A failed rerun overwrites the failed task: the old failed entry is hidden
+    # while the new attempt is the only visible active run.
+    assert [item.run_id for item in recent] == []
+    assert [item.run_id for item in active] == [rerun_id]

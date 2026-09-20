@@ -150,8 +150,13 @@ class FrontendSentinelDocumentationTests(unittest.TestCase):
 
     def test_portrait_ratio_offers_adaptive(self):
         html = (ROOT / "portal" / "static" / "index.html").read_text("utf-8")
-        self.assertIn(
-            "<option>adaptive</option>", html,
+        js = (ROOT / "portal" / "static" / "app.js").read_text("utf-8")
+        # The ratio select is populated dynamically (petite-vue) since the
+        # model-capability unification; there is no static <option> anymore.
+        self.assertIn("modelRatios()", html, "ratio select must use modelRatios()")
+        self.assertRegex(
+            js,
+            r"modelRatios\(\)[\s\S]*?return\s+\[[^\]]*'adaptive'",
             "edit/extend tasks are unsubmittable without an adaptive ratio option",
         )
 

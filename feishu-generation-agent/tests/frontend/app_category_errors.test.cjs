@@ -73,6 +73,7 @@ class FakeNode {
   }
 
   setAttribute() {}
+  removeAttribute() {}
   scrollIntoView() {}
 }
 
@@ -95,6 +96,8 @@ async function settle() {
 
 async function loadApp(fetch) {
   const nodes = new Map();
+  const intervals = new Map();
+  let intervalId = 0;
   const getNode = (id) => {
     if (!nodes.has(id)) nodes.set(id, new FakeNode("div", id));
     return nodes.get(id);
@@ -115,8 +118,12 @@ async function loadApp(fetch) {
     fetch,
     confirm: () => true,
     location: { reload() {} },
-    setInterval: () => 1,
-    clearInterval() {},
+    setInterval: (callback) => {
+      intervalId += 1;
+      intervals.set(intervalId, callback);
+      return intervalId;
+    },
+    clearInterval(id) { intervals.delete(id); },
     console,
   };
   const source = readFileSync(
@@ -125,7 +132,12 @@ async function loadApp(fetch) {
   );
   vm.runInNewContext(source, context);
   await settle();
-  return { getNode };
+  return {
+    getNode,
+    tick: async () => {
+      await Promise.all([...intervals.values()].map((callback) => callback()));
+    },
+  };
 }
 
 function baseFetch(categoryResponse) {
@@ -527,7 +539,13 @@ test("failed history runs explain the missing artifacts instead of hiding the pr
     "本次运行未生成成片，请在下方的失败原因中查看详情。",
   );
   assert.equal(app.getNode("artifact-review-feedback-box").hidden, true);
-  assert.equal(app.getNode("artifact-review-actions").hidden, true);
+  // 失败的那一版没有成片可勾选 → 「导出到结果表 / 重跑选中任务」仍然不出现；
+  // 但重跑入口只在预览页（任务记录里的重跑按钮已删），所以这里要保留
+  // 「重跑这一版」，否则失败的任务没地方重跑。
+  assert.equal(app.getNode("artifact-review-actions").hidden, false);
+  assert.equal(app.getNode("confirm-artifacts-button").hidden, true);
+  assert.equal(app.getNode("adjust-artifacts-button").hidden, true);
+  assert.equal(app.getNode("rerun-artifacts-button").hidden, false);
   assert.equal(
     app.getNode("validation-issues").textContent,
     "飞书应用没有权限读取该文档或素材，请检查文档分享与应用权限。",
@@ -593,7 +611,7 @@ test("trash supports paging, search, status filters, and filtered empty states",
   const statusFilter = app.getNode("trash-status-filter");
   assert.deepEqual(statusFilter.children.map((option) => option.value), [
     "",
-    "成片与结果",
+    "生成完成",
     "执行失败",
   ]);
   statusFilter.value = "执行失败";
@@ -701,6 +719,275 @@ test("cancelling a run restores history controls and allows switching immediatel
   assert.equal(app.getNode("document-title").textContent, "其他已完成任务");
 });
 
+test("artifact review restores saved rerun selection and feedback", async () => {
+  const runId = "run-artifact-restore";
+  const view = {
+    run_id: runId,
+    thread_id: "thread-artifact-restore",
+    source_url: "https://example.invalid/artifact-restore",
+    status: "succeeded",
+    events: [],
+    privacy: {},
+    delivery: null,
+    artifacts: [{
+      artifact_id: "artifact-1",
+      task_id: "task-1",
+      kind: "video",
+      size: 1024,
+      preview_url: "/api/artifacts/artifact-1",
+    }],
+    artifact_review: {
+      feedback: "继续调整动作衔接",
+      decision: {
+        action: "adjust",
+        feedback: "继续调整动作衔接",
+        task_ids: ["task-1"],
+      },
+    },
+    approval: {
+      document_title: "成品重跑恢复测试",
+      revision: 1,
+      document_summary: "",
+      tasks: [],
+      media_assets: [],
+      excluded_assets: [],
+      selected_task_ids: [],
+      coverage: {},
+      validation_issues: [],
+      ingest_issue_records: [],
+      vision_issues: [],
+    },
+  };
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/active-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, [{
+      run_id: runId,
+      display_text: "成品重跑恢复测试",
+      status: "已完成",
+      rerunnable: true,
+    }]);
+    if (url === `/api/runs/${runId}`) return jsonResponse(200, view);
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  const switcher = app.getNode("current-run-switcher");
+  switcher.value = runId;
+  await switcher.dispatch("change");
+  await settle();
+
+  const checkbox = app.getNode("artifact-list").querySelectorAll("input")[0];
+  assert.equal(checkbox.checked, true);
+  assert.equal(
+    app.getNode("artifact-review-feedback").value,
+    "继续调整动作衔接",
+  );
+  assert.equal(app.getNode("adjust-artifacts-button").disabled, false);
+});
+
+
+test("completed run keeps the shared result table link visible", async () => {
+  const deliveredRunId = "run-delivered";
+  const pendingRunId = "run-pending";
+  const resultTableUrl = "https://tenant.feishu.cn/base/result-table";
+  const approval = {
+    document_title: "\u7ed3\u679c\u8868\u94fe\u63a5\u6d4b\u8bd5",
+    revision: 1,
+    document_summary: "",
+    tasks: [],
+    media_assets: [],
+    excluded_assets: [],
+    selected_task_ids: [],
+    coverage: {},
+    validation_issues: [],
+    ingest_issue_records: [],
+    vision_issues: [],
+  };
+  const deliveredView = {
+    run_id: deliveredRunId,
+    thread_id: "thread-delivered",
+    source_url: "https://example.invalid/delivered",
+    status: "succeeded",
+    events: [],
+    privacy: {},
+    result_table_url: resultTableUrl,
+    delivery: {
+      status: "succeeded",
+      target_type: "production_result_record",
+      result_table_url: resultTableUrl,
+    },
+    artifacts: [{
+      artifact_id: "artifact-1",
+      task_id: "task-1",
+      kind: "video",
+      size: 1024,
+      preview_url: "/api/artifacts/artifact-1",
+    }],
+    approval,
+  };
+  const pendingView = {
+    run_id: pendingRunId,
+    thread_id: "thread-pending",
+    source_url: "https://example.invalid/pending",
+    status: "succeeded",
+    events: [],
+    privacy: {},
+    delivery: null,
+    artifacts: [],
+    approval,
+  };
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/active-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/recent-runs") {
+      return jsonResponse(200, [
+        {
+          run_id: deliveredRunId,
+          display_text: "\u5df2\u5bfc\u51fa\u4efb\u52a1",
+          status: "\u5df2\u5b8c\u6210",
+          rerunnable: true,
+        },
+        {
+          run_id: pendingRunId,
+          display_text: "\u672a\u5bfc\u51fa\u4efb\u52a1",
+          status: "\u5df2\u5b8c\u6210",
+          rerunnable: true,
+        },
+      ]);
+    }
+    if (url === `/api/runs/${deliveredRunId}`) {
+      return jsonResponse(200, deliveredView);
+    }
+    if (url === `/api/runs/${pendingRunId}`) {
+      return jsonResponse(200, pendingView);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  const switcher = app.getNode("current-run-switcher");
+  switcher.value = deliveredRunId;
+  await switcher.dispatch("change");
+  await settle();
+
+  const link = app.getNode("artifact-result-table-link");
+  assert.equal(link.href, resultTableUrl);
+  assert.equal(link.hidden, false);
+  assert.equal(app.getNode("retry-delivery-button").hidden, true);
+
+  switcher.value = pendingRunId;
+  await switcher.dispatch("change");
+  await settle();
+
+  assert.equal(link.hidden, true);
+});
+
+
+test("artifact rerun creates a new run and preserves source record", async () => {
+  const sourceRunId = "run-artifact-source";
+  const rerunRunId = "run-artifact-rerun-new";
+  const artifact = {
+    artifact_id: "artifact-1",
+    task_id: "task-1",
+    kind: "video",
+    size: 1024,
+    preview_url: "/api/artifacts/artifact-1",
+  };
+  const approval = {
+    document_title: "成品重跑测试",
+    revision: 1,
+    document_summary: "",
+    tasks: [],
+    media_assets: [],
+    excluded_assets: [],
+    selected_task_ids: [],
+    coverage: {},
+    validation_issues: [],
+    ingest_issue_records: [],
+    vision_issues: [],
+  };
+  const sourceView = {
+    run_id: sourceRunId,
+    thread_id: "thread-artifact-source",
+    source_url: "https://example.invalid/artifact-rerun",
+    status: "waiting_review",
+    events: [],
+    privacy: {},
+    delivery: null,
+    artifacts: [artifact],
+    approval,
+  };
+  const newRunning = {
+    ...sourceView,
+    run_id: rerunRunId,
+    thread_id: "thread-artifact-rerun-new",
+    status: "running",
+    artifacts: [],
+  };
+  let rerunRequests = 0;
+  let artifactReviewRequests = 0;
+  let newRunReads = 0;
+  const app = await loadApp(async (url, options = {}) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/active-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, [{
+      run_id: sourceRunId,
+      display_text: "成品重跑测试",
+      status: "待确认",
+      rerunnable: false,
+    }]);
+    if (url === `/api/runs/${sourceRunId}`) return jsonResponse(200, sourceView);
+    if (url === `/api/runs/${rerunRunId}`) {
+      newRunReads += 1;
+      return jsonResponse(200, newRunning);
+    }
+    if (url === `/api/bitable/runs/${sourceRunId}/rerun-selected`) {
+      rerunRequests += 1;
+      const body = JSON.parse(options.body);
+      assert.equal(body.action, "adjust");
+      assert.deepEqual(body.task_ids, ["task-1"]);
+      assert.equal(body.feedback, "继续调整动作衔接");
+      return jsonResponse(202, { run_id: rerunRunId });
+    }
+    if (url === `/api/runs/${sourceRunId}/artifact-review`) {
+      artifactReviewRequests += 1;
+      return jsonResponse(202, { ok: true });
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url} ${options.method || "GET"}`);
+  });
+
+  const switcher = app.getNode("current-run-switcher");
+  switcher.value = sourceRunId;
+  await switcher.dispatch("change");
+  await settle();
+
+  const checkbox = app.getNode("artifact-list").querySelectorAll("input")[0];
+  checkbox.checked = true;
+  await checkbox.dispatch("change");
+  app.getNode("artifact-review-feedback").value = "继续调整动作衔接";
+  await app.getNode("artifact-review-feedback").dispatch("input");
+  assert.equal(app.getNode("adjust-artifacts-button").disabled, false);
+
+  await app.getNode("adjust-artifacts-button").dispatch("click");
+  await settle();
+
+  assert.equal(rerunRequests, 1);
+  assert.equal(artifactReviewRequests, 0);
+  assert.equal(newRunReads, 1);
+  assert.equal(sourceView.artifacts.length, 1);
+  // 2026-09-17 用户明确要求：重跑也要能看到预览（新版还在审批、没有成片时，
+  // 面板不能整块消失）。旧行为是 hidden=true，这里按新口径断言。
+  assert.equal(app.getNode("artifact-review").hidden, false);
+});
+
 test("completed runs keep generated artifacts visible without review controls", async () => {
   let artifactReviewRequests = 0;
   const completed = {
@@ -757,7 +1044,7 @@ test("completed runs keep generated artifacts visible without review controls", 
   switcher.value = completed.run_id;
   await switcher.dispatch("change");
 
-  assert.equal(app.getNode("status-badge").textContent, "成片与结果");
+  assert.equal(app.getNode("status-badge").textContent, "生成完成");
   assert.equal(app.getNode("artifact-review").hidden, false);
   assert.equal(app.getNode("artifact-list").children.length, 1);
   assert.equal(app.getNode("artifact-review-feedback-box").hidden, true);

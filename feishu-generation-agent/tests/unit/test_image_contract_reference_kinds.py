@@ -81,8 +81,7 @@ def test_contract_still_explains_required_fields():
 
 
 def test_video_contract_is_untouched():
-    """图片契约的改动不得影响视频契约。"""
     video = planner_system_prompt()
 
-    assert "风格参考" not in video
-    assert "场景参考" not in video
+    assert "prompt_slots" not in video
+    assert "image_size" not in video

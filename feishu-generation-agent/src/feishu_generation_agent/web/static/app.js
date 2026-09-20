@@ -12,6 +12,25 @@
   const PlannerPromptState = globalThis.PlannerPromptState;
   const ApiPaths = globalThis.ApiPaths;
 
+  const BITABLE_CATEGORY_STORAGE_KEY = "feishu-agent.active-category";
+
+  function initialBitableCategory() {
+    try {
+      const value = globalThis.localStorage?.getItem(BITABLE_CATEGORY_STORAGE_KEY);
+      return ["animation", "portrait", "image"].includes(value) ? value : "animation";
+    } catch {
+      return "animation";
+    }
+  }
+
+  function persistBitableCategory(category) {
+    try {
+      globalThis.localStorage?.setItem(BITABLE_CATEGORY_STORAGE_KEY, category);
+    } catch {
+      // Local storage is optional; category selection still works in-session.
+    }
+  }
+
   const state = {
     runId: null,
     view: null,
@@ -22,13 +41,18 @@
     providers: null,
     providerDefaults: null,
     providerPreferences: null,
-    bitable: BitableState.createState(),
+    bitable: BitableState.createState(initialBitableCategory()),
     review: ReviewState.createReviewState(),
     referenceUploads: ReferenceUploadState.createState(),
     referenceMutations: ReferenceMutationState.createState(),
     plannerPrompt: PlannerPromptState?.createPlannerPromptState?.() || null,
     artifactPreviewSignature: null,
+    artifactRetryTaskIds: new Set(),
+    artifactReviewRunId: null,
   };
+  // 正在看的那条运行上次见到的状态：变了才去刷新任务记录（同一状态反复轮询
+  // 时什么都不做）。切换运行时会自动重置，不会误判成「状态变了」。
+  let lastViewedRun = { runId: null, status: null };
   const byId = (id) => document.getElementById(id);
   const errorMessage = byId("error-message");
   const taskList = byId("task-list");
@@ -40,12 +64,22 @@
   const retryFailedAssetsFeedback = byId("retry-failed-assets-feedback");
   const confirmArtifactsButton = byId("confirm-artifacts-button");
   const adjustArtifactsButton = byId("adjust-artifacts-button");
+  // 失败/取消的版本没有成片可勾选，用它重跑这一版（重跑入口只在预览页）。
+  const rerunArtifactsButton = byId("rerun-artifacts-button");
   const artifactReview = byId("artifact-review");
   const artifactList = byId("artifact-list");
   const artifactReviewMessage = byId("artifact-review-message");
+  const artifactResultLink = byId("artifact-result-table-link");
   const artifactReviewFeedbackBox = byId("artifact-review-feedback-box");
   const artifactReviewActions = byId("artifact-review-actions");
   const artifactReviewFeedback = byId("artifact-review-feedback");
+  // 模型审片（自动找穿帮）：用户 2026-09-18 要求「不要让我自己找问题」。
+  const takeFindings = byId("take-findings");
+  const takeFindingsScan = byId("take-findings-scan");
+  const takeFindingsSummary = byId("take-findings-summary");
+  const takeFindingsList = byId("take-findings-list");
+  // 文档名旁边的一键复制（用户 2026-09-18 要求：需求文档名很长，要能直接复制）。
+  const copyDocumentTitle = byId("copy-document-title");
   const conflictBox = byId("review-conflict");
   const conflictText = byId("review-conflict-text");
   const permissionGuide = byId("permission-guide");
@@ -94,6 +128,8 @@
   const advancedSettingsModal = byId("advanced-settings-modal");
   const advancedVideoProvider = byId("advanced-video-provider");
   const advancedImageProvider = byId("advanced-image-provider");
+  // 规划方式（高级设置里手动切）：text = 逐张看图描述后规划；multimodal = 原图/视频一起交给模型。
+  const advancedPlanningPipeline = byId("advanced-planning-pipeline");
   const advancedSettingsSave = byId("advanced-settings-save");
   const advancedSettingsFeedback = byId("advanced-settings-feedback");
   const TERMINAL_RUN_STATUSES = new Set([
@@ -101,6 +137,18 @@
   ]);
   const RERUNNABLE_RUN_STATUSES = new Set([
     "succeeded", "completed_with_errors", "failed", "cancelled",
+  ]);
+  // Active (non-terminal) run states that can be force-cancelled via
+  // POST /api/runs/{run_id}/cancel. waiting_approval / waiting_review keep
+  // their own decision buttons, so they are intentionally excluded here.
+  const CANCELLABLE_RUN_STATUSES = new Set([
+    "created", "running", "resuming", "waiting_provider", "delivering",
+  ]);
+  const EXPORTABLE_RUN_STATUSES = new Set([
+    "succeeded", "completed_with_errors", "delivery_failed",
+  ]);
+  const ARTIFACT_REVIEWABLE_STATUSES = new Set([
+    "waiting_review", "succeeded", "completed_with_errors", "delivery_failed",
   ]);
   const RUN_STATUS_UI = {
     planning: { label: "正在生成计划", tone: "running", action: "系统正在读取文档并拆解任务，请稍候。" },
@@ -110,7 +158,7 @@
     waiting_provider: { label: "正在生成内容", tone: "running", action: "生成服务正在工作，可以留在此页等待自动更新。" },
     waiting_review: { label: "成片与结果", tone: "attention", action: "查看生成素材，确认满意后导出到结果表。" },
     delivering: { label: "正在写入结果表", tone: "running", action: "内容已生成，正在回写飞书，请不要重复提交。" },
-    succeeded: { label: "成片与结果", tone: "success", action: "素材已导出到结果表，仍可在这里继续查看。" },
+    succeeded: { label: "生成完成", tone: "success", action: "视频已生成完成，可点击下方「导出到结果表」回写飞书。" },
     completed_with_errors: { label: "部分完成", tone: "warning", action: "部分内容生成失败，可查看错误后重新运行。" },
     delivery_failed: { label: "写入结果表失败", tone: "danger", action: "生成内容已保留，请重新写入结果表，不需要重新生成。" },
     failed: { label: "执行失败", tone: "danger", action: "查看页面中的失败原因，修正后可重新运行。" },
@@ -165,6 +213,45 @@
       : path;
   }
 
+  function artifactExtension(artifact) {
+    if (artifact.kind === "video") return ".mp4";
+    if (artifact.mime_type === "image/jpeg") return ".jpg";
+    if (artifact.mime_type === "image/webp") return ".webp";
+    return ".png";
+  }
+
+  async function downloadArtifact(artifact, button) {
+    if (!artifact?.preview_url) return;
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "\u4e0b\u8f7d\u4e2d...";
+    try {
+      const response = await fetch(agentUrl(artifact.preview_url), {
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      if (!blob.size) throw new Error("\u6587\u4ef6\u4e3a\u7a7a");
+      const taskId = String(artifact.task_id || "artifact").replace(/[^A-Za-z0-9._-]+/g, "-");
+      const artifactId = String(artifact.artifact_id || "artifact").slice(0, 12);
+      const filename = `feishu-${taskId}-${artifactId}${artifactExtension(artifact)}`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `\uff08${error.message}\uff09` : "";
+      showError(new Error(`\u6210\u7247\u4e0b\u8f7d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5${detail}`));
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  }
   async function api(url, options = {}) {
     const response = await fetch(agentUrl(url), options);
     const contentType = response.headers.get("content-type") || "";
@@ -201,10 +288,125 @@
   function providerOptions(kind) {
     return (state.providers?.[kind] || []).map((provider) => ({
       value: provider.name,
-      label: `${provider.label}${provider.reachable === false ? " (unavailable)" : ""}`,
+      label: `${provider.label}${
+        provider.configured === false
+          ? "（未配置）"
+          : provider.reachable === false
+            ? " (unavailable)"
+            : ""
+      }`,
       local: provider.mode === "local",
       reachable: provider.reachable,
+      configured: provider.configured,
+      model: provider.model,
+      capabilities: provider.capabilities || null,
     }));
+  }
+
+  function videoOptions() {
+    return providerOptions("video").filter((option) => !option.local);
+  }
+
+  function videoOptionFor(task) {
+    const options = videoOptions();
+    const selected = task.video_provider || state.providerDefaults?.video_provider;
+    return options.find((option) => option.value === selected) || options[0] || null;
+  }
+
+  function videoCapabilities(task) {
+    const option = videoOptionFor(task);
+    if (option?.capabilities) return option.capabilities;
+    return {
+      duration_min: 4,
+      duration_max: 15,
+      default_duration: 10,
+      resolutions: ["720p", "1080p"],
+      default_resolution: "720p",
+      aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"],
+      default_aspect_ratio: "16:9",
+      max_output_count: 4,
+      supports_audio: true,
+    };
+  }
+
+  function clampNumber(value, minimum, maximum) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return minimum;
+    return Math.min(maximum, Math.max(minimum, Math.round(number)));
+  }
+
+  function ratioValue(value) {
+    if (!value || value === "adaptive") return null;
+    const parts = String(value).toLowerCase().replace("×", "x").replace("*", "x").split(/[:x]/);
+    if (parts.length !== 2) return null;
+    const width = Number(parts[0]);
+    const height = Number(parts[1]);
+    if (!width || !height) return null;
+    return width / height;
+  }
+
+  function nearestSupportedRatio(value, ratios) {
+    if (ratios.includes(value)) return value;
+    const target = ratioValue(value);
+    if (target === null) return ratios[0] || "16:9";
+    const numeric = ratios.filter((item) => item !== "adaptive" && ratioValue(item) !== null);
+    if (!numeric.length) return ratios[0] || "16:9";
+    return numeric.reduce((best, item) => (
+      Math.abs(ratioValue(item) - target) < Math.abs(ratioValue(best) - target)
+        ? item
+        : best
+    ));
+  }
+
+  function normalizeVideoTaskPatch(task, option) {
+    const capabilities = option?.capabilities;
+    if (!capabilities) return { video_provider: option?.value || task.video_provider };
+    const duration = clampNumber(
+      task.duration ?? capabilities.default_duration,
+      capabilities.duration_min,
+      capabilities.duration_max,
+    );
+    const resolutions = capabilities.resolutions || [];
+    const resolution = resolutions.includes(task.resolution)
+      ? task.resolution
+      : (capabilities.default_resolution || resolutions[0] || "720p");
+    const aspectRatios = capabilities.aspect_ratios || [];
+    const aspectRatio = nearestSupportedRatio(
+      task.aspect_ratio,
+      aspectRatios.length ? aspectRatios : ["16:9"],
+    );
+    const outputCount = clampNumber(
+      task.output_count ?? 1,
+      1,
+      capabilities.max_output_count || 1,
+    );
+    return {
+      video_provider: option.value,
+      duration,
+      resolution,
+      aspect_ratio: aspectRatio,
+      output_count: outputCount,
+    };
+  }
+
+  function resolutionLabel(value) {
+    return String(value || "").toLowerCase() === "4k" ? "4K" : value;
+  }
+
+  function boundedNumberInput(value, options, onInput) {
+    const control = document.createElement("input");
+    control.className = "task-control";
+    control.type = "number";
+    control.min = String(options.min);
+    control.max = String(options.max);
+    control.step = String(options.step || 1);
+    control.value = String(value ?? options.min);
+    control.addEventListener("change", () => {
+      const next = clampNumber(control.value, options.min, options.max);
+      control.value = String(next);
+      onInput(next);
+    });
+    return control;
   }
 
   function renderAdvancedSettings() {
@@ -229,6 +431,11 @@
     }
     advancedVideoProvider.value = preferences.video_provider;
     advancedImageProvider.value = preferences.image_provider;
+    if (advancedPlanningPipeline) {
+      advancedPlanningPipeline.value = preferences.planning_pipeline === "multimodal"
+        ? "multimodal"
+        : "text";
+    }
     advancedSettingsFeedback.textContent = "";
     advancedSettingsFeedback.className = "planner-prompt-feedback";
   }
@@ -237,6 +444,7 @@
     try {
       const payload = await api("/api/provider-preferences");
       state.providerPreferences = payload;
+      state.providerDefaults = payload;
       renderAdvancedSettings();
       renderProviderStatus();
     } catch (error) {
@@ -266,13 +474,18 @@
         body: JSON.stringify({
           video_provider: advancedVideoProvider.value,
           image_provider: advancedImageProvider.value,
+          planning_pipeline: advancedPlanningPipeline
+            ? advancedPlanningPipeline.value
+            : "text",
         }),
       });
       state.providerPreferences = payload;
+      state.providerDefaults = payload;
       advancedSettingsFeedback.textContent = "模型偏好已保存";
       advancedSettingsFeedback.className = "planner-prompt-feedback is-success";
       renderAdvancedSettings();
       renderProviderStatus();
+      if (state.view) render(ReviewState.draftView(state.review));
       setTimeout(closeAdvancedSettings, 700);
     } catch (error) {
       advancedSettingsFeedback.textContent = error.message || "保存失败";
@@ -369,8 +582,46 @@
     renderRecentRuns();
   }
 
-  function stopPolling() {
-    if (state.pollTimer !== null) globalThis.clearInterval(state.pollTimer);
+  //: 上一次请求是「我们自己 PATCH 保存」引起的 —— 下一次轮询要认领这个变化，
+  //: 不能当成别人改了（否则会弹「服务端计划已更新」并重建任务列表，打断输入）。
+  let selfSavedPending = false;
+  //: 上次真正重绘时的服务端数据签名（没变就不重绘）。
+  let lastRenderedSignature = null;
+  //: 停在待审批/待审核时的轮询降频。
+  let pollTicks = 0;
+  const PARKED_POLL_EVERY = 5;
+  const PARKED_STATUSES = new Set(["waiting_approval", "waiting_review"]);
+  function isParkedStatus(status) {
+    return PARKED_STATUSES.has(status);
+  }
+  //: 任务列表有挂起的重建（重建时用户正在输入 → 推迟到失焦）。
+  let pendingTaskRefresh = false;
+
+  function taskEditorFocused() {
+    const active = document.activeElement;
+    if (!active || !taskList.contains(active)) return false;
+    return (
+      active.tagName === "TEXTAREA" ||
+      active.tagName === "INPUT" ||
+      active.isContentEditable === true
+    );
+  }
+
+  // 失焦后把挂起的重建补上：轮询每秒一次，正常情况下下一次就会生效；
+  // 但如果服务端已经没变化（shouldRefreshTaskEditor 返回 false），就得靠这里补。
+  taskList.addEventListener("focusout", () => {
+    if (!pendingTaskRefresh) return;
+    pendingTaskRefresh = false;
+    globalThis.setTimeout(() => {
+      if (taskEditorFocused()) {
+        pendingTaskRefresh = true;
+        return;
+      }
+      render(state.view, { refreshTasks: true });
+    }, 0);
+  });
+
+  function stopPolling() {    if (state.pollTimer !== null) globalThis.clearInterval(state.pollTimer);
     state.pollTimer = null;
   }
 
@@ -378,6 +629,22 @@
     stopPolling();
     if (!state.runId || TERMINAL_RUN_STATUSES.has(state.view?.status)) return;
     state.pollTimer = globalThis.setInterval(() => poll(false), 1000);
+  }
+
+  /**
+   * 徽章文案：优先用任务记录列表刚轮询到的运行状态（新鲜），拿不到才退回
+   * 扫描时带的 claim_status（可能已经旧了）。
+   */
+  function claimBadgeFor(task, claimedRunId) {
+    if (!claimedRunId) return null;
+    const run = (state.bitable.recentRuns || []).find(
+      (item) => item.run_id === claimedRunId,
+    );
+    return BitableState.liveClaimBadge(
+      task,
+      claimedRunId,
+      run ? statusUi(run.status) : null,
+    );
   }
 
   function renderBitableTasks() {
@@ -400,9 +667,24 @@
     ) {
       bitableStatus.textContent = state.bitable.claim.error;
     } else if (scan.phase === "ready") {
-      bitableStatus.textContent = tasks.length
-        ? `发现 ${tasks.length} 条可处理任务，请手动选择一条。`
-        : "当前没有需求附件可读且进度符合规则的可处理任务。";
+      const claimed = tasks.filter((task) => task.claimed_run_id);
+      const waitingCount = claimed.filter(
+        (task) => claimBadgeFor(task, task.claimed_run_id)?.tone === "attention",
+      ).length;
+      const claimableCount = tasks.length - claimed.length;
+      if (waitingCount) {
+        bitableStatus.textContent = `${
+          claimableCount ? `${claimableCount} 条可处理，` : ""
+        }${claimed.length} 条已领取，其中 ${waitingCount} 条等你处理。`;
+      } else if (claimableCount && claimed.length) {
+        bitableStatus.textContent = `${claimableCount} 条可处理，${claimed.length} 条已领取。`;
+      } else if (claimed.length) {
+        bitableStatus.textContent = `${claimed.length} 条任务已领取，可在当前列表查看进度。`;
+      } else if (claimableCount) {
+        bitableStatus.textContent = `发现 ${claimableCount} 条可处理任务，请手动选择一条。`;
+      } else {
+        bitableStatus.textContent = "当前没有需求附件可读且进度符合规则的可处理任务。";
+      }
     }
 
     const nodes = tasks.map((task) => {
@@ -426,14 +708,37 @@
           : "未指定";
         identity.append(element("p", "bitable-task-meta", `执行人：${executors}`));
       }
+      const claimedRunId = task.claimed_run_id || (
+        state.bitable.claim.recordId === task.record_id
+          ? state.bitable.claim.runId
+          : null
+      );
+      const badge = claimBadgeFor(task, claimedRunId);
+      if (badge) {
+        const badgeNode = element(
+          "span",
+          "bitable-task-badge",
+          `状态：${badge.label}`,
+        );
+        badgeNode.dataset.tone = badge.tone;
+        identity.append(badgeNode);
+      }
       const link = element("a", "", "查看需求来源");
       link.href = task.source_url;
       link.target = "_blank";
       link.rel = "noreferrer";
-      const claim = element("button", "primary", "开始分析");
+      const claim = element(
+        "button",
+        claimedRunId ? "secondary" : "primary",
+        claimedRunId ? "查看当前任务" : "开始分析",
+      );
       claim.type = "button";
-      claim.disabled = state.busy || state.bitable.claim.phase === "loading" || task.deliverable === false;
-      claim.addEventListener("click", () => claimBitableTask(task.record_id));
+      if (claimedRunId) {
+        claim.addEventListener("click", () => viewRecentRun(claimedRunId));
+      } else {
+        claim.disabled = state.busy || state.bitable.claim.phase === "loading" || task.deliverable === false;
+        claim.addEventListener("click", () => claimBitableTask(task.record_id));
+      }
       card.append(identity, link, claim);
       return card;
     });
@@ -441,16 +746,43 @@
       nodes.push(element("p", "bitable-empty", "没有可领取任务。"));
     }
     bitableTaskList.replaceChildren(...nodes);
+    bitableTaskList.dataset.taskSig = taskListSignature(tasks);
     renderRecentRuns();
   }
 
   function renderRecentRuns() {
     const runs = state.bitable.recentRuns || [];
+    const signature = JSON.stringify({
+      selected: state.runId,
+      busy: state.busy,
+      runs: runs.map((run) => [
+        run.run_id,
+        run.display_text,
+        run.status,
+        run.active,
+        run.result_table_url,
+        run.rerunnable,
+        run.artifact_count,
+      ]),
+    });
+    if (recentRunList.dataset.renderSig === signature) return;
+    recentRunList.dataset.renderSig = signature;
     const activeCount = runs.filter((run) => run.active).length;
+    // 一条记录一行：重跑不再多出一行。历次版本去成片预览的横向滑条里看/切。
+    const rows = BitableState.latestRunsByRecord(runs);
+    // 外面直接看得到这条任务一共出了多少条成片（历次尝试累加）。
+    const producedByRecord = new Map();
+    runs.forEach((run) => {
+      const key = run.record_id || `run:${run.run_id}`;
+      producedByRecord.set(
+        key,
+        (producedByRecord.get(key) || 0) + (Number(run.artifact_count) || 0),
+      );
+    });
     runHistorySummary.textContent = runs.length
-      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${runs.length} 条`
+      ? `${activeCount ? `${activeCount} 个进行中 · ` : ""}共 ${rows.length} 条`
       : "进行中与历史任务都在这里";
-    const switchOptions = runs.map((run) => {
+    const switchOptions = rows.map((run) => {
       const option = element("option", "", `${run.display_text || run.run_id} · ${statusUi(run.status).label}`);
       option.value = run.run_id;
       return option;
@@ -466,58 +798,75 @@
       : "";
     currentRunSwitcher.disabled = state.busy || runs.length === 0;
 
-    const nodes = runs.map((run) => {
+    const nodes = rows.map((run) => {
       const selected = run.run_id === state.runId;
       const row = element("article", `recent-run${selected ? " is-current" : ""}`);
       row.dataset.runId = run.run_id;
+      if (run.record_id) row.dataset.recordId = run.record_id;
       const details = element("div", "recent-run-details");
+      const produced = producedByRecord.get(run.record_id || `run:${run.run_id}`) || 0;
       details.append(
         element("strong", "", run.display_text || run.run_id),
         element(
           "p",
           "bitable-task-meta",
-          `${run.active ? "进行中" : "历史"} · ${statusUi(run.status).label}`,
+          `${run.active ? "进行中" : "历史"} · ${statusUi(run.status).label}`
+            + (run.updated_at ? ` · ${formatRecentTime(run.updated_at)}` : "")
+            + (produced ? ` · 已成片 ${produced} 条` : ""),
         ),
       );
-      const actions = element("div", "recent-run-actions");
-      const view = element(
-        "button",
-        selected ? "quiet-button is-current" : "quiet-button",
-        selected ? "当前查看" : "查看",
-      );
-      view.type = "button";
-      view.disabled = state.busy || selected;
-      view.addEventListener("click", () => viewRecentRun(run.run_id));
-      actions.append(view);
-      if (run.result_table_url) {
-        const link = element("a", "", "结果表");
-        link.href = run.result_table_url;
-        link.target = "_blank";
-        link.rel = "noreferrer";
-        actions.append(link);
-      }
-      if (run.rerunnable) {
-        const rerun = element("button", "quiet-button", "重跑");
-        rerun.type = "button";
-        rerun.disabled = state.busy;
-        rerun.addEventListener("click", () => rerunBitableTask(run.run_id));
-        actions.append(rerun);
-      }
-      if (!run.active) {
-        const remove = element("button", "danger", "删除");
-        remove.type = "button";
-        remove.disabled = state.busy;
-        remove.addEventListener("click", () => archiveBitableRun(run.run_id));
-        actions.append(remove);
-      }
-      row.append(details, actions);
+      row.append(details, runActionsFor(run, { selected }));
       return row;
     });
     if (!nodes.length) nodes.push(element("p", "bitable-empty", "暂无任务记录。"));
     recentRunList.replaceChildren(...nodes);
   }
 
-  async function loadRecentRuns() {
+
+  /** 一条运行的按钮组（任务记录里只留「查看 / 删除」；重跑在成片与结果页）。 */
+  function runActionsFor(run, { selected = false } = {}) {
+    const actions = element("div", "recent-run-actions");
+    const view = element(
+      "button",
+      selected ? "quiet-button is-current" : "quiet-button",
+      selected ? "当前查看" : "查看",
+    );
+    view.type = "button";
+    view.disabled = state.busy || selected;
+    view.addEventListener("click", () => viewRecentRun(run.run_id));
+    actions.append(view);
+    if (run.result_table_url) {
+      const link = element("a", "", "结果表");
+      link.href = run.result_table_url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      actions.append(link);
+    }
+    if (canDeleteRun(run)) {
+      const remove = element("button", "danger", "删除");
+      remove.type = "button";
+      remove.disabled = state.busy;
+      remove.addEventListener("click", () => archiveBitableRun(run.run_id));
+      actions.append(remove);
+    }
+    return actions;
+  }
+
+  function formatRecentTime(value) {
+    // 统一走 BitableState.parseServerTime：没有时区的裸串按 UTC 解析，
+    // 否则会被当成本地时间，显示比真实时间早 8 小时（用户 2026-09-18：「时间还是不对」）。
+    const parsed = BitableState.parseServerTime(value);
+    if (!Number.isFinite(parsed)) return "";
+    return new Date(parsed).toLocaleString("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+
+  async function loadRecentRuns({ silent = false } = {}) {
     if (!state.modes.bitable) return;
     try {
       const [activeRuns, recentRuns] = await Promise.all([
@@ -535,9 +884,105 @@
         });
       state.bitable = BitableState.recentSucceeded(state.bitable, merged);
       renderRecentRuns();
+      // 徽章文案取自这份新鲜状态，所以列表也要跟着重算（内容没变则不重建 DOM，
+      // 免得用户正要点「开始分析」时按钮被换掉）。
+      refreshTaskListIfChanged();
+      // 有新状态在自行推进就起盯守，全都在等人操作就把盯守停掉。
+      scheduleRunWatch();
     } catch (error) {
-      showError(error);
+      // 后台定时刷新失败（服务重启中、飞书抖动）不该每 5 秒弹一次全局错误：
+      // 用户没法对它做任何事，手动「刷新任务」仍会把错误如实报出来。
+      if (!silent) showError(error);
     }
+  }
+
+  // 任务记录 / 任务列表徽章**只在状态会自己变的时候**盯，而且只在签名变化时
+// 重画。以前是固定 5 秒刷一次整个面板 —— 而等待审批 / 等待成片审核是停在等人
+// 操作上的，状态不会自己变，那种轮询纯属白跑（用户要的是「状态更新才刷新」）。
+  const SELF_PROGRESSING_RUN_STATUSES = new Set([
+    // TableTaskStatus 的中文值 —— tasks / recent-runs 两个接口下发的就是这一套。
+    "处理中",
+    "生成中",
+    "回写中",
+    // 运行时英文状态（运行详情等其它来源）。
+    "created",
+    "planning",
+    "running",
+    "resuming",
+    "waiting_provider",
+    "delivering",
+  ]);
+  const RUN_WATCH_INTERVAL_MS = 5000;
+  //: 空闲时的心跳：全都在等人操作也**慢速**对一次。
+  //:
+  //: 2026-09-17 用户报「任务记录更新变得不实时了」：实测接口是新的、页面 DOM 停在
+  //: 几十分钟前 —— 因为「只在自行推进时盯守」在**别的窗口/会话**开始的任务上失效
+  //: （本页看不到任何推进中的状态，就永远不会去对），一切停下来后更是彻底不再对。
+  //: 改成：有推进中的任务 → 5 秒；空闲 → 每 3 个 tick（15 秒）对一次，仍远低于
+  //: 原来的固定 5 秒轮询。
+  const RUN_IDLE_TICKS = 3;
+  let runWatchTimer = null;
+
+  function needsRunWatch() {
+    return (state.bitable.recentRuns || []).some((run) =>
+      SELF_PROGRESSING_RUN_STATUSES.has(run.status),
+    );
+  }
+
+  /** 只有**不在跑**的运行才给删除按钮（用户 2026-09-17：生成中的任务不要有删除按钮）。
+   *
+   * 以前只看 `run.active`，而 active 只来自 active-runs 接口 —— 别的窗口/会话起的
+   * 任务在本页会显示成非 active，于是「生成中」的行也挂着删除按钮，点了会把正在跑
+   * 的任务删掉。改成按状态判断：自推进中的状态一律不给删。
+   */
+  function canDeleteRun(run) {
+    return !run.active && !SELF_PROGRESSING_RUN_STATUSES.has(run.status);
+  }
+
+  function stopRunWatch() {
+    if (runWatchTimer !== null) globalThis.clearInterval(runWatchTimer);
+    runWatchTimer = null;
+  }
+
+  /** 有任务在自行推进就 5 秒盯一次；空闲降到 15 秒心跳（跨窗口也能发现新任务）。 */
+  function scheduleRunWatch() {
+    if (runWatchTimer !== null) return; // 已经在盯了，别重复起
+    let idleTicks = 0;
+    runWatchTimer = globalThis.setInterval(() => {
+      if (document.hidden) return;
+      if (!needsRunWatch()) {
+        idleTicks += 1;
+        if (idleTicks < RUN_IDLE_TICKS) return;
+      }
+      idleTicks = 0;
+      loadRecentRuns({ silent: true });
+    }, RUN_WATCH_INTERVAL_MS);
+  }
+
+  function startBitableRefresh() {
+    // 从别的标签页切回来时立刻对一次，别让用户盯着旧数据。
+    // 用可选调用是刻意的：这套前端的测试跑在自制的极简 DOM 上，不一定实现
+    // addEventListener；浏览器里它始终存在，缺了也只是少一次「切回来即刷新」。
+    document.addEventListener?.("visibilitychange", () => {
+      if (!document.hidden) loadRecentRuns({ silent: true });
+    });
+  }
+
+  /** 任务列表内容（含徽章文案）没变就不重建 DOM，避免点击落空与闪烁。 */
+  function taskListSignature(tasks) {
+    return JSON.stringify(
+      (tasks || []).map((task) => [
+        task.record_id,
+        claimBadgeFor(task, task.claimed_run_id)?.label || "",
+      ]),
+    );
+  }
+
+  function refreshTaskListIfChanged() {
+    const current = BitableState.activeCategoryState(state.bitable);
+    const signature = taskListSignature(current.tasks);
+    if (bitableTaskList.dataset.taskSig === signature) return;
+    renderBitableTasks();
   }
 
   async function archiveBitableRun(runId) {
@@ -566,10 +1011,10 @@
   }
 
   function formatArchivedTime(value) {
-    if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "";
-    return date.toLocaleString("zh-CN", {
+    // 同 formatRecentTime：没有时区的裸串按 UTC 解析，避免早 8 小时。
+    const parsed = BitableState.parseServerTime(value);
+    if (!Number.isFinite(parsed)) return "";
+    return new Date(parsed).toLocaleString("zh-CN", {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -782,6 +1227,7 @@
       || category === state.bitable.activeCategory
     ) return;
     state.bitable = BitableState.selectCategory(state.bitable, category);
+    persistBitableCategory(category);
     renderBitableTasks();
     if (BitableState.activeCategoryState(state.bitable).scan.phase === "idle") {
       await scanBitableTasks();
@@ -826,39 +1272,75 @@
     }
     if (
       state.modes.bitable
-      && state.bitable.activeCategory === "animation"
       && BitableState.activeCategoryState(state.bitable).scan.phase === "idle"
     ) {
       await scanBitableTasks();
     }
   }
 
+  //: 正在提交重跑/调整请求。
+  //:
+  //: **刻意不用 setBusy** —— 这些请求在后端要"看上一版成片 + 融合返工要求"，
+  //: 可能等一分钟；setBusy 会把整个界面锁死（用户 2026-09-18：
+  //: 「重跑的时候其它按钮都点不了」）。这里只禁用触发按钮本身。
+  let rerunRequesting = false;
+
+  function setRerunRequesting(value) {
+    rerunRequesting = value;
+    if (pollingNote) {
+      pollingNote.textContent = value
+        ? "正在提交重跑：模型要先看上一版成片再融合要求，可能要等一分钟…"
+        : "";
+    }
+    updateActionAvailability();
+  }
+
   function updateActionAvailability() {
     const canReview = state.view && state.view.status === "waiting_approval";
-    const canReviewArtifacts = state.view && state.view.status === "waiting_review";
+    const canReviewArtifacts = Boolean(
+      state.view
+      && ARTIFACT_REVIEWABLE_STATUSES.has(state.view.status)
+      && !state.view.delivery
+    );
+    const canAdjustArtifacts = Boolean(
+      canReviewArtifacts
+      && state.artifactRetryTaskIds.size > 0
+      && artifactReviewFeedback.value.trim()
+    );
     const status = state.view?.status;
     const statusInfo = statusUi(status);
     const conflict = ReviewState.conflictMessage(state.review);
+    const canCancelRun = CANCELLABLE_RUN_STATUSES.has(status);
     rejectButton.disabled = state.busy || !canReview;
-    cancelButton.disabled = state.busy || !canReview;
+    cancelButton.disabled = state.busy || (!canReview && !canCancelRun);
     approveButton.disabled = state.busy || !ReviewState.canApprove(state.review);
-    retryDeliveryButton.disabled = state.busy || state.view?.status !== "delivery_failed";
+    // 交付已成功时不再显示「导出到结果表」，避免重复导出看起来像“点了没反应”。
+    const deliverySucceeded = Boolean(
+      state.view?.delivery && state.view.delivery.status === "succeeded"
+    );
+    const canExportDelivery = EXPORTABLE_RUN_STATUSES.has(status) && !deliverySucceeded;
+    retryDeliveryButton.disabled = state.busy || !canExportDelivery;
     const retryableAssetIssues = (state.view?.approval?.ingest_issue_records || [])
       .filter((record) => record.severity === "asset" && record.code === "media_download_failed");
     retryFailedAssetsButton.disabled = state.busy || !canReview || retryableAssetIssues.length === 0;
     retryFailedAssetsButton.hidden = !canReview || retryableAssetIssues.length === 0;
     confirmArtifactsButton.disabled = state.busy || !canReviewArtifacts;
-    adjustArtifactsButton.disabled = state.busy || !canReviewArtifacts;
+    adjustArtifactsButton.disabled = state.busy || rerunRequesting || !canAdjustArtifacts;
     artifactReviewFeedback.disabled = state.busy || !canReviewArtifacts;
     const terminal = TERMINAL_RUN_STATUSES.has(state.view?.status);
-    rerunButton.disabled = state.busy
+    rerunButton.disabled = state.busy || rerunRequesting
       || state.runMode !== "bitable"
       || !RERUNNABLE_RUN_STATUSES.has(state.view?.status);
+    if (rerunArtifactsButton) {
+      rerunArtifactsButton.disabled = rerunRequesting;
+    }
     rerunButton.hidden = state.runMode !== "bitable" || !RERUNNABLE_RUN_STATUSES.has(status);
-    retryDeliveryButton.hidden = status !== "delivery_failed";
+    retryDeliveryButton.hidden = !canExportDelivery;
     rejectButton.hidden = !canReview;
     approveButton.hidden = !canReview;
-    cancelButton.hidden = !canReview;
+    cancelButton.hidden = !(canReview || canCancelRun);
+    cancelButton.textContent = (canCancelRun && !canReview)
+      ? "取消运行" : "取消本次任务";
     actionTitle.textContent = statusInfo.label;
     byId("reject-feedback").disabled = state.busy || !canReview;
     taskList.querySelectorAll("input, textarea, select, button").forEach((control) => {
@@ -882,7 +1364,11 @@
 
   function renderEvents(events) {
     const list = byId("event-list");
-    const nodes = (events || []).map((event) => {
+    const source = events || [];
+    const signature = JSON.stringify(source);
+    if (list.dataset.renderSig === signature) return;
+    list.dataset.renderSig = signature;
+    const nodes = source.map((event) => {
       const item = element("li", "event-item");
       const meta = element("div", "event-meta");
       meta.append(
@@ -908,6 +1394,16 @@
   function field(labelText, control, wide = false) {
     const wrapper = element("div", wide ? "field field-wide" : "field");
     wrapper.append(element("label", "", labelText), control);
+    return wrapper;
+  }
+
+  function videoField(labelText, control, hintText = "") {
+    const wrapper = element("div", "video-param-field", "");
+    wrapper.append(
+      element("label", "video-param-label", labelText),
+      control,
+      element("span", "video-param-hint", hintText),
+    );
     return wrapper;
   }
 
@@ -946,6 +1442,7 @@
 
   function providerPicker(task) {
     const control = document.createElement("select");
+    control.className = "task-control";
     const options = imageProviderOptions(task);
     const preferred = state.providerDefaults?.image_provider || options[0]?.value || "";
     options.forEach((option) => {
@@ -961,24 +1458,179 @@
   }
   function videoProviderPicker(task) {
     const control = document.createElement("select");
-    const options = providerOptions("video");
-    const preferred = state.providerDefaults?.video_provider || "aiport";
+    control.className = "task-control";
+    const options = videoOptions();
+    const defaultModel = state.providerDefaults?.video_provider;
+    const selected = options.some((option) => option.value === task.video_provider)
+      ? task.video_provider
+      : (options.some((option) => option.value === defaultModel)
+        ? defaultModel
+        : options[0]?.value || "");
     options.forEach((option) => {
       const node = element("option", "", option.label);
       node.value = option.value;
-      node.selected = (task.video_provider || preferred) === option.value;
+      node.selected = selected === option.value;
       control.append(node);
     });
-    if (!options.some((option) => option.value === (task.video_provider || preferred))) {
-      const node = element("option", "", `${task.video_provider} (unavailable)`);
-      node.value = task.video_provider || preferred;
-      node.selected = true;
-      control.append(node);
-    }
+    control.disabled = options.length <= 1;
     control.addEventListener("change", () => {
-      updateTask(task.task_id, { video_provider: control.value });
+      const option = options.find((item) => item.value === control.value);
+      updateTask(task.task_id, normalizeVideoTaskPatch(task, option));
+      render(state.view, { refreshTasks: true });
     });
     return control;
+  }
+
+  //: 模型审片结果（按 run 缓存，切回来不用重新看片 —— 每次看片都是一次真实模型调用）。
+  const takeFindingsCache = new Map();
+  //: 审片请求进行中（只用来禁用按钮，避免重复点）。
+  let takeFindingsScanning = false;
+
+  /** 成片预览里的「模型审片」：自动列疑似穿帮，可一键采纳成返工反馈。 */
+  function renderTakeFindings(view) {
+    if (!takeFindings) return;
+    // 只要有 run 就显示这个区块 —— 以前没有成片时整块隐藏，用户根本找不到入口
+    // （「让模型看一遍找问题点不了」）。没成片时按钮照样可点，会说明原因。
+    takeFindings.hidden = false;
+    const videos = (view.artifacts || []).filter(
+      (artifact) => artifact.kind === "video",
+    );
+    // 只在自己正在看片时禁用 —— **不跟 state.busy 走**：setBusy(false) 之后不一定
+    // 会再渲染（有"变了才重绘"的签名门），按钮会永久卡在禁用状态
+    //（用户 2026-09-18：「让模型看一遍找问题还是点不了」）。
+    if (takeFindingsScan) {
+      takeFindingsScan.disabled = takeFindingsScanning === true;
+    }
+    const findings = takeFindingsCache.get(view.run_id);
+    if (!findings) {
+      takeFindingsSummary.textContent = videos.length
+        ? "点右边按钮，让模型看一遍这一版成片，自动列出疑似穿帮"
+          + "（穿模 / 悬浮 / 多余肢体 / 动作跳变 / 口型对不上 / 道具突变…）。"
+        : "这一版还没有成片，生成完成后就能让模型审片找穿帮。";
+      takeFindingsList.replaceChildren();
+      return;
+    }
+    takeFindingsSummary.textContent = findings.available
+      ? findings.summary || "（模型没给出画面描述）"
+      : findings.reason || "看片失败";
+    const problems = findings.problems || [];
+    if (findings.available && problems.length === 0) {
+      takeFindingsList.replaceChildren(
+        element("li", "take-finding", "模型没发现明显穿帮。"),
+      );
+      return;
+    }
+    takeFindingsList.replaceChildren(
+      ...problems.map((problem) => {
+        const row = element("li", "take-finding");
+        // 「违背要求」是用户最在意的一类（提示词写了但没做到），单独标出来。
+        if (problem.kind === "违背要求") {
+          row.classList.add("is-violation");
+          row.append(element("span", "take-finding-kind", "违背要求"));
+        }
+        row.append(element("span", "take-finding-at", problem.at || "—"));
+        row.append(element("span", "take-finding-issue", problem.issue));
+        if (problem.why) {
+          row.append(element("span", "take-finding-why", problem.why));
+        }
+        const adopt = element("button", "take-finding-adopt", "采纳");
+        adopt.type = "button";
+        adopt.addEventListener("click", () => {
+          if (!artifactReviewFeedback) return;
+          const line = problem.kind === "违背要求"
+            ? `没按要求：${problem.issue}`
+            : `穿帮：${problem.at ? `${problem.at} ` : ""}${problem.issue}`;
+          const current = artifactReviewFeedback.value.trim();
+          artifactReviewFeedback.value = current ? `${current}\n${line}` : line;
+          artifactReviewFeedback.focus();
+        });
+        row.append(adopt);
+        return row;
+      }),
+    );
+  }
+
+  async function scanTakeFindings() {
+    if (!state.runId || takeFindingsScanning) return;
+    takeFindingsScanning = true;
+    if (takeFindingsScan) takeFindingsScan.disabled = true;
+    if (takeFindingsSummary) {
+      takeFindingsSummary.textContent = "模型正在看片…（一般十几秒）";
+    }
+    try {
+      const findings = await api(`/api/runs/${state.runId}/take-findings`);
+      takeFindingsCache.set(state.runId, findings);
+    } catch (error) {
+      if (takeFindingsSummary) {
+        takeFindingsSummary.textContent = error.message || "看片失败";
+      }
+    } finally {
+      takeFindingsScanning = false;
+      if (takeFindingsScan) takeFindingsScan.disabled = false;
+      if (state.view) renderTakeFindings(state.view);
+    }
+  }
+
+  if (takeFindingsScan) {
+    takeFindingsScan.addEventListener("click", () => {
+      scanTakeFindings();
+    });
+  }
+
+  /** 复制当前文档名（局域网 http 下没有 clipboard API，退回 execCommand）。 */
+  async function copyCurrentDocumentTitle() {
+    const title = String(
+      state.view?.approval?.document_title
+      || byId("document-title")?.textContent
+      || "",
+    ).trim();
+    if (!title) return;
+    let ok = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(title);
+        ok = true;
+      }
+    } catch (error) {
+      ok = false;
+    }
+    if (!ok) {
+      try {
+        const helper = document.createElement("textarea");
+        helper.value = title;
+        helper.setAttribute("readonly", "");
+        helper.style.position = "fixed";
+        helper.style.opacity = "0";
+        document.body.append(helper);
+        helper.select();
+        ok = document.execCommand("copy");
+        helper.remove();
+      } catch (error) {
+        ok = false;
+      }
+    }
+    if (!copyDocumentTitle) return;
+    if (!ok) {
+      // 两条路都失败（浏览器禁了剪贴板）：直接把标题选中，用户 Ctrl+C 就行。
+      const titleNode = byId("document-title");
+      if (titleNode && globalThis.getSelection) {
+        const range = document.createRange();
+        range.selectNodeContents(titleNode);
+        const selection = globalThis.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+    copyDocumentTitle.textContent = ok ? "已复制 ✓" : "已选中，Ctrl+C";
+    globalThis.setTimeout(() => {
+      if (copyDocumentTitle) copyDocumentTitle.textContent = "复制文档名";
+    }, 1800);
+  }
+
+  if (copyDocumentTitle) {
+    copyDocumentTitle.addEventListener("click", () => {
+      copyCurrentDocumentTitle();
+    });
   }
 
   function renderProviderStatus() {
@@ -991,16 +1643,16 @@
       return;
     }
     const video = (providers.video || []).find((p) => p.name === defaults.video_provider);
-    const videoText = video && video.mode === "local"
-      ? (video.reachable === false ? "视频：本地 MiniMax H3（离线）" : "视频：本地 MiniMax H3（免费）")
-      : "视频：Seedance（付费）";
+    const videoText = video && video.mode !== "local"
+      ? `视频：${video.label || "Seedance 2.5"}（付费）`
+      : (video?.reachable === false ? "视频：本地 MiniMax H3（离线）" : "视频：本地 MiniMax H3（免费）");
     const imageText = defaults.image_provider === "aiport"
       ? "图片：本地 Qwen（免费）"
       : "图片：云模型（付费）";
     const realPersonText = defaults.video_provider === "aiport"
       ? "真人类视频：本地 MiniMax H3"
       : "真人类视频：火山方舟真人模型";
-    bar.textContent = `生成来源 · ${videoText} · ${imageText} · ${realPersonText}`;
+    bar.textContent = `默认生成来源 · ${videoText} · ${imageText} · ${realPersonText}`;
     bar.hidden = false;
   }
 
@@ -1011,13 +1663,20 @@
 
   function ratioPicker(task) {
     const control = document.createElement("select");
-    IMAGE_ASPECT_RATIOS.forEach((ratio) => {
-      const option = element("option", "", ratio);
+    control.className = "task-control";
+    const capabilities = task.task_type === "image_to_video"
+      ? videoCapabilities(task)
+      : null;
+    const ratios = capabilities?.aspect_ratios?.length
+      ? capabilities.aspect_ratios
+      : IMAGE_ASPECT_RATIOS;
+    ratios.forEach((ratio) => {
+      const option = element("option", "", ratio === "adaptive" ? "自适应" : ratio);
       option.value = ratio;
       option.selected = task.aspect_ratio === ratio;
       control.append(option);
     });
-    if (!IMAGE_ASPECT_RATIOS.includes(task.aspect_ratio)) {
+    if (!ratios.includes(task.aspect_ratio)) {
       const option = element("option", "", task.aspect_ratio || "未选择");
       option.value = task.aspect_ratio || "";
       option.selected = true;
@@ -1029,6 +1688,58 @@
     return control;
   }
 
+  function resolutionPicker(task) {
+    const capabilities = videoCapabilities(task);
+    const control = document.createElement("select");
+    control.className = "task-control";
+    const resolutions = capabilities?.resolutions?.length
+      ? capabilities.resolutions
+      : ["720p", "1080p"];
+    resolutions.forEach((resolution) => {
+      const option = element("option", "", resolutionLabel(resolution));
+      option.value = resolution;
+      option.selected = task.resolution === resolution;
+      control.append(option);
+    });
+    if (!resolutions.includes(task.resolution)) {
+      const option = element("option", "", task.resolution || "未选择");
+      option.value = task.resolution || "";
+      option.selected = true;
+      control.append(option);
+    }
+    control.title = `可选：${resolutions.map(resolutionLabel).join("、")}`;
+    control.addEventListener("change", () => {
+      updateTask(task.task_id, { resolution: control.value });
+    });
+    return control;
+  }
+
+  function durationInput(task) {
+    const capabilities = videoCapabilities(task);
+    return boundedNumberInput(
+      task.duration ?? capabilities.default_duration,
+      {
+        min: capabilities.duration_min,
+        max: capabilities.duration_max,
+        hint: `${capabilities.duration_min}-${capabilities.duration_max} 秒`,
+      },
+      (value) => updateTask(task.task_id, { duration: value }),
+    );
+  }
+
+  function outputCountInput(task) {
+    const capabilities = videoCapabilities(task);
+    const maximum = capabilities.max_output_count || 1;
+    return boundedNumberInput(
+      task.output_count ?? 1,
+      {
+        min: 1,
+        max: maximum,
+        hint: `1-${maximum} 条候选`,
+      },
+      (value) => updateTask(task.task_id, { output_count: value }),
+    );
+  }
   function deliveryCropToggle(task) {
     const wrapper = element("label", "task-crop-toggle", "");
     const control = document.createElement("input");
@@ -1112,7 +1823,12 @@
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ patch }),
-      }).then(() => poll(false)).catch((error) => showError(error));
+      }).then(() => {
+        // 这是我们自己刚保存的：告诉下一次轮询"这个变化是自己造成的"，
+        // 别当成别人改了而弹冲突/重建任务列表。
+        selfSavedPending = true;
+        return poll(false);
+      }).catch((error) => showError(error));
     }, 600));
   }
 
@@ -1591,6 +2307,126 @@
       rows.push(element("p", "mode-message", "暂无排除素材。"));
     }
     byId("excluded-asset-list").replaceChildren(...rows);
+    // 未覆盖的素材：给一个「排除」入口 —— 覆盖门要求「每个素材要么被引用、要么被
+    // 排除」，而以前界面没有排除入口，用户只能手改提示词才能批准（2026-09-17）。
+    const uncovered = ReviewState.uncoveredAssetRows(view).map((item) => {
+      const row = element("div", "excluded-asset-row");
+      const content = element("div", "excluded-asset-copy");
+      const exclude = element("button", "quiet-button", "排除");
+      exclude.type = "button";
+      exclude.disabled = state.busy;
+      exclude.addEventListener("click", () => excludeAsset(item.asset_id, exclude));
+      content.append(
+        element("strong", "", item.asset_id),
+        element("p", "", "计划没有用到它：排除掉才能批准；要用就把它加进某个任务的参考图。"),
+        exclude,
+      );
+      row.append(content);
+      return row;
+    });
+    byId("uncovered-asset-list").replaceChildren(
+      ...(uncovered.length
+        ? uncovered
+        : [element("p", "mode-message", "没有未使用素材。")]),
+    );
+  }
+
+  /** 把用不到的素材排除掉（覆盖门要人做这个决定，界面得给人入口）。 */
+  async function excludeAsset(assetId, button) {
+    if (state.busy || !state.runId) return;
+    setBusy(true);
+    clearError();
+    button.disabled = true;
+    try {
+      await api(`/api/runs/${state.runId}/excluded-assets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset_id: assetId }),
+      });
+      await poll(true);
+    } catch (error) {
+      showError(error);
+      button.disabled = false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 返工对比：这条新提示词怎么来的、跟改前比动了哪几句。 */
+  function reworkComparisonPanel(task) {
+    const diffApi =
+      typeof globalThis.PromptDiff === "object" ? globalThis.PromptDiff : null;
+    if (!diffApi) return null;
+    const comparison = diffApi.reworkComparison(task);
+    if (!comparison.hasRework) return null;
+
+    const box = element("div", "rework-compare");
+    const head = element("div", "rework-compare-head");
+    head.append(
+      element("strong", "", "返工对比"),
+      element(
+        "span",
+        "rework-compare-stats",
+        `新增 ${comparison.stats.added} 句 · 删除 ${comparison.stats.removed} 句 · 保留 ${comparison.stats.unchanged} 句`,
+      ),
+    );
+    box.append(head);
+
+    if (comparison.requirements.length) {
+      box.append(
+        element(
+          "div",
+          "rework-compare-label",
+          "历次返工要求（只累积、不覆盖）",
+        ),
+      );
+      const list = element("ol", "rework-compare-requirements");
+      comparison.requirements.forEach((item) => {
+        list.append(element("li", "", item));
+      });
+      box.append(list);
+    }
+
+    box.append(
+      element("div", "rework-compare-label", "改前（上一版提示词）"),
+      element("pre", "rework-compare-base", comparison.basePrompt),
+    );
+
+    if (comparison.hasChanges) {
+      box.append(element("div", "rework-compare-label", "改后差异"));
+      const diff = element("div", "rework-compare-diff");
+      comparison.segments.forEach((segment) => {
+        if (segment.type === "added") {
+          diff.append(element("span", "diff-added", segment.text));
+        } else if (segment.type === "removed") {
+          diff.append(element("span", "diff-removed", segment.text));
+        } else {
+          diff.append(element("span", "diff-same", segment.text));
+        }
+      });
+      box.append(diff);
+    } else {
+      // 光说「一致」等于没说：用户会以为是坏了。这里要讲清真实原因，并给出
+      // 下一步。**不要再建议"写成禁止项"** —— 用户口径（2026-09-18）是
+      // 「不要在约束里加东西，直接描述在正文就行」，禁止项堆多了反而加深坏印象。
+      box.append(
+        element("div", "rework-compare-label", "本次返工没有改变提示词正文"),
+        element(
+          "p",
+          "bitable-task-meta",
+          "原因通常是这条要求**上一版正文里已经写进去了**（融合器核对后判定无需改动），"
+            + "也可能是它本身不构成对画面的新约束。"
+            + "如果你的意思是「上一版写了但没做到」，重复同一句不会更有效 —— "
+            + "建议把它**改写成更可判定、更可执行的画面描述**"
+            + "（例如「自然一点」→「手部动作放慢，每次只做一个动作」），"
+            + "也可以直接手动改提示词正文。",
+        ),
+      );
+    }
+
+    const wrapper = element("div", "field field-wide");
+    wrapper.append(element("label", "", "返工对比"), box);
+    return wrapper;
   }
 
   function renderTask(task) {
@@ -1631,12 +2467,16 @@
         }, 5, "task-negative-editor"),
         true,
       ),
-      field("画面比例", ratioPicker(task)),
-      field("生成数量", textInput(task.output_count, (value) => {
-        updateTask(task.task_id, { output_count: Number(value) });
-      }, "number")),
     );
+    const reworkPanel = reworkComparisonPanel(task);
+    if (reworkPanel) grid.append(reworkPanel);
     if (task.task_type === "image_to_image") {
+      grid.append(
+        field("画面比例", ratioPicker(task)),
+        field("生成数量", textInput(task.output_count, (value) => {
+          updateTask(task.task_id, { output_count: Number(value) });
+        }, "number")),
+      );
       grid.append(field("裁剪交付", deliveryCropToggle(task), true));
       grid.append(field("图片尺寸", textInput(task.image_size, (value) => {
         updateTask(task.task_id, { image_size: value });
@@ -1660,16 +2500,17 @@
       })));
       grid.append(field("画风预设", stylePresets(task), true));
     } else {
-      grid.append(
-        field("视频时长", textInput(task.duration, (value) => {
-          updateTask(task.task_id, { duration: Number(value) });
-        }, "number")),
-        field("分辨率", textInput(task.resolution, (value) => {
-          updateTask(task.task_id, { resolution: value });
-        })),
+      const capabilities = videoCapabilities(task);
+      const modelOption = videoOptionFor(task);
+      const section = element("section", "video-param-section");
+      const heading = element("div", "video-param-heading");
+      heading.append(
+        element("span", "video-param-title", "生成参数"),
+        element("span", "video-param-model", modelOption?.label || task.video_provider || ""),
       );
-      grid.append(field("Video model", videoProviderPicker(task)));
+
       const audio = document.createElement("select");
+      audio.className = "task-control";
       [["true", "开启"], ["false", "关闭"]].forEach(([value, label]) => {
         const option = element("option", "", label);
         option.value = value;
@@ -1679,7 +2520,43 @@
       audio.addEventListener("change", () => {
         updateTask(task.task_id, { generate_audio: audio.value === "true" });
       });
-      grid.append(field("声音", audio));
+
+      const parameterGrid = element("div", "video-param-grid");
+      parameterGrid.append(
+        videoField("视频模型", videoProviderPicker(task), "切换后自动校正参数"),
+        videoField(
+          "画面比例",
+          ratioPicker(task),
+          `支持 ${capabilities.aspect_ratios.length} 种比例`,
+        ),
+        videoField(
+          "分辨率",
+          resolutionPicker(task),
+          `可选 ${capabilities.resolutions.map(resolutionLabel).join(" / ")}`,
+        ),
+        videoField(
+          "视频时长",
+          durationInput(task),
+          `${capabilities.duration_min}-${capabilities.duration_max} 秒`,
+        ),
+        videoField(
+          "生成数量",
+          outputCountInput(task),
+          `1-${capabilities.max_output_count} 条候选`,
+        ),
+        videoField("声音", audio, "按需求开启"),
+      );
+
+      const resolutionText = capabilities.resolutions.map(resolutionLabel).join(" / ");
+      section.append(heading, parameterGrid);
+      section.append(
+        element(
+          "p",
+          "task-model-capability",
+          `当前模型能力：${capabilities.duration_min}-${capabilities.duration_max} 秒 · ${resolutionText} · 最多 ${capabilities.max_output_count} 条候选`,
+        ),
+      );
+      grid.append(section);
     }
 
     const notes = element("div", "task-notes");
@@ -1690,62 +2567,274 @@
     return card;
   }
 
+  // 同一条需求历次尝试的成片（run_id → artifacts）。取过一次就缓存，避免
+  // 成片预览每秒轮询时反复拉同一批数据。
+  const artifactHistoryCache = new Map();
+  //: 每次生成**自己的**时间（来自 /api/runs/{id}）。
+  //:
+  //: 不能用 recent-runs 的 updated_at —— 那是**多维表格记录行**的更新时间，一条记录
+  //: 一行，同一记录的历次尝试全是同一个时间（用户 2026-09-18：「所有日期都一样，
+  //: 没有按照顺序来，跟生成的时机完全不一样」）。
+  const runTimeCache = new Map();
+
+  async function ensureArtifactHistory(runIds) {
+    const missing = runIds.filter((runId) => !artifactHistoryCache.has(runId));
+    if (!missing.length) return false;
+    await Promise.all(missing.map(async (runId) => {
+      try {
+        const sibling = await api(`/api/runs/${runId}`);
+        artifactHistoryCache.set(
+          runId,
+          Array.isArray(sibling?.artifacts) ? sibling.artifacts : [],
+        );
+        runTimeCache.set(runId, {
+          created_at: sibling?.created_at,
+          updated_at: sibling?.updated_at,
+        });
+      } catch (error) {
+        // 某一版拉不到不影响其它版本，也不该弹全局错误。
+        artifactHistoryCache.set(runId, []);
+        runTimeCache.set(runId, {});
+      }
+    }));
+  }
+
+  /** 历次尝试的展示/排序时间：优先**每次生成自己的**时间，取不到才退回表格行时间。 */
+  function siblingDisplayTime(run) {
+    const cached = runTimeCache.get(run.run_id);
+    const value =
+      (cached && (cached.updated_at || cached.created_at)) || run.updated_at;
+    const parsed = BitableState.parseServerTime(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  /**
+   * 成片预览里的「历史生成」快照：同一条需求**往次生成**的成片。
+   *
+   * 任务记录一条记录一行；历次版本在这里（成片与结果那一栏的横向滑条里）看和切，
+   * 不另开往下的分区 —— 那样页面会挤。产物取过一次就缓存：成片预览每秒轮询。
+   */
+  function artifactHistorySnapshot() {
+    const siblings = BitableState.siblingRuns(
+      state.bitable.recentRuns || [],
+      state.runId,
+    )
+      // 按**每次生成自己的**时间倒序：表格行的时间对同一记录全都一样，排不出先后。
+      .map((run, index) => ({ run, index }))
+      .sort((left, right) => {
+        const leftMs = siblingDisplayTime(left.run);
+        const rightMs = siblingDisplayTime(right.run);
+        if (leftMs !== rightMs) return rightMs - leftMs;
+        return left.index - right.index;
+      })
+      .map((entry) => entry.run);
+    return {
+      siblings,
+      signature: JSON.stringify(
+        siblings.map((run) => [
+          run.run_id,
+          run.status,
+          run.updated_at,
+          artifactHistoryCache.has(run.run_id),
+          runTimeCache.get(run.run_id)?.updated_at || "",
+        ]),
+      ),
+    };
+  }
+
+  /** 一个「往次版本」卡片：和当前成片并排在同一栏，能直接播、能切过去看。 */
+  function artifactHistoryCard(run) {
+    const card = element("figure", "artifact-card artifact-history-card");
+    card.dataset.runId = run.run_id;
+    const cachedTime = runTimeCache.get(run.run_id);
+    const displayTime =
+      (cachedTime && (cachedTime.updated_at || cachedTime.created_at))
+      || run.updated_at;
+    const caption = element(
+      "figcaption",
+      "",
+      `往次 · ${statusUi(run.status).label}`
+        + (displayTime ? ` · ${formatRecentTime(displayTime)}` : ""),
+    );
+    const open = element("button", "quiet-button", "查看这一版");
+    open.type = "button";
+    // 刻意**不**按 state.busy 置灰：它是纯导航，而终态运行不会再轮询 ——
+    // 置灰后就没有下一次重绘把它恢复，用户看到的就是「点不了」
+    // （2026-09-17 实测踩到）。busy 期间的保护由 viewRecentRun 内部负责。
+    open.addEventListener("click", () => viewRecentRun(run.run_id));
+    caption.append(open);
+    card.append(caption);
+    const artifacts = artifactHistoryCache.get(run.run_id) || [];
+    const artifact = artifacts.find(
+      (item) => item && item.preview_url && item.kind !== "file",
+    );
+    if (!artifact) {
+      card.append(element("p", "bitable-task-meta", "这一版没有成片。"));
+      return card;
+    }
+    if (artifact.kind === "video") {
+      const video = document.createElement("video");
+      video.controls = true;
+      video.preload = "metadata";
+      video.playsInline = true;
+      video.muted = true;
+      video.src = agentUrl(artifact.preview_url);
+      card.prepend(video);
+    } else {
+      const image = document.createElement("img");
+      image.alt = artifact.artifact_id;
+      image.loading = "lazy";
+      image.src = agentUrl(artifact.preview_url);
+      card.prepend(image);
+    }
+    return card;
+  }
+
   function renderArtifactReview(view) {
+    // 历史成片独立于当前这条的成片状态：即使这次失败/还没出片，也要能看到往次的。
+    const history = artifactHistorySnapshot();
+    // 当前 run 可能**还没进最近列表**（刚重跑出来的新版）—— siblingRuns 需要先在
+    // 列表里找到自己、拿到 record_id，否则直接返回空 → "往次成片"整块消失
+    //（用户 2026-09-18：「为什么在审核界面看不到往次成片」）。
+    // 补拉一次列表并重绘；每个 run 只补一次，避免列表里始终没有它时死循环。
+    const knownRuns = state.bitable.recentRuns || [];
+    const currentKnown = knownRuns.some((run) => run?.run_id === state.runId);
+    // 列表为空时**也要**补拉（那正是最需要的时候）；每个 run 只补一次，避免死循环。
+    if (!currentKnown && state.historyRefetchRunId !== state.runId) {
+      state.historyRefetchRunId = state.runId;
+      loadRecentRuns({ silent: true }).then(() => {
+        state.artifactPreviewSignature = null;
+        if (state.view) render(state.view);
+      });
+    }
+    // 只在**真的有东西要拉**时才补数据并重画一次：否则会变成
+    // 「重画 → 缓存已命中 → 再重画」的微任务死循环（实测把测试跑挂了）。
+    const missingHistory = history.siblings.filter(
+      (run) => !artifactHistoryCache.has(run.run_id),
+    );
+    if (missingHistory.length) {
+      ensureArtifactHistory(missingHistory.map((run) => run.run_id)).then(() => {
+        state.artifactPreviewSignature = null;
+        if (state.view) renderArtifactReview(state.view);
+      });
+    }
     const artifacts = Array.isArray(view.artifacts) ? view.artifacts : [];
+    const canReviewArtifacts = Boolean(
+      ARTIFACT_REVIEWABLE_STATUSES.has(view.status) && !view.delivery
+    );
+    // 结果表链接常驻在「成片与结果」面板：只要运行已有成片或已交付，
+    // 就把共享结果表地址展示出来，避免导出后链接一闪而过。
+    const resultTableUrl = (artifacts.length > 0 || view.delivery)
+      ? (view.result_table_url || view.delivery?.result_table_url || "")
+      : "";
+    if (resultTableUrl) {
+      artifactResultLink.href = resultTableUrl;
+      artifactResultLink.hidden = false;
+    } else {
+      artifactResultLink.removeAttribute("href");
+      artifactResultLink.hidden = true;
+    }
+    const validArtifactTaskIds = new Set(
+      artifacts.map((artifact) => artifact.task_id)
+    );
+    if (
+      canReviewArtifacts
+      && artifacts.length > 0
+      && state.artifactReviewRunId !== view.run_id
+    ) {
+      const decision = view.artifact_review?.decision;
+      const restoredTaskIds = Array.isArray(decision?.task_ids)
+        ? decision.task_ids.filter((taskId) => validArtifactTaskIds.has(taskId))
+        : [];
+      state.artifactReviewRunId = view.run_id;
+      state.artifactRetryTaskIds = new Set(restoredTaskIds);
+      const restoredFeedback = view.artifact_review?.feedback;
+      if (typeof restoredFeedback === "string") {
+        artifactReviewFeedback.value = restoredFeedback.trim();
+      }
+    }
+    if (canReviewArtifacts && artifacts.length > 0) {
+      for (const taskId of [...state.artifactRetryTaskIds]) {
+        if (!validArtifactTaskIds.has(taskId)) {
+          state.artifactRetryTaskIds.delete(taskId);
+        }
+      }
+    } else if (view.delivery || TERMINAL_RUN_STATUSES.has(view.status)) {
+      state.artifactRetryTaskIds.clear();
+    }
     // 成片预览里的 <video> 重建成本高，而审批页每 1 秒轮询一次。若成片与
     // 状态都没变就跳过重绘，否则视频元素会被反复销毁重建，导致卡顿/一直加载。
     const signature = JSON.stringify({
       status: view.status,
+      // busy 必须进签名：卡片上的按钮按 busy 置灰，而重绘只在签名变化时发生 ——
+      // 少了它，「查看这一版」会在选中运行的瞬间被置灰后再也回不来（实测踩到）。
+      busy: state.busy,
       artifacts: artifacts.map((artifact) => [
         artifact.artifact_id,
         artifact.preview_url,
         artifact.kind,
         artifact.size,
       ]),
+      history: history.signature,
     });
     if (signature === state.artifactPreviewSignature) {
       return;
     }
     state.artifactPreviewSignature = signature;
 
-    const showsArtifacts = [
-      "waiting_review", "delivering", "delivery_failed", "succeeded", "completed_with_errors",
-    ].includes(view.status) && artifacts.length > 0;
-    // 终态但没有任何成片（执行失败/已取消）：不隐藏整块，而是给出明确占位，
-    // 避免历史任务点进去后主区域一片空白，让用户误以为「成片预览坏了」。
-    const terminalWithoutArtifacts = (
-      ["failed", "cancelled"].includes(view.status)
-    );
-    if (!showsArtifacts && !terminalWithoutArtifacts) {
-      artifactReview.hidden = true;
-      artifactList.replaceChildren();
-      return;
-    }
+    // 预览面板**常驻**：本次还没成片（审批中 / 生成中 / 失败）也留着，
+    // 往次成片继续看得到 —— 用户明确要求「重跑的时候也能看到预览」。
     artifactReview.hidden = false;
-    artifactList.replaceChildren();
-    if (terminalWithoutArtifacts) {
-      artifactReviewFeedbackBox.hidden = true;
-      artifactReviewActions.hidden = true;
+    artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
+    // 失败/取消没有成片可勾选，但**重跑入口只在预览页**（任务记录里已删掉），
+    // 所以这里必须给它一个「重跑这一版」，否则失败的任务没地方重跑。
+    const canRerunThisVersion = ["failed", "cancelled"].includes(view.status);
+    artifactReviewActions.hidden = !(canReviewArtifacts || canRerunThisVersion);
+    confirmArtifactsButton.hidden = !canReviewArtifacts;
+    adjustArtifactsButton.hidden = !canReviewArtifacts;
+    rerunArtifactsButton.hidden = !canRerunThisVersion;
+    if (artifacts.length > 0) {
+      artifactReviewMessage.textContent = canReviewArtifacts
+        ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
+        : view.status === "delivery_failed"
+          ? "素材已生成但结果表写入失败，可继续查看素材并在底部重新写入。"
+          : "视频已生成完成，可继续查看；如需回写飞书，请点击下方「导出到结果表」。";
+    } else if (["failed", "cancelled"].includes(view.status)) {
       artifactReviewMessage.textContent = view.status === "cancelled"
         ? "本次运行已取消，未生成成片。"
         : "本次运行未生成成片，请在下方的失败原因中查看详情。";
-      return;
+    } else {
+      artifactReviewMessage.textContent =
+        "本次运行还没有成片（审批或生成中），下面是往次成片。";
     }
-    const canReviewArtifacts = view.status === "waiting_review";
-    artifactReviewMessage.textContent = canReviewArtifacts
-      ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
-      : view.status === "delivery_failed"
-        ? "素材已生成但结果表写入失败，可继续查看素材并在底部重新写入。"
-        : "本次生成素材已保留，可继续查看；导出结果可通过上方结果表入口打开。";
-    artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
-    artifactReviewActions.hidden = !canReviewArtifacts;
-    artifactList.replaceChildren(...artifacts.map((artifact) => {
+    const artifactNodes = artifacts.map((artifact) => {
       const card = element("figure", "artifact-card");
       const label = artifact.kind === "video" ? "视频" : "图片";
       const size = typeof artifact.size === "number"
         ? `${(artifact.size / 1024 / 1024).toFixed(1)} MB`
         : "—";
-      card.append(element("figcaption", "", `${label} · ${size}`));
+      const caption = element("figcaption", "", `${label} · ${size}`);
+      if (canReviewArtifacts) {
+        const choice = element("label", "artifact-retry-choice", "");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = state.artifactRetryTaskIds.has(artifact.task_id);
+        checkbox.setAttribute("aria-label", `选择重跑任务 ${artifact.task_id}`);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) state.artifactRetryTaskIds.add(artifact.task_id);
+          else state.artifactRetryTaskIds.delete(artifact.task_id);
+          updateActionAvailability();
+        });
+        choice.append(checkbox, element("span", "", "选择此条重跑"));
+        caption.append(choice);
+      }
+      const downloadButton = document.createElement("button");
+      downloadButton.type = "button";
+      downloadButton.className = "artifact-download-button";
+      downloadButton.textContent = artifact.kind === "video" ? "\u4e0b\u8f7d\u89c6\u9891" : "\u4e0b\u8f7d\u56fe\u7247";
+      downloadButton.addEventListener("click", () => downloadArtifact(artifact, downloadButton));
+      caption.append(downloadButton);
+      card.append(caption);
       if (artifact.kind === "video") {
         const video = document.createElement("video");
         video.controls = true;
@@ -1762,7 +2851,14 @@
         card.prepend(image);
       }
       return card;
-    }));
+    });
+    const historyNodes = history.siblings.length
+      ? [
+          element("div", "artifact-history-divider", "历史生成"),
+          ...history.siblings.map((run) => artifactHistoryCard(run)),
+        ]
+      : [];
+    artifactList.replaceChildren(...artifactNodes, ...historyNodes);
   }
 
   function render(view, { refreshTasks = true } = {}) {
@@ -1781,7 +2877,16 @@
     byId("thread-id").textContent = view.thread_id;
     const latestEvent = (view.events || []).at(-1);
     byId("current-node").textContent = BitableState.runStage(view) || latestEvent?.node || "—";
-    byId("run-duration").textContent = formatDuration(BitableState.runElapsedMs(view));
+    const elapsed = BitableState.runElapsedBreakdown(view);
+    if (elapsed.systemMs === null) {
+      byId("run-duration").textContent = "—";
+    } else {
+      const human =
+        elapsed.humanMs > 0
+          ? ` + 你审阅 ${formatDuration(elapsed.humanMs)}`
+          : "";
+      byId("run-duration").textContent = `${formatDuration(elapsed.systemMs)}${human}`;
+    }
     byId("document-title").textContent = view.approval.document_title || "未命名文档";
     byId("source-link").href = view.source_url;
     byId("document-revision").textContent = view.approval.revision ?? "—";
@@ -1802,16 +2907,21 @@
     byId("langsmith-warning").hidden = !view.privacy?.langsmith_tracing;
     renderEvents(view.events);
 
-    const providerNames = {
-      seedance: "Seedance",
-      chiyun: "Chiyun",
-      volcengine_portrait: "真人视频",
-      aiport: "本地模型",
-    };
+        const providerNames = {
+          "seedance2.0": "Seedance 2.0",
+          "seedance2.5": "Seedance 2.5",
+          seedance: "Seedance",
+          chiyun: "Chiyun",
+          volcengine_portrait: "真人视频",
+          aiport: "本地模型",
+        };
     const executionErrors = (view.execution_records || [])
-      .filter((record) => record?.error?.message)
+      .filter((record) => record?.error?.message || record?.status === "timed_out")
       .map((record) => {
         const provider = providerNames[record.provider] || record.provider || "生成服务";
+        if (record.status === "timed_out" && !record.error?.message) {
+          return `${provider}：生成服务等待超时，请稍后重新运行`;
+        }
         const code = record.error.code ? `（${record.error.code}）` : "";
         return `${provider}：${record.error.message}${code}`;
       });
@@ -1913,18 +3023,89 @@
     visionIssueBox.hidden = visionIssues.length === 0;
     renderCoverage(view);
     if (refreshTasks) {
-      taskList.replaceChildren(...(view.approval.tasks || []).map(renderTask));
+      // 正在编辑提示词/素材时**绝不重建**任务列表：replaceChildren 会销毁输入框，
+      // 正在敲的内容和光标都会丢（用户 2026-09-18：「改提示词会被经常打断」）。
+      // 挂起这次刷新，等失焦后再补上。
+      if (taskEditorFocused()) {
+        pendingTaskRefresh = true;
+      } else {
+        taskList.replaceChildren(...(view.approval.tasks || []).map(renderTask));
+        pendingTaskRefresh = false;
+      }
     }
     renderArtifactReview(view);
+    renderTakeFindings(view);
     updateActionAvailability();
   }
 
+  /**
+   * 服务端数据的"有意义签名"：只取会改变界面的字段。
+   *
+   * 刻意**不含** updated_at / 运行时长这类每秒都在变的字段 —— 那些由
+   * `renderRunDuration` 单独更新，否则每秒都会判定为"变了"、白白重绘整页
+   * （用户 2026-09-18：「前端轮询效率太低了，就改成变化的时候才更新不行吗」）。
+   */
+  function runViewSignature(view) {
+    if (!view) return "";
+    return JSON.stringify({
+      // 带上 run 身份：切换任务时一定重绘（不用在每处切任务的地方手动重置）。
+      run: view.run_id || view.thread_id || "",
+      status: view.status,
+      events: (view.events || []).map(
+        (event) => [event.node, event.status, event.summary, event.created_at],
+      ),
+      approval: view.approval,
+      artifacts: view.artifacts,
+      execution_records: view.execution_records,
+      delivery: view.delivery,
+      last_error: view.last_error,
+      vision_issues: view.vision_issues,
+      artifact_review_decision: view.artifact_review_decision,
+    });
+  }
+
+  /** 数据没变时唯一要动的界面元素：运行时长。 */
+  function renderRunDuration(view) {
+    const target = byId("run-duration");
+    if (!target) return;
+    const elapsed = BitableState.runElapsedBreakdown(view);
+    if (elapsed.systemMs === null) {
+      target.textContent = "—";
+      return;
+    }
+    const human =
+      elapsed.humanMs > 0 ? ` + 人工等待 ${formatDuration(elapsed.humanMs)}` : "";
+    target.textContent = `${formatDuration(elapsed.systemMs)}${human}`;
+  }
+
   async function poll(force = false, resetDraft = false) {
+    // 任务停在"等人操作"（待审批 / 待审核）时没什么可等的，降频到每 5 秒请求一次；
+    // 生成中仍保持每秒。配合上面的签名判断，停在审批页时界面几乎完全静止。
+    pollTicks += 1;
+    if (
+      !force &&
+      isParkedStatus(state.view?.status) &&
+      pollTicks % PARKED_POLL_EVERY !== 0
+    ) {
+      return;
+    }
     if (!state.runId || (state.busy && !force)) return;
     const requestedRunId = state.runId;
     try {
       const serverView = await api(`/api/runs/${requestedRunId}`);
       if (state.runId !== requestedRunId) return;
+      // 正在看的这条运行状态变了 —— 这就是「状态更新的时候刷新」：立刻对一次
+      // 任务记录（同一状态反复轮询时什么都不做）。
+      const previous = lastViewedRun;
+      const statusChanged =
+        previous.runId === requestedRunId && previous.status !== serverView.status;
+      lastViewedRun = { runId: requestedRunId, status: serverView.status };
+      // 自己刚保存的变化：先认领（对齐服务端身份），这样下面的身份比对相等、
+      // 不会弹冲突也不会重建任务列表。
+      if (selfSavedPending) {
+        selfSavedPending = false;
+        state.review = ReviewState.adoptSelfSavedView(state.review, serverView);
+      }
       const previousReview = state.review;
       const nextReview = resetDraft
         ? ReviewState.mergeServerView(ReviewState.createReviewState(), serverView)
@@ -1935,12 +3116,21 @@
         taskList.childElementCount > 0,
       );
       state.review = nextReview;
-      render(ReviewState.draftView(state.review), { refreshTasks });
+      // 只有服务端数据**真的变了**才整体重绘；没变就只更新运行时长。
+      // （以前每秒无条件 render，既浪费又把用户正在编辑的内容卷进去。）
+      const signature = runViewSignature(serverView);
+      if (resetDraft || signature !== lastRenderedSignature) {
+        lastRenderedSignature = signature;
+        render(ReviewState.draftView(state.review), { refreshTasks });
+      } else {
+        renderRunDuration(serverView);
+      }
       if (TERMINAL_RUN_STATUSES.has(serverView.status)) {
         stopPolling();
         pollingNote.textContent = "任务已结束，可开始下一任务或重跑。";
-        await loadRecentRuns();
+        await loadRecentRuns({ silent: true });
       } else {
+        if (statusChanged) await loadRecentRuns({ silent: true });
         pollingNote.textContent = statusUi(serverView.status).action;
       }
     } catch (error) {
@@ -1959,6 +3149,7 @@
       state.review = ReviewState.createReviewState();
       state.referenceMutations = ReferenceMutationState.createState();
       state.artifactPreviewSignature = null;
+          state.artifactRetryTaskIds = new Set();
       await poll(true);
       startPolling();
       renderRecentRuns();
@@ -1972,8 +3163,8 @@
   }
 
   async function rerunBitableTask(runId = state.runId) {
-    if (!runId || state.busy) return;
-    setBusy(true);
+    if (!runId || state.busy || rerunRequesting) return;
+    setRerunRequesting(true);
     clearError();
     try {
       const created = await api(`/api/bitable/runs/${encodeURIComponent(runId)}/rerun`, {
@@ -1985,6 +3176,7 @@
       state.referenceUploads = ReferenceUploadState.createState();
       state.referenceMutations = ReferenceMutationState.createState();
       state.artifactPreviewSignature = null;
+          state.artifactRetryTaskIds = new Set();
       await poll(true);
       startPolling();
       await loadRecentRuns();
@@ -1993,7 +3185,7 @@
       showError(error);
       await loadRecentRuns();
     } finally {
-      setBusy(false);
+      setRerunRequesting(false);
       renderRecentRuns();
     }
   }
@@ -2033,18 +3225,54 @@
   }
 
   async function submitArtifactReview(action) {
-    if (!state.runId || state.busy || state.view?.status !== "waiting_review") return;
+    if (
+      !state.runId
+      || state.busy
+      || !state.view
+      || !ARTIFACT_REVIEWABLE_STATUSES.has(state.view.status)
+      || state.view.delivery
+    ) return;
     const body = { action };
     if (action === "adjust") {
       body.feedback = artifactReviewFeedback.value;
+      body.task_ids = [...state.artifactRetryTaskIds];
       if (!body.feedback || !body.feedback.trim()) {
         showError(new Error("请填写调整意见"));
         return;
       }
+      if (!body.task_ids.length) {
+        showError(new Error("请至少选择一条需要重跑的任务"));
+        return;
+      }
     }
-    setBusy(true);
+    setRerunRequesting(true);
     clearError();
     try {
+      if (action === "adjust" && state.runMode === "bitable") {
+        const created = await api(
+          `/api/bitable/runs/${state.runId}/rerun-selected`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
+        state.runId = created.run_id;
+        state.runMode = "bitable";
+        state.review = ReviewState.createReviewState();
+        state.referenceUploads = ReferenceUploadState.createState();
+        state.referenceMutations = ReferenceMutationState.createState();
+        state.artifactPreviewSignature = null;
+        state.artifactRetryTaskIds = new Set();
+        state.artifactReviewRunId = null;
+        artifactReviewFeedback.value = "";
+        await poll(true);
+        startPolling();
+        await loadRecentRuns();
+        renderRecentRuns();
+        document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
+        return;
+      }
       await api(`/api/runs/${state.runId}/artifact-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2054,15 +3282,37 @@
     } catch (error) {
       showError(error);
     } finally {
+      setRerunRequesting(false);
+    }
+  }
+
+  async function cancelActiveRun() {
+    if (!state.runId || state.busy) return;
+    setBusy(true);
+    clearError();
+    try {
+      await api(`/api/runs/${state.runId}/cancel`, { method: "POST" });
+      await poll(true);
+    } catch (error) {
+      showError(error);
+    } finally {
       setBusy(false);
     }
   }
 
   byId("reject-button").addEventListener("click", () => submitDecision("reject"));
-  byId("cancel-button").addEventListener("click", () => submitDecision("cancel"));
+  byId("cancel-button").addEventListener("click", () => {
+    if (CANCELLABLE_RUN_STATUSES.has(state.view?.status)) {
+      cancelActiveRun();
+    } else {
+      submitDecision("cancel");
+    }
+  });
   byId("approve-button").addEventListener("click", () => submitDecision("approve"));
   confirmArtifactsButton.addEventListener("click", () => submitArtifactReview("confirm"));
   adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));
+  rerunArtifactsButton.addEventListener("click", () => rerunBitableTask());
+  artifactReviewFeedback.addEventListener("input", updateActionAvailability);
   rerunButton.addEventListener("click", () => rerunBitableTask());
   retryFailedAssetsButton.addEventListener("click", async () => {
     if (!state.runId || state.busy || state.view?.status !== "waiting_approval") return;
@@ -2090,7 +3340,8 @@
       ? `/api/bitable/runs/${state.runId}/retry-delivery`
       : `/api/runs/${state.runId}/retry-delivery`;
     if (state.runMode !== "bitable") {
-      await mutate(url, { method: "POST" });
+      const started = await mutate(url, { method: "POST" });
+      if (started && state.view?.status === "delivering") startPolling();
       return;
     }
     state.bitable = BitableState.retryStarted(state.bitable, state.runId);
@@ -2100,6 +3351,7 @@
       await api(url, { method: "POST" });
       state.bitable = BitableState.retrySucceeded(state.bitable);
       await poll(true);
+      if (state.view?.status === "delivering") startPolling();
     } catch (error) {
       state.bitable = BitableState.retryFailed(state.bitable, error.message);
       showError(error);
@@ -2188,4 +3440,5 @@
     loadPlannerPrompt();
   }
   configureModes();
+  startBitableRefresh();
 })();

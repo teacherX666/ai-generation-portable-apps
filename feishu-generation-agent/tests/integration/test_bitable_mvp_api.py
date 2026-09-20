@@ -83,7 +83,18 @@ class _BitableService:
         del category
         if self.scan_error:
             raise self.scan_error
-        return self.tasks
+        # 跟真实服务一致：已领取的记录留在列表里，并带上领取状态（#1）。
+        return [
+            task.model_copy(
+                update={
+                    "claim_status": TableTaskStatus.PROCESSING,
+                    "claimed_run_id": "run-bitable-1",
+                }
+            )
+            if task.record_id in self.claimed
+            else task
+            for task in self.tasks
+        ]
 
     async def claim(self, record_id: str, category: str = "animation") -> str:
         del category
@@ -161,6 +172,7 @@ async def test_scan_claim_duplicate_and_run_detail_sync(tmp_path: Path) -> None:
     async with app.router.lifespan_context(app), client:
         scanned = await client.get("/api/bitable/tasks")
         claimed = await client.post("/api/bitable/tasks/rec-1/claim")
+        rescan = await client.get("/api/bitable/tasks")
         duplicate = await client.post("/api/bitable/tasks/rec-1/claim")
         detail = await client.get("/api/runs/run-bitable-1")
 
@@ -174,10 +186,17 @@ async def test_scan_claim_duplicate_and_run_detail_sync(tmp_path: Path) -> None:
             "executor_open_ids": ["ou_alice"],
             "executor_names": ["Alice"],
             "has_result": False,
+            "claim_status": None,
+            "claimed_run_id": None,
         }
     ]
     assert claimed.status_code == 202
     assert claimed.json() == {"run_id": "run-bitable-1"}
+    # #1：领取之后这条记录仍然留在列表里，并带上领取状态，用户才找得回来。
+    assert rescan.status_code == 200
+    assert [task["record_id"] for task in rescan.json()] == ["rec-1"]
+    assert rescan.json()[0]["claimed_run_id"] == "run-bitable-1"
+    assert rescan.json()[0]["claim_status"] == "处理中"
     assert duplicate.status_code == 409
     assert "rec-1" not in duplicate.text
     assert detail.status_code == 200

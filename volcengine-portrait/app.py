@@ -42,7 +42,7 @@ STATIC_DIR = ROOT / "static"
 _PORTAL_DIR = str(ROOT.parent / "portal")
 if _PORTAL_DIR not in sys.path:
     sys.path.insert(0, _PORTAL_DIR)
-from ark_errors import translate_ark_error  # noqa: E402
+from ark_errors import translate_ark_error, translate_ark_error_body  # noqa: E402
 from error_explainer import explain_error  # noqa: E402
 OUTPUT_DIR = _DATA_BASE / "outputs"
 STATE_DIR = _DATA_BASE / "state"
@@ -64,7 +64,16 @@ _MODEL_MAX_DURATION = {
     "doubao-seedance-2-5-260628": 30,
     "local-minimax-h3-ref2v": 30,
 }
+_DISABLED_MODELS = set()
 _ALLOWED_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
+
+_MODEL_RESOLUTIONS = {
+    "doubao-seedance-2-0-260128": {"480p", "720p", "1080p", "4k"},
+    "doubao-seedance-2-0-fast-260128": {"480p", "720p"},
+    "ep-20260912121738-vtd78": {"480p", "720p"},
+    "doubao-seedance-2-5-260628": {"480p", "720p"},
+    "local-minimax-h3-ref2v": {"480p", "720p", "1080p"},
+}
 # Keep in sync with the Portal selector; 21:9 was exposed in the UI but was
 # previously rejected by the backend, making that valid option unusable.
 _ALLOWED_RATIOS = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"}
@@ -103,16 +112,19 @@ def _parse_int_field(value, default, field):
 
 
 def _validate_job_params(model, duration, resolution, ratio, repeat_count):
+    if str(model) in _DISABLED_MODELS:
+        raise ValueError(f"模型 {model} 已失效，暂时不可用，请选择其他模型")
     max_duration = _MODEL_MAX_DURATION.get(str(model), 15)
     # -1 is Ark's auto-duration sentinel for edit mode only.
     if duration != -1 and not 4 <= duration <= max_duration:
         raise ValueError(f"{model} 时长必须为 4~{max_duration} 秒，编辑模式才可填 -1")
     if duration == -1 and ratio != "adaptive":
         raise ValueError("时长为 -1 时比例必须为 adaptive")
-    if str(resolution) not in _ALLOWED_RESOLUTIONS:
-        raise ValueError("不支持的分辨率")
+    allowed_resolutions = _MODEL_RESOLUTIONS.get(str(model), _ALLOWED_RESOLUTIONS)
+    if str(resolution) not in allowed_resolutions:
+        raise ValueError("分辨率 " + str(resolution) + " 不支持，可用：" + " / ".join(sorted(allowed_resolutions)))
     if str(ratio) not in _ALLOWED_RATIOS:
-        raise ValueError("不支持的画面比例")
+        raise ValueError("比例 " + str(ratio) + " 不支持，可用：" + " / ".join(sorted(_ALLOWED_RATIOS)))
     if not 1 <= repeat_count <= 4:
         raise ValueError("生成数量必须为 1~4")
 
@@ -513,7 +525,21 @@ def handle_job_cancel(handler, job_id: str):
             job["errors"] = ["任务已取消。"]
         job["finished_at"] = time.time()
         job["events"].append({"time": time.strftime("%H:%M:%S"), "message": "任务已取消。"})
+        provider_tasks = list(job.get("provider_tasks") or [])
         _backlog_remove_locked(job_id)
+    for task in provider_tasks:
+        task_id = str(task.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        try:
+            _ark_v3_call_once(
+                "DELETE",
+                f"/contents/generations/tasks/{task_id}",
+                timeout=5,
+                api_key=str(task.get("api_key") or API_KEY),
+            )
+        except Exception:
+            pass
     report_final_to_portal(job_id, "cancelled")
     json_response(handler, 200, {"ok": True, "status": "cancelled"})
 
@@ -681,7 +707,7 @@ def retry_virtual_job(job_id: str) -> str:
             "asset_id": job.get("asset_id", ""),
             "extra_asset_ids": list(job.get("extra_asset_ids") or []),
             "prompt": job.get("prompt", ""),
-            "model": job.get("model", "doubao-seedance-2-0-260128"),
+            "model": job.get("model", "ep-20260912121738-vtd78"),
             "duration": job.get("duration", 0),
             "requested_duration": job.get("requested_duration", 12),
             "resolution": job.get("resolution", "720p"),
@@ -714,41 +740,49 @@ def retry_virtual_job(job_id: str) -> str:
 
 
 def recover_backlog() -> tuple[int, int]:
-    """启动时恢复：queued → 自动重新入队；started → 标记服务更新中断。"""
+    """启动时恢复（2026-09-09 对齐 seedance/nano 无感语义）：
+    queued/started → 原 job_id 重新入队自动继续跑，活动记录保持 running；
+    failed/succeeded/cancelled → 终态守卫只清 backlog 条目，绝不翻改；
+    参数已无法找回且记录已滚出日志 → 静默丢弃，不造无主失败任务。"""
     recovered = 0
     interrupted = 0
+    dropped = 0
+    stale_cleared = 0
     backlog = _backlog_load()
     if not backlog:
         return 0, 0
+    activities = {str(a.get("id")): a for a in read_activity_log()}
     for job_id, meta in list(backlog.items()):
         spec = dict(meta.get("spec") or {})
+        activity_id = str(meta.get("activity_id") or "")
+        act = activities.get(activity_id) or {}
         try:
-            if meta.get("stage") == "started":
-                # 运行中被重启打断：不自动重跑（避免重复计费），标记可重试；
-                # backlog 保留 stage=interrupted，重试端点可从中找回参数
+            # 终态守卫：活动记录已收尾（成功/失败/取消）说明任务早已走完完成
+            # 路径、只是 backlog 条目没清掉——只清条目，绝不做中断改写。
+            act_status = str(act.get("status") or "").lower()
+            if act and act_status in {"succeeded", "success", "completed", "failed", "failure", "cancelled", "canceled"}:
                 with JOBS_LOCK:
-                    JOBS[job_id] = dict(spec)
-                    JOBS[job_id].update({
-                        "job_id": job_id, "status": "failed",
-                        "errors": ["服务更新重启，任务中断——请点击「重试」重新提交。"],
-                        "events": list(spec.get("events") or []) + [
-                            {"time": time.strftime("%H:%M:%S"), "message": "服务更新重启，任务中断"}],
-                        "finished_at": time.time(),
-                        "retryable": True,
-                        "api_key": None,
-                    })
-                    _backlog_set_locked(job_id, stage="interrupted")
-                update_activity(meta.get("activity_id"), status="failed",
-                                error="服务更新重启，任务中断——请点击重试")
-                interrupted += 1
+                    _backlog_remove_locked(job_id)
+                stale_cleared += 1
                 continue
-            if not spec or not spec.get("prompt"):
-                raise ValueError("spec 缺失")
+            if not spec or not spec.get("prompt") or not spec.get("asset_id"):
+                raise ValueError("spec 缺失或残缺")
+            # 活动记录已滚出日志：任务年代久远、原状态未知，重跑=重复计费。
+            # 与 seedance/nano 一致直接丢弃（无感语义只管重启瞬间还在跑的任务，
+            # 那些任务的记录必然还在日志里）。
+            if not act:
+                with JOBS_LOCK:
+                    _backlog_remove_locked(job_id)
+                dropped += 1
+                continue
+            # 排队中/运行中统一 resume：原 job_id 重新入队、自动继续跑，
+            # 活动记录保持 running——重启前后用户无感。
             with JOBS_LOCK:
                 JOBS[job_id] = dict(spec)
                 JOBS[job_id].update({
                     "job_id": job_id, "status": "queued", "done": 0,
-                    "events": [{"time": time.strftime("%H:%M:%S"), "message": "服务重启后自动恢复入队"}],
+                    "events": list(spec.get("events") or []) + [
+                        {"time": time.strftime("%H:%M:%S"), "message": "服务重启后自动恢复入队"}],
                     "finished_at": None, "started_at": None,
                     "retryable": False, "api_key": None,
                 })
@@ -757,6 +791,13 @@ def recover_backlog() -> tuple[int, int]:
             _executor.submit(run_virtual_job, job_id)
             recovered += 1
         except Exception as exc:
+            # 数据残缺无法重放：活动记录还在 → 标记中断；记录已滚出日志
+            # → 直接丢弃，绝不造无主失败条目污染任务列表
+            with JOBS_LOCK:
+                _backlog_remove_locked(job_id)
+            if not act:
+                dropped += 1
+                continue
             with JOBS_LOCK:
                 JOBS[job_id] = dict(spec)
                 JOBS[job_id].update({
@@ -764,8 +805,36 @@ def recover_backlog() -> tuple[int, int]:
                     "errors": ["服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）"],
                     "finished_at": time.time(), "retryable": False, "api_key": None,
                 })
-                _backlog_remove_locked(job_id)
+            update_activity(activity_id, status="failed",
+                            error="服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）",
+                            finished_at=time.time())
             interrupted += 1
+    # 孤儿自愈：恢复流程结束后仍处于进行中状态、且内存里没有对应任务的活动记录
+    # （fastapi 引擎此前从不跑恢复、或运行线程异常消失等）统一标记中断，
+    # 避免「永久 running」的幽灵任务继续被前端与统计当作进行中。
+    with JOBS_LOCK:
+        live_ids = set(JOBS.keys())
+    orphaned = 0
+    for act in activities.values():
+        status = str(act.get("status") or "").lower()
+        if status not in {"running", "pending", "queued", "processing", "submitted"}:
+            continue
+        jid = str(act.get("job_id") or "")
+        if jid and jid in live_ids:
+            continue
+        update_activity(
+            str(act.get("id") or ""),
+            status="failed",
+            error="任务因服务重启/异常中断（恢复流程未找到该任务），请点击重试或重新提交",
+            finished_at=time.time(),
+        )
+        orphaned += 1
+    if orphaned:
+        print(f"Orphaned running activities marked interrupted: {orphaned}", flush=True)
+    if dropped:
+        print(f"Stale backlog entries dropped (activity rolled out): {dropped}", flush=True)
+    if stale_cleared:
+        print(f"Backlog entries cleared for already-final records: {stale_cleared}", flush=True)
     return recovered, interrupted
     if not activity_id:
         return
@@ -794,6 +863,17 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict:
             counts[source] += 1
         if status in counts:
             counts[status] += 1
+        # 矩阵缩略图：产出快照在 result.results 里（首条即封面）
+        first_url = ""
+        first_filename = ""
+        try:
+            for run in ((item.get("result") or {}).get("results") or []):
+                if run.get("download_url"):
+                    first_url = run["download_url"]
+                    first_filename = run.get("filename") or first_filename
+                    break
+        except Exception:
+            first_url = ""
         summary.append({
             "id": item.get("id"),
             "job_id": item.get("job_id"),
@@ -804,6 +884,8 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict:
             "title": item.get("title"),
             "request_kind": item.get("request_kind"),
             "username": item.get("username", ""),
+            "first_url": first_url,
+            "first_filename": first_filename,
         })
     summary.reverse()
     return {"counts": counts, "records": summary}
@@ -891,7 +973,13 @@ def handle_config_post(handler):
 
 def _public(d):
     """Return a copy of dict without internal fields."""
-    return {k: v for k, v in d.items() if k not in ("api_key", "access_key", "secret_key", "local_extra_files")}
+    data = {k: v for k, v in d.items() if k not in ("api_key", "access_key", "secret_key", "local_extra_files")}
+    if isinstance(data.get("provider_tasks"), list):
+        data["provider_tasks"] = [
+            {"task_id": str(item.get("task_id") or "")}
+            for item in data["provider_tasks"] if isinstance(item, dict)
+        ]
+    return data
 
 
 def json_response(handler, status, data):
@@ -1916,7 +2004,7 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
         except (ValueError, TypeError):
             extra_asset_ids = []
         prompt = form.getfirst("prompt", "")
-        model = form.getfirst("model", "doubao-seedance-2-0-260128")
+        model = form.getfirst("model", "ep-20260912121738-vtd78")
         try:
             duration = _parse_int_field(form.getfirst("duration", "12"), 12, "duration")
             repeat_count = _parse_int_field(form.getfirst("repeat_count", "1"), 1, "repeat_count")
@@ -1949,7 +2037,7 @@ def handle_virtual_jobs_post(handler, task_type: str = "virtual"):
         if not isinstance(extra_asset_ids, list):
             extra_asset_ids = []
         prompt = data.get("prompt", "")
-        model = data.get("model", "doubao-seedance-2-0-260128")
+        model = data.get("model", "ep-20260912121738-vtd78")
         try:
             duration = _parse_int_field(data.get("duration", 12), 12, "duration")
             repeat_count = _parse_int_field(data.get("repeat_count", 1), 1, "repeat_count")
@@ -2219,6 +2307,9 @@ def _submit_local_portrait_job(
     resolution: str,
     duration: int,
     refs: list[dict[str, Any]],
+    *,
+    job_id: str,
+    run_index: int,
 ) -> str:
     if not refs:
         raise RuntimeError("本地模型至少需要一个参考素材")
@@ -2234,7 +2325,20 @@ def _submit_local_portrait_job(
         data_url = f"data:{mime};base64,{base64.b64encode(ref['data']).decode('ascii')}"
         files[ref["field"]] = {"filename": ref.get("filename") or "reference", "data_url": data_url}
 
+    ref_signature = [
+        (
+            str(ref.get("field") or ""),
+            str(ref.get("filename") or ""),
+            len(bytes(ref.get("data") or b"")),
+            str(ref.get("mime") or ""),
+        )
+        for ref in refs
+    ]
+    request_id = local_gateway.job_request_id(
+        job_id, run_index, _LOCAL_MODEL_KIND, ref_signature
+    )
     payload = {
+        "request_id": request_id,
         "values": {
             "provider": "comfyui_local",
             "base_url": "http://127.0.0.1:8188",
@@ -2320,14 +2424,24 @@ def _run_local_virtual_job_impl(job_id: str, job: dict[str, Any]) -> None:
             break
 
         try:
-            local_job_id = _submit_local_portrait_job(prompt, ratio, resolution, requested_duration, refs)
+            local_job_id = _submit_local_portrait_job(
+                prompt,
+                ratio,
+                resolution,
+                requested_duration,
+                refs,
+                job_id=job_id,
+                run_index=idx,
+            )
             with JOBS_LOCK:
                 job["events"].append({
                     "time": time.strftime("%H:%M:%S"),
                     "message": f"Run {idx} 已提交本地任务 {local_job_id}",
                 })
             run_finished = False
-            for _ in range(360):
+            local_timeout = max(60, int(job.get("timeout") or 3600))
+            local_started = time.time()
+            while time.time() - local_started < local_timeout:
                 time.sleep(5)
                 if _job_cancel_requested(job_id):
                     run_finished = True
@@ -2393,12 +2507,26 @@ def _run_local_virtual_job_impl(job_id: str, job: dict[str, Any]) -> None:
                     run_finished = True
                     break
             if not run_finished:
+                try:
+                    _http_json(
+                        f"{LOCAL_GATEWAY_BASE_URL}/api/video_local/jobs/{local_job_id}/cancel",
+                        {},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+                timeout_minutes = max(1, int(round(local_timeout / 60)))
                 with JOBS_LOCK:
-                    job["errors"].append(f"Run {idx}: 本地模型生成超时（30 分钟未完成）")
+                    job["errors"].append(
+                        f"Run {idx}: 本地模型生成超时（{timeout_minutes} 分钟未完成）"
+                    )
                     job["done"] += 1
                     job["events"].append({
                         "time": time.strftime("%H:%M:%S"),
-                        "message": f"Run {idx} 失败: 本地模型生成超时（30 分钟未完成）",
+                        "message": (
+                            f"Run {idx} 失败: 本地模型生成超时"
+                            f"（{timeout_minutes} 分钟未完成），已同步取消 AI Port 任务"
+                        ),
                     })
         except Exception as exc:
             with JOBS_LOCK:
@@ -2501,7 +2629,12 @@ def _asset_type_for(asset_id, cache=None):
 
 def _asset_content_item(asset_id, cache=None):
     """Build one content[] entry for an asset:// reference, routed to the
-    image_url / video_url / audio_url field that matches the asset's type."""
+    image_url / video_url / audio_url field that matches the asset's type.
+
+    引用契约（2026-09-09 与运营确认，改资产库时勿动）：
+    资产库内容一律走 asset://；视频资产必须 asset://（url 会被 Ark 拒），
+    图片资产 asset:// 与 url 均可，本项目统一 asset://。
+    """
     atype = _asset_type_for(asset_id, cache=cache).lower()
     url = f"asset://{asset_id}"
     if atype == "video":
@@ -2524,7 +2657,7 @@ def _run_virtual_job_impl(job_id, job):
     asset_id = job.get("asset_id", "")
     extra_asset_ids = job.get("extra_asset_ids", []) or []
     prompt = job.get("prompt", "")
-    model = job.get("model", "doubao-seedance-2-0-260128")
+    model = job.get("model", "ep-20260912121738-vtd78")
     # Read the requested value (may be -1), not the billing-safe `duration`.
     duration = int(job.get("requested_duration", job.get("duration", 12)))
     resolution = job.get("resolution", "720p")
@@ -2590,6 +2723,11 @@ def _run_virtual_job_impl(job_id, job):
         if "error" in result:
             detail = result.get("detail", "")
             err_msg = f"{result['error']}: {detail}" if detail else result["error"]
+            # 提交阶段只有原始 body（detail）；先过中文规则表，别让用户对着
+            # 英文 JSON 盲猜——真人素材的 PrivacyInformation 正是这一类。
+            zh = translate_ark_error_body(detail) or translate_ark_error_body(result["error"])
+            if zh:
+                err_msg = f"{zh} 原始错误：{err_msg}"
             with JOBS_LOCK:
                 job["errors"].append(f"Run {idx}: {err_msg}")
                 job["done"] += 1
@@ -2598,6 +2736,10 @@ def _run_virtual_job_impl(job_id, job):
 
         with JOBS_LOCK:
             job["events"].append({"time": time.strftime("%H:%M:%S"), "message": f"Run {idx} 已提交 task={task_id}"})
+            job.setdefault("provider_tasks", []).append({
+                "task_id": task_id,
+                "api_key": api_key,
+            })
 
         run_finished = False
         for _ in range(240):
@@ -2897,6 +3039,13 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/activity":
             sees_all, username = _view_scope(self)
             json_response(self, 200, activity_list(sees_all=sees_all, username=username))
+            return
+        if path.startswith("/api/activity/by-job/"):
+            job_id = urllib.parse.unquote(path.rsplit("/", 1)[-1])
+            record = next((item for item in reversed(read_activity_log())
+                           if str(item.get("job_id") or "") == job_id), None)
+            json_response(self, 200 if record else 404,
+                          activity_record_for_client(record) or {"ok": False, "error": "activity not found"})
             return
         if path.startswith("/api/activity/"):
             activity_id = path.rsplit("/", 1)[-1]

@@ -55,6 +55,14 @@ $Services = [ordered]@{
         StartupTimeoutSeconds = 300
         RecoveryTimeoutSeconds = 60
         RestartBackoffSeconds = 5
+        # "Busy" probe: /queue is a plain in-memory read and stays responsive while
+        # /system_stats (which queries GPU/VRAM) stalls under heavy load. If neither
+        # answers, fall back to the GPU.
+        QueueUrl = "http://127.0.0.1:8188/queue"
+        BusyGpuMemMb = 4000
+        # Only treat "busy but unresponsive" as wedged after this long. One measured
+        # 15s 720p upscale took 30 minutes, so leave plenty of headroom.
+        BusyMaxSeconds = 5400
     }
     "aiport" = [ordered]@{
         Label = "AI Port"
@@ -69,6 +77,10 @@ $Services = [ordered]@{
         StartupTimeoutSeconds = 60
         RecoveryTimeoutSeconds = 30
         RestartBackoffSeconds = 3
+        # The gateway also runs jobs: never kill it while its queue is non-empty,
+        # that is exactly how an in-flight job gets destroyed.
+        QueueUrl = "http://127.0.0.1:8801/api/queue"
+        BusyMaxSeconds = 5400
     }
 }
 
@@ -104,7 +116,7 @@ function Test-ServiceHealth {
 
     foreach ($url in $Service.HealthUrls) {
         try {
-            $null = & curl.exe --noproxy "*" --silent --show-error --max-time 4 $url 2>$null
+            $null = & curl.exe --noproxy "*" --silent --show-error --fail --max-time 4 $url 2>$null
             if ($LASTEXITCODE -eq 0) {
                 return $true
             }
@@ -121,6 +133,68 @@ function Test-ServiceHealth {
         }
         catch {
             # Keep checking the remaining health URLs.
+        }
+    }
+
+    return $false
+}
+
+# When a health probe fails, decide whether the service is BUSY or DEAD.
+# Why (measured 2026-09-20): a 15s 720p upscale ran for 30 minutes; during the
+# final decode /system_stats stopped answering for 60s (it queries GPU/VRAM and
+# gets stuck under load), so the watchdog taskkilled ComfyUI and 30 minutes of
+# work were lost. A failing probe is NOT proof the service is dead.
+function Test-ServiceBusy {
+    param([hashtable]$Service)
+
+    # 1) A non-empty queue means it is working. ComfyUI exposes
+    #    queue_running/queue_pending, AI Port exposes count.
+    if ($Service.QueueUrl) {
+        $raw = & curl.exe --noproxy "*" --silent --max-time 4 $Service.QueueUrl 2>$null
+        if ($LASTEXITCODE -eq 0 -and $raw) {
+            try {
+                $queue = $raw | ConvertFrom-Json
+                if ($null -ne $queue.queue_running -or $null -ne $queue.queue_pending) {
+                    return ((@($queue.queue_running).Count + @($queue.queue_pending).Count) -gt 0)
+                }
+                if ($null -ne $queue.count) {
+                    return ([int]$queue.count -gt 0)
+                }
+            }
+            catch {
+                # Queue answered but the body was unreadable; fall through to the GPU.
+            }
+        }
+    }
+
+    # 2) Queue unreachable: if the GPU is still loaded it is computing, not dead.
+    #    Sample a few times and take the peak: a single reading is far too jumpy
+    #    (measured 1% -> 57% -> 12% within 4 seconds while a job was running).
+    #    NOTE: do NOT pipe nvidia-smi into Select-Object -First 1 -- cutting the
+    #    pipeline short makes $LASTEXITCODE -1 and silently skips the check.
+    #    Capture the whole output first, then index it.
+    if ($Service.BusyGpuMemMb -gt 0) {
+        $maxUtil = 0
+        $maxMem = 0
+        foreach ($attempt in 1..3) {
+            $out = @(& nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits 2>$null)
+            $line = if ($out.Count -gt 0) { [string]$out[0] } else { "" }
+            if ($line) {
+                $parts = $line -split ","
+                if ($parts.Count -ge 2) {
+                    $util = 0; $mem = 0
+                    [void][int]::TryParse($parts[0].Trim(), [ref]$util)
+                    [void][int]::TryParse($parts[1].Trim(), [ref]$mem)
+                    if ($util -gt $maxUtil) { $maxUtil = $util }
+                    if ($mem -gt $maxMem) { $maxMem = $mem }
+                }
+            }
+            if ($attempt -lt 3) {
+                Start-Sleep -Milliseconds 600
+            }
+        }
+        if ($maxUtil -ge 10 -or $maxMem -ge $Service.BusyGpuMemMb) {
+            return $true
         }
     }
 
@@ -216,6 +290,7 @@ foreach ($key in $Services.Keys) {
         HealthFailures = 0
         LastStartAttempt = [datetime]::MinValue
         RestartNotBefore = [datetime]::MinValue
+        BusySince = [datetime]::MinValue
     }
 }
 
@@ -284,6 +359,7 @@ try {
                 $state.EverHealthy = $true
                 $state.HealthFailures = 0
                 $state.LastStartAttempt = Get-Date
+                $state.BusySince = [datetime]::MinValue
                 continue
             }
 
@@ -309,6 +385,25 @@ try {
                 }
                 continue
             }
+
+            # Probe failing but the service is demonstrably working (queue non-empty /
+            # GPU loaded) -> busy, not dead. Never taskkill it here. Only a service
+            # that stays busy AND unresponsive past BusyMaxSeconds is treated as wedged.
+            if (Test-ServiceBusy -Service $service) {
+                if ($state.BusySince -eq [datetime]::MinValue) {
+                    $state.BusySince = Get-Date
+                }
+                $busySeconds = ((Get-Date) - $state.BusySince).TotalSeconds
+                $busyMax = if ($service.BusyMaxSeconds) { $service.BusyMaxSeconds } else { 1800 }
+                if ($busySeconds -lt $busyMax) {
+                    if (($state.HealthFailures % 12) -eq 0) {
+                        Write-WatchdogLog "$($service.Label) health probe failing but busy ($([int]$busySeconds)s) - not restarting"
+                    }
+                    continue
+                }
+                Write-WatchdogLog "$($service.Label) busy and unresponsive for $([int]$busySeconds)s - forcing restart"
+            }
+            $state.BusySince = [datetime]::MinValue
 
             if ($portOwner -gt 0) {
                 Write-WatchdogLog "$($service.Label) is unhealthy; stopping process $portOwner"

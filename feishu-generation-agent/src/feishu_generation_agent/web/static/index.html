@@ -162,6 +162,9 @@
           <div>
             <p class="eyebrow">REVIEW</p>
             <h2 id="document-title">等待提交飞书文档</h2>
+            <button id="copy-document-title" type="button" class="quiet-button" title="复制文档名">
+              复制文档名
+            </button>
           </div>
           <div class="review-heading-actions">
             <label class="run-switcher-label" for="current-run-switcher">切换任务</label>
@@ -204,6 +207,10 @@
           </div>
           <p id="coverage-detail" class="mode-message"></p>
           <div class="excluded-assets">
+            <h3>未使用素材（未覆盖就不能批准）</h3>
+            <div id="uncovered-asset-list" class="excluded-asset-list"></div>
+          </div>
+          <div class="excluded-assets">
             <h3>排除素材</h3>
             <div id="excluded-asset-list" class="excluded-asset-list"></div>
           </div>
@@ -214,10 +221,21 @@
           <div class="panel-heading">
             <h3>成片与结果</h3>
             <p id="artifact-review-message" class="mode-message">查看生成素材，确认满意后导出到多维表格「结果」列。</p>
+            <a id="artifact-result-table-link" class="result-table-link" target="_blank" rel="noreferrer" hidden>查看结果表</a>
           </div>
           <div id="artifact-list" class="artifact-list"></div>
+          <div id="take-findings" class="take-findings" hidden>
+            <div class="take-findings-head">
+              <strong>模型审片</strong>
+              <button id="take-findings-scan" type="button" class="secondary">
+                让模型看一遍找问题
+              </button>
+            </div>
+            <p id="take-findings-summary" class="bitable-task-meta"></p>
+            <ul id="take-findings-list" class="take-findings-list"></ul>
+          </div>
           <div id="artifact-review-feedback-box" class="feedback-box">
-            <label for="artifact-review-feedback">调整意见（不满意时填写）</label>
+            <label for="artifact-review-feedback">返工要求（仅用于选中任务）</label>
             <textarea
               id="artifact-review-feedback"
               rows="3"
@@ -229,7 +247,11 @@
               导出到结果表
             </button>
             <button id="adjust-artifacts-button" type="button" class="secondary">
-              不满意，退回调整
+              重跑选中任务
+            </button>
+            <!-- 失败/取消的运行没有成片可选，用它重跑这一版 -->
+            <button id="rerun-artifacts-button" type="button" class="secondary" hidden>
+              重跑这一版
             </button>
           </div>
         </section>
@@ -249,7 +271,7 @@
       </div>
       <div class="action-buttons">
         <button id="rerun-button" type="button" class="secondary" disabled hidden>重新运行</button>
-        <button id="retry-delivery-button" type="button" class="primary" hidden>重新写入结果表</button>
+        <button id="retry-delivery-button" type="button" class="primary" hidden>导出到结果表</button>
         <button id="reject-button" type="button" class="secondary" hidden>退回修改计划</button>
         <button id="approve-button" type="button" class="primary" hidden>批准并开始生成</button>
         <button id="cancel-button" type="button" class="danger" hidden>取消本次任务</button>
@@ -277,11 +299,18 @@
         </div>
         <hr class="advanced-settings-divider" />
         <div class="advanced-settings-grid">
-          <label for="advanced-video-provider">视频模型</label>
+          <label for="advanced-video-provider">默认视频模型</label>
           <select id="advanced-video-provider"></select>
-          <label for="advanced-image-provider">图片模型</label>
+          <label for="advanced-image-provider">默认图片模型</label>
           <select id="advanced-image-provider"></select>
+          <label for="advanced-planning-pipeline">规划方式</label>
+          <select id="advanced-planning-pipeline">
+            <option value="text">逐张看图描述后规划（现有）</option>
+            <option value="multimodal">原图/视频一起交给模型规划（更快更准）</option>
+          </select>
         </div>
+        <p class="planner-prompt-note">这里设置新任务默认模型；每个任务下方的视频模型 / 出图模型才是该任务实际使用的模型。</p>
+        <p class="planner-prompt-note">规划方式：默认「逐张看图描述后规划」；切到「原图/视频一起交给模型规划」后，规划只调一次模型、直接看原图，失败会自动回退到现有方式。</p>
         <p id="advanced-settings-feedback" class="planner-prompt-feedback" aria-live="polite"></p>
         <div class="planner-prompt-actions">
           <button id="advanced-settings-save" type="button" class="primary">保存模型偏好</button>
@@ -322,12 +351,13 @@
     </div>
 
     <script src="static/reference-mutation-state.js" defer></script>
-    <script src="static/review-state.js" defer></script>
-    <script src="static/bitable-state.js" defer></script>
+    <script src="static/review-state.js?v=20260917-uncovered-assets" defer></script>
+    <script src="static/bitable-state.js?v=20260918-copy-doc-title" defer></script>
     <script src="static/reference-upload-state.js" defer></script>
     <script src="static/api-paths.js" defer></script>
     <script src="static/planner-prompt-state.js" defer></script>
-    <script src="static/app.js?v=20260908-5" defer></script>
-    <script src="static/effects.js" defer></script>
+    <script src="static/prompt-diff.js?v=20260916-record-versions" defer></script>
+    <script src="static/app.js?v=20260917-uncovered-assets" defer></script>
+    <script src="static/effects.js?v=20260910-fx-perf" defer></script>
   </body>
 </html>

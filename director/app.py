@@ -122,7 +122,7 @@ def config_payload() -> dict[str, Any]:
         "local_model": local.get("model_kind", "qwen2511"),
         "ark_ready": bool(_ark_key()),
         "deepseek_ready": bool(_load_deepseek_key() or SKILL_PATH.exists()),
-        "deepseek_model": deepseek.get("model", "deepseek-chat"),
+        "deepseek_model": deepseek.get("model", "deepseek-v4-1-flash-260910"),
     }
 
 
@@ -141,8 +141,8 @@ def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: Any,
     handler.wfile.write(data)
 
 
-DEEPSEEK_MODEL = PROVIDERS.get("deepseek", {}).get("model", "deepseek-chat")
-DEEPSEEK_BASE = PROVIDERS.get("deepseek", {}).get("base_url", "https://api.deepseek.com/v1")
+DEEPSEEK_MODEL = PROVIDERS.get("deepseek", {}).get("model", "deepseek-v4-1-flash-260910")
+DEEPSEEK_BASE = PROVIDERS.get("deepseek", {}).get("base_url", "https://ark.cn-beijing.volces.com/api/v3")
 
 # 导演台 v2 词库资产（来源见 tools/extract_director_assets.py 与各 JSON 的 source 字段）
 ASSETS_DIR = ROOT / "assets"

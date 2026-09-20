@@ -9,7 +9,7 @@
 时每次失败都白等 15 秒超时。
 
 模型与超时可配：环境变量 ``ERROR_EXPLAINER_MODEL``（默认
-doubao-seed-1-6-flash-250615）。前置条件：所用 Ark 账号需开通该对话模型；
+doubao-seed-2-0-lite-260428）。前置条件：所用 Ark 账号需开通该对话模型；
 未开通时全部失败静默降级，不影响现有行为。
 """
 
@@ -63,7 +63,7 @@ def explain_error(job_id: str, code: str, detail: str, api_key: str,
         with lock:
             if job_id in _CACHE:
                 return _CACHE[job_id]
-            model_id = model or os.environ.get("ERROR_EXPLAINER_MODEL") or "doubao-seed-1-6-flash-250615"
+            model_id = model or os.environ.get("ERROR_EXPLAINER_MODEL") or "doubao-seed-2-0-lite-260428"
             if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", model_id) is None:
                 return None
             payload = {

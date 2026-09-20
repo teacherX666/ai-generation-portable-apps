@@ -74,8 +74,6 @@ class Settings(BaseSettings):
     lark_output_owner_open_id: str | None = None
     lark_output_folder_token: str | None = None
     deepseek_api_key: SecretStr | None = None
-    # 规划/提示词生成走火山方舟（Ark key + DeepSeek V4.1 Flash）；
-    # 原来是官方 DeepSeek（api.deepseek.com + deepseek-v4-pro）。
     deepseek_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     deepseek_model: str = "deepseek-v4-1-flash-260910"
     claude_api_key: SecretStr | None = None
@@ -89,14 +87,15 @@ class Settings(BaseSettings):
     banana_model: str = "banana2-ssvip"
     gpt_image_model: str = "gpt-image-2"
     # seedream 走火山方舟，复用 ark_api_key / ark_base_url。
+    # 新项目 COOP_YZQ 下按模型名调用会 403，使用控制台推理接入点。
     seedream_model: str = "ep-20260912121809-6wt62"
     ark_api_key: SecretStr | None = None
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     seedance_model: str = "doubao-seedance-2-5-260628"
     # 本地 AI Port 网关（127.0.0.1:8801）桥接 ComfyUI 本地模型。
-    # video_provider=aiport 时视频走本地 minimax H3，不再强制 ark_api_key。
-    video_provider: Literal["seedance", "aiport"] = "aiport"
-    aiport_base_url: str = "http://UT-20210713KMWD.local:8801"
+    # 当前飞书创作助手默认仅用 Seedance 2.5；aiport 仅用于本地模型开发。
+    video_provider: str = "seedance2.5"
+    aiport_base_url: str = "http://127.0.0.1:8801"
     aiport_image_model: str = "qwen2511"
     aiport_image_enabled: bool = False
     aiport_video_model: str = "minimax_h3_all_reference"
@@ -109,13 +108,29 @@ class Settings(BaseSettings):
     langsmith_api_key: SecretStr | None = None
     langsmith_project: str = "feishu-generation-agent-local"
     max_output_count: int = 4
+    artifact_review_enabled: bool = True
     max_download_bytes: int = 500 * 1024 * 1024
     allow_benchmark_fake_ips: bool = False
     provider_poll_interval_seconds: float = Field(default=1.0, ge=0.0)
-    provider_poll_max_attempts: int = Field(default=900, ge=1, le=10_000)
+    # 本地 AI Port 在 GPU 队列忙时可能排队 17 分钟以上，15 分钟会过早判超时。
+    provider_poll_max_attempts: int = Field(default=3600, ge=1, le=20_000)
     submission_intent_lease_seconds: float = Field(default=180.0, ge=0.03)
     bot_scan_page_size: int = Field(default=10, ge=1, le=50)
     coordinator_poll_interval_seconds: float = Field(default=1.0, ge=0.05)
+    # RAG prompt optimization service (rag-assistant /api/rag/preflight).
+    # Set to an empty string to disable automatic prompt optimization.
+    rag_preflight_url: str = "http://127.0.0.1:8900"
+
+    #: 规划流水线：
+    #: - `text`（默认，现状）：图片逐张视觉描述 → 纯文本规划；
+    #: - `multimodal`：一次调用把文本 + **原始图片/视频**交给 ds4.1 规划。
+    #:
+    #: 2026-09-17 实测同一份文档：text 流程三次重试全废（参考图顺序/镜头编号契约），
+    #: multimodal 一次 29.6s 成功且每张图都指派到了具体分镜。默认仍是 text ——
+    #: 不改变现有工作流，确认效果后再切。
+    planning_pipeline: Literal["text", "multimodal"] = "text"
+    #: multimodal 失败时是否自动回退到 text（回退时会懒补图片视觉描述）。
+    planning_fallback_to_text: bool = True
 
     @field_validator("asset_base_url")
     @classmethod

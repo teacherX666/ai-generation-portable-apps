@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import subprocess
+import os
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,15 +16,20 @@ def _binary(name: str) -> str:
     resolved = shutil.which(name)
     if resolved:
         return resolved
-    for candidate in (
+    program_data = os.environ.get("ProgramData", "C:/ProgramData")
+    candidates = (
         f"/opt/homebrew/bin/{name}",
         f"/usr/local/bin/{name}",
-    ):
+        f"{program_data}/chocolatey/bin/{name}.exe",
+        f"{program_data}/chocolatey/lib/ffmpeg/tools/ffmpeg/bin/{name}.exe",
+        f"C:/ffmpeg/bin/{name}.exe",
+        "C:/Program Files/ffmpeg/bin/{name}.exe",
+    )
+    for candidate in candidates:
         path = Path(candidate)
         if path.is_file():
             return str(path)
     raise RuntimeError(f"{name} is not available")
-
 
 def _video_duration(video_path: Path) -> float:
     result = subprocess.run(

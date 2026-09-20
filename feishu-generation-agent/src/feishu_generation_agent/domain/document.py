@@ -403,6 +403,50 @@ class VideoReferenceAnalysis(BaseModel):
     uncertainties: list[str] = Field(default_factory=list)
 
 
+class VideoShot(BaseModel):
+    """原生视频理解产出的单个镜头。
+
+    时间字段**不加 pydantic 约束**（spec §5.1）：时间轴的合法性由
+    native_understanding/validation.py 这个确定性门卫独占判定。
+    若这里加 ge=0，NaN 会在构造时就被拒，validation 里"剔除非有限时间戳"
+    那段既测不到也无意义，两处校验反而互相打架。
+    """
+
+    start: float
+    end: float
+    shot_size: str = ""
+    action: str = ""
+    camera: str = ""
+
+
+class TranscriptLine(BaseModel):
+    """台词 / 歌词，带出现时间点（秒）。时间字段理由同 VideoShot。"""
+
+    t: float
+    text: str
+
+
+class VideoEvidence(BaseModel):
+    """原生多模态引擎对参考视频的带时间点结构化证据。
+
+    engine_id / schema_version 由构造方（原生引擎或抽帧降级）显式写入，
+    缓存 key 与审核留痕都依赖它们区分 native_v1 与 frame_v1。
+    """
+
+    asset_id: str
+    engine_id: str
+    schema_version: str
+    duration: float
+    shots: list[VideoShot] = Field(default_factory=list)
+    transcript: list[TranscriptLine] = Field(default_factory=list)
+    audio: list[str] = Field(default_factory=list)
+    on_screen_text: list[str] = Field(default_factory=list)
+    representative_timestamp: float = 0.0
+    summary: str = ""
+    kind: VideoReferenceKind = VideoReferenceKind.OTHER
+    uncertainties: list[str] = Field(default_factory=list)
+
+
 class NormalizedDocument(BaseModel):
     document_id: str
     title: str
@@ -415,3 +459,4 @@ class NormalizedDocument(BaseModel):
     ingest_issue_records: list[IngestIssueRecord] = Field(default_factory=list)
     ingest_issues: list[str] = Field(default_factory=list)
     video_semantics: list[VideoReferenceAnalysis] = Field(default_factory=list)
+    video_evidence: list[VideoEvidence] = Field(default_factory=list)

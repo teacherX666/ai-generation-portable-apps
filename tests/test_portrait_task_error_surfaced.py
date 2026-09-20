@@ -144,6 +144,8 @@ class PortraitFailedTaskErrorTests(unittest.TestCase):
         mod = self.mod
         # 21:9 is exposed by the Portal and must not be rejected server-side.
         mod._validate_job_params("doubao-seedance-2-0-260128", 12, "720p", "21:9", 1)
+        with self.assertRaisesRegex(ValueError, "已失效"):
+            mod._validate_job_params("doubao-seedance-2-0-mini-260615", 12, "720p", "21:9", 1)
         with self.assertRaises(ValueError):
             mod._validate_job_params("doubao-seedance-2-0-260128", 16, "720p", "16:9", 1)
         with self.assertRaises(ValueError):

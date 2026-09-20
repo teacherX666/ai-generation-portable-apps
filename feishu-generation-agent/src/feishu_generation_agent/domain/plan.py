@@ -3,6 +3,7 @@ import re
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from feishu_generation_agent.domain.image_prompt import (
     ImagePromptSlots,
@@ -23,9 +24,13 @@ ImageProvider = Literal[
     "aiport_klein", "aiport_klein_v3", "aiport_anime2real",
     "aiport_zimage", "aiport_style",
 ]
-VideoProvider = Literal["seedance", "aiport"]
+VideoProvider = str
 DEFAULT_IMAGE_PROVIDER: ImageProvider = "banana"
 # provider 只接受这三个基准分辨率档位；像素尺寸属于 size_variants。
+# Seedance/视频提示词的硬性上限，规划与提交共用同一个值。
+SEEDANCE_PROMPT_MAX_CHARS = 1500
+# 提交时会追加参考图映射与负面约束，给最终供应商载荷保留独立余量。
+SEEDANCE_PROMPT_SUBMIT_MAX_CHARS = 2048
 IMAGE_SIZE_TOKENS = ("1K", "1.5K", "2K")
 # 图片生成模型（seedream / banana / gpt-image2）支持的离散画面比例。
 # 需求文档里的 1700*2500 是交付尺寸，不是比例参数：禁止写进 aspect_ratio。
@@ -136,13 +141,27 @@ class GenerationTask(BaseModel):
     # 实测不稳定（时而套用、时而退回视频三段式）。
     prompt_slots: ImagePromptSlots | None = None
     duration: int | None = None
-    resolution: Literal["720p", "1080p"] | None = None
+    resolution: str | None = None
     generate_audio: bool | None = None
     output_count: int = Field(default=1, ge=1)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     blocking_issues: list[str] = Field(default_factory=list)
+    # 返工（重做）状态。历次返工要求**只累积、永不覆盖**，否则上一轮修好的
+    # 问题会在下一轮复发（2026-09-16 修复的缺陷）。
+    # rework_base_prompt = 首次返工**之前**那一版，只作历史锚点（老数据也靠它
+    # 显示改前原文）；融合基准实际取「上一版」（见 rework_prompt.rework_inputs），
+    # 否则每轮都从最初重写、融合一有遗漏就把前几轮的优化回退掉（2026-09-17 修）。
+    # SkipJsonSchema：这两个字段由系统维护，不该出现在给规划模型的 JSON Schema
+    # 契约里（模型不需要产出它们），但不影响 model_dump 持久化。
+    rework_requirements: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    rework_base_prompt: SkipJsonSchema[str | None] = None
+    # 审批页「返工对比」的改前原文 = **上一版**提示词（这一版被返工前的样子），
+    # 用户要看的是「这次改了什么」，而不是「跟第一版差多少」。
+    # 注意它与 rework_base_prompt 分工不同：base 是融合的输入基准（冻结在首次
+    # 返工前），不能拿它做展示，否则第二次返工的差异里会把上一轮的要求又标一遍。
+    rework_previous_prompt: SkipJsonSchema[str | None] = None
 
     @field_validator("resolution", mode="before")
     @classmethod
@@ -151,10 +170,14 @@ class GenerationTask(BaseModel):
             return value
         normalized = value.strip().lower().replace("×", "x")
         aliases = {
+            "480x854": "480p",
+            "854x480": "480p",
             "720x1280": "720p",
             "1280x720": "720p",
             "1080x1920": "1080p",
             "1920x1080": "1080p",
+            "2160x3840": "4k",
+            "3840x2160": "4k",
         }
         return aliases.get(normalized, normalized)
 
@@ -352,7 +375,7 @@ class GenerationTask(BaseModel):
 
         if self.duration is None:
             raise ValueError("duration is required for image_to_video")
-        self.duration = max(4, min(15, self.duration))
+        self.duration = max(4, self.duration)
         if self.resolution is None:
             raise ValueError("resolution is required for image_to_video")
         if self.image_size is not None:
@@ -363,6 +386,10 @@ class GenerationTask(BaseModel):
             raise ValueError("size_variants is not allowed for image_to_video")
         if self.safe_area is not None:
             raise ValueError("safe_area is not allowed for image_to_video")
+        if len(self.prompt) > SEEDANCE_PROMPT_MAX_CHARS:
+            raise ValueError(
+                f"image_to_video prompt must not exceed {SEEDANCE_PROMPT_MAX_CHARS} characters"
+            )
         self._normalize_video_reference_mode()
         return self
 
@@ -589,3 +616,4 @@ class ArtifactReviewDecision(BaseModel):
 
     action: Literal["confirm", "adjust", "cancel"]
     feedback: str | None = None
+    task_ids: list[str] = Field(default_factory=list)

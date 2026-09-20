@@ -31,6 +31,11 @@ class BitableTaskSummary(BaseModel):
     executor_open_ids: list[str] = Field(default_factory=list)
     executor_names: list[str] = Field(default_factory=list)
     has_result: bool = False
+    # 这条记录当前是否已经被领取（以及领到哪一次运行）。#1 之前扫描会把
+    # 已领取的记录整个滤掉，用户一点「开始分析」它就消失了；现在改为带着
+    # 这两个字段回到列表，前端据此渲染状态徽章并跳回那条运行。
+    claim_status: TableTaskStatus | None = None
+    claimed_run_id: str | None = None
 
 
 class BitableBinding(BaseModel):

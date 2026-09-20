@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import sys
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
@@ -480,6 +481,8 @@ async def test_submit_rejects_forged_or_replaced_input_file(
     second = _asset(tmp_path, "asset-green")
     if case == "declared_size":
         first = first.model_copy(update={"size": first.size - 1})
+    elif case == "symlink_replacement" and sys.platform == "win32":
+        pytest.skip("Windows 符号链接需要额外权限")
     else:
         target = tmp_path / "replacement.png"
         target.write_bytes(PNG_1X1)

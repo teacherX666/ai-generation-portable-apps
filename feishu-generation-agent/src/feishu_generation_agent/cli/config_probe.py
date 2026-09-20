@@ -66,7 +66,7 @@ async def _http_probe(
     except httpx.HTTPError:
         return False, False, "网络连接失败"
     if 200 <= response.status_code < 300:
-        if expected_model is not None:
+        if expected_model is not None and not expected_model.startswith("ep-"):
             try:
                 payload = response.json()
             except ValueError:

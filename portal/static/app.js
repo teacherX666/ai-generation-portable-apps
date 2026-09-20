@@ -3,13 +3,16 @@
 // === Utilities ===
 function workspaceId() {
   let id = localStorage.getItem('workspace_id');
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem('workspace_id', id); }
+  if (!id) { id = (window.crypto && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : ('ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)); localStorage.setItem('workspace_id', id); }
   return id;
 }
 
 async function api(url, method, body) {
   try {
-    const opts = { method: method || 'GET', headers: { 'X-Workspace-Id': workspaceId() } };
+    const headers = { 'X-Workspace-Id': workspaceId() };
+    const session = localStorage.getItem('portal_session');
+    if (session) headers['X-Session'] = session;
+    const opts = { method: method || 'GET', headers: headers };
     if (body) opts.body = body;
     const res = await fetch(url, opts);
     return await res.json();
@@ -19,7 +22,7 @@ async function api(url, method, body) {
 function escHtml(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''; }
 
 function jobStatusLabel(status) {
-  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', waiting_approval: '待审批', waiting_review: '待确认', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '???' };
+const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '已中断' , waiting_approval: '待审批', waiting_review: '待确认'};
   return map[String(status || '').toLowerCase()] || String(status || '未知');
 }
 
@@ -327,6 +330,8 @@ function DreaminaApp() {
     wsTab: 'jobs',
     runningCount: 0,
     historyFilter: 'all',
+    // 历史放大预览弹窗（关闭只翻 open，数据保留避免 petite-vue 渲染竞态）
+    dmZoom: { open: false, url: '', isVideo: false, title: '', prompt: '', meta: '', status: '', files: [] },
     archives: [],
     selectedArchive: '',
     archiveName: '',
@@ -380,7 +385,19 @@ function DreaminaApp() {
           this.setupMode = null;
           this.loggedIn = true;
           this.appStatus = 'ready';
-          if (res.credit) this.credit = String(res.credit).slice(0, 40);
+          // credit 可能是 CLI 返回的对象（{points:..} 等）——直接 String() 会显示
+          // [object Object]（2026-09-10 巡检实锤）。对象时提取常见字段拼可读文案。
+          if (res.credit != null) {
+            const c = res.credit;
+            if (typeof c === 'object') {
+              const parts = ['points', 'credit', 'total', 'balance', 'amount', 'free']
+                .map(k => (c[k] != null && c[k] !== '') ? `${k} ${c[k]}` : '')
+                .filter(Boolean);
+              this.credit = parts.join(' · ') || JSON.stringify(c).slice(0, 40);
+            } else {
+              this.credit = String(c).slice(0, 40);
+            }
+          }
           this.loadJobs();
           this.loadHistory();
           this.loadArchives();
@@ -563,7 +580,6 @@ function DreaminaApp() {
       const res = await api(`/dreamina/api/${this.mode}`, 'POST', data);
       if (!res || res.error) { this.submitting = false; window.portalToast(friendlyDmError(res?.error) || '提交失败', 'danger'); return; }
       this.submitting = false;
-      this.clearDraft();
       window.portalToast('已提交，任务 ' + (res.job_id || res.id) + ' 在后台运行');
       this.pollJob(res.job_id || res.id);
     },
@@ -581,11 +597,11 @@ function DreaminaApp() {
       el.prepend(card);
       // Guard against stacked loops: loadJobs() can run repeatedly (login poll,
       // manual refresh) and must not spawn a second poller for the same job.
-      this._pollingJobs = this._pollingJobs || new Set();
-      if (this._pollingJobs.has(jobId)) { card.remove(); return; }
-      this._pollingJobs.add(jobId);
+      this._pollingJobs = this._pollingJobs || {};
+      if (this._pollingJobs[jobId]) { card.remove(); return; }
+      this._pollingJobs[jobId] = true;
       const stop = () => {
-        this._pollingJobs.delete(jobId);
+        delete this._pollingJobs[jobId];
         card.id = '';
       };
       let fails = 0;
@@ -696,6 +712,7 @@ function DreaminaApp() {
             titleEl.appendChild(rb);
           }
           stop();
+          card.remove();
           // 系统通知：状态归一后与 Portal 15s 兜底轮询按 jobId 去重
           const st = String(job.status).toLowerCase();
           notifyJobDone(jobId, st === 'completed' ? 'succeeded' : (st === 'cancelled' || st === 'canceled') ? 'cancelled' : 'failed', '即梦生成', 'dreamina');
@@ -716,7 +733,7 @@ function DreaminaApp() {
     // 后端走「取消标志 + 结果丢弃」兜底；409 = 任务已结束。
     async cancelJob(jobId, status) {
       if (status === 'running') {
-        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
+        if (false && !(await window.portalConfirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。', { danger: true }))) return;
       }
       const res = await api(`/dreamina/api/jobs/${encodeURIComponent(jobId)}/cancel`, 'POST');
       const card = document.getElementById('card-' + String(jobId).slice(0, 8));
@@ -829,6 +846,11 @@ function DreaminaApp() {
       el.replaceWith(v);
     },
 
+    refreshTasks() {
+      this.loadJobs();
+      this.loadHistory();
+    },
+
     async loadJobs() {
       const res = await api('/dreamina/api/jobs');
       if (!res) return;
@@ -873,185 +895,256 @@ function DreaminaApp() {
     },
 
     _dmBuildHistCard(item) {
+      // 矩阵式历史卡片：缩略图 + 状态角标 + 类型/时间 + 一行提示词；点击放大预览
       const files = item.result?.files || [];
-      const thumb = files[0] ? '/dreamina/' + files[0].replace(/^\//, '') : '';
-      const isVid = thumb && /\.(mp4|mov|webm)$/i.test(thumb);
+      const fileUrl = (f) => '/dreamina/' + String(f).replace(/^\//, '');
+      const isVideoFile = (u) => /\.(mp4|mov|webm|m4v)$/i.test(u);
+      // 并发生成（一次多张）会有多条产出：格子最多画 4 张缩略图，多出来的
+      // 收进 +N 格子；放大预览里给编号条逐条切换（原来只看得到第一条）。
+      const MAX_THUMBS = 4;
+      const thumbs = files.length > MAX_THUMBS ? files.slice(0, MAX_THUMBS - 1) : files;
+      const overflow = files.length - thumbs.length;
+      const firstUrl = thumbs[0] ? fileUrl(thumbs[0]) : '';
+      const isVid = !!firstUrl && isVideoFile(firstUrl);
       const prompt = item.params?.prompt || '';
       const status = item.status || '';
-      const logs = item.cli_logs || [];
       const timeText = (item.created_at || '').slice(5, 16);
       const taskType = item.task_type || '';
 
-      const card = document.createElement('div');
-      card.className = 'dm-hist-card';
-      if (status) card.dataset.status = status;
+      const tile = document.createElement('div');
+      tile.className = 'dm-hist-tile';
+      if (status) tile.dataset.status = status;
+      tile.title = (prompt || [taskType, timeText].filter(Boolean).join(' · '));
 
-      // head: status badge + meta + actions
-      const head = document.createElement('div');
-      head.className = 'dm-hist-head';
-      const badge = document.createElement('span');
-      badge.className = `status-badge ${status || ''}`.trim();
-      badge.textContent = status || '?';
-      head.appendChild(badge);
-      const metaText = document.createElement('span');
-      metaText.className = 'dm-hist-meta';
-      metaText.textContent = [taskType, timeText].filter(Boolean).join(' · ');
-      head.appendChild(metaText);
-      const actions = document.createElement('div');
-      actions.className = 'dm-hist-actions';
-      let logPanel = null;
-      if (logs.length) {
-        const cliBtn = document.createElement('button');
-        cliBtn.type = 'button';
-        cliBtn.className = 'btn-small dm-hist-cli-btn';
-        cliBtn.textContent = 'CLI 详情';
-        cliBtn.addEventListener('click', () => {
-          if (logPanel) logPanel.hidden = !logPanel.hidden;
-        });
-        actions.appendChild(cliBtn);
-      }
-      const copyBtn = document.createElement('button');
-      copyBtn.type = 'button';
-      copyBtn.className = 'btn-small dm-hist-copy-btn';
-      copyBtn.textContent = '复制提示词';
-      copyBtn.addEventListener('click', () => this._dmCopyPrompt(prompt));
-      actions.appendChild(copyBtn);
-      if (status === 'failed') {
-        // One-click retry via the sub-app's existing handle_retry (only valid
-        // while the sub-app still holds the job in memory — after a sub-app
-        // restart it 404s and we fall back to telling the user to resubmit).
-        const retryBtn = document.createElement('button');
-        retryBtn.type = 'button';
-        retryBtn.className = 'btn-small dm-hist-retry-btn';
-        retryBtn.textContent = '重试';
-        retryBtn.addEventListener('click', async () => {
-          const jid = item.job_id || item.id;
-          if (!jid) { window.portalToast('该任务缺少 ID，无法重试，请重新提交', 'danger'); return; }
-          retryBtn.disabled = true;
-          retryBtn.textContent = '重试中...';
-          const res = await api(`/dreamina/api/jobs/${jid}/retry`, 'POST');
-          retryBtn.disabled = false;
-          retryBtn.textContent = '重试';
-          if (res && res.ok) {
-            this.statusText = '已重新提交，任务在后台运行';
-            this.pollJob(res.job_id || jid);
-            this.loadHistory();
-          } else {
-            window.portalToast((res && res.error) ? '重试失败：' + res.error : '重试失败（服务可能已重启，请重新提交）', 'danger');
-            this.loadHistory();
-          }
-        });
-        actions.appendChild(retryBtn);
-      }
-      head.appendChild(actions);
-      card.appendChild(head);
-
-      // prompt (2-line clamp)
-      if (prompt) {
-        const promptEl = document.createElement('div');
-        promptEl.className = 'dm-hist-prompt';
-        promptEl.textContent = prompt;
-        promptEl.title = prompt;
-        card.appendChild(promptEl);
-      }
-
-      // preview
-      if (thumb) {
-        const previewWrap = document.createElement('div');
-        previewWrap.className = 'dm-hist-preview';
-        if (isVid) {
-          const v = document.createElement('video');
-          v.className = 'dm-hist-thumb';
-          v.src = thumb;
-          v.preload = 'metadata';
-          v.muted = true;
-          v.playsInline = true;
-          v.controls = true;
-          previewWrap.appendChild(v);
+      const media = document.createElement('div');
+      media.className = 'dm-tile-media' + (thumbs.length > 1 ? ' dm-tile-media--multi' : '');
+      // 产出文件可能已被 14 天清理策略删除：该张换过期占位；全部过期才禁用放大预览
+      let liveThumbs = thumbs.length;
+      const markExpired = (el) => {
+        liveThumbs -= 1;
+        if (liveThumbs <= 0) tile.dataset.expired = '1';
+        const ph = document.createElement('span');
+        ph.className = 'dm-tile-thumb-gone';
+        ph.textContent = '🗑';
+        ph.title = '产出文件已过期（保留 14 天后自动清理）';
+        el.replaceWith(ph);
+      };
+      thumbs.forEach((f) => {
+        const url = fileUrl(f);
+        const vid = isVideoFile(url);
+        let el;
+        if (vid) {
+          el = document.createElement('video');
+          el.src = url;
+          el.preload = 'metadata';
+          el.muted = true;
+          el.playsInline = true;
         } else {
-          const img = document.createElement('img');
-          img.className = 'dm-hist-thumb';
-          img.src = thumb;
-          img.loading = 'lazy';
-          img.alt = 'result thumbnail';
-          img.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (typeof openPreview === 'function') openPreview('image', thumb);
-          });
-          previewWrap.appendChild(img);
+          el = document.createElement('img');
+          el.src = url;
+          el.loading = 'lazy';
+          el.alt = '结果预览';
         }
-        card.appendChild(previewWrap);
+        el.className = 'dm-tile-thumb';
+        el.addEventListener('error', () => markExpired(el));
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.openDmZoom(item, url, vid);
+        });
+        media.appendChild(el);
+      });
+      if (overflow > 0) {
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'dm-tile-thumb dm-tile-thumb--more';
+        more.textContent = '+' + overflow;
+        more.title = '还有 ' + overflow + ' 条产出，点开逐条查看';
+        more.addEventListener('click', (e) => { e.stopPropagation(); this.openDmZoom(item, firstUrl, isVid); });
+        media.appendChild(more);
       }
-
-      // Download links for every result file. History cards previously offered
-      // ONLY the native <video> 3-dot menu / long-press as a download path, which
-      // hits the browser download manager and fails under self-signed HTTPS
-      // ("请检查互联网连接状况"). Since users often refresh away a finished job and
-      // can only retrieve it from history, that left them with no working way to
-      // download. These links reuse _blobDownload (fetch → blob → local save),
-      // the same self-signed-safe path the live result panel uses.
-      if (files.length) {
-        const dl = document.createElement('div');
-        dl.className = 'dm-hist-downloads';
-        for (const f of files) {
-          const url = '/dreamina/' + f.replace(/^\//, '');
-          const name = f.split('/').pop();
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = name;
-          a.className = 'dm-hist-dl-link';
-          a.textContent = files.length > 1 ? `下载 ${name}` : '下载';
-          a.addEventListener('click', (e) => {
-            e.preventDefault();
-            this._blobDownload(url, name);
-          });
-          dl.appendChild(a);
+      if (thumbs.length) {
+        const zoomHint = document.createElement('span');
+        zoomHint.className = 'dm-tile-zoom';
+        zoomHint.textContent = '⤢';
+        media.appendChild(zoomHint);
+        if (thumbs.length > 1) {
+          const count = document.createElement('span');
+          count.className = 'dm-tile-count';
+          count.textContent = '×' + files.length;
+          count.title = '本次共 ' + files.length + ' 条产出';
+          media.appendChild(count);
         }
-        card.appendChild(dl);
-      }
-
-      if (files.length > 1) {
-        const count = document.createElement('div');
-        count.className = 'dm-hist-count';
-        count.textContent = `共 ${files.length} 个文件`;
-        card.appendChild(count);
-      }
-
-      // log panel (hidden by default)
-      if (logs.length) {
-        logPanel = document.createElement('div');
-        logPanel.className = 'dm-hist-log-panel';
-        logPanel.hidden = true;
-        for (const l of logs) {
-          const entry = document.createElement('div');
-          entry.className = 'dm-hist-log-entry';
-          const cmdEl = document.createElement('div');
-          cmdEl.className = 'dm-hist-log-cmd';
-          cmdEl.textContent = `$ ${l.command || ''}`;
-          entry.appendChild(cmdEl);
-          const codeEl = document.createElement('div');
-          codeEl.className = 'dm-hist-log-code';
-          codeEl.textContent = `exitcode: ${l.returncode}`;
-          entry.appendChild(codeEl);
-          if (l.stdout) {
-            const out = document.createElement('pre');
-            out.className = 'dm-hist-log-stdout';
-            out.textContent = String(l.stdout).slice(0, 800);
-            entry.appendChild(out);
-          }
-          if (l.stderr) {
-            const err = document.createElement('pre');
-            err.className = 'dm-hist-log-stderr';
-            err.textContent = String(l.stderr).slice(0, 300);
-            entry.appendChild(err);
-          }
-          logPanel.appendChild(entry);
+      } else {
+        const ph = document.createElement('span');
+        ph.className = 'dm-tile-placeholder';
+        if (status === 'cancelled' || status === 'canceled' || status === 'interrupted') {
+          ph.className = 'dm-tile-cancelled';
+          ph.innerHTML = '<span class="dm-cancel-stop"></span><span>' + (status === 'interrupted' ? '已中断' : '已取消') + '</span>';
+        } else {
+          ph.className = 'dm-tile-placeholder';
+          ph.textContent = status === 'failed' ? '❌' : '🎬';
         }
-        card.appendChild(logPanel);
+        media.appendChild(ph);
       }
+      const badge = document.createElement('span');
+      badge.className = 'dm-tile-badge ' + (status || '');
+      badge.textContent = status || '?';
+      media.appendChild(badge);
+      tile.appendChild(media);
 
-      return card;
+      const info = document.createElement('div');
+      info.className = 'dm-tile-info';
+      const meta = document.createElement('span');
+      meta.className = 'dm-tile-meta';
+      meta.textContent = [taskType, timeText].filter(Boolean).join(' · ');
+      info.appendChild(meta);
+      if (prompt) {
+        const pEl = document.createElement('span');
+        pEl.className = 'dm-tile-prompt';
+        pEl.textContent = prompt;
+        info.appendChild(pEl);
+      }
+      tile.appendChild(info);
+
+      tile.addEventListener('click', () => {
+        if (tile.dataset.expired) {
+          if (typeof window.portalToast === 'function') window.portalToast('产出文件已过期（保留 14 天后自动清理）', 'info');
+          return;
+        }
+        this.openDmZoom(item, firstUrl, isVid);
+      });
+      return tile;
     },
+
+    // 点击历史卡片 → 放大预览弹窗（图片/视频通用），操作区放弹窗底部
+    openDmZoom(item, url, isVideo) {
+      const files = item.result?.files || [];
+      const prompt = item.params?.prompt || '';
+      const timeText = (item.created_at || '').slice(5, 16);
+      const taskType = item.task_type || '';
+      this.dmZoom = {
+        open: true,
+        url: url || '',
+        isVideo: !!isVideo,
+        title: (prompt || '历史记录').slice(0, 60),
+        prompt,
+        meta: [taskType, timeText].filter(Boolean).join(' · '),
+        status: item.status || '',
+        files,
+      };
+      // petite-vue 渲染是异步的（microtask），弹窗容器要等它挂载后再填操作区
+      setTimeout(() => this._dmZoomBuildActions(item), 0);
+    },
+
+    _dmZoomBuildActions(item) {
+      const files = item.result?.files || [];
+      const prompt = item.params?.prompt || '';
+      const box = document.getElementById('dm-zoom-actions');
+      if (box) {
+        box.innerHTML = '';
+        // 多条产出：编号条逐条切换放大预览的内容（原来只能看第一条）
+        if (files.length > 1) {
+          const strip = document.createElement('div');
+          strip.className = 'preview-strip';
+          strip.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;flex-basis:100%;margin-bottom:4px';
+          files.forEach((f, i) => {
+            const u = '/dreamina/' + f.replace(/^\//, '');
+            const vid = /\.(mp4|mov|webm|m4v)$/i.test(u);
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'preview-strip-item' + (this.dmZoom.url === u ? ' is-active' : '');
+            b.textContent = String(i + 1);
+            b.title = f.split('/').pop();
+            b.addEventListener('click', () => {
+              this.dmZoom.url = u;
+              this.dmZoom.isVideo = vid;
+              this._dmZoomBuildActions(item);
+            });
+            strip.appendChild(b);
+          });
+          box.appendChild(strip);
+        }
+        // 下载（_blobDownload：自签证书安全路径）
+        for (const f of files) {
+          const u = '/dreamina/' + f.replace(/^\//, '');
+          const name = f.split('/').pop();
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'btn-small';
+          b.textContent = files.length > 1 ? '下载 ' + name : '下载';
+          b.addEventListener('click', () => this._blobDownload(u, name));
+          box.appendChild(b);
+        }
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'btn-small';
+        copyBtn.textContent = '复制提示词';
+        copyBtn.addEventListener('click', () => this._dmCopyPrompt(prompt));
+        box.appendChild(copyBtn);
+        if (item.status === 'failed') {
+          const retryBtn = document.createElement('button');
+          retryBtn.type = 'button';
+          retryBtn.className = 'btn-small';
+          retryBtn.textContent = '重试';
+          retryBtn.addEventListener('click', async () => {
+            const jid = item.job_id || item.id;
+            if (!jid) { window.portalToast('该任务缺少 ID，无法重试，请重新提交', 'danger'); return; }
+            retryBtn.disabled = true;
+            retryBtn.textContent = '重试中...';
+            const res = await api(`/dreamina/api/jobs/${jid}/retry`, 'POST');
+            retryBtn.disabled = false;
+            retryBtn.textContent = '重试';
+            if (res && res.ok) {
+              this.statusText = '已重新提交，任务在后台运行';
+              this.pollJob(res.job_id || jid);
+              this.loadHistory();
+              this.closeDmZoom();
+            } else {
+              window.portalToast((res && res.error) ? '重试失败：' + res.error : '重试失败（服务可能已重启，请重新提交）', 'danger');
+              this.loadHistory();
+            }
+          });
+          box.appendChild(retryBtn);
+        }
+      }
+      const logBox = document.getElementById('dm-zoom-logs');
+      if (logBox) {
+        logBox.innerHTML = '';
+        const logs = item.cli_logs || [];
+        if (logs.length) {
+          const panel = document.createElement('div');
+          panel.className = 'dm-hist-log-panel';
+          panel.style.maxHeight = '160px';
+          for (const l of logs) {
+            const entry = document.createElement('div');
+            entry.className = 'dm-hist-log-entry';
+            const cmdEl = document.createElement('div');
+            cmdEl.className = 'dm-hist-log-cmd';
+            cmdEl.textContent = `$ ${l.command || ''}`;
+            entry.appendChild(cmdEl);
+            const codeEl = document.createElement('div');
+            codeEl.className = 'dm-hist-log-code';
+            codeEl.textContent = `exitcode: ${l.returncode}`;
+            entry.appendChild(codeEl);
+            if (l.stdout) {
+              const out = document.createElement('pre');
+              out.className = 'dm-hist-log-stdout';
+              out.textContent = String(l.stdout).slice(0, 800);
+              entry.appendChild(out);
+            }
+            if (l.stderr) {
+              const err = document.createElement('pre');
+              err.className = 'dm-hist-log-stderr';
+              err.textContent = String(l.stderr).slice(0, 300);
+              entry.appendChild(err);
+            }
+            panel.appendChild(entry);
+          }
+          logBox.appendChild(panel);
+        }
+      }
+    },
+    closeDmZoom() { this.dmZoom.open = false; },
 
     async _dmCopyPrompt(text) {
       const value = String(text || '');
@@ -1312,7 +1405,14 @@ function DreaminaApp() {
       try {
         const d = JSON.parse(localStorage.getItem('aiPortal.draft.dreamina') || 'null');
         if (!d) return;
+        if (d.major) this.major = d.major;
+        if (d.mode) {
+          this.mode = d.mode;
+          if (['text2image', 'image2image'].includes(d.mode)) this.imageSub = d.mode;
+          else if (['frames2video', 'multimodal2video', 'multiframe2video'].includes(d.mode)) this.videoSub = d.mode;
+        }
         Object.keys(d).forEach(name => {
+          if (name === 'major' || name === 'mode') return;
           const el = document.querySelector('#dm-form [name="' + name + '"]');
           if (!el || el.type === 'file') return;
           if (el.type === 'checkbox') el.checked = !!d[name];
@@ -1323,7 +1423,7 @@ function DreaminaApp() {
     wireDraftAutosave() {
       const save = () => {
         try {
-          const out = {};
+          const out = { major: this.major, mode: this.mode };
           document.querySelectorAll('#dm-form [name]').forEach(el => {
             if (el.type === 'file') return;
             if (el.type === 'checkbox') out[el.name] = el.checked ? 1 : 0;
@@ -1336,6 +1436,19 @@ function DreaminaApp() {
       if (root) { root.addEventListener('input', save); root.addEventListener('change', save); }
     },
     clearDraft() { try { localStorage.removeItem('aiPortal.draft.dreamina'); } catch (e) {} },
+    restoreDefaultConfig() {
+      try { localStorage.removeItem('aiPortal.draft.dreamina'); } catch (e) {}
+      this.major = 'image';
+      this.mode = 'text2image';
+      this.imageSub = 'text2image';
+      this.videoSub = 'frames2video';
+      const defaults = { prompt: '', ratio: '1:1', resolution_type: '2k', duration: '5', video_resolution: '720P', model_version: 'seedance2.0fast_vip', repeat_count: '1', concurrency: '1', output_name: '' };
+      Object.keys(defaults).forEach(name => {
+        const el = document.querySelector('#dm-form [name="' + name + '"]');
+        if (el) el.value = defaults[name];
+      });
+      if (typeof window.portalToast === 'function') window.portalToast('已恢复默认设置');
+    },
 
     async copyAccountLoginUrl(url) {
       try {
@@ -1450,6 +1563,7 @@ function StatsApp() {
     // consult this first, fall back to hardcoded golden set if fetch failed.
     appsMeta: {},
     recentActivity: [],
+    localGateway: null,
     isAdmin: false,
     users: [],
     newUser: { username: '', password: '', role: 'user' },
@@ -1587,6 +1701,7 @@ function StatsApp() {
     async loadPlatformStatus() {
       const res = await api('/api/platform/status');
       if (!res?.ok) return;
+      this.localGateway = res.local_gateway || null;
       const lan = document.getElementById('lanInfo');
       const lanUrl = `${location.protocol}//${res.lan_ip}:${res.portal_port}/`;
       lan.textContent = `LAN: ${location.protocol}//${res.lan_ip}:${res.portal_port} 📋`;
@@ -1604,6 +1719,11 @@ function StatsApp() {
         });
       }
       document.getElementById('barStats').textContent = `今日: ${this.todayJobs} jobs`;
+    },
+
+    localModuleSummary() {
+      const modules = (this.localGateway && this.localGateway.modules) || [];
+      return modules.map((item) => item.label || item.id).filter(Boolean).join('、') || '未识别';
     },
 
     async loadStats() {
@@ -2060,6 +2180,9 @@ function VolcenginePortraitApp() {
 
   return {
     statusText: '空闲',
+    modelCaps: null,
+    modelHint: '',
+    modelSummary: '',
     appPath,  // exposed to petite-vue templates (used in index.html for download urls)
     // 本地 AI Port 检测（PR #11）：/api/config 返回 local_ready/local_models
     localReady: false,
@@ -2074,7 +2197,7 @@ function VolcenginePortraitApp() {
     assets: [],
     assetName: '',
     genAssetId: '', extraAssetIds: [], extraFiles: [],
-    prompt: '', model: 'doubao-seedance-2-0-260128', duration: 12, resolution: '720p', ratio: '16:9', repeat: 1,
+    prompt: '', model: 'ep-20260912121738-vtd78', duration: 12, resolution: '720p', ratio: '16:9', repeat: 1,
     // Task-type switch — see seedance/static/app.js for the rationale.
     // Ark 2.5 auto-classifies as reference / extend / edit from the prompt;
     // this makes the classification explicit so the user can't accidentally
@@ -2092,22 +2215,30 @@ function VolcenginePortraitApp() {
     portraitModels: [
       {
         id: 'doubao-seedance-2-0-260128', label: 'Seedance 2.0（最高 4k）',
-        maxDuration: 15, resolutions: ['480p', '720p', '1080p', '4k'],
+        maxDuration: 15, duration_range: [4, 15], resolutions: ['480p', '720p', '1080p', '4k'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
         id: 'doubao-seedance-2-0-fast-260128', label: 'Seedance 2.0 fast',
-        maxDuration: 15, resolutions: ['480p', '720p'],
+        maxDuration: 15, duration_range: [4, 15], resolutions: ['480p', '720p'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
         id: 'ep-20260912121738-vtd78', label: 'Seedance 2.0 mini（最快）',
-        maxDuration: 15, resolutions: ['480p', '720p'],
+        maxDuration: 15, duration_range: [4, 15], resolutions: ['480p', '720p'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
         id: 'doubao-seedance-2-5-260628', label: 'Seedance 2.5（最长 30s）',
-        maxDuration: 30, resolutions: ['480p', '720p'],
+        maxDuration: 30, duration_range: [4, 30], resolutions: ['480p', '720p'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
     ],
     submitting: false, events: '', results: [], jobs: [], activityRecords: [],
+    vpHistory: [],            // 矩阵渲染数据：内存任务 + 持久化活动记录合并（dedupe by job_id）
+    vpPageItems: [],          // 当前页切片（每页 20 个，防全量 video 缩略图同时挂载卡顿）
+    vpHistoryPage: 1,         // 当前页码
+    vpPageSize: 20,           // 每页任务数（2026-09-10 用户要求，防加载卡顿）
+    vpPageCount: 0,           // 总页数
+    vpJobDetail: null,
+    vpJobDetailOpen: false,
+    _vpJobDetailRequest: 0,        // 任务详情弹窗数据（请求参数 / 返回事件 / 产出）
     // 新版资产库交互状态
     zoomAsset: null,          // 放大预览弹窗中的资产（图片/视频通用；关闭时不置 null，避免模板渲染竞态）
     zoomOpen: false,          // 弹窗开关（与 zoomAsset 分离，zoomAsset 保持非 null 供模板安全读取）
@@ -2118,6 +2249,9 @@ function VolcenginePortraitApp() {
     _activeVpJobId: null,
     _activeVpStatus: '',
     _vpPollingJobId: null,
+    selectedVpJobId: null,
+    vpJobsLimit: 20,
+    _vpPollingJobs: [],
     runtimeTick: 0,
     outputDir: '', outputDirInput: '', showOutputDirInput: false,
     savingOutputDir: false, outputDirMsg: '', outputDirOk: true,
@@ -2162,6 +2296,16 @@ function VolcenginePortraitApp() {
       this.restoreDraft();
       setInterval(() => this.saveDraft(), 5000);
       setInterval(() => { this.runtimeTick = (this.runtimeTick + 1) % 1e9; }, 1000);
+      // 输入即保存 + 刷新前落盘（原来只有 5s 轮询，快速刷新会丢最后几秒的修改）
+      const vpRoot = document.getElementById('tab-volcengine-portrait');
+      if (vpRoot) {
+        const saveSoon = () => { clearTimeout(this._vpSaveTimer); this._vpSaveTimer = setTimeout(() => this.saveDraft(), 500); };
+        vpRoot.addEventListener('input', saveSoon);
+        vpRoot.addEventListener('change', saveSoon);
+      }
+      const vpFlush = () => { try { this.saveDraft(); } catch (e) {} };
+      window.addEventListener('pagehide', vpFlush);
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') vpFlush(); });
       // 拖文件进资产库 = 快捷上传（等价于「选择文件」）
       const lib = document.getElementById('vp-library');
       if (lib) {
@@ -2232,9 +2376,13 @@ function VolcenginePortraitApp() {
       try {
         const d = JSON.parse(localStorage.getItem('aiPortal.draft.portrait') || 'null');
         if (!d) return;
-        ['prompt', 'genAssetId', 'model', 'duration', 'resolution', 'ratio', 'repeat'].forEach(k => {
+        ['prompt', 'genAssetId', 'model', 'duration', 'resolution', 'ratio', 'repeat', 'taskMode'].forEach(k => {
           if (d[k] !== undefined) this[k] = d[k];
         });
+        if (Array.isArray(d.extraAssetIds)) this.extraAssetIds = d.extraAssetIds;
+        if (this.genAssetId) this.syncFig1Asset();
+        this.ensureAvailablePortraitModel();
+        this.onModelChange();
       } catch (e) { /* 草稿恢复尽力而为 */ }
     },
     saveDraft() {
@@ -2242,11 +2390,33 @@ function VolcenginePortraitApp() {
         const d = {
           prompt: this.prompt, genAssetId: this.genAssetId, model: this.model,
           duration: this.duration, resolution: this.resolution, ratio: this.ratio, repeat: this.repeat,
+          taskMode: this.taskMode, extraAssetIds: this.extraAssetIds,
         };
         localStorage.setItem('aiPortal.draft.portrait', JSON.stringify(d));
       } catch (e) {}
     },
     clearDraft() { try { localStorage.removeItem('aiPortal.draft.portrait'); } catch (e) {} },
+    restoreDefaultConfig() {
+      try { localStorage.removeItem('aiPortal.draft.portrait'); } catch (e) {}
+      this.prompt = '';
+      this.genAssetId = '';
+      this.extraAssetIds = [];
+      this.extraFiles = [];
+      this.model = 'ep-20260912121738-vtd78';
+      this.duration = 12;
+      this.resolution = '720p';
+      this.ratio = '16:9';
+      this.repeat = 1;
+      this.taskMode = 'reference';
+      this._prevTaskMode = 'reference';
+      this._taskModeMemory = {
+        reference: { ratio: '16:9', duration: 12 },
+        extend: { ratio: 'adaptive', duration: 5 },
+        edit: { ratio: 'adaptive', duration: -1 },
+      };
+      this.syncFig1Asset();
+      if (typeof window.portalToast === 'function') window.portalToast('已恢复默认设置（资产库不受影响）');
+    },
 
     formatRuntime(job) {
       const _ = this.runtimeTick;
@@ -2498,6 +2668,8 @@ function VolcenginePortraitApp() {
         this.outputDirInput = this.outputDir;
         this.localReady = res.local_ready === true;
         this.applyLocalModels(res.local_models || []);
+        this.ensureAvailablePortraitModel();
+        this.onModelChange();
       }
     },
 
@@ -2510,7 +2682,9 @@ function VolcenginePortraitApp() {
           id: m.id,
           label: m.label || m.id,
           maxDuration: Number(m.maxDuration || 15),
+          duration_range: [Number(m.minDuration || 4), Number(m.maxDuration || 15)],
           resolutions: Array.isArray(m.resolutions) && m.resolutions.length ? m.resolutions : ['720p'],
+          ratios: Array.isArray(m.ratios) && m.ratios.length ? m.ratios : ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'],
         });
       }
     },
@@ -2588,18 +2762,81 @@ function VolcenginePortraitApp() {
     modelSpec() {
       return this.portraitModels.find(m => m.id === this.model) || this.portraitModels[0];
     },
-    modelResolutions() { return this.modelSpec().resolutions; },
-    modelMaxDuration() { return this.modelSpec().maxDuration; },
+    ensureAvailablePortraitModel() {
+      const current = this.portraitModels.find(m => m.id === this.model);
+      const currentUnavailable = current
+        && (current.disabled || (this.isLocalModel(current.id) && !this.localReady));
+      if (!currentUnavailable) return false;
+      const fallback = this.portraitModels.find(m =>
+        !m.disabled && (!this.isLocalModel(m.id) || this.localReady)
+      );
+      if (!fallback) {
+        this.modelHint = '当前没有可用模型，请联系管理员处理。';
+        return false;
+      }
+      this.model = fallback.id;
+      this.modelHint = (current.disabled ? '所选模型已失效' : '本地模型未连接')
+        + '，已自动切换到 ' + fallback.label + '。';
+      return true;
+    },
+    modelCapabilities() {
+      return (window.ModelCapabilities && window.ModelCapabilities.capabilitiesFor)
+        ? window.ModelCapabilities.capabilitiesFor({ __vp: { models: this.portraitModels } }, '__vp', this.model)
+        : null;
+    },
+    modelResolutions() {
+      const caps = this.modelCapabilities();
+      if (caps && Array.isArray(caps.resolution) && caps.resolution.length) return caps.resolution;
+      const spec = this.modelSpec();
+      return (spec && spec.resolutions) || ['720p'];
+    },
+    modelMaxDuration() {
+      const caps = this.modelCapabilities();
+      if (caps && caps.duration) return Number(caps.duration.max);
+      const spec = this.modelSpec();
+      return Number(spec && spec.maxDuration) || 15;
+    },
+    modelRatios() {
+      const caps = this.modelCapabilities();
+      if (caps && Array.isArray(caps.ratio) && caps.ratio.length) return caps.ratio;
+      return ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'];
+    },
     // Called from index.html on model change so a stale resolution or an
     // out-of-range duration is corrected before the user can submit.
     onModelChange() {
+      if (this.ensureAvailablePortraitModel()) return;
+      const caps = this.modelCapabilities();
+      this.modelCaps = caps;
       const spec = this.modelSpec();
-      if (!spec.resolutions.includes(this.resolution)) this.resolution = spec.resolutions[0];
-      // -1 means "let Ark pick the length" and is required by video edit /
-      // extend tasks, so it must survive a model switch instead of being clamped.
-      if (Number(this.duration) !== -1 && Number(this.duration) > spec.maxDuration) {
-        this.duration = spec.maxDuration;
+      const providerLabel = this.isLocalModel(this.model) ? '本地 AI Port（免费）' : '火山方舟';
+      const summary = [providerLabel];
+      const support = [];
+      if (caps && caps.duration) support.push('时长 ' + Number(caps.duration.min) + '-' + Number(caps.duration.max) + ' 秒');
+      if (caps && Array.isArray(caps.resolution) && caps.resolution.length) support.push('分辨率 ' + caps.resolution.join(' / '));
+      if (caps && Array.isArray(caps.ratio) && caps.ratio.length) support.push('比例 ' + caps.ratio.join(' / '));
+      if (this.isLocalModel(this.model)) support.push('本地免费');
+      this.modelSummary = summary.concat(support).join(' · ') + '。';
+      const hints = [];
+      if (!caps) { this.modelHint = ''; return; }
+      if (Array.isArray(caps.resolution) && caps.resolution.length && !caps.resolution.includes(this.resolution)) {
+        const keep = caps.resolution[0];
+        hints.push('分辨率 ' + this.resolution + ' 不支持，已切换为 ' + keep);
+        this.resolution = keep;
       }
+      if (Array.isArray(caps.ratio) && caps.ratio.length && !caps.ratio.includes(this.ratio)) {
+        const keep = caps.ratio.includes('adaptive') ? 'adaptive' : caps.ratio[0];
+        hints.push('比例 ' + this.ratio + ' 不支持，已切换为 ' + keep);
+        this.ratio = keep;
+      }
+      if (caps.duration) {
+        const n = Number(this.duration);
+        if (!Number.isNaN(n) && n !== -1 && (n < Number(caps.duration.min) || n > Number(caps.duration.max))) {
+          const keep = Math.min(Number(caps.duration.max), Math.max(Number(caps.duration.min), n));
+          hints.push('时长 ' + n + ' 不支持，已切换为 ' + keep);
+          this.duration = keep;
+        }
+      }
+      this.modelHint = hints.join('；');
     },
 
     // Task-type switch. reference / extend / edit each impose different
@@ -2632,10 +2869,29 @@ function VolcenginePortraitApp() {
     async createJob() {
       if (!this.genAssetId) { this.statusText = '请选择资产 ID（图1）'; return; }
       if (!this.prompt) { this.statusText = '请输入 Prompt'; return; }
+      if (this.ensureAvailablePortraitModel()) {
+        this.statusText = this.modelHint || '所选模型已失效，请选择其他模型后重新提交';
+        return;
+      }
+      const vpCaps = this.modelCapabilities();
+      if (vpCaps) {
+        const vpProblems = [];
+        if (Array.isArray(vpCaps.resolution) && vpCaps.resolution.length && !vpCaps.resolution.includes(this.resolution)) {
+          vpProblems.push('分辨率 ' + this.resolution + ' 不支持，可用：' + vpCaps.resolution.join(' / '));
+        }
+        if (Array.isArray(vpCaps.ratio) && vpCaps.ratio.length && !vpCaps.ratio.includes(this.ratio)) {
+          vpProblems.push('比例 ' + this.ratio + ' 不支持，可用：' + vpCaps.ratio.join(' / '));
+        }
+        const vpDuration = Number(this.duration);
+        if (vpCaps.duration && !Number.isNaN(vpDuration) && vpDuration !== -1 && (vpDuration < Number(vpCaps.duration.min) || vpDuration > Number(vpCaps.duration.max))) {
+          vpProblems.push('时长仅支持 ' + Number(vpCaps.duration.min) + '-' + Number(vpCaps.duration.max) + ' 秒');
+        }
+        if (vpProblems.length) { this.statusText = vpProblems.join('；'); return; }
+      }
       // 本地模型未连接时兜底：即使草稿/历史残留 local-* 模型，也切回云端再拦
       // 截，避免把本地模型请求发到不可达的 AI Port。
       if (this.isLocalModel(this.model) && !this.localReady) {
-        this.model = 'doubao-seedance-2-0-260128';
+        this.model = 'ep-20260912121738-vtd78';
         this.statusText = '本地模型未连接，已切回云端模型，请确认后重新提交';
         return;
       }
@@ -2676,9 +2932,7 @@ function VolcenginePortraitApp() {
       }
       if (res?.ok) {
         this.statusText = '已提交，任务 ' + res.job_id + ' 在后台运行';
-        this._activeVpJobId = res.job_id;
-        this._activeVpStatus = '';
-        this.clearDraft();
+        this.selectedVpJobId = res.job_id;
         this.loadJobs();
         this.pollJob(res.job_id);
       } else {
@@ -2687,70 +2941,70 @@ function VolcenginePortraitApp() {
     },
 
     async pollJob(jobId) {
-      if (this._vpPollingJobId === jobId) return;
-      this._vpPollingJobId = jobId;
-      // Transient failures (network blip / sub-app restart) used to break the
-      // loop silently — the running task vanished from view with no hint. Now
-      // retry with a cap, and say so while retrying.
+      if (!jobId) return;
+      if (this._vpPollingJobs.includes(jobId)) return;
+      this._vpPollingJobs.push(jobId);
       let fails = 0;
-      let terminal = '';
       while (true) {
         const job = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}`);
         if (!job || job.ok === false) {
           fails++;
           if (fails >= 10) {
-            this.statusText = '网络不稳定，已暂停轮询（任务仍在后台运行，稍后可从历史查看）';
+            if (this.selectedVpJobId === jobId) this.statusText = '网络不稳定，已暂停轮询（任务仍在后台运行，稍后刷新查看）';
             break;
           }
-          this.statusText = `连接中断，正在重试 (${fails}/10)...`;
+          if (this.selectedVpJobId === jobId) this.statusText = `连接中断，正在重试 (${fails}/10)...`;
           await new Promise(r => setTimeout(r, 3000));
           continue;
         }
         fails = 0;
-        this._activeVpStatus = job.status || '';
-        const vpLabel = { queued: '排队中', running: '处理中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }[job.status] || job.status;
-        this.statusText = `${vpLabel} ${job.done || 0}/${job.total || 0}`;
-        this.events = (job.events || []).map(e => '<div>' + e.time + ' ' + e.message + '</div>').join('');
-        for (const r of job.results || []) {
-          if (r.download_url) {
-            const url = `${appPath}${r.download_url}`;
-            if (!this.results.find(x => x.url === url)) this.results.push({ url, filename: r.filename });
-          }
+        const idx = (this.jobs || []).findIndex(x => (x.job_id || x.id) === jobId);
+        if (idx >= 0) this.jobs.splice(idx, 1, { ...this.jobs[idx], ...job });
+        if (this.selectedVpJobId === jobId) {
+          this.statusText = `${this.vpStatusLabel(job.status)} ${job.done || 0}/${job.total || 0}`;
         }
         if (['succeeded', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
-          terminal = job.status;
-          // 系统通知：与 Portal 15s 兜底轮询按 jobId 去重
           notifyJobDone(jobId, String(job.status).toLowerCase() === 'canceled' ? 'cancelled' : String(job.status).toLowerCase(), '人像视频', 'volcengine-portrait');
-          // 失败原因留在状态区（用户视线所在），而不是清成「空闲」让错误只沉在历史卡片里
-          if (job.status === 'failed') {
+          if (job.status === 'failed' && this.selectedVpJobId === jobId) {
             const reason = this.friendlyErrors(job.errors);
-            this.statusText = '❌ 任务失败' + (reason ? '：' + reason : '') + '。可在下方「生成历史」点击「重试」原样重提。';
+            this.statusText = '❌ 任务失败' + (reason ? '：' + reason : '') + '。可在下方「任务」点击「重试」原样重提。';
+          } else if (this.selectedVpJobId === jobId && job.status !== 'failed') {
+            this.statusText = '空闲';
           }
           break;
         }
         await new Promise(r => setTimeout(r, 3000));
       }
-      if (this._vpPollingJobId === jobId) this._vpPollingJobId = null;
-      this._activeVpJobId = null;
-      this._activeVpStatus = '';
-      if (terminal !== 'failed') this.statusText = '空闲';
+      this._vpPollingJobs = this._vpPollingJobs.filter(id => id !== jobId);
       this.loadJobs();
     },
 
     // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）
-    async cancelJob() {
-      const jobId = this._activeVpJobId;
+    async cancelJob(jobId) {
+      jobId = jobId || this.selectedVpJobId;
       if (!jobId) return;
-      if (this._activeVpStatus === 'running') {
-        if (!confirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。')) return;
+      const j = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
+      if (j && String(j.status || '').toLowerCase() === 'running') {
+        if (false && !(await window.portalConfirm('取消正在生成的任务？\n\n任务已开始计费。取消后本次生成结果将丢失，已产生的费用可能仍然需要支付。\n取消后即可重新发起新的生成任务。', { danger: true }))) return;
       }
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}/cancel`, 'POST');
       if (res?.ok) {
         this.statusText = '任务已取消，输入和参数已保留。';
+        const current = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
+        if (current) {
+          current.status = 'cancelled';
+          current.finished_at = Date.now() / 1000;
+          if (!Array.isArray(current.errors) || !current.errors.length) current.errors = ['任务已取消。'];
+        }
+        this._syncVpHistory();
+        if (typeof window.portalToast === 'function') window.portalToast('任务已取消', 'success');
+        this.loadJobs();
       } else if (res && res.error) {
         this.statusText = res.error;
+        if (typeof window.portalToast === 'function') window.portalToast(res.error, 'danger');
       } else {
         this.statusText = '取消失败：网络异常，请重试';
+        if (typeof window.portalToast === 'function') window.portalToast('取消失败：网络异常，请重试', 'danger');
       }
     },
 
@@ -2758,22 +3012,11 @@ function VolcenginePortraitApp() {
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs`);
       if (res?.ok) {
         this.jobs = res.jobs || [];
-        // Refresh-safe recovery: the original lower task/status bar is driven
-        // by _activeVpJobId, not by the history list. Rehydrate the newest
-        // non-terminal job and restart the existing poller so its original
-        // cancel button comes back in the same place after a page refresh.
-        const active = this.jobs
-          .filter(j => !['succeeded', 'failed', 'cancelled', 'canceled', 'completed'].includes(String(j.status || '').toLowerCase()))
-          .sort((a, b) => Number(b.submitted_at || 0) - Number(a.submitted_at || 0))[0];
-        if (active && this._vpPollingJobId !== active.job_id) {
-          this._activeVpJobId = active.job_id;
-          this._activeVpStatus = active.status || '';
-          this.statusText = `${active.status || 'queued'} ${active.done || 0}/${active.total || 0}`;
-          this.events = (active.events || []).map(e => '<div>' + e.time + ' ' + e.message + '</div>').join('');
-          this.results = (active.results || []).filter(r => r.download_url).map(r => ({
-            url: `${appPath}${r.download_url}`, filename: r.filename,
-          }));
-          this.pollJob(active.job_id);
+        // 统一任务视图：为每个运行中的任务启动独立轮询，支持一次提交多条
+        const running = this.jobs.filter(j => !['succeeded', 'failed', 'cancelled', 'canceled', 'completed'].includes(String(j.status || '').toLowerCase()));
+        for (const j of running) this.pollJob(j.job_id || j.id);
+        if (!this.selectedVpJobId && running.length) {
+          this.statusText = running.length + ' 个任务进行中';
         }
       }
       this.loadActivity();
@@ -2784,8 +3027,7 @@ function VolcenginePortraitApp() {
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs/${encodeURIComponent(jobId)}/retry`, 'POST');
       if (res?.ok) {
         this.statusText = '已重试，任务 ' + res.job_id + ' 在后台运行';
-        this._activeVpJobId = res.job_id;
-        this._activeVpStatus = '';
+        this.selectedVpJobId = res.job_id;
         this.loadJobs();
         this.pollJob(res.job_id);
       } else {
@@ -2798,6 +3040,7 @@ function VolcenginePortraitApp() {
     async loadActivity() {
       const res = await vpApi.call(this, `${appPath}/api/activity`);
       this.activityRecords = (res && res.records) || [];
+      this._syncVpHistory();
     },
 
     // History items that only live in the persisted activity log — i.e. jobs
@@ -2805,6 +3048,176 @@ function VolcenginePortraitApp() {
     extraHistory() {
       const liveIds = new Set((this.jobs || []).map(j => j.job_id));
       return (this.activityRecords || []).filter(a => a.job_id && !liveIds.has(a.job_id));
+    },
+
+    vpStatusLabel(status) {
+      return { queued: '排队中', pending: '排队中', running: '处理中', querying: '处理中', succeeded: '已完成', completed: '已完成', failed: '失败', cancelled: '已取消', canceled: '已取消' }[status] || status || '排队中';
+    },
+
+    visibleVpJobs() {
+      const jobs = this.jobs || [];
+      const rank = s => ['queued', 'pending', 'running', 'querying'].includes(String(s || '').toLowerCase()) ? 0 : 1;
+      return jobs.slice().sort((a, b) => {
+        const ra = rank(a.status), rb = rank(b.status);
+        if (ra !== rb) return ra - rb;
+        return Number(b.submitted_at || b.created_at || 0) - Number(a.submitted_at || a.created_at || 0);
+      }).slice(0, this.vpJobsLimit);
+    },
+
+    vpSelectedJob() {
+      const id = this.selectedVpJobId;
+      if (!id) return null;
+      return (this.jobs || []).find(j => (j.job_id || j.id) === id) || null;
+    },
+
+    isVpCancellable(j) {
+      const s = String(j.status || '').toLowerCase();
+      return ['queued', 'pending', 'running', 'querying'].includes(s) && !!j.job_id;
+    },
+
+    selectVpJob(jobId) {
+      this.selectedVpJobId = jobId;
+      const j = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
+      if (j && this.isVpCancellable(j)) this.pollJob(jobId);
+    },
+
+    closeVpJobDetail() {
+      this._vpJobDetailRequest += 1;
+      this.selectedVpJobId = null;
+      // Keep the detail object alive for petite-vue; only toggle visibility.
+      this.vpJobDetailOpen = false;
+    },
+    // === 矩阵渲染数据（2026-09-09 对齐 seedance/nano 任务矩阵） ===
+    // 模板不直接调方法（petite-vue 渲染竞态教训），由数据属性 vpHistory 维护；
+    // loadJobs / loadActivity 每次刷新都重算一次。内存任务优先，活动记录补缺
+    // （重启后内存剪枝的任务从持久化记录并入，缩略图来自后端 first_url）。
+    _syncVpHistory() {
+      const liveIds = new Set((this.jobs || []).map(j => j.job_id));
+      const items = [];
+      for (const j of (this.jobs || [])) {
+        const first = ((j.results || []).filter(r => r.download_url))[0];
+        items.push({
+          job_id: j.job_id,
+          status: j.status || 'queued',
+          prompt: j.prompt || '',
+          created_at: j.created_at || '',
+          retryable: !!j.retryable,
+          cancellable: this.isVpCancellable(j),
+          isLive: true,
+          first: first ? { url: first.download_url, filename: first.filename || 'video', isVideo: true } : null,
+        });
+      }
+      for (const a of (this.activityRecords || [])) {
+        if (!a.job_id || liveIds.has(a.job_id)) continue;
+        const url = a.first_url;
+        items.push({
+          job_id: a.job_id,
+          activity_id: a.id,
+          status: a.status || 'queued',
+          prompt: a.title || '',
+          created_at: a.created_at || '',
+          retryable: false,
+          cancellable: false,
+          isLive: false,
+          first: url ? { url: url, filename: a.first_filename || 'video', isVideo: true } : null,
+        });
+      }
+      // 新任务在上（活动记录 summary 已是倒序；live jobs 按后端排序）
+      this.vpHistory = items;
+      this._applyVpPage();
+    },
+
+    // 分页（2026-09-10 用户要求：一页 20 个，防止 87 个 video 缩略图同时挂载卡顿）。
+    // 轮询刷新时保持当前页码；总页数减少时自动收拢到最后一页。
+    setVpPage(n) {
+      const max = Math.max(1, this.vpPageCount);
+      this.vpHistoryPage = Math.min(Math.max(1, n), max);
+      this._applyVpPage();
+      // 翻页后滚回历史区顶部（长页里翻页控件在底部）
+      const sec = document.querySelector('.vp-job-grid');
+      if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    },
+    _applyVpPage() {
+      const size = this.vpPageSize || 20;
+      this.vpPageCount = Math.max(1, Math.ceil((this.vpHistory.length || 1) / size));
+      this.vpHistoryPage = Math.min(Math.max(1, this.vpHistoryPage), this.vpPageCount);
+      const start = (this.vpHistoryPage - 1) * size;
+      this.vpPageItems = this.vpHistory.slice(start, start + size);
+    },
+
+    // 整格点击 → 详情弹窗：live 单任务 + 持久化活动记录合并展示
+    async openVpJobDetail(j) {
+      const requestToken = ++this._vpJobDetailRequest;
+      this.vpJobDetailOpen = true;
+      this.vpJobDetail = {
+        job_id: j.job_id, activity_id: j.activity_id || '',
+        status: j.status || '', prompt: j.prompt || '', loading: true,
+        reqText: '', evtText: '', results: [],
+      };
+      const jobId = j.job_id;
+      let live = null, rec = null;
+      try {
+        const r = await vpApi.call(this, `${appPath}/api/virtual/jobs/${encodeURIComponent(jobId)}`);
+        if (r && !r.error) live = r;
+      } catch (e) { /* 内存任务已剪枝 → 只展示活动记录 */ }
+      try {
+        const knownActivityId = this.vpJobDetail && this.vpJobDetail.activity_id;
+        const r = knownActivityId
+          ? await vpApi.call(this, `${appPath}/api/activity/${encodeURIComponent(knownActivityId)}`)
+          : await vpApi.call(this, `${appPath}/api/activity/by-job/${encodeURIComponent(jobId)}`);
+        if (r && !r.error) rec = r;
+      } catch (e) { /* 活动记录缺失时只展示 live */ }
+      if (!this.vpJobDetail || !this.vpJobDetailOpen || requestToken !== this._vpJobDetailRequest) return;
+      const d = this.vpJobDetail;
+      // 请求参数：live 任务字段优先；内存剪枝后回退活动记录 request（无 key 类字段）
+      const req = (rec && rec.request) || {};
+      const params = live
+        ? {
+            model: live.model || req.model || '',
+            duration: live.requested_duration ?? live.duration ?? req.duration ?? '',
+            resolution: live.resolution || req.resolution || '',
+            ratio: live.ratio || req.ratio || '',
+            asset_id: live.asset_id || req.asset_id || '',
+            extra_asset_ids: (live.extra_asset_ids && live.extra_asset_ids.length)
+              ? live.extra_asset_ids : (req.extra_asset_ids || []),
+            repeat_count: live.total || req.repeat_count || 1,
+          }
+        : req;
+      d.reqText = JSON.stringify(params, null, 2);
+      // 返回事件：live events 优先；活动记录 result.errors 兜底
+      const evtLines = [];
+      for (const e of ((live && live.events) || [])) evtLines.push(`${e.time || ''} ${e.message || ''}`);
+      if (!evtLines.length) {
+        const errs = (rec && rec.result && rec.result.errors) || [];
+        for (const e of errs) evtLines.push(String(e));
+      }
+      d.evtText = evtLines.join('\n') || '（无事件）';
+      // 产出：live results 优先，活动记录 result.results 兜底
+      d.results = ((live && live.results) || (rec && rec.result && rec.result.results) || [])
+        .filter(r => r.download_url);
+      d.status = (live && live.status) || d.status;
+      d.prompt = (live && live.prompt) || d.prompt || ((rec && rec.title) || '');
+      d.loading = false;
+    },
+
+    // 缩略图点开 → 放大预览（复用资产放大弹窗；人像产出均为视频）
+    openVpJobPreview(j) {
+      const f = j.first;
+      if (!f || f.broken) return;
+      this.openZoom({
+        file_name: f.filename || 'video',
+        asset_type: 'Video',
+        url: `${appPath}${f.url}`,
+        status: 'active',
+        asset_id: j.job_id,
+      });
+    },
+    // 媒体 404（产出文件已被 14 天清理策略删除）→ 缩略图换占位、下载按钮消失。
+    // 注意不能把 j.first 置 null：petite-vue 的 :src effect 与 v-if effect 调度
+    // 无顺序保证，置 null 会触发「reading 'url' of null」模板求值崩溃——用 broken 标志。
+    onVpMediaError(e, j) {
+      if (j.first) j.first.broken = true;
+      j.expired = true;
     },
 
     // Retry a failed task from the persisted history: restore its params into
@@ -2856,6 +3269,11 @@ function HistoryApp() {
     isAdmin: false, userList: [], userFilter: "", appList: [], appFilter: "", favorites: {}, favOnly: false, downloaded: {}, downloadedOnly: false,
     kind: "all", status: "all", days: 30, q: "",
     detail: null, detailTab: "req",
+    // 产出文件可能已被 14 天清理策略删除：媒体 404 时清掉 thumb_url，
+    // 卡片/弹窗自动落到「无预览」占位分支，下载按钮一并消失
+    histMediaError(it, e) {
+      if (it) it.thumb_url = '';
+    },
     get totalPages() {
       return Math.max(1, Math.ceil(this.total / this.pageSize));
     },
@@ -2872,10 +3290,25 @@ function HistoryApp() {
       } catch (e) { /* 权限信息拿不到时按普通用户渲染 */ }
       try { this.favorites = JSON.parse(localStorage.getItem('portal_history_favorites') || '{}'); } catch (e) {}
       try { this.downloaded = JSON.parse(localStorage.getItem('portal_history_downloads') || '{}'); } catch (e) {}
+      if (!this._historyTabListenerBound) {
+        this._historyTabListenerBound = true;
+        document.addEventListener('portal:tabchange', (event) => {
+          if (event.detail && event.detail.tab === 'history') this.refresh();
+        });
+        document.addEventListener('portal:historyupdated', () => {
+          const active = document.querySelector('.app-tab.active');
+          if (!active || active.dataset.tab !== 'history' || document.hidden) return;
+          clearTimeout(this._historyEventRefreshTimer);
+          this._historyEventRefreshTimer = window.setTimeout(() => this.refresh(), 200);
+        });
+      }
       this.reload();
     },
     async reload() {
       this.page = 1;
+      await this._fetch();
+    },
+    async refresh() {
       await this._fetch();
     },
     async goPage(p) {
@@ -2905,7 +3338,10 @@ function HistoryApp() {
         this.total = res.total || 0;
       }
       if (this.page > this.totalPages) { this.page = this.totalPages; return this._fetch(); }
-      this.detail = null;
+      if (this.detail) {
+        const activeKey = this.favKey(this.detail);
+        this.detail = all.find((item) => this.favKey(item) === activeKey) || null;
+      }
     },
     favKey(it) { return (it && it.app) + ":" + (it && it.job_id); },
     isFav(it) { return !!this.favorites[this.favKey(it)]; },
@@ -2922,6 +3358,24 @@ function HistoryApp() {
       try { localStorage.setItem('portal_history_downloads', JSON.stringify(this.downloaded)); } catch (e) {}
     },
     openDetail(it) { this.detail = it; this.detailTab = "req"; },
+    historyTime(it) {
+      if (!it) return 0;
+      const value = it.submitted_at || it.created_at || it.completed_at || 0;
+      if (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim())) return Number(value);
+      return value;
+    },
+    historyTitle(it) {
+      if (!it) return "";
+      const prompt = String(it.prompt || "").trim();
+      if (prompt) return prompt;
+      const title = String(it.title || "").trim();
+      if (title) return title;
+      const label = it.display_name || ({ seedance: "视频生成", "nano-banana": "图片生成", dreamina: "即梦创作", "volcengine-portrait": "人像视频", "feishu-generation-agent": "飞书任务" }[it.app] || it.app || "生成任务");
+      const model = String(it.model || "").trim();
+      if (model) return label + " · " + model;
+      const jobId = String(it.job_id || "").trim();
+      return jobId ? label + " · " + jobId.slice(0, 8) : label;
+    },
     // ?????????????????????? URL
     thumbFor(it) {
       if (!it || !it.thumb_url) return "";
@@ -2967,7 +3421,7 @@ function HistoryApp() {
     async reuseParams(it) {
       if (!it) return;
       const params = it.params || {};
-      const prompt = it.prompt || params.prompt || '';
+      const prompt = it.prompt || params.prompt || it.title || '';
       const targetMap = {
         'seedance': 'seedance',
         'nano-banana': 'nb',
@@ -3291,6 +3745,7 @@ PetiteVue.createApp({
     btn.style.display = '';
     btn.addEventListener('click', async () => {
       await api('/api/auth/logout', 'POST');
+      try { localStorage.removeItem('portal_session'); } catch(_) {}
       location.replace('/login');
     });
   }

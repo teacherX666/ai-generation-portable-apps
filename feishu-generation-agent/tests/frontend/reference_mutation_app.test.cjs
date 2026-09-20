@@ -49,6 +49,7 @@ class FakeNode {
     return descendants(this).filter((node) => tags.has(node.tagName));
   }
   setAttribute(name, value) { this[name] = String(value); }
+  removeAttribute(name) { delete this[name]; }
   scrollIntoView() {}
   focus() {}
 }

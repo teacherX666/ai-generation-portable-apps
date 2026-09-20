@@ -126,7 +126,12 @@ class AiPortVideoGenerator:
             )
         job = await self._get_job(submission.provider_task_id)
         status = str(job.get("status") or "").strip().lower()
+        if status in {"pending", "submitted"}:
+            return self._submission(submission, status="queued")
+        if status in {"running", "cancelling"}:
+            return self._submission(submission, status="running")
         if status in _PENDING_JOB_STATUSES:
+            return self._submission(submission, status="queued")
             return self._submission(submission, status="running")
         if status in _CANCELLED_JOB_STATUSES:
             return self._submission(submission, status="cancelled")

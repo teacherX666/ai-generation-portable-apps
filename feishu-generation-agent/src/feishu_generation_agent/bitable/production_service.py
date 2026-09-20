@@ -10,6 +10,7 @@ from feishu_generation_agent.domain.document import (
     RequirementRequest,
     build_planning_prompt_snapshot,
 )
+from feishu_generation_agent.domain.plan import ApprovalDecision
 from feishu_generation_agent.domain.production_bitable import ProductionTaskSummary
 from feishu_generation_agent.graph.runtime import (
     RunConflict,
@@ -38,6 +39,20 @@ _ACTIVE_STATUSES = {
     "delivery_failed": TableTaskStatus.WRITEBACK_FAILED,
 }
 _SHARED_RESULT_TARGET = "__shared_production_result__"
+
+#: 任务记录最多列几条**任务**（每条任务自带它的全部历次尝试）。
+_RECENT_TASK_LIMIT = 10
+#: 分组前先捞多少条 run —— 要足够大，才能把最近这些任务的历次尝试都捞全。
+_RECENT_RUN_SCAN_LIMIT = 500
+
+# 这些绑定状态在 _ACTIVE_STATUSES 里算「活跃」，但其实是在**等人操作**
+# （审批计划 / 审核成片），并没有真的在跑。此时复用它们会把用户静默甩回
+# 那个卡住的页面——用户体感就是「点了重跑却立刻跳到审核页，什么都没做」
+# （2026-09-16 生产事故：一条卡在待审批一天的任务挡掉了该记录所有重跑）。
+_RERUN_BLOCKING_STATUSES = {
+    TableTaskStatus.WAITING_APPROVAL,
+    TableTaskStatus.REVIEWING,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,18 +110,39 @@ class ProductionBitableService:
             schema,
             include_completed=self._include_completed_for_test,
         )
-        active_record_ids = {
-            binding.record_id
+        # 显示前先把绑定状态跟运行时对齐，否则徽章会一直停在领取那一刻的
+        # 「处理中」，而任务其实早就到了待审批 —— 单条失败不影响整个列表。
+        await self._reconcile_bindings(await self._store.list_active(*schema_key))
+        claimed_by_record = {
+            binding.record_id: binding
             for binding in await self._store.list_active(*schema_key)
         }
         return [
-            task
+            self._stamp_claim(
+                task,
+                claimed_by_record.get(task.record_id),
+            )
             for task in (
                 self._stamp_declared_type(task, source) for task in tasks
             )
             if source.matches_task_type(task.task_type)
-            and task.record_id not in active_record_ids
         ]
+
+    @staticmethod
+    def _stamp_claim(task, binding):
+        """把「这条记录已被领取」挂到摘要上，而不是把记录整条滤掉。
+
+        #1 之前是直接过滤掉已领取的记录，用户一点「开始分析」这条记录就从
+        列表里消失，只能进审批页才找得回来。
+        """
+        if binding is None:
+            return task
+        return task.model_copy(
+            update={
+                "claim_status": binding.status,
+                "claimed_run_id": binding.run_id,
+            }
+        )
 
     @staticmethod
     def _stamp_declared_type(task, source: ProductionTaskSource):
@@ -140,7 +176,7 @@ class ProductionBitableService:
             (item for item in await self.scan(category) if item.record_id == record_id),
             None,
         )
-        if task is None:
+        if task is None or task.claimed_run_id is not None:
             raise RunConflict("该生产表记录当前不可领取")
         if task.task_type not in self._enabled_task_types:
             raise RunConflict(f"{task.task_type or '未分类'}任务暂未启用")
@@ -182,6 +218,15 @@ class ProductionBitableService:
         # restart or an old cancellation can leave production_tasks at 待审批
         # while the runtime is already terminal; those rows otherwise render as
         # dead tasks whose buttons all return conflicts.
+        await self._reconcile_bindings(bindings)
+        return await self._store.list_active(
+            app_token,
+            table_id,
+            owner_user_id=owner_user_id,
+        )
+
+    async def _reconcile_bindings(self, bindings) -> None:
+        """把绑定状态跟运行时对齐；单条失败不能拖垮整个列表。"""
         for binding in bindings:
             try:
                 await self.sync_once(
@@ -202,19 +247,46 @@ class ProductionBitableService:
                 # A transient runtime/provider error must not prevent the task
                 # list from loading.  Keep the last persisted status for now.
                 continue
-        return await self._store.list_active(
+
+    async def recent_runs(self, *, owner_user_id: str = "prime-local"):
+        """最近的任务记录：**以任务为单位**，最多 `_RECENT_TASK_LIMIT` 条任务，
+        每条任务带上它的**全部**历次尝试（成片预览的历史滑条就靠这个）。
+
+        以前是「取最近 10 条 run」——任务一多，同一条任务的历史就被挤出窗口，
+        预览里只剩一两条。改成按记录分组后，外面的条数仍是 10 条**任务**，
+        任务内部的尝试不再被截断。
+        """
+        location = await self._table_location()
+        app_token = location.app_token or ""
+        table_id = location.table_id
+        recent = await self._store.list_recent(
             app_token,
             table_id,
             owner_user_id=owner_user_id,
+            limit=_RECENT_RUN_SCAN_LIMIT,
         )
-
-    async def recent_runs(self, *, owner_user_id: str = "prime-local"):
-        location = await self._table_location()
-        return await self._store.list_recent(
-            location.app_token or "",
-            location.table_id,
-            owner_user_id=owner_user_id,
-        )
+        active_record_ids = {
+            binding.record_id
+            for binding in await self._store.list_active(
+                app_token,
+                table_id,
+                owner_user_id=owner_user_id,
+            )
+        }
+        grouped: dict[str, list] = {}
+        for binding in recent:
+            if (
+                binding.record_id in active_record_ids
+                and binding.status is not TableTaskStatus.COMPLETED
+            ):
+                continue
+            grouped.setdefault(binding.record_id, []).append(binding)
+        # recent 已按 updated_at 倒序 → 记录第一次出现的顺序就是任务的新旧顺序。
+        return [
+            binding
+            for record_id in list(grouped)[:_RECENT_TASK_LIMIT]
+            for binding in grouped[record_id]
+        ]
 
     async def archived_runs(self, *, owner_user_id: str = "prime-local"):
         location = await self._table_location()
@@ -264,7 +336,13 @@ class ProductionBitableService:
         return state == "owned"
 
     async def rerun(
-        self, run_id: str, *, owner_user_id: str = "prime-local"
+        self,
+        run_id: str,
+        *,
+        owner_user_id: str = "prime-local",
+        task_ids: list[str] | None = None,
+        feedback: str | None = None,
+        auto_approve: bool = False,
     ) -> str:
         source = await self._store.get_by_run(
             run_id, owner_user_id=owner_user_id
@@ -291,6 +369,11 @@ class ProductionBitableService:
             None,
         )
         if active_for_record is not None:
+            if active_for_record.status in _RERUN_BLOCKING_STATUSES:
+                raise RunConflict(
+                    f"该记录上还有一条「{active_for_record.status}」的任务，"
+                    "请先处理（审批通过或取消）它再重跑。"
+                )
             return active_for_record.run_id
         task = ProductionTaskSummary(
             record_id=source.record_id,
@@ -311,15 +394,31 @@ class ProductionBitableService:
         )
         try:
             with self._runtime_owner_scope(owner_user_id):
-                return await self._runtime.clone_run_for_approval(
+                clone_kwargs = {
+                    "run_id": rerun.run_id,
+                    "thread_id": rerun.thread_id,
+                }
+                if task_ids is not None:
+                    clone_kwargs["task_ids"] = task_ids
+                if feedback is not None:
+                    clone_kwargs["feedback"] = feedback
+                new_run_id = await self._runtime.clone_run_for_approval(
                     run_id,
                     RequirementRequest(
                         source_url=rerun.source_url,
                         trigger_type="production_bitable",
                     ),
-                    run_id=rerun.run_id,
-                    thread_id=rerun.thread_id,
+                    **clone_kwargs,
                 )
+                if auto_approve:
+                    await self._runtime.resume_run(
+                        new_run_id,
+                        ApprovalDecision(
+                            action="approve",
+                            selected_task_ids=list(task_ids or []),
+                        ),
+                    )
+                return new_run_id
         except Exception:
             await self._store.release(
                 rerun.run_id,
@@ -364,8 +463,12 @@ class ProductionBitableService:
         )
         if binding is None:
             raise RunNotFound("多维表格运行不存在")
-        if binding.status is not TableTaskStatus.WRITEBACK_FAILED:
-            raise RunConflict("只有交付失败的运行可以重试交付")
+        if binding.status not in {
+            TableTaskStatus.COMPLETED,
+            TableTaskStatus.FAILED,
+            TableTaskStatus.WRITEBACK_FAILED,
+        }:
+            raise RunConflict("只有已生成完成的运行可以导出结果表")
         with self._runtime_owner_scope(owner_user_id):
             await self._runtime.retry_delivery(run_id)
         await self._store.set_status(

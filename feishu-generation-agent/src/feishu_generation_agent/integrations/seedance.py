@@ -3,7 +3,9 @@ from hashlib import sha256
 import ipaddress
 from io import BytesIO
 import json
+import logging
 import os
+import re
 import stat
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -24,11 +26,40 @@ from feishu_generation_agent.domain.errors import (
     ErrorCategory,
     ErrorDetail,
 )
-from feishu_generation_agent.domain.plan import GenerationTask
+from feishu_generation_agent.domain.plan import GenerationTask, ImageReference, SEEDANCE_PROMPT_SUBMIT_MAX_CHARS
+from feishu_generation_agent.domain.video_models import (
+    VIDEO_MODEL_BY_ID,
+    VideoModelCapability,
+)
+from feishu_generation_agent.domain.reference_contract import (
+    canonicalize_references,
+    remap_prompt_references,
+)
 from feishu_generation_agent.integrations.public_media import (
     PublicMediaHost,
     PublicMediaUploadError,
 )
+from feishu_generation_agent.integrations.rework_prompt import (
+    merge_negative_constraints,
+)
+
+
+_LOGGER = logging.getLogger(__name__)
+
+#: 供应商错误消息里像密钥的片段要抹掉（错误文本会进日志与界面）。
+_SECRET_LIKE = re.compile(r"\b(?:ark|sk)-[A-Za-z0-9._-]{8,}")
+
+
+def _redact_secret_like(text: str) -> str:
+    return _SECRET_LIKE.sub("<已隐藏>", text)
+
+#: 提交文本（正文 + 参考图映射 + 「必须避免」块）的总字符预算。
+#:
+#: 上游实测口径：合计 2007 字能过、2088 字被拒 `generation_prompt_too_long`；
+#: 本地旧闸门是 2048 —— 比上游松，于是 2008~2048 这段灰区会放过去、由上游报错
+#: （2026-09-17 用户正是撞在这个灰区）。取 1900 留出余量，只裁「跨轮反复改写的
+#: 负向块」，正文与参考图映射永不裁剪。
+SUBMIT_TOTAL_BUDGET_CHARS = 1900
 
 
 _IMAGE_MIME_TYPES = frozenset(
@@ -73,9 +104,11 @@ class SeedanceVideoGenerator:
         base_url: str | None,
         api_key: str | SecretStr | None,
         model: str | None,
+        capability: VideoModelCapability | None = None,
         max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
         max_input_bytes: int = _DEFAULT_MAX_INPUT_BYTES,
         max_total_input_bytes: int = _DEFAULT_MAX_TOTAL_INPUT_BYTES,
+        enforce_total_input_bytes: bool = True,
         public_media_host: PublicMediaHost | None = None,
         provider_name: str = "seedance",
         image_url_resolver: Callable[[GenerationTask, Any, MediaAsset, bytes], Awaitable[str]] | None = None,
@@ -127,18 +160,77 @@ class SeedanceVideoGenerator:
             raise self._configuration_error(
                 "max_total_input_bytes", "cause=less_than_single_limit"
             )
+        if not isinstance(enforce_total_input_bytes, bool):
+            raise self._configuration_error(
+                "enforce_total_input_bytes", "cause=not_bool"
+            )
 
         self._http_client = http_client
         self._base_url = f"https://{parsed.netloc}/api/v3"
         self._api_key = SecretStr(secret.strip())
         self._model = model.strip()
+        self._capability = capability or VIDEO_MODEL_BY_ID.get(self._model)
+        if self._capability is not None and self._capability.model != self._model:
+            raise self._configuration_error("model", "cause=capability_mismatch")
         self._max_response_bytes = max_response_bytes
         self._max_input_bytes = max_input_bytes
         self._max_total_input_bytes = max_total_input_bytes
+        self._enforce_total_input_bytes = enforce_total_input_bytes
         self._timeout = httpx.Timeout(120, connect=10)
         self._public_media_host = public_media_host
         self._provider_name = provider_name
         self._image_url_resolver = image_url_resolver
+
+    def _strip_non_image_references(
+        self,
+        task: GenerationTask,
+        assets: list[MediaAsset],
+    ) -> tuple[GenerationTask, list[MediaAsset]]:
+        """Image-only mode: drop non-image references (portrait provider).
+
+        Reference videos/audio only inform the prompt (their semantics are
+        already folded into task.prompt by the planner); they must not be
+        submitted to the generation API. Drop those references and rewrite the
+        prompt's @videoN / @audioN tokens so the upstream service does not
+        reject unsupported video_url / audio_url references (HTTP 400).
+        """
+        references = task.reference_images
+        image_references: list[ImageReference] = [
+            reference
+            for reference in references
+            if reference.role in {"reference_image", "first_frame", "last_frame"}
+        ]
+        if len(image_references) == len(references):
+            return task, assets
+
+        keep_ids = {reference.asset_id for reference in image_references}
+        kept_assets = [
+            asset for asset in assets if asset.asset_id in keep_ids
+        ]
+        mime_types = {asset.asset_id: asset.mime_type for asset in assets}
+        canonical_references = canonicalize_references(image_references)
+        try:
+            prompt = remap_prompt_references(
+                task.prompt,
+                references,
+                canonical_references,
+                mime_types,
+            )
+        except Exception:
+            _LOGGER.warning(
+                "Failed to rewrite prompt tokens while dropping portrait "
+                "video/audio refs; keeping original prompt. task=%s",
+                task.task_id,
+                exc_info=True,
+            )
+            prompt = task.prompt
+        updated = task.model_copy(
+            update={
+                "reference_images": canonical_references,
+                "prompt": prompt,
+            }
+        )
+        return updated, kept_assets
 
     async def submit(
         self,
@@ -150,6 +242,8 @@ class SeedanceVideoGenerator:
         # This is a local crash-correlation token owned by the orchestration layer.
         # Ark does not support client-assigned task IDs, so it must not cross the API.
         del submission_id
+        if self._image_url_resolver is not None:
+            task, assets = self._strip_non_image_references(task, assets)
         references, ordered_assets, contents = self._validate_submission(task, assets)
         request_content: list[dict[str, Any]] = [
             {"type": "text", "text": self._prompt(task, references)}
@@ -213,7 +307,9 @@ class SeedanceVideoGenerator:
         provider_task_id = self._official_task_id(body.get("id"), "submit")
         status = self._status(body.get("status", "queued"), "submit")
         if status in _TERMINAL_FAILURE_STATUSES:
-            raise self._terminal_status_error("submit", status)
+            raise self._terminal_status_error(
+                "submit", status, provider_error=body.get("error")
+            )
         result_items = (
             [self._video_result(body, operation="submit")]
             if status in {"success", "succeeded"}
@@ -270,7 +366,13 @@ class SeedanceVideoGenerator:
                 status=status,
             )
         if status in _TERMINAL_FAILURE_STATUSES:
-            raise self._terminal_status_error("poll", status)
+            # 任务失败时火山的 body 里带 `error.code/message`（例如
+            # `InvalidParameter: input media detect failed: invalid_media`）。
+            # 以前只报「视频任务未成功完成（poll_http_failed）」，用户根本不知道
+            # 是参考素材无效 —— 现在把原因带出来（用户 2026-09-18）。
+            raise self._terminal_status_error(
+                "poll", status, provider_error=body.get("error")
+            )
         if status not in {"succeeded", "success"}:
             raise self._provider_error(
                 "Seedance 返回了未知任务状态",
@@ -307,11 +409,14 @@ class SeedanceVideoGenerator:
                 follow_redirects=False,
             ) as response:
                 if not 200 <= response.status_code < 300:
-                    provider_code = await self._safe_provider_error_code(response)
+                    provider_code, provider_message = (
+                        await self._safe_provider_error_reason(response)
+                    )
                     raise self._http_error(
                         operation,
                         response.status_code,
                         provider_code=provider_code,
+                        provider_message=provider_message,
                     )
                 declared_size = response.headers.get("content-length")
                 if declared_size is not None:
@@ -360,20 +465,37 @@ class SeedanceVideoGenerator:
         return payload
 
     @staticmethod
+    @staticmethod
     async def _safe_provider_error_code(response: httpx.Response) -> str | None:
+        code, _message = await SeedanceVideoGenerator._safe_provider_error_reason(
+            response
+        )
+        return code
+
+    @staticmethod
+    async def _safe_provider_error_reason(
+        response: httpx.Response,
+    ) -> tuple[str | None, str | None]:
+        """从供应商的拒绝响应里取出 `(code, message)`。
+
+        用户 2026-09-18：「Seedance 2.5 生成服务拒绝了请求（submit_http_400）」——
+        以前只留了 HTTP 状态码，火山的错误码和消息都没落盘，排查只能猜。现在两个都取，
+        消息会进 technical_detail（`provider_message=`）并附在用户可见的失败原因后面。
+        """
         raw = bytearray()
         async for chunk in response.aiter_bytes():
             if len(raw) + len(chunk) > 65_536:
-                return None
+                return None, None
             raw.extend(chunk)
         try:
             payload = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
+            return None, None
         if not isinstance(payload, dict):
-            return None
+            return None, None
         error = payload.get("error")
-        code = error.get("code") if isinstance(error, dict) else payload.get("code")
+        source = error if isinstance(error, dict) else payload
+        code = source.get("code")
         if (
             not isinstance(code, str)
             or not code
@@ -383,8 +505,14 @@ class SeedanceVideoGenerator:
                 for character in code
             )
         ):
-            return None
-        return code
+            code = None
+        message = source.get("message")
+        if isinstance(message, str):
+            message = " ".join(message.split())[:200]
+            message = _redact_secret_like(message)
+        else:
+            message = None
+        return code, message or None
 
     def _video_result(
         self,
@@ -563,6 +691,13 @@ class SeedanceVideoGenerator:
     ) -> tuple[list[Any], list[MediaAsset], list[bytes]]:
         self._validate_video_parameters(task)
         references = sorted(task.reference_images, key=lambda item: item.order)
+        prompt_length = len(self._prompt(task, references))
+        if prompt_length > SEEDANCE_PROMPT_SUBMIT_MAX_CHARS:
+            raise self._validation_error(
+                task.task_id,
+                f"Seedance 提示词过长（{prompt_length} 字，上限 {SEEDANCE_PROMPT_SUBMIT_MAX_CHARS} 字），请精简后重试",
+                "cause=prompt_too_long",
+            )
         if not references and not assets:
             # Seedance 的文生视频模式：content 只保留 text，不传任何参考素材。
             return [], [], []
@@ -668,7 +803,10 @@ class SeedanceVideoGenerator:
                     "cause=content_mismatch",
                 )
             total_size += file_stat.st_size
-            if total_size > self._max_total_input_bytes:
+            if (
+                self._enforce_total_input_bytes
+                and total_size > self._max_total_input_bytes
+            ):
                 raise self._document_error(
                     asset.asset_id,
                     "参考图片总量超过大小限制",
@@ -693,19 +831,31 @@ class SeedanceVideoGenerator:
                 "Seedance 只接受图生视频任务",
                 "cause=unsupported_task_type",
             )
+        duration_min = self._capability.duration_min if self._capability else 4
+        duration_max = self._capability.duration_max if self._capability else 15
+        aspect_ratios = (
+            self._capability.aspect_ratios
+            if self._capability
+            else _ASPECT_RATIOS
+        )
+        resolutions = (
+            self._capability.resolutions
+            if self._capability
+            else _RESOLUTIONS
+        )
         if (
             not isinstance(task.duration, int)
             or isinstance(task.duration, bool)
-            or not 4 <= task.duration <= 15
+            or not duration_min <= task.duration <= duration_max
         ):
             raise self._validation_error(
                 task.task_id, "视频时长无效", "cause=invalid_duration"
             )
-        if task.aspect_ratio not in _ASPECT_RATIOS:
+        if task.aspect_ratio not in aspect_ratios:
             raise self._validation_error(
                 task.task_id, "视频比例无效", "cause=invalid_aspect_ratio"
             )
-        if task.resolution not in _RESOLUTIONS:
+        if task.resolution not in resolutions:
             raise self._validation_error(
                 task.task_id, "视频分辨率无效", "cause=invalid_resolution"
             )
@@ -882,9 +1032,52 @@ class SeedanceVideoGenerator:
                 for index, reference in enumerate(references, start=1)
             )
         )
-        if task.negative_constraints:
-            lines.append("必须避免：" + "；".join(task.negative_constraints))
+        block = SeedanceVideoGenerator._negative_block(task, "\n\n".join(lines))
+        if block:
+            lines.append("必须避免：" + block)
         return "\n\n".join(lines)
+
+    @staticmethod
+    def _negative_block(task: GenerationTask, head: str) -> str:
+        """按总预算裁剪「必须避免」整块，保留**最新**的条目。
+
+        negative_constraints 是跨轮累积的：每轮返工的融合都会按全部历史要求重新
+        派生一份 must_avoid 并进来（同一批要求的反复改写），于是它随返工轮数线性
+        膨胀 —— 实测同一条记录：5 轮 40 条/686 字 → 6 轮 46 条/779 字 → 7 轮
+        51 条/868 字。而正文本身已接近 1500，两者相加在 7 轮时顶穿上游上限，
+        上游直接回 `generation_prompt_too_long`（真人通道实测：合计 2007 字过、
+        2088 字被拒）。
+
+        正文与参考图映射永不裁剪；只有这段反复改写的负向块会按预算收缩。
+        `merge_requirements` 保序（旧→新），所以从尾部往前取、丢掉最旧的。
+
+        2026-09-17：先做一次**语义去重**（`merge_negative_constraints`）再裁剪 ——
+        存量的老任务里同一句约束会被攒成十几条换皮写法（墨滴任务实测 21 条里 10 条
+        同义），既占掉 26% 的提交篇幅，又把「不要出现的东西」反复喂给模型。
+        """
+        entries = merge_negative_constraints(
+            task.negative_constraints or [], []
+        )
+        if not entries:
+            return ""
+        budget = SUBMIT_TOTAL_BUDGET_CHARS - len(head) - len("\n\n必须避免：")
+        kept: list[str] = []
+        used = 0
+        for entry in reversed(entries):
+            cost = len(entry) + (1 if kept else 0)
+            if kept and used + cost > budget:
+                break
+            kept.append(entry)
+            used += cost
+        kept.reverse()
+        if len(kept) != len(entries):
+            _LOGGER.warning(
+                "提交文本超预算，「必须避免」条目已从 %d 条裁到 %d 条以塞进 %d 字上限",
+                len(entries),
+                len(kept),
+                SUBMIT_TOTAL_BUDGET_CHARS,
+            )
+        return "；".join(kept)
 
     @staticmethod
     def _error(
@@ -948,10 +1141,15 @@ class SeedanceVideoGenerator:
         status_code: int,
         *,
         provider_code: str | None = None,
+        provider_message: str | None = None,
     ) -> AgentError:
         if status_code in {401, 403}:
             category = ErrorCategory.PERMISSION
             message = "Seedance 凭证无效或没有模型权限"
+            retryable = False
+        elif status_code == 400:
+            category = ErrorCategory.PROVIDER_TERMINAL
+            message = "Seedance 拒绝了请求，请检查提示词长度、参考图数量和 duration/resolution 组合"
             retryable = False
         elif status_code == 429 or status_code >= 500:
             category = ErrorCategory.TRANSIENT
@@ -961,6 +1159,9 @@ class SeedanceVideoGenerator:
             category = ErrorCategory.PROVIDER_TERMINAL
             message = "Seedance 拒绝了请求"
             retryable = False
+        if provider_message:
+            # 供应商自己的说明比我们的猜测有用得多（用户 2026-09-18 要求记录原因）。
+            message = f"{message}：{provider_message}"
         return AgentError(
             ErrorDetail(
                 category=category,
@@ -971,6 +1172,7 @@ class SeedanceVideoGenerator:
                         f"operation={operation}",
                         f"status={status_code}",
                         f"provider_code={provider_code}" if provider_code else None,
+                        f"provider_message={provider_message}" if provider_message else None,
                     )
                     if part is not None
                 ),
@@ -989,11 +1191,34 @@ class SeedanceVideoGenerator:
             )
         )
 
-    def _terminal_status_error(self, operation: str, status: str) -> AgentError:
-        return self._provider_error(
-            "Seedance 视频任务未成功完成",
-            f"operation={operation}; status={status}",
+    def _terminal_status_error(
+        self,
+        operation: str,
+        status: str,
+        *,
+        provider_error: object = None,
+    ) -> AgentError:
+        code = message = None
+        if isinstance(provider_error, dict):
+            raw_code = provider_error.get("code")
+            raw_message = provider_error.get("message")
+            code = raw_code if isinstance(raw_code, str) and raw_code else None
+            if isinstance(raw_message, str) and raw_message:
+                message = _redact_secret_like(" ".join(raw_message.split())[:200])
+        text = "Seedance 视频任务未成功完成"
+        if message:
+            text = f"{text}：{message}"
+        detail = "; ".join(
+            part
+            for part in (
+                f"operation={operation}",
+                f"status={status}",
+                f"provider_code={code}" if code else None,
+                f"provider_message={message}" if message else None,
+            )
+            if part is not None
         )
+        return self._provider_error(text, detail)
 
     def _invalid_result(self, operation: str, cause: str) -> AgentError:
         return self._provider_error(

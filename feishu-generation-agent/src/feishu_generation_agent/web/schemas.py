@@ -74,14 +74,17 @@ class ArtifactReviewRequest(BaseModel):
 
     action: Literal["confirm", "adjust", "cancel"]
     feedback: str | None = None
+    task_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_action_fields(self) -> "ArtifactReviewRequest":
+        if len(self.task_ids) != len(set(self.task_ids)):
+            raise ValueError("不能重复选择同一任务")
         if self.action == "adjust":
             if self.feedback is None or not self.feedback.strip():
                 raise ValueError("退回调整时必须填写调整意见")
-        elif self.feedback is not None:
-            raise ValueError("确认或取消时不能携带调整意见")
+        elif self.feedback is not None or self.task_ids:
+            raise ValueError("确认或取消时不能携带调整意见或任务")
         return self
 
     def to_domain(self) -> ArtifactReviewDecision:
@@ -95,6 +98,18 @@ class ReferenceListRequest(BaseModel):
 
     references: list[ImageReference] = Field(min_length=1)
     reference_mode: ReferenceMode | None = None
+
+
+class ExcludedAssetRequest(BaseModel):
+    """把一个用不到的素材排除掉。
+
+    覆盖门要求「每个素材要么被任务引用、要么被排除」，而审批页过去只有引用的增删、
+    没有排除入口（2026-09-17 超级大床：image-4..image-8 未覆盖，批准按钮一直灰着）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str = Field(min_length=1)
 
 
 class TaskPatchRequest(BaseModel):
@@ -131,11 +146,14 @@ class ProviderPreferencesUpdate(BaseModel):
 
     video_provider: str = Field(min_length=1)
     image_provider: str = Field(min_length=1)
+    #: 规划流水线：text（现状）或 multimodal（一次调用把原图/视频交给 ds4.1）。
+    planning_pipeline: Literal["text", "multimodal"] = "text"
 
 
 class ProviderPreferencesResponse(BaseModel):
     video_provider: str
     image_provider: str
+    planning_pipeline: Literal["text", "multimodal"] = "text"
 
 
 class BitableClaimResponse(BaseModel):

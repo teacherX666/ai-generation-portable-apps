@@ -76,9 +76,9 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
   <h1 id="title">登录</h1>
   <p class="sub" id="subtitle">RedCraft · 红海无限 AI 创作平台</p>
   <form id="form">
-    <label><span>用户名</span><input id="username" type="text" autocomplete="username" required></label>
-    <label><span>密码</span><input id="password" type="password" autocomplete="current-password" required></label>
-    <label id="confirmWrap" style="display:none"><span>确认密码</span><input id="confirm" type="password" autocomplete="new-password"></label>
+    <label><span>用户名</span><input id="username" name="username" type="text" autocomplete="username" required></label>
+    <label><span>密码</span><input id="password" name="password" type="password" autocomplete="current-password" required></label>
+    <label id="confirmWrap" style="display:none"><span>确认密码</span><input id="confirm" name="confirm" type="password" autocomplete="new-password"></label>
     <button id="btn" type="submit">登录</button>
     <div class="err" id="err"></div>
   </form>
@@ -91,7 +91,8 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
 (async () => {
   const q = new URLSearchParams(location.search);
   const next = q.get('next') || '/';
-  let mode = 'login'; // 'login' | 'register' | 'setup'
+  const urlMode = q.get('mode');
+  let mode = urlMode || 'login'; // 'login' | 'register' | 'setup'
   let signupEnabled = false;
   let isFirstRun = false;
 
@@ -110,7 +111,10 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
 
   // Already logged in?
   try {
-    const r = await fetch('/api/auth/me', {credentials: 'include'});
+    const headers = {};
+    const sess = localStorage.getItem('portal_session');
+    if (sess) headers['X-Session'] = sess;
+    const r = await fetch('/api/auth/me', {credentials: 'include', headers});
     if (r.ok) { location.replace(next); return; }
   } catch(_) {}
 
@@ -121,7 +125,7 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
     signupEnabled = !!d?.signup_enabled;
   } catch(_) {}
 
-  if (isFirstRun) {
+  if (isFirstRun && !urlMode) {
     mode = 'setup';
   }
 
@@ -171,9 +175,13 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
 
   render();
 
+  const errCode = q.get('error');
+  if (errCode) {
+    document.getElementById('err').textContent = friendlyLoginError(errCode.replace(/_/g, ' '));
+  }
+
   document.getElementById('form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const btn = document.getElementById('btn');
     const err = document.getElementById('err');
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
@@ -183,9 +191,8 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
       if (password !== confirm) { err.textContent = '两次密码不一致'; return; }
       if (password.length < 6) { err.textContent = '密码至少 6 位'; return; }
     }
-    const origLabel = btn.textContent;
+    const btn = document.getElementById('btn');
     btn.disabled = true;
-    btn.textContent = '请稍候...';
     try {
       const url = (mode === 'login') ? '/api/auth/login' : '/api/auth/register';
       const r = await fetch(url, {
@@ -194,17 +201,16 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
         body: JSON.stringify({username, password}),
       });
       const d = await r.json();
-      if (d.ok) { location.replace(next); }
-      else {
-        // 后端英文错误中文化（此前 "invalid credentials" 等原文直出）
-        err.textContent = friendlyLoginError(d.error) || '操作失败';
+      if (d && d.ok) {
+        try { if (d.token) localStorage.setItem('portal_session', d.token); } catch(_) {}
+        location.replace(next);
+      } else {
+        err.textContent = friendlyLoginError(d && d.error) || '操作失败';
         btn.disabled = false;
-        btn.textContent = origLabel;
       }
     } catch(_) {
       err.textContent = '网络错误';
       btn.disabled = false;
-      btn.textContent = origLabel;
     }
   });
 })();

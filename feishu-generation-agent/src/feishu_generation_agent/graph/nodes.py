@@ -1,8 +1,8 @@
 import asyncio
-import tempfile
+import logging
+import re
 from inspect import Parameter, signature
 import json
-import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -44,6 +44,12 @@ from feishu_generation_agent.domain.errors import (
     ErrorCategory,
     ErrorDetail,
 )
+from feishu_generation_agent.domain.video_models import (
+    DEFAULT_VIDEO_MODEL_KEY,
+    VIDEO_MODEL_BY_KEY,
+    normalize_video_task_payload,
+    resolve_video_model_key,
+)
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
     ArtifactReviewDecision,
@@ -73,12 +79,25 @@ from feishu_generation_agent.ports import (
     VisionAnalyzer,
 )
 from feishu_generation_agent.storage.files import FileStore
-from feishu_generation_agent.storage.repository import Repository
-from feishu_generation_agent.integrations.video_reference import (
-    ExtractedVideoFrame,
-    extract_video_frames,
+from feishu_generation_agent.integrations.planning_media import (
+    MediaUploadCache,
+    build_planning_media_parts,
 )
+from feishu_generation_agent.integrations.video_insight import (
+    describe_output_videos,
+)
+from feishu_generation_agent.storage.repository import Repository
 
+from feishu_generation_agent.integrations.rag_prompt_optimizer import (
+    fetch_knowledge_rules,
+    format_knowledge_context,
+)
+from feishu_generation_agent.integrations.rework_prompt import (
+    build_rework_prompt,
+    merge_negative_constraints,
+    merge_requirements,
+    rework_inputs,
+)
 from .state import AgentState
 
 
@@ -95,6 +114,10 @@ class GraphServices:
     settings: Settings
     portrait_video_generator: Any | None = None
     production_task_store: Any | None = None
+    #: 能**直接看视频**的分析器（ds4.1 多模态）。参考视频只作分镜参考，不再抽帧。
+    video_analyzer: Any | None = None
+    #: 公开图床（多模态规划要把原图/视频传上去拿 https 链接给模型看）。
+    public_media_host: Any | None = None
     # 图片 provider registry：{"banana": gen, "seedream": gen, "gpt-image2": gen}。
     # 为 None 时回落到单实例 image_generator，保持存量调用方零改动。
     image_providers: Mapping[str, ImageGenerator] | None = None
@@ -105,6 +128,7 @@ class GraphServices:
     # 本地 AI Port 视频 provider（minimax H3 all-reference，走 ComfyUI）。
     # Keep both video providers alive so each task can choose independently.
     seedance_video_generator: Any | None = None
+    seedance_video_generators: Mapping[str, Any] | None = None
     # Local AI Port video provider (MiniMax H3 via ComfyUI).
     aiport_video_generator: Any | None = None
     # Global defaults; task-level provider fields always take precedence.
@@ -194,6 +218,10 @@ def _safe_error(exc: BaseException) -> AgentError:
     technical_detail = f"{category.value} in workflow node"
     if inner_detail:
         technical_detail = f"{technical_detail}; {inner_detail}"
+    else:
+        technical_detail = (
+            f"{technical_detail}; exception_type={type(exc).__name__}"
+        )
     return AgentError(
         ErrorDetail(
             category=category,
@@ -219,6 +247,12 @@ async def _run_node(
     try:
         result = await operation()
     except Exception as exc:
+        _LOGGER.exception(
+            "workflow node failed node=%s run_id=%s exception_type=%s",
+            node,
+            run_id,
+            type(exc).__name__,
+        )
         failure = _safe_error(exc)
     if failure is not None:
         await services.repository.append_event(
@@ -625,86 +659,40 @@ async def _analyze_video_reference(
     services: GraphServices,
     document_id: str,
     video: MediaAsset,
-) -> tuple[MediaAsset | None, VideoReferenceAnalysis | None]:
-    """把文档里的参考视频转成一张可被 Seedance/火山消费的参考图。
+) -> VideoReferenceAnalysis | None:
+    """把文档里的参考视频交给**能看视频的模型**分析，产出分镜参考用的文字描述。
 
-    视频本体在火山 Bearer 模式下不可上传，所以统一抽帧：视觉模型判断这段
-    视频到底在表达「人物形象 / 运镜 / 剪辑节奏 / 场景画风」，并选出最有代表
-    性的一帧落成图片素材。判断失败时退回中间帧，保证任务不会因为没有参考图
-    而直接失败。
+    2026-09-17 用户要求：「不要抽帧，直接上传视频」+「视频基本上都没有能作为参考图
+    的，只能作为分镜参考」。实测火山 ds4.1 接受 `video_url` 且真的看懂了内容，所以
+    这里**不再抽帧、也不再伪造 `video-N-frame` 图片素材** —— 那张"参考图"会被模型
+    当成人物形象锚点，正是「让它不要参考人物形象它还是参考」的来源。
+
+    分析失败返回 None（不猜内容）：视频保持原样，只作分镜参考。
     """
-    analyzer = getattr(services.vision_analyzer, "analyze_video", None)
+    del document_id  # 兼容旧签名：不再落帧文件，用不到
+    analyzer = getattr(services, "video_analyzer", None)
+    if analyzer is None:
+        return None
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="feishu-video-ref-"
-        ) as work_dir:
-            frame_paths = await asyncio.to_thread(
-                extract_video_frames,
-                video.local_path,
-                _VIDEO_FRAME_COUNT,
-                Path(work_dir),
-            )
-            frames = [
-                ExtractedVideoFrame(index=index + 1, path=path)
-                for index, path in enumerate(frame_paths)
-            ]
-            insight: VideoReferenceAnalysis | None = None
-            if callable(analyzer):
-                try:
-                    insight = await analyzer(video, frames)
-                except Exception:
-                    _LOGGER.warning(
-                        "视频参考语义分析失败，退回中间帧 video=%s",
-                        video.asset_id,
-                        exc_info=True,
-                    )
-            if insight is None:
-                insight = VideoReferenceAnalysis(
-                    asset_id=video.asset_id,
-                    kind=VideoReferenceKind.OTHER,
-                    summary="视频参考语义未识别，已抽取中间帧作为画面参考",
-                    representative_frame_index=(len(frames) + 1) // 2,
-                    uncertainties=["视频语义分析不可用或失败，未对视频内容作猜测"],
-                )
-            chosen_index = min(
-                max(insight.representative_frame_index, 1),
-                len(frames),
-            )
-            chosen = frames[chosen_index - 1]
-            frame_content = chosen.path.read_bytes()
-            stored = services.file_store.save_input(
-                document_id,
-                f"{video.asset_id}-frame.jpg",
-                frame_content,
-            )
-            frame_asset = MediaAsset(
-                asset_id=f"{video.asset_id}-frame",
-                source_block_id=video.source_block_id,
-                origin="feishu_video_frame",
-                file_token=None,
-                local_path=stored.local_path,
-                mime_type=stored.mime_type,
-                size=stored.size,
-                sha256=stored.sha256,
-                width=stored.width,
-                height=stored.height,
-            )
-            return frame_asset, insight.model_copy(
-                update={"asset_id": frame_asset.asset_id}
-            )
+        return await analyzer.analyze_video(video, [])
     except Exception:
         _LOGGER.warning(
-            "视频参考抽帧失败，保留原始视频素材 video=%s",
+            "参考视频分析失败，本段只作分镜参考（不抽帧、不当参考图） video=%s",
             video.asset_id,
             exc_info=True,
         )
-        return None, None
+        return None
 
 
 async def _materialize_video_references(
     document: NormalizedDocument,
     services: GraphServices,
 ) -> NormalizedDocument:
+    """给文档里的参考视频补上「分镜参考」描述（不再抽帧、不再替换素材）。
+
+    视频保持 `[video:*]` 标记留在文档里，模型据此理解动作/运镜/节奏；
+    它**不会**被挂成参考图（planner 那边有确定性规则把它排除）。
+    """
     video_assets = [
         asset
         for asset in document.media_assets
@@ -713,50 +701,17 @@ async def _materialize_video_references(
     if not video_assets:
         return document
 
-    replacements: dict[str, MediaAsset] = {}
     semantics: list[VideoReferenceAnalysis] = list(document.video_semantics)
     for video in video_assets:
-        frame_asset, insight = await _analyze_video_reference(
+        insight = await _analyze_video_reference(
             services,
             document.document_id,
             video,
         )
-        if frame_asset is not None:
-            replacements[video.asset_id] = frame_asset
         if insight is not None:
             semantics.append(insight)
 
-    if not replacements:
-        return document.model_copy(update={"video_semantics": semantics})
-
-    media_assets: list[MediaAsset] = []
-    text_view = document.text_view
-    for asset in document.media_assets:
-        replacement = replacements.get(asset.asset_id)
-        if replacement is None:
-            media_assets.append(asset)
-            continue
-        media_assets.append(replacement)
-        text_view = text_view.replace(
-            f"[video:{asset.asset_id}]",
-            f"[image:{replacement.asset_id}]",
-        )
-
-    for video in video_assets:
-        replacement = replacements.get(video.asset_id)
-        if replacement is None:
-            continue
-        marker = f"[image:{replacement.asset_id}]"
-        if marker not in text_view:
-            text_view = f"{text_view}\n{marker}"
-
-    return document.model_copy(
-        update={
-            "media_assets": media_assets,
-            "text_view": text_view,
-            "video_semantics": semantics,
-        }
-    )
+    return document.model_copy(update={"video_semantics": semantics})
 
 
 def _planner_mode_argument(
@@ -778,6 +733,46 @@ def _planner_mode_argument(
     if parameter is None or parameter.kind is Parameter.POSITIONAL_ONLY:
         return {}
     return {"mode": mode}
+
+
+def _knowledge_context_argument(
+    planner: RequirementPlanner,
+    knowledge_context: str,
+) -> dict[str, str]:
+    """把命中的知识库规则作为上下文传给 planner。
+
+    与 _planner_mode_argument 同样的签名探测做法：存量测试里的 fake planner
+    大多没有该参数，直接传会 TypeError；而 planner 本来就支持时，
+    这条上下文会让它**一次**就把知识库经验写进提示词，不再需要事后改写。
+    """
+    if not knowledge_context:
+        return {}
+    try:
+        parameters = signature(planner.plan).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "knowledge_context" not in parameters:
+        return {}
+    return {"knowledge_context": knowledge_context}
+
+
+async def _knowledge_context_for_plan(
+    document: NormalizedDocument,
+    services: GraphServices,
+) -> str:
+    """取知识库命中的规则文本；服务不可用或没命中都返回空串。
+
+    实测真实文档 1.7k~7.6k 字符（最长约 23KB UTF-8），而 planner 本来就把
+    document.text_view 全文当输入，所以这里直接用全文，不做截断。
+    """
+    rag_url = getattr(services.settings, "rag_preflight_url", None)
+    if not (isinstance(rag_url, str) and rag_url.strip()):
+        return ""
+    text = getattr(document, "text_view", "") or ""
+    if not text.strip():
+        return ""
+    rules = await fetch_knowledge_rules(text, rag_url)
+    return format_knowledge_context(rules)
 
 
 def _planner_prompt_argument(
@@ -925,19 +920,179 @@ async def analyze_images(
         )
 
         descriptions: list[VisionDescription] = []
+        issues: list[str] = []
         for asset, outcome in zip(assets, outcomes):
             if isinstance(outcome, VisionDescription):
                 descriptions.append(outcome)
+                continue
+            reason = (
+                outcome.detail.message
+                if isinstance(outcome, AgentError)
+                else "??????"
+            )
+            issues.append(
+                f"?? {asset.asset_id} ???????{reason}"
+            )
         return {
             "vision_descriptions": [
                 _json_model(description) for description in descriptions
             ],
-            "vision_issues": [],
+            "vision_issues": issues,
             "normalized_document": document_json,
             "media_assets": document_json["media_assets"],
         }
 
     return await _run_node(state, "analyze_images", services, operation)
+
+
+async def _planning_media_parts(
+    document: NormalizedDocument,
+    services: GraphServices,
+) -> list[dict[str, Any]]:
+    """多模态规划要带的媒体（按文档顺序，链接走 sha256 缓存）。"""
+    host = getattr(services, "public_media_host", None)
+    if host is None:
+        return []
+    cache = MediaUploadCache(
+        Path(services.settings.data_dir) / "media-upload-cache.json"
+    )
+    return await build_planning_media_parts(
+        list(document.media_assets),
+        public_media_host=host,
+        cache=cache,
+    )
+
+
+async def _history_context_for_plan(
+    state: AgentState,
+    *,
+    limit: int = 12,
+) -> str | None:
+    """把这条需求**历次返工被要求改的地方**整理成规划上下文。
+
+    用户 2026-09-18 选的第 2 条：「一次规划能把更多的信息上传然后效果更好，视频就不会
+    再多次生成」。这些要求本来就在我们自己的数据里（计划任务的 `rework_requirements`），
+    喂给 planner **不增加任何模型调用**。
+
+    只在重新规划（退回修改）时才有内容 —— 全新需求没有历史，返回 None。
+    """
+    collected: list[str] = []
+    for plan_key in ("draft_plan", "approved_plan"):
+        plan = state.get(plan_key)
+        if not isinstance(plan, dict):
+            continue
+        for task in plan.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            for item in task.get("rework_requirements") or []:
+                text = str(item).strip()
+                if text and text not in collected:
+                    collected.append(text)
+    if not collected:
+        return None
+    return "\n".join(f"- {item}" for item in collected[-limit:])
+
+
+async def _plan_with_optional_fallback(
+    services: GraphServices,
+    document: NormalizedDocument,
+    descriptions: list[VisionDescription],
+    state: AgentState,
+    planning_prompt: str | None,
+    mode: str,
+    resolved_characters: list[Any],
+    knowledge_context: str | None,
+    media_parts: list[dict[str, Any]],
+    history_context: str | None = None,
+) -> Any:
+    """多模态规划；失败且允许时自动回退到纯文本（懒补图片视觉描述）。
+
+    回退路径等价于改造前的行为 —— 保证「切到多模态」不会比现在更差。
+    """
+    planner = services.planner
+    common = {
+        **_planner_prompt_argument(planner, planning_prompt),
+        **_planner_mode_argument(planner, mode),
+        **_character_context_argument(planner, resolved_characters),
+        **_knowledge_context_argument(planner, knowledge_context),
+        **_history_context_argument(planner, history_context),
+    }
+    try:
+        return await planner.plan(
+            document,
+            descriptions,
+            state.get("planner_feedback"),
+            **common,
+            **_planning_media_argument(planner, media_parts),
+        )
+    except AgentError:
+        fallback = (
+            media_parts
+            and getattr(services.settings, "planning_fallback_to_text", True)
+        )
+        if not fallback:
+            raise
+        _LOGGER.warning("多模态规划失败，回退纯文本流程（懒补图片视觉描述）")
+        lazy_descriptions = await _describe_images(document, services)
+        return await planner.plan(
+            document,
+            lazy_descriptions,
+            state.get("planner_feedback"),
+            **common,
+        )
+
+
+def _history_context_argument(
+    planner: Any,
+    history_context: str | None,
+) -> dict[str, Any]:
+    """只在 planner 支持 `history_context` 时才传（与其它可选参数同一套签名探测）。"""
+    if not history_context:
+        return {}
+    if "history_context" not in signature(planner.plan).parameters:
+        return {}
+    return {"history_context": history_context}
+
+
+def _planning_media_argument(
+    planner: Any,
+    media_parts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """只在 planner 支持 `media_parts` 时才传（与其它可选参数同一套签名探测）。"""
+    if not media_parts:
+        return {}
+    if "media_parts" not in signature(planner.plan).parameters:
+        return {}
+    return {"media_parts": media_parts}
+
+
+async def _describe_images(
+    document: NormalizedDocument,
+    services: GraphServices,
+) -> list[VisionDescription]:
+    """逐张图片做视觉描述（回退路径与现有流程共用）。"""
+    analyzer = services.vision_analyzer
+    if analyzer is None:
+        return []
+    assets = [
+        asset
+        for asset in document.media_assets
+        if asset.mime_type.startswith("image/")
+        and asset.download_error is None
+    ]
+    semaphore = asyncio.Semaphore(_VISION_MAX_CONCURRENCY)
+
+    async def analyze_one(asset: MediaAsset) -> VisionDescription | Exception:
+        async with semaphore:
+            try:
+                return await analyzer.analyze(asset)
+            except Exception as exc:  # noqa: BLE001
+                return exc
+
+    outcomes = await asyncio.gather(*(analyze_one(asset) for asset in assets))
+    return [
+        outcome for outcome in outcomes if isinstance(outcome, VisionDescription)
+    ]
 
 
 async def plan_requirements(
@@ -962,15 +1117,31 @@ async def plan_requirements(
             if mode == "image"
             else []
         )
-        plan = await services.planner.plan(
+        # 多模态规划：文本 + **原始图片/视频**一次交给模型（实测比纯文本流程稳得多）。
+        # 开关以「前端高级设置里的偏好」为准，环境变量只作兜底（用户 2026-09-18）。
+        pipeline = getattr(services.settings, "planning_pipeline", "text")
+        preferences = getattr(services, "provider_preferences", None)
+        if preferences is not None:
+            pipeline = getattr(preferences, "planning_pipeline", None) or pipeline
+        media_parts: list[dict[str, Any]] = []
+        if pipeline == "multimodal" and mode != "image":
+            media_parts = await _planning_media_parts(document, services)
+        # 知识库必须在 planner **之前**查：命中的规则当上下文喂给 planner，
+        # 让它一次就把经验写进提示词。旧做法是写完再改写提示词（且逐任务调导演台），
+        # 既和 planner 打架，又要多花 N 次调用。
+        knowledge_context = await _knowledge_context_for_plan(document, services)
+        plan = await _plan_with_optional_fallback(
+            services,
             document,
             descriptions,
-            state.get("planner_feedback"),
-            **_planner_prompt_argument(services.planner, planning_prompt),
-            **_planner_mode_argument(services.planner, mode),
-            **_character_context_argument(
-                services.planner, resolved_characters
-            ),
+            state,
+            planning_prompt,
+            mode,
+            resolved_characters,
+            knowledge_context,
+            media_parts,
+            # 这条需求历次返工被要求改的地方（重新规划时才有）—— 免费，不增加调用。
+            await _history_context_for_plan(state),
         )
         plan_json = _json_model(plan)
         updates: AgentState = {
@@ -998,6 +1169,23 @@ async def plan_requirements(
     return await _run_node(state, "plan_requirements", services, operation)
 
 
+def _default_video_model_key(services: GraphServices) -> str:
+    preferences = getattr(services, "provider_preferences", None)
+    preferred = getattr(preferences, "video_provider", None)
+    settings = services.settings
+    fallback = resolve_video_model_key(
+        getattr(settings, "seedance_model", None),
+        fallback=DEFAULT_VIDEO_MODEL_KEY,
+    )
+    resolved = resolve_video_model_key(preferred, fallback=fallback or "")
+    if resolved in VIDEO_MODEL_BY_KEY:
+        return resolved
+    resolved = resolve_video_model_key(
+        getattr(settings, "video_provider", None),
+        fallback=fallback or "",
+    )
+    return resolved if resolved in VIDEO_MODEL_BY_KEY else DEFAULT_VIDEO_MODEL_KEY
+
 async def audit_plan(
     state: AgentState,
     config: RunnableConfig,
@@ -1024,7 +1212,28 @@ async def validate_planned_tasks(
 ) -> AgentState:
     async def operation() -> AgentState:
         _ensure_thread_id(state, config)
-        plan = TaskPlan.model_validate(_draft_plan(state))
+        raw_plan = _draft_plan(state)
+        default_model_key = _default_video_model_key(services)
+        normalized_payload = raw_plan
+        if isinstance(raw_plan, dict):
+            normalized_payload = dict(raw_plan)
+            normalized_tasks: list[Any] = []
+            for item in raw_plan.get("tasks", []):
+                if not isinstance(item, dict):
+                    normalized_tasks.append(item)
+                    continue
+                normalized_task, notes = normalize_video_task_payload(
+                    item,
+                    default_model_key=default_model_key,
+                    max_output_count=services.settings.max_output_count,
+                )
+                if notes:
+                    warnings = list(normalized_task.get("warnings") or [])
+                    warnings.extend(notes)
+                    normalized_task["warnings"] = list(dict.fromkeys(warnings))
+                normalized_tasks.append(normalized_task)
+            normalized_payload["tasks"] = normalized_tasks
+        plan = TaskPlan.model_validate(normalized_payload)
         document = NormalizedDocument.model_validate(
             state.get("normalized_document")
         )
@@ -1045,10 +1254,16 @@ async def validate_planned_tasks(
             issues.extend(
                 f"audit: {issue}"
                 for issue in audit.issues
-                if issue.startswith("技术阻断")
-                or "人工处理" in issue
+                if issue.startswith("\u6280\u672f\u963b\u65ad")
+                or "\u4eba\u5de5\u5904\u7406" in issue
             )
-        return {"validation_issues": issues, "status": "waiting_approval"}
+        normalized_json = _json_model(plan)
+        return {
+            "draft_plan": normalized_json,
+            "task_plan": normalized_json,
+            "validation_issues": issues,
+            "status": "waiting_approval",
+        }
 
     return await _run_node(state, "validate_plan", services, operation)
 
@@ -1216,10 +1431,18 @@ async def revalidate_approval(
             not isinstance(approval_revision, int)
             or isinstance(approval_revision, bool)
             or approval_revision < 0
-            or approval_revision != _document_revision(state)
         ):
             raise _validation_error(
-                "审批时的文档版本与当前不一致，请刷新页面后重新审批"
+                "审批状态已失效，请刷新页面后重新审批"
+            )
+        if approval_revision != _document_revision(state):
+            # 用户口径（2026-09-18）：「点击开始生成就是生成视频了，不要乱规划哦」。
+            # 版本不一致不再拦住生成，只记一条提示 —— 审批就是审批，直接出片。
+            await services.repository.append_event(
+                state.get("run_id", "unknown-run"),
+                "revalidate_approval",
+                "source_changed",
+                "审批与文档版本不一致，仍按已审批的计划生成",
             )
         draft = TaskPlan.model_validate(_draft_plan(state))
         decision = ApprovalDecision.model_validate(
@@ -1313,21 +1536,15 @@ async def check_source_revision(
             raise _validation_error()
         current_revision = await services.document_source.get_revision(source_url)
         if current_revision != approval_revision:
+            # 用户口径（2026-09-18）：「点击开始生成就是生成视频了，不要乱规划哦」。
+            # 以前这里会**作废审批、清空已选任务、回到 ingest_source 重新规划** ——
+            # 用户看到的就是"点了开始生成，结果又变回待审批"。现在只记一条提示，
+            # 仍然按**你已经审批过的计划**生成。
             await services.repository.append_event(
                 state.get("run_id", "unknown-run"),
                 "check_source_revision",
                 "source_changed",
-                "Source revision changed; approval cleared",
-            )
-            return Command(
-                update={
-                    "approval_decision": None,
-                    "approval_revision": None,
-                    "approved_tasks": [],
-                    "approved_plan": None,
-                    "status": "running",
-                },
-                goto="ingest_source",
+                "文档在审批后有改动，仍按已审批的计划生成",
             )
         return Command(
             update={"status": "approved"}, goto="execute_selected_tasks"
@@ -1340,9 +1557,15 @@ async def check_source_revision(
 
 def _execution_error(exc: BaseException) -> dict[str, object]:
     safe = _safe_error(exc).detail
+    # 供应商自己给的说明比我们的泛化文案有用得多（用户 2026-09-18 要求记录拒绝原因），
+    # 所以有就**追加**在中文泛化文案后面；没有则保持原样 —— 不能直接把 message 换成
+    # 适配层的文案，某些包装路径下那是「The workflow node could not be completed」这种
+    # 英文内部话术，反而更看不懂。
+    reason = _execution_provider_reason(safe.technical_detail)
+    base = _safe_execution_message(safe.category)
     result: dict[str, object] = {
         "category": safe.category.value,
-        "message": _safe_execution_message(safe.category),
+        "message": f"{base}：{reason}" if reason else base,
         "retryable": safe.retryable,
     }
     if isinstance(exc, AgentError):
@@ -1350,6 +1573,17 @@ def _execution_error(exc: BaseException) -> dict[str, object]:
         if code is not None:
             result["code"] = code
     return result
+
+
+def _execution_provider_reason(technical_detail: str) -> str | None:
+    """从 technical_detail 里取出 `provider_message=`（供应商原话，已脱敏）。"""
+    for part in technical_detail.split(";"):
+        key, separator, value = part.strip().partition("=")
+        if separator and key.strip() == "provider_message":
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned[:200]
+    return None
 
 
 def _safe_execution_message(category: ErrorCategory) -> str:
@@ -1529,57 +1763,87 @@ async def _generator_for_task(run_id: str, task: GenerationTask, services: Graph
     preferred_video = getattr(preferences, "video_provider", None)
     settings_provider = getattr(settings, "video_provider", None)
     aiport_generator = getattr(services, "aiport_video_generator", None)
-    seedance_generator = getattr(services, "seedance_video_generator", None)
+    generator_registry = getattr(services, "seedance_video_generators", None) or {}
+    default_generator = getattr(services, "seedance_video_generator", None)
     legacy_video_generator = getattr(services, "video_generator", None)
     explicit_provider = task.video_provider
-    requested = explicit_provider or preferred_video or settings_provider
-    if requested is None:
-        requested = "aiport" if aiport_generator is not None else "seedance"
+
+    if settings_provider == "aiport":
+        generator = aiport_generator or legacy_video_generator
+        if generator is None:
+            raise _validation_error(
+                "The selected local video provider is unavailable; check AI Port/ComfyUI"
+            )
+        return "aiport", generator
+
+    default_key = resolve_video_model_key(
+        getattr(settings, "seedance_model", None),
+        fallback=DEFAULT_VIDEO_MODEL_KEY,
+    ) or DEFAULT_VIDEO_MODEL_KEY
+    preferred_key = None
+    for candidate in (explicit_provider, preferred_video, settings_provider):
+        if candidate == "aiport":
+            continue
+        resolved = resolve_video_model_key(candidate, fallback="")
+        if resolved in VIDEO_MODEL_BY_KEY:
+            preferred_key = resolved
+            break
+    model_key = preferred_key or default_key
+
+    # 显式指定走真人类通道（自动切换用）：Seedance 拒绝真人素材时，任务会被改写成
+    # `video_provider="volcengine_portrait"` 再重跑一次。
+    if (
+        explicit_provider == "volcengine_portrait"
+        and services.portrait_video_generator is not None
+    ):
+        return (
+            "volcengine_portrait",
+            services.portrait_video_generator.for_run(
+                run_id,
+                model_key=model_key,
+            ),
+        )
 
     if (
-        requested == "seedance"
+        model_key
         and services.portrait_video_generator is not None
         and services.production_task_store is not None
     ):
         binding = await services.production_task_store.get_by_run(run_id)
-        if binding is not None and binding.snapshot.task_type == "真人类":
-            return "volcengine_portrait", services.portrait_video_generator.for_run(run_id)
-
-    if requested == "aiport":
-        generator = aiport_generator
-        if generator is None and not explicit_provider and not preferred_video and settings_provider == "aiport":
-            generator = legacy_video_generator
-        if generator is None:
-            if explicit_provider is not None:
-                raise _validation_error(
-                    "The selected local video provider is unavailable; check AI Port/ComfyUI"
-                )
-            if seedance_generator is not None:
-                requested = "seedance"
-            else:
-                raise _validation_error(
-                    "The selected local video provider is unavailable; check AI Port/ComfyUI"
-                )
-        else:
-            return "aiport", generator
-
-    if requested != "seedance":
-        raise _validation_error(f"Unsupported video provider: {requested}")
-
-    generator = seedance_generator
-    if generator is None and not explicit_provider and not preferred_video and settings_provider != "aiport":
-        generator = legacy_video_generator
-    if generator is None:
-        if explicit_provider is not None:
-            raise _validation_error(
-                "The selected Seedance provider is unavailable; configure ARK_API_KEY"
+        if binding is not None and binding.snapshot.task_type == "\u771f\u4eba\u7c7b":
+            return (
+                "volcengine_portrait",
+                services.portrait_video_generator.for_run(
+                    run_id,
+                    model_key=model_key,
+                ),
             )
-        if aiport_generator is not None:
-            return "aiport", aiport_generator
-        raise _validation_error(
-            "The selected Seedance provider is unavailable; configure ARK_API_KEY"
+
+    generator = generator_registry.get(model_key)
+    using_model_registry = bool(generator_registry)
+    if generator is None and not using_model_registry:
+        cloud_requested = (
+            explicit_provider not in (None, "aiport")
+            or preferred_video not in (None, "aiport")
         )
-    return "seedance", generator
+        legacy_provider = getattr(legacy_video_generator, "provider", None)
+        if legacy_provider is None and settings_provider not in (None, "aiport"):
+            legacy_provider = "seedance"
+        if default_generator is not None:
+            generator = default_generator
+        elif legacy_provider not in (None, "aiport"):
+            generator = legacy_video_generator
+        elif cloud_requested:
+            raise _validation_error(
+                "The selected Seedance model is unavailable; configure ARK_API_KEY"
+            )
+        else:
+            generator = legacy_video_generator
+    if generator is None:
+        raise _validation_error(
+            "The selected Seedance model is unavailable; configure ARK_API_KEY"
+        )
+    return (model_key if using_model_registry else "seedance"), generator
 
 async def _transition_operation(
     services: GraphServices,
@@ -1634,12 +1898,36 @@ async def _existing_valid_artifacts(
     return artifacts
 
 
+# 真正跑在本机的推理供应商（ComfyUI 网关等）。只有这些才该说「本地模型」——
+# 旧文案把这句写死了，云端方舟的任务也显示「本地模型生成中」，用户因此以为
+# 重跑被强制走了本地（2026-09-16 误判）。
+_LOCAL_PROVIDER_NAMES = {"aiport", "local_gateway", "local_llm", "comfyui"}
+
+
+def _provider_progress_message(provider: str | None, status: str) -> str | None:
+    """把轮询状态翻成给用户看的事件文案；不需要播报的状态返回 None。"""
+    name = (provider or "").strip()
+    is_local = name in _LOCAL_PROVIDER_NAMES
+    if status in {"submitted", "pending", "queued"}:
+        if is_local:
+            return "本地模型排队中，等待 GPU / ComfyUI 空闲"
+        return f"云端模型（{name or '生成服务'}）排队等待中"
+    if status in {"running", "processing"}:
+        if is_local:
+            return "本地模型生成中，请稍候"
+        return f"云端模型（{name or '生成服务'}）生成中，请稍候"
+    return None
+
+
 async def _poll_submission(
     generator: Any,
     submission: ProviderSubmission,
     services: GraphServices,
+    run_id: str,
+    task_id: str,
 ) -> ProviderSubmission | None:
     current = submission
+    last_reported_status = ""
     for attempt in range(services.settings.provider_poll_max_attempts):
         try:
             current = await generator.poll(current)
@@ -1653,6 +1941,16 @@ async def _poll_submission(
                 official_id=submission.provider_task_id,
             )
             status = current.status.lower()
+            progress = (
+                _provider_progress_message(submission.provider, status)
+                if status != last_reported_status
+                else None
+            )
+            if progress is not None:
+                last_reported_status = status
+                await services.repository.append_event(
+                    run_id, "execute_selected_tasks", "running", progress
+                )
             if status not in _PENDING_PROVIDER_STATUSES:
                 return current
         if attempt + 1 < services.settings.provider_poll_max_attempts:
@@ -1779,6 +2077,8 @@ async def _repair_succeeded_submission(
             ProviderSubmission(provider=provider, provider_task_id=official_id,
                                status="submitted"),
             services,
+            run_id,
+            task.task_id,
         )
         if submission is None:
             target = "timed_out"
@@ -1853,6 +2153,13 @@ async def _finish_submit_phase(
     artifacts: list[Artifact] | None = None,
     error: dict[str, object] | None = None,
 ) -> tuple[ExecutionRecord, list[Artifact]]:
+    if target == "timed_out" and error is None:
+        error = {
+            "category": "transient_error",
+            "message": "生成服务等待超时，请稍后重新运行。",
+            "retryable": True,
+        }
+
     changed = await _transition_operation(
         services, run_id, task.task_id, operation, target, official_id
     )
@@ -1887,6 +2194,186 @@ async def _finish_submit_phase(
         provider_task_id=official_id, status=authoritative,
         error=error,
     ), []
+
+
+#: 供应商拒绝里表示「输入图含真人」的措辞（火山原文是英文）。
+_REAL_PERSON_REJECTION = re.compile(
+    r"may contain real person|real person|contains?\s+real\s+human|真人",
+    re.IGNORECASE,
+)
+
+
+def _should_switch_to_portrait(
+    exc: BaseException,
+    provider: str,
+    services: GraphServices,
+) -> bool:
+    """这次拒绝是不是「输入图疑似真人」，且值得自动改走真人类通道。
+
+    用户 2026-09-18：Seedance 对真人素材是合规红线（换模型没用），真人素材本来就要走
+    私域虚拟人像（`asset://`）通道 —— 所以这里自动切一次。
+    """
+    if provider == "volcengine_portrait":
+        return False  # 已经在真人通道上了，别再切
+    if getattr(services, "portrait_video_generator", None) is None:
+        return False  # 没配真人通道，切不了
+    detail = getattr(exc, "detail", None)
+    text = " ".join(
+        str(part)
+        for part in (
+            getattr(detail, "message", ""),
+            getattr(detail, "technical_detail", ""),
+        )
+    )
+    return bool(_REAL_PERSON_REJECTION.search(text))
+
+
+#: 火山对参考图的硬限制（素材/生成同源）：每边 300~6000px，宽高比 0.4~2.5。
+#:
+#: 用户 2026-09-18 实测报错：「expected the height to be at least 300px, but received
+#: a 384x254px image」—— 文档里的横幅/小图（高 228~254px）被当参考图提交，整单被拒。
+_REFERENCE_MIN_SIDE = 300
+_REFERENCE_MAX_SIDE = 6000
+_REFERENCE_MIN_ASPECT = 0.4
+_REFERENCE_MAX_ASPECT = 2.5
+
+
+def _reference_size_problem(asset: MediaAsset) -> str | None:
+    """参考图尺寸不符合火山要求时返回原因，符合则返回 None。"""
+    if not asset.mime_type.startswith("image/"):
+        return None
+    width = int(getattr(asset, "width", 0) or 0)
+    height = int(getattr(asset, "height", 0) or 0)
+    if width <= 0 or height <= 0:
+        return None  # 拿不到尺寸就不拦，交给供应商判断
+    if width < _REFERENCE_MIN_SIDE or height < _REFERENCE_MIN_SIDE:
+        return f"尺寸 {width}x{height} 小于 {_REFERENCE_MIN_SIDE}px"
+    if width > _REFERENCE_MAX_SIDE or height > _REFERENCE_MAX_SIDE:
+        return f"尺寸 {width}x{height} 超过 {_REFERENCE_MAX_SIDE}px"
+    ratio = width / height
+    if ratio < _REFERENCE_MIN_ASPECT or ratio > _REFERENCE_MAX_ASPECT:
+        return f"宽高比 {ratio:.2f} 超出 {_REFERENCE_MIN_ASPECT}~{_REFERENCE_MAX_ASPECT}"
+    return None
+
+
+def _upscale_reference(asset: MediaAsset) -> MediaAsset | None:
+    """把过小的参考图**等比放大**到合规尺寸（不裁切、不拉伸）。
+
+    用户口径（2026-09-18）：「不要拦截，能不能帮我自动等比例放大」—— 火山要求参考图
+    每边 ≥300px，文档里的横幅（384x254）以前会让整单被拒，现在直接放大后再提交。
+    放大失败（文件损坏等）返回 None，由调用方决定丢弃。
+    """
+    width = int(getattr(asset, "width", 0) or 0)
+    height = int(getattr(asset, "height", 0) or 0)
+    if width <= 0 or height <= 0:
+        return None
+    scale = max(
+        _REFERENCE_MIN_SIDE / width,
+        _REFERENCE_MIN_SIDE / height,
+    )
+    if scale <= 1:
+        return None
+    target_width = max(_REFERENCE_MIN_SIDE, round(width * scale))
+    target_height = max(_REFERENCE_MIN_SIDE, round(height * scale))
+    # 放大后也不能超过上限：超过就整体缩回去（仍保持比例）。
+    overflow = max(
+        target_width / _REFERENCE_MAX_SIDE,
+        target_height / _REFERENCE_MAX_SIDE,
+        1,
+    )
+    target_width = max(_REFERENCE_MIN_SIDE, round(target_width / overflow))
+    target_height = max(_REFERENCE_MIN_SIDE, round(target_height / overflow))
+    source = Path(str(asset.local_path))
+    target = source.with_name(f"{source.stem}-upscaled.png")
+    try:
+        with Image.open(source) as image:
+            image.convert("RGB").resize(
+                (target_width, target_height), Image.Resampling.LANCZOS
+            ).save(target, format="PNG")
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning(
+            "参考图放大失败 asset=%s path=%s", asset.asset_id, source, exc_info=True
+        )
+        return None
+    content = target.read_bytes()
+    return asset.model_copy(
+        update={
+            "local_path": target,
+            "mime_type": "image/png",
+            "size": len(content),
+            "width": target_width,
+            "height": target_height,
+            "sha256": sha256(content).hexdigest(),
+        }
+    )
+
+
+async def _without_unusable_references(
+    assets: list[MediaAsset],
+    run_id: str,
+    services: GraphServices,
+) -> list[MediaAsset]:
+    """执行前整理参考素材：过小的图**等比放大**，视频**摘掉**，都记一条事件。
+
+    以前这两种都会让整单被火山拒（`invalid_media` / `submit_invalidparameter`），
+    用户只看到一句「生成服务拒绝了请求」。现在：能修的修（放大 ✓）、修不了的跳过
+    并写清原因（用户 2026-09-18：「不要拦截，能不能帮我自动等比例放大」）。
+    """
+    videos = [asset for asset in assets if asset.mime_type.startswith("video/")]
+    undersized = [
+        asset
+        for asset in assets
+        if _reference_size_problem(asset) is not None
+    ]
+    if not videos and not undersized:
+        return assets
+    notes: list[str] = []
+    if videos:
+        notes.append(
+            "视频不能作为参考图（Seedance 不接受视频输入）："
+            + "、".join(asset.asset_id for asset in videos)
+        )
+    replacements: dict[str, MediaAsset] = {}
+    dropped = {asset.asset_id for asset in videos}
+    for asset in undersized:
+        problem = _reference_size_problem(asset) or ""
+        if "宽高比" in problem:
+            # 比例问题放大也改不了（比例不随缩放变化），照旧提交交给供应商判断。
+            notes.append(f"{asset.asset_id} {problem}（放大改不了比例，仍按原样提交）")
+            continue
+        fixed = _upscale_reference(asset)
+        if fixed is None:
+            dropped.add(asset.asset_id)
+            notes.append(f"{asset.asset_id} {problem}，且放大失败，已跳过")
+            continue
+        replacements[asset.asset_id] = fixed
+        notes.append(
+            f"{asset.asset_id} {problem} → 已等比放大到 "
+            f"{fixed.width}x{fixed.height}"
+        )
+    if notes:
+        await services.repository.append_event(
+            run_id,
+            "execute_selected_tasks",
+            "running",
+            "参考素材已自动整理：" + "；".join(notes),
+        )
+        _LOGGER.warning("整理参考素材 run=%s notes=%s", run_id, notes)
+    result: list[MediaAsset] = []
+    for asset in assets:
+        if asset.asset_id in dropped:
+            continue
+        result.append(replacements.get(asset.asset_id, asset))
+    return result
+
+
+async def _without_video_references(
+    assets: list[MediaAsset],
+    run_id: str,
+    services: GraphServices,
+) -> list[MediaAsset]:
+    """兼容旧调用点：只摘视频（新代码用 `_without_unusable_references`）。"""
+    return await _without_unusable_references(assets, run_id, services)
 
 
 async def _execute_one_task(
@@ -2013,9 +2500,38 @@ async def _execute_one_task(
             )
         )
         try:
-            immediate = await generator.submit(
-                task, assets, submission_id=client_id
-            )
+            try:
+                immediate = await generator.submit(
+                    task, assets, submission_id=client_id
+                )
+            except AgentError as exc:
+                if not _should_switch_to_portrait(exc, provider, services):
+                    raise
+                # 用户 2026-09-18：Seedance 因「输入图疑似真人」拒绝时**自动改走
+                # 真人类通道**（真人素材在 Seedance 侧是合规红线，换模型没用）。
+                # 清掉按旧 provider 建的提交意图，再把任务改写成真人类重跑一次。
+                await services.repository.delete_task_operations(
+                    run_id, task.task_id
+                )
+                await services.repository.append_event(
+                    run_id,
+                    "execute_selected_tasks",
+                    "running",
+                    "Seedance 拒绝真人素材，已自动改走真人类通道",
+                )
+                _LOGGER.warning(
+                    "Seedance 拒绝真人素材，自动改走真人类通道 run=%s task=%s",
+                    run_id,
+                    task.task_id,
+                )
+                return await _execute_one_task(
+                    services,
+                    run_id,
+                    task.model_copy(
+                        update={"video_provider": "volcengine_portrait"}
+                    ),
+                    assets,
+                )
             official_id = immediate.provider_task_id
             if immediate.provider != provider:
                 raise _provider_terminal_error("供应商任务身份不一致")
@@ -2107,6 +2623,8 @@ async def _execute_one_task(
                     status="submitted",
                 ),
                 services,
+                run_id,
+                task.task_id,
             )
         if submission is None:
             return await _finish_submit_phase(
@@ -2214,7 +2732,9 @@ async def execute_selected_tasks(
         records: list[ExecutionRecord] = []
         artifacts: list[Artifact] = []
         for task in plan.tasks:
-            assets = _task_assets(task, document)
+            assets = await _without_unusable_references(
+                _task_assets(task, document), run_id, services
+            )
             unit_results = await asyncio.gather(
                 *(
                     _execute_one_task(services, run_id, unit, assets)
@@ -2302,12 +2822,67 @@ async def verify_and_download_artifacts(
             verified.extend(state_items)
         return {
             "artifacts": [_json_model(artifact) for artifact in verified],
-            "status": "waiting_review" if verified else "failed",
+            # Verified artifacts mean generation succeeded. Feishu result-table
+            # export is optional and must not gate the success status.
+            "status": "succeeded" if verified else "failed",
         }
 
     return await _run_node(
         state, "verify_and_download_artifacts", services, operation
     )
+
+async def _rework_prompt_for_task(
+    services: GraphServices,
+    task: GenerationTask,
+    feedback: str,
+    visual_context: str = "",
+) -> tuple[str, list[str], str, bool, list[str]]:
+    """算出这条任务重跑后的提示词、累积要求与负向约束。
+
+    走 `integrations.rework_prompt` 的共享实现，与多维表格重跑
+    （`GraphRuntime.clone_run_for_approval`）保持完全一致的语义：
+    要求只累积不覆盖、优先 AI 融合、永不因超长失败。
+
+    **负向约束不再往里加东西**（用户口径 2026-09-17：「不要在约束里加东西，直接描述
+    在正文就行」）：融合已经把这次的要求写进正文了，再把 `must_avoid` 并进
+    `negative_constraints` 只会让它一轮一轮堆下去 —— 而否定句堆太多会把"不要出现的
+    东西"反复喂给模型、反而加深印象。这里只对**存量**做一次合并 + 限量清理。
+    """
+    base_prompt, requirements = rework_inputs(task, feedback)
+    prompt, truncated, _must_avoid = await build_rework_prompt(
+        base_prompt,
+        requirements,
+        fuse=getattr(services.planner, "fuse_rework_prompt", None),
+        visual_context=visual_context,
+    )
+    constraints = merge_negative_constraints(task.negative_constraints, [])
+    return base_prompt, requirements, prompt, truncated, constraints
+
+
+async def _record_visual_context(
+    services: GraphServices,
+    run_id: str,
+    visual_context: str,
+) -> None:
+    """把「模型看过的上一版画面」记进运行事件。
+
+    用户 2026-09-18：「融合返工要求没有上传前一次的生成视频吗，这样看不出问题啊」——
+    看片其实一直在做，但过程完全不可见。现在把"看了什么"写进事件，用户能直接核对。
+    """
+    try:
+        text = " ".join((visual_context or "").split())
+        await services.repository.append_event(
+            run_id,
+            "review_artifacts",
+            "running",
+            (
+                f"已让模型看过上一版成片，融合时带上画面：{text[:300]}"
+                if text
+                else "本次返工没带上一版画面（没有成片文件，或看片失败）"
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("记录画面上下文事件失败 run=%s", run_id, exc_info=True)
 
 
 def _artifact_review_payload(state: AgentState) -> dict[str, Any]:
@@ -2324,8 +2899,8 @@ def _artifact_review_payload(state: AgentState) -> dict[str, Any]:
 
 def _parse_artifact_review(value: Any) -> ArtifactReviewDecision:
     if not isinstance(value, dict):
-        raise _validation_error("成片确认请求格式无效：期望 JSON 对象")
-    allowed_keys = {"action", "feedback"}
+        raise _validation_error("成片确认请求格式无效：需要 JSON 对象")
+    allowed_keys = {"action", "feedback", "task_ids"}
     extra_keys = set(value) - allowed_keys
     if extra_keys:
         raise _validation_error(
@@ -2341,11 +2916,13 @@ def _parse_artifact_review(value: Any) -> ArtifactReviewDecision:
         )
         raise _validation_error(f"成片确认载荷无效：{compact}") from None
 
+    if len(decision.task_ids) != len(set(decision.task_ids)):
+        raise _validation_error("重跑任务不能重复选择")
     if decision.action == "adjust":
         if not isinstance(decision.feedback, str) or not decision.feedback.strip():
             raise _validation_error("退回调整时必须填写调整意见")
-    elif decision.feedback is not None:
-        raise _validation_error("确认或取消时不能携带调整意见")
+    elif decision.feedback is not None or decision.task_ids:
+        raise _validation_error("确认或取消时不能携带调整意见或任务")
     return decision
 
 
@@ -2355,7 +2932,11 @@ async def review_artifacts(
     *,
     services: GraphServices,
 ) -> Command:
+    """Review generated artifacts and optionally rerun selected tasks."""
     _ensure_thread_id(state, config)
+    if not services.settings.artifact_review_enabled:
+        return Command(update={}, goto=END)
+
     resume_value = interrupt(_artifact_review_payload(state))
 
     async def operation() -> Command:
@@ -2366,32 +2947,150 @@ async def review_artifacts(
                 update={
                     "artifact_review_decision": decision_json,
                     "artifact_review_feedback": None,
-                    "status": "review_confirmed",
+                    "status": "succeeded",
                 },
                 goto="deliver_to_feishu",
             )
         if decision.action == "adjust":
-            # 清空本 run 已落库的产物与提交操作记录，避免重新规划后复用旧成片
-            # 或因为旧提交指纹不一致被判为 submission_uncertain。
             run_id = state.get("run_id")
-            if isinstance(run_id, str) and run_id:
-                await services.repository.delete_run_operations(run_id)
-                await services.repository.delete_run_artifacts(run_id)
+            if not isinstance(run_id, str) or not run_id:
+                raise _validation_error()
+            plan = approved_plan_from_state(
+                state,
+                max_output_count=services.settings.max_output_count,
+            )
+            artifacts = [
+                Artifact.model_validate(item)
+                for item in state.get("artifacts", [])
+            ]
+            records = [
+                ExecutionRecord.model_validate(item)
+                for item in state.get("execution_records", [])
+            ]
+            available_task_ids = {artifact.task_id for artifact in artifacts}
+            requested_ids = set(decision.task_ids) or set(available_task_ids)
+
+            def base_task_id(task_id: str) -> str:
+                return task_id.split(_OUTPUT_SLOT_MARKER, 1)[0]
+
+            target_task_ids = {base_task_id(task_id) for task_id in requested_ids}
+            known_task_ids = {task.task_id for task in plan.tasks}
+            unknown_ids = target_task_ids - known_task_ids
+            if unknown_ids:
+                raise _validation_error(
+                    "重跑任务不存在："
+                    + "、".join(sorted(unknown_ids))
+                )
+            if not target_task_ids:
+                raise _validation_error("请至少选择一条需要重跑的任务")
+
+            feedback = decision.feedback.strip()
+            updated_tasks: list[GenerationTask] = []
+            # 上一版成片**直接送能看视频的模型**（不抽帧）：让融合模型"看到"实际
+            # 画成了什么，而不是只靠用户打的字（用户 2026-09-17 要求）。
+            visual_context = await describe_output_videos(
+                getattr(services, "video_analyzer", None),
+                list(state.get("artifacts") or []),
+            )
+            await _record_visual_context(
+                services, state.get("run_id", "unknown-run"), visual_context
+            )
+            for task in plan.tasks:
+                if task.task_id not in target_task_ids:
+                    updated_tasks.append(task)
+                    continue
+                # 老 run 的返工历史写在提示词正文里，先接住再并入累积清单，
+                # 否则升级后历史要求会凭空丢失。
+                (
+                    base_prompt,
+                    requirements,
+                    prompt,
+                    truncated,
+                    constraints,
+                ) = await _rework_prompt_for_task(
+                    services, task, feedback, visual_context
+                )
+                if requirements and prompt.strip() == (base_prompt or "").strip():
+                    # 融合没生效（被限流 / 上游报错 / 模型判定无需改动）—— 以前静默，
+                    # 用户只看到"提示词一个字没变"却不知道为什么（2026-09-18：
+                    # 「为什么我要求他给出动作指导，他还是没有动我的提示词」）。
+                    try:
+                        await services.repository.append_event(
+                            state.get("run_id", "unknown-run"),
+                            "review_artifacts",
+                            "running",
+                            "本次返工没有改动提示词正文（融合未生效：多半是模型限流或"
+                            "上游报错）—— 要求已记录，稍后重跑即可带上；也可以直接在"
+                            "审批页手动改。",
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOGGER.warning("记录返工未生效事件失败", exc_info=True)
+                task_updates: dict[str, Any] = {
+                    "prompt": prompt,
+                    "rework_requirements": requirements,
+                    # 冻结锚点：只写第一次，往后每轮都不能覆盖。注意它与
+                    # rework_previous_prompt 分工不同——后者是融合基准/改前。
+                    "rework_base_prompt": task.rework_base_prompt or base_prompt,
+                    # 展示用的「改前」是这一版被返工前的样子（不是冻结的第一版）。
+                    "rework_previous_prompt": task.prompt,
+                    "negative_constraints": constraints,
+                }
+                if truncated:
+                    task_updates["warnings"] = [
+                        *task.warnings,
+                        "返工要求过多，提示词已截断；历史要求仍完整保留",
+                    ]
+                updated_tasks.append(task.model_copy(update=task_updates))
+
+            target_unit_ids = {
+                artifact.task_id
+                for artifact in artifacts
+                if base_task_id(artifact.task_id) in target_task_ids
+            } | {
+                record.task_id
+                for record in records
+                if base_task_id(record.task_id) in target_task_ids
+            }
+            for unit_id in sorted(target_unit_ids):
+                await services.repository.delete_task_operations(run_id, unit_id)
+                await services.repository.delete_task_artifacts(run_id, unit_id)
+
+            updated_plan = plan.model_copy(update={"tasks": updated_tasks})
+            remaining_artifacts = [
+                artifact
+                for artifact in artifacts
+                if base_task_id(artifact.task_id) not in target_task_ids
+            ]
+            remaining_records = [
+                record
+                for record in records
+                if base_task_id(record.task_id) not in target_task_ids
+            ]
+            await services.repository.append_event(
+                run_id,
+                "review_artifacts",
+                "running",
+                "Selected task feedback queued for regeneration",
+            )
             return Command(
                 update={
                     "artifact_review_decision": decision_json,
-                    "artifact_review_feedback": decision.feedback.strip(),
-                    "planner_feedback": decision.feedback.strip(),
-                    "approval_decision": None,
-                    "approval_revision": None,
-                    "approved_tasks": [],
-                    "approved_plan": None,
-                    "execution_records": [],
-                    "artifacts": [],
+                    "artifact_review_feedback": feedback,
+                    "approved_tasks": [
+                        _json_model(task) for task in updated_plan.tasks
+                    ],
+                    "approved_plan": _json_model(updated_plan),
+                    "execution_records": [
+                        _json_model(record) for record in remaining_records
+                    ],
+                    "artifacts": [
+                        _json_model(artifact) for artifact in remaining_artifacts
+                    ],
                     "delivery_record": None,
+                    "last_error": None,
                     "status": "running",
                 },
-                goto="plan_requirements",
+                goto="execute_selected_tasks",
             )
         return Command(
             update={
@@ -2411,14 +3110,20 @@ async def deliver_to_feishu(
     *,
     services: GraphServices,
 ) -> AgentState:
+    """Export only when this node is reached by an explicit user action.
+
+    This node is deliberately disconnected from the automatic generation
+    path. Verified artifacts already mean the task succeeded; export failure
+    is diagnostic and never downgrades that success.
+    """
     _ensure_thread_id(state, config)
     run_id = state.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise _validation_error()
     summary = _NODE_SUMMARIES["deliver_to_feishu"]
-    await services.repository.append_event(
-        run_id, "deliver_to_feishu", "started", f"{summary} started"
-    )
+    artifacts = [
+        Artifact.model_validate(item) for item in state.get("artifacts", [])
+    ]
     try:
         document = NormalizedDocument.model_validate(
             state.get("normalized_document")
@@ -2427,12 +3132,16 @@ async def deliver_to_feishu(
             state,
             max_output_count=services.settings.max_output_count,
         )
-        artifacts = [
-            Artifact.model_validate(item) for item in state.get("artifacts", [])
-        ]
+        if services.delivery_writer is None:
+            raise RuntimeError("飞书结果表交付服务未配置")
+        await services.repository.append_event(
+            run_id, "deliver_to_feishu", "started", f"{summary} started"
+        )
         record = await services.delivery_writer.deliver(
             run_id, document, plan, artifacts
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         failure = _safe_error(exc)
         await services.repository.append_event(
@@ -2442,7 +3151,7 @@ async def deliver_to_feishu(
             f"{summary} failed ({failure.detail.category.value})",
         )
         return {
-            "status": "delivery_failed",
+            "status": "succeeded" if artifacts else "failed",
             "delivery_record": None,
             "last_error": _json_model(failure.detail),
         }

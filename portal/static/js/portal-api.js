@@ -3,7 +3,7 @@
 (function () {
   window.workspaceId = function () {
     let id = localStorage.getItem('workspace_id');
-    if (!id) { id = crypto.randomUUID(); localStorage.setItem('workspace_id', id); }
+    if (!id) { id = (window.crypto && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : ('ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)); localStorage.setItem('workspace_id', id); }
     return id;
   };
 

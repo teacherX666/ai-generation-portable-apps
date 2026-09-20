@@ -129,6 +129,9 @@
 .ui-btn--danger:hover:not(:disabled) { color: #fff; background: var(--ui-color-danger-text); border-color: var(--ui-color-danger-text); }
 .ui-btn--warning-outline { color: var(--ui-color-danger-text); background: var(--ui-bg-surface); border-color: var(--ui-color-danger); }
 .ui-btn--warning-outline:hover:not(:disabled), .ui-btn--warning-outline:focus-visible { color: #fff; background: var(--ui-color-danger); border-color: var(--ui-color-danger); }
+.ui-btn--success { color: #fff; background: var(--ui-color-success); border-color: var(--ui-color-success); }
+.ui-btn--success:hover:not(:disabled), .ui-btn--success:focus-visible { color: #fff; background: var(--ui-color-success-text); border-color: var(--ui-color-success-text); }
+.ui-btn--block { width: 100%; }
 .ui-field { display: grid; gap: var(--ui-space-1); }
 .ui-field__label { color: var(--ui-text-secondary); font-size: var(--ui-font-size-sm); font-weight: var(--ui-font-weight-medium); }
 .ui-input, .ui-select, .ui-textarea { width: 100%; color: var(--ui-text-primary); background: var(--ui-bg-surface); border: 1px solid var(--ui-border-default); border-radius: var(--ui-radius-md); }

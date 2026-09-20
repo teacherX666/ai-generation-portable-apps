@@ -37,6 +37,40 @@ class ArkErrorsTableTests(unittest.TestCase):
     def test_unknown_returns_none(self):
         self.assertIsNone(self.ark.translate_ark_error("WeirdCode", "whatever"))
 
+    def test_real_person_privacy_information_translated(self):
+        # 2026-09 高频：真人素材未认证 → 方舟 400 PrivacyInformation
+        zh = self.ark.translate_ark_error(
+            "InputVideoSensitiveContentDetected.PrivacyInformation",
+            "The request failed because the input video 'content[1]' may contain real person.",
+        )
+        self.assertIn("含真人", zh)
+        self.assertIn("本地", zh)
+
+    def test_private_info_entry_wins_over_generic_prefix(self):
+        # 前缀匹配先命中先返回：PrivacyInformation 必须排在通用条目之前，
+        # 否则用户拿到的只是"审核未通过"这种没有下一步动作的泛化提示。
+        generic = self.ark.translate_ark_error("InputVideoSensitiveContentDetected", "x")
+        specific = self.ark.translate_ark_error(
+            "InputVideoSensitiveContentDetected.PrivacyInformation", "x")
+        self.assertIsNotNone(generic)
+        self.assertIsNotNone(specific)
+        self.assertNotEqual(generic, specific)
+        self.assertIn("真人认证", specific)
+
+    def test_body_helper_parses_raw_ark_error_json(self):
+        # 提交阶段拿不到 (code, message) 对：seedance 的 APIError.message 与
+        # volcengine-portrait 的 detail 都是原始 body，必须能解析出来。
+        raw = ('{"error":{"code":"InputVideoSensitiveContentDetected.PrivacyInformation",'
+               '"message":"The request failed because the input video \'content[3]\' may contain real person.",'
+               '"param":"content[3]","type":"BadRequest"}}')
+        self.assertIn("含真人", self.ark.translate_ark_error_body(raw))
+        # dict 形态（{"error": {...}} 或内层 error dict）同样支持
+        self.assertIn("含真人", self.ark.translate_ark_error_body(
+            {"error": {"code": "InputVideoSensitiveContentDetected.PrivacyInformation"}}))
+        # 未命中/空 body 返回 None，调用方继续展示原文
+        self.assertIsNone(self.ark.translate_ark_error_body("not json at all"))
+        self.assertIsNone(self.ark.translate_ark_error_body(None))
+
 
 class DreaminaTableTests(unittest.TestCase):
     @classmethod

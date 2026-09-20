@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dreamina 生成器</title>
   <link rel="stylesheet" href="/ui/portal-ui-core.css">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260914-task-live-fix3">
 </head>
 <body class="ui-page ui-shell">
   <div id="setupView" class="setup-view ui-admin-page">
@@ -34,6 +34,7 @@
         <button id="switchAccountBtn" class="btn-small">切换账号</button>
         <button id="cleanCacheBtn" class="btn-small">清理缓存</button>
         <button id="updateCliBtn" class="btn-small">更新 CLI</button>
+        <button id="resetConfigBtn" class="btn-small">恢复默认设置</button>
       </div>
 
       <div class="account-panel" id="accountPanel">
@@ -233,17 +234,6 @@
         <div id="jobsList" class="jobs-list"></div>
       </div>
 
-      <div class="workspace-panel ui-panel">
-        <div class="workspace-header">
-          <h2>历史记录</h2>
-          <div class="filter-bar">
-            <button class="filter-btn active" data-filter="all">全部</button>
-            <button class="filter-btn" data-filter="image">图片</button>
-            <button class="filter-btn" data-filter="video">视频</button>
-          </div>
-        </div>
-        <div id="historyList" class="history-list"></div>
-      </div>
     </section>
   </main>
 
@@ -252,6 +242,6 @@
     <div id="previewContent"></div>
   </dialog>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260914-task-live-fix3"></script>
 </body>
 </html>

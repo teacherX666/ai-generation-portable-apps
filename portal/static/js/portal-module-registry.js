@@ -5,6 +5,7 @@
     { name: 'history', display_name: '创作记录' },
     { name: 'keys', display_name: '我的密钥' },
     { name: 'stats', display_name: '使用统计' },
+    { name: 'free-creation', display_name: '自由创作' },
   ];
 
   // Apps present in apps.json but not top-level navigation entries.

@@ -631,6 +631,20 @@ textarea { min-height: 100px; line-height: 1.5; }
 
 .job-actions { margin-top: 8px; }
 
+.btn-cancel {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid #f2b8b5;
+  background: #fff5f5;
+  color: #b42318;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+.btn-cancel:hover { border-color: #d92d20; background: #fee4e2; }
+.btn-cancel:active { transform: translateY(1px); }
+.btn-cancel:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn-retry {
   font-size: 12px;
   padding: 5px 12px;
@@ -951,6 +965,20 @@ button:disabled,
 .filter-btn,
 .close-btn,
 .btn-template,
+.btn-cancel {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid #f2b8b5;
+  background: #fff5f5;
+  color: #b42318;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+.btn-cancel:hover { border-color: #d92d20; background: #fee4e2; }
+.btn-cancel:active { transform: translateY(1px); }
+.btn-cancel:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn-retry {
   background: var(--surface);
   color: var(--text-secondary);

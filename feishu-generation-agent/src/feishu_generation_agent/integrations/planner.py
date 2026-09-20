@@ -18,16 +18,23 @@ from feishu_generation_agent.domain.errors import (
 )
 from feishu_generation_agent.domain.plan import (
     AuditReport,
+    ExcludedAsset,
     ImageReference,
     TaskPlan,
+    SEEDANCE_PROMPT_MAX_CHARS,
 )
 from feishu_generation_agent.domain.reference_contract import (
     canonicalize_references,
     has_multiple_shot_markers,
     reference_tokens,
     remap_asset_id_tokens,
+    remap_prompt_references,
+    unused_reference_assets,
     validate_image_prompt,
     validate_seedance_prompt,
+)
+from feishu_generation_agent.integrations.rework_prompt import (
+    merge_negative_constraints,
 )
 
 
@@ -98,12 +105,17 @@ _ACTIONABLE_HUMAN_HANDLING = re.compile(
     r"(?:人工处理|人工确认|手动处理|"
     r"请(?:补充|提供|确认|申请|开通|上传|替换|联系|调整|选择|改用))"
 )
-_SEEDANCE_PLANNING_CONTRACT = """【Seedance 多模态提示词契约】
+_SEEDANCE_PLANNING_CONTRACT = f"""【Seedance 多模态提示词契约】
 图生视频必须逐张读取视觉描述，理解每张素材中的具体主体、场景、风格、构图、动作、运镜或声音，再决定其适用分镜；不得机械平均分配素材，不得用“参考图片风格”等泛化措辞冒充素材理解。
 图片、视频、音频按实际提交顺序分别从 1 编号，并在 prompt 中使用 @图片N、@视频N、@音频N。每个被引用素材都必须写成“@图片N 中的具体主体/场景”“@视频N 中的具体动作/运镜”或“@音频N 中的具体音色/声音”；禁止输出内部 asset_id。
 复杂多分镜任务使用“总体设定与素材绑定 → 镜头 1/镜头 2/镜头 3 → 风格与约束”的结构。每个镜头必须直接写出本镜头采用的素材 token，不得只在开头或末尾罗列素材；每个素材必须至少用于一个实际镜头。禁止绝对秒数。
 提示词必须保留需求指定风格，并包含必要的画质、稳定、不变形、无水印和无 Logo 约束；多人或非写实场景按需求增加主体一致性、避免分身和风格锚定。
+每个 image_to_video 任务的 prompt 都必须让表演比普通自然表演更外显：情绪和表情更夸张，关键情绪必须有清晰面部与肢体反应；如果文档明确要求克制、自然或不夸张，则以文档限制为准。
+每个 image_to_video 任务的 prompt 都必须加入物理与动作逻辑约束：人物和物体不悬浮、不穿模、重心稳定，动作符合身体结构与因果顺序，镜头运动和物体速度合理。
+如果视频参考语义中存在 camera_movement 或 editing_style，必须把其中的运镜方式或剪辑节奏用中文写入对应任务的 prompt，并说明它约束哪些镜头；不得只当成画面风格参考。
 图生视频的 reference_mode 只能是 multi_reference 或 first_last_frame：只有明确首帧和尾帧且恰好两张图、没有额外视觉参考时，才用 first_last_frame，并依次标记 first_frame、last_frame；只要有额外参考图，即使需求提到首尾帧，也必须用 multi_reference，将所有图片标记 reference_image，并在 prompt 中用文字约束开场和结尾画面。
+每个 image_to_video 任务的 prompt 总长度（含 @图片N/@视频N/@音频N 与所有镜头描述）不得超过 {SEEDANCE_PROMPT_MAX_CHARS} 字；优先保留表情、动作、物理逻辑、运镜和硬性约束，删除重复解释与次要描述。
+video_provider is runtime policy: omit it or set null. output_count must default to 1; only a human may change candidate count in approval.
 """
 _PLAN_SYSTEM_PROMPT = f"""你是 AI 图片与视频生成需求规划器。
 只根据给定文档、稳定引用和视觉描述输出 TaskPlan JSON，不得虚构素材或需求。
@@ -289,6 +301,305 @@ def _compact_json(value: Any) -> str:
     )
 
 
+def _storyboard_fills(
+    sources_list: list[list[str]],
+    requirements: dict[str, list[str]],
+) -> list[tuple[int, list[str]]]:
+    """算出「哪些任务要补哪些分镜行 id」——返回 [(任务下标, 待补 id 列表)]。
+
+    只补已经（部分）覆盖该表的任务；若整份计划只有一个视频任务、且完全没引用该表，
+    也认它就是要覆盖这张表的那个任务。
+    """
+    if not sources_list or not requirements:
+        return []
+    fills: list[tuple[int, list[str]]] = []
+    for table_id, required_ids in requirements.items():
+        relevant = {table_id, *required_ids}
+        indexes = [
+            index
+            for index, sources in enumerate(sources_list)
+            if relevant.intersection(sources)
+        ]
+        if not indexes and len(sources_list) == 1:
+            indexes = [0]
+        for index in indexes:
+            missing = [
+                block_id
+                for block_id in required_ids
+                if block_id not in sources_list[index]
+            ]
+            if missing:
+                fills.append((index, missing))
+    return fills
+
+
+def _fill_storyboard_source_block_ids(
+    payload: dict[str, Any],
+    document: NormalizedDocument,
+) -> None:
+    """（dict 形态）把分镜行 id 补进 payload —— 规划时用，见 reconcile_storyboard_sources。"""
+    requirements = _storyboard_requirements(document)
+    tasks = payload.get("tasks")
+    if not requirements or not isinstance(tasks, list):
+        return
+    video_tasks = [
+        task
+        for task in tasks
+        if isinstance(task, dict) and task.get("task_type") == "image_to_video"
+    ]
+    sources_list = [
+        list(task.get("source_block_ids") or []) for task in video_tasks
+    ]
+    for index, missing in _storyboard_fills(sources_list, requirements):
+        video_tasks[index]["source_block_ids"] = [
+            *sources_list[index],
+            *missing,
+        ]
+
+
+def reconcile_storyboard_sources(
+    plan: TaskPlan,
+    document: NormalizedDocument,
+) -> TaskPlan:
+    """把分镜表每一行镜头的 block id **确定性地**补进覆盖它的那个任务。
+
+    2026-09-17 实测（超级大床）：分镜表 50+ 行，模型每次都会漏抄几行 → 契约校验
+    「task … missing source_block_ids […]」必然失败，重试 3 次全废，而用户看到的
+    是「模型三次返回的 JSON 均未通过校验」（其实 JSON 合法，是计划不合契约）。
+
+    这些 id 我们本来就能从文档里算出来，不该让模型去枚举几十个不透明字符串。
+    规划路径（`_fill_storyboard_source_block_ids`）与**重跑复制计划**路径
+    （`GraphRuntime._persist_draft`）都走这里，保证进审批的计划一定齐。
+    """
+    requirements = _storyboard_requirements(document)
+    if not requirements:
+        return plan
+    video_indexes = [
+        index
+        for index, task in enumerate(plan.tasks)
+        if task.task_type == "image_to_video"
+    ]
+    if not video_indexes:
+        return plan
+    sources_list = [
+        list(plan.tasks[index].source_block_ids) for index in video_indexes
+    ]
+    fills = _storyboard_fills(sources_list, requirements)
+    if not fills:
+        return plan
+    tasks = list(plan.tasks)
+    for position, missing in fills:
+        index = video_indexes[position]
+        task = tasks[index]
+        tasks[index] = task.model_copy(
+            update={
+                "source_block_ids": [
+                    *task.source_block_ids,
+                    *missing,
+                ]
+            }
+        )
+    return plan.model_copy(update={"tasks": tasks})
+
+
+#: 自动排除「没被具体使用」的素材时写的理由（要含中文，校验器会查）。
+_UNUSED_ASSET_REASON = (
+    "计划没有具体使用这张素材（未绑定到镜头或描述笼统），已自动排除"
+)
+
+
+def reconcile_negative_constraints(plan: TaskPlan) -> TaskPlan:
+    """把每条任务「必须避免」里的**重复写法**合并掉（规则一条不少，只去重复措辞）。
+
+    去重是在**返工合并**时生效的（`merge_negative_constraints`），但存量计划里仍
+    带着上线前攒下的重复 —— 实测脱毛 57 条里有 10 条是同义换皮（「不要出现水印、
+    Logo、品牌特征」的各种写法），而**重跑复制会把它们一起复制下去**，看起来就像
+    「负面约束还在叠加」。复制/编辑计划时顺手清一遍即可。
+    """
+    tasks = list(plan.tasks)
+    changed = False
+    for index, task in enumerate(tasks):
+        if not task.negative_constraints:
+            continue
+        merged = merge_negative_constraints(task.negative_constraints, [])
+        if len(merged) != len(task.negative_constraints):
+            tasks[index] = task.model_copy(
+                update={"negative_constraints": merged}
+            )
+            changed = True
+    if not changed:
+        return plan
+    return plan.model_copy(update={"tasks": tasks})
+
+
+def _exclude_unused_references(
+    payload: dict[str, Any],
+    document: NormalizedDocument,
+) -> None:
+    """把「挂了却没被具体用起来」的素材摘掉，并写进 `excluded_assets`。
+
+    2026-09-17 生产（超级大床 / 拿着吧你！2）：模型把素材挂在任务上、却只在开头
+    罗列（或写得笼统），于是同时踩中
+      「Seedance prompt 缺少素材引用 @图片N」
+      「@图片N 只被罗列但没有用于任何实际镜头」
+      「@图片N 必须绑定具体主体、场景、动作、运镜或声音」
+    而覆盖门又要求「每个素材要么被引用、要么被排除」—— 两条规则互相夹住，模型三次
+    重试全废，run 直接失败（用户「一直重跑但每次都失败」）。
+
+    这些素材**本来就没有被具体使用**，所以摘掉不改变生成内容，只让计划自洽：
+    从参考图里移除（prompt 里的 token 用 `remap_prompt_references` 一并重映射/
+    清理）+ 写进 `excluded_assets`（理由写明，审批页「排除素材」里看得到）。
+    """
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    mime_types = {
+        asset.asset_id: asset.mime_type for asset in document.media_assets
+    }
+    raw_exclusions = payload.get("excluded_assets")
+    exclusions = raw_exclusions if isinstance(raw_exclusions, list) else []
+    excluded_ids = {
+        item.get("asset_id")
+        for item in exclusions
+        if isinstance(item, dict)
+    }
+    changed = False
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("task_type") != "image_to_video":
+            continue
+        prompt = task.get("prompt")
+        raw_references = task.get("reference_images")
+        if not isinstance(prompt, str) or not isinstance(raw_references, list):
+            continue
+        try:
+            references = canonicalize_references(
+                [ImageReference.model_validate(item) for item in raw_references]
+            )
+        except Exception:
+            continue  # 引用本身不合法：交给校验器如实报错
+        unused = set(
+            unused_reference_assets(
+                prompt,
+                references,
+                mime_types,
+                require_storyboard=True,
+            )
+        )
+        if not unused:
+            continue
+        kept = [
+            reference
+            for reference in references
+            if reference.asset_id not in unused
+        ]
+        if not kept:
+            # 一张都没用上：别把视频任务悄悄变成纯文生视频，交给校验器报错。
+            continue
+        remaining = canonicalize_references(kept)
+        task["prompt"] = remap_prompt_references(
+            prompt, references, remaining, mime_types
+        )
+        task["reference_images"] = [
+            reference.model_dump(mode="json") for reference in remaining
+        ]
+        for asset_id in sorted(unused):
+            if asset_id in excluded_ids:
+                continue
+            exclusions.append(
+                {
+                    "asset_id": asset_id,
+                    "reason": _UNUSED_ASSET_REASON,
+                }
+            )
+            excluded_ids.add(asset_id)
+        changed = True
+    if changed:
+        payload["excluded_assets"] = exclusions
+
+
+#: 视频素材被排除时写的理由（要含中文，校验器会查）。
+_VIDEO_REFERENCE_REASON = "视频素材只作为分镜参考，不作为参考图"
+
+
+def _exclude_video_references(
+    payload: dict[str, Any],
+    document: NormalizedDocument,
+) -> None:
+    """视频素材**不作为参考图**（用户口径 2026-09-17：「视频基本上都没有能作为
+    参考图的，只能作为分镜参考」）。
+
+    「参考视频抽帧冒充参考图」那条路已经删掉（见 graph/nodes.py），所以文档里的视频
+    不再有对应的图片素材；而覆盖门要求「每个素材要么被引用、要么被排除」，这里就
+    确定性地把视频从 reference_images 摘掉（prompt 里的 token 一并重映射/清理）
+    并写进 excluded_assets。
+    """
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    mime_types = {
+        asset.asset_id: asset.mime_type for asset in document.media_assets
+    }
+    video_ids = {
+        asset_id
+        for asset_id, mime_type in mime_types.items()
+        if str(mime_type).startswith("video/")
+    }
+    if not video_ids:
+        return
+    raw_exclusions = payload.get("excluded_assets")
+    exclusions = raw_exclusions if isinstance(raw_exclusions, list) else []
+    excluded_ids = {
+        item.get("asset_id")
+        for item in exclusions
+        if isinstance(item, dict)
+    }
+    changed = False
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("task_type") != "image_to_video":
+            continue
+        raw_references = task.get("reference_images")
+        if not isinstance(raw_references, list):
+            continue
+        try:
+            references = canonicalize_references(
+                [ImageReference.model_validate(item) for item in raw_references]
+            )
+        except Exception:
+            continue  # 引用本身不合法：交给校验器如实报错
+        dropped = sorted(
+            reference.asset_id
+            for reference in references
+            if reference.asset_id in video_ids
+        )
+        if not dropped:
+            continue
+        remaining = canonicalize_references(
+            [
+                reference
+                for reference in references
+                if reference.asset_id not in video_ids
+            ]
+        )
+        prompt = task.get("prompt")
+        if isinstance(prompt, str):
+            task["prompt"] = remap_prompt_references(
+                prompt, references, remaining, mime_types
+            )
+        task["reference_images"] = [
+            reference.model_dump(mode="json") for reference in remaining
+        ]
+        for asset_id in dropped:
+            if asset_id in excluded_ids:
+                continue
+            exclusions.append(
+                {"asset_id": asset_id, "reason": _VIDEO_REFERENCE_REASON}
+            )
+            excluded_ids.add(asset_id)
+        changed = True
+    if changed:
+        payload["excluded_assets"] = exclusions
+
+
 def _storyboard_requirements(
     document: NormalizedDocument,
 ) -> dict[str, list[str]]:
@@ -447,6 +758,10 @@ def _normalize_generated_plan_payload(
             ]
         if task.get("task_type") == "image_to_video":
             task["image_size"] = None
+            # Provider and candidate count are runtime/human policy, not a
+            # creative-planning decision.
+            task["video_provider"] = None
+            task["output_count"] = 1
         raw_references = task.get("reference_images")
         prompt = task.get("prompt")
         if not isinstance(raw_references, list) or not isinstance(prompt, str):
@@ -507,6 +822,32 @@ def _normalize_generated_plan_payload(
     return issues
 
 
+#: 视频素材抽帧后的素材 id 后缀（见 graph/nodes.py 的 analyze_images）。
+_FRAME_SUFFIX = "-frame"
+
+
+def _register_video_frame_aliases(assets: dict[str, Any]) -> None:
+    """让「视频抽出来的那一帧」被当作原视频的别名。
+
+    视频不能直接当参考图，`analyze_images` 会把 `video-1` 抽帧成 `video-1-frame`
+    再交给规划；于是**计划引用的是帧、校验查的是文档里的原始素材** —— 不认这个别名
+    就会同时报「unknown asset_id video-1-frame」和「uncovered successful asset
+    video-1」（2026-09-17 超级大床实测，用户看到的「一直都有问题」）。
+    """
+    for asset_id, asset in list(assets.items()):
+        if str(getattr(asset, "mime_type", "")).startswith("video/"):
+            assets.setdefault(f"{asset_id}{_FRAME_SUFFIX}", asset)
+
+
+def _asset_base_id(asset_id: str, assets: dict[str, Any]) -> str:
+    """把抽帧素材归回原视频（`video-1-frame` → `video-1`），覆盖统计按原素材算。"""
+    if asset_id.endswith(_FRAME_SUFFIX):
+        base = asset_id[: -len(_FRAME_SUFFIX)]
+        if base in assets:
+            return base
+    return asset_id
+
+
 def validate_plan(
     plan: TaskPlan | dict[str, Any],
     document: NormalizedDocument,
@@ -537,6 +878,7 @@ def validate_plan(
 
     block_ids = {block.block_id for block in document.blocks}
     assets = {asset.asset_id: asset for asset in document.media_assets}
+    _register_video_frame_aliases(assets)
     storyboard_requirements = _storyboard_requirements(document)
     task_ids: set[str] = set()
     referenced_asset_ids: set[str] = set()
@@ -621,7 +963,8 @@ def validate_plan(
                 )
                 continue
             task_reference_ids.append(asset_id)
-            referenced_asset_ids.add(asset_id)
+            # 引用「视频抽出来的帧」＝引用那个视频，否则覆盖统计会把原视频记成未使用。
+            referenced_asset_ids.add(_asset_base_id(asset_id, assets))
             asset = assets.get(asset_id)
             if asset is None:
                 issues.append(
@@ -795,7 +1138,7 @@ def validate_plan(
         if not isinstance(asset_id, str) or not asset_id:
             issues.append(f"{prefix}.asset_id: must be a non-empty string")
             continue
-        excluded_asset_ids.append(asset_id)
+        excluded_asset_ids.append(_asset_base_id(asset_id, assets))
         asset = assets.get(asset_id)
         if asset is None:
             issues.append(f"{prefix}.asset_id: unknown asset_id {asset_id}")
@@ -911,6 +1254,29 @@ def validate_plan(
     return issues
 
 
+_REWORK_FUSION_SYSTEM_PROMPT = (
+    "你是生成模型提示词的改写器。把「原始提示词」与「历次返工要求」合并，"
+    '只输出一个 JSON 对象：{"prompt": 改写后的提示词, "must_avoid": [必须避免项]}。\n'
+    "prompt 的硬性要求：\n"
+    "1. 保留原始提示词里的全部画面信息（主体、场景、构图、动作、运镜、风格与"
+    "画质约束），不得删减。\n"
+    "2. 原始提示词中出现的每一个 @图片N / @视频N / @音频N 引用令牌都必须原样"
+    "保留，一个都不能增加、不能删除、不能改号。\n"
+    "3. 每一条返工要求都必须落实：能写成正向画面描述的写进 prompt，只能写成"
+    "禁止项的放进 must_avoid。一条都不能遗漏。\n"
+    "4. 用户的返工要求往往是口语，必须改写成具体、可执行、可判定的物理描述，"
+    "不能照抄口语。例如「不要让红衣服老头跑出去」：prompt 写「老头d 双脚始终"
+    "踩在起跑线后，全程不发生位移，镜头结束时仍保持起跑姿势」，must_avoid 写"
+    "「老头d 不得跑出起跑线」。禁止把空泛的「不要…」「别…」当作唯一表述。\n"
+    "5. 若新旧要求冲突，以更新的要求为准，并把被替代的表述改写掉而不是并存。\n"
+    "6. 不要输出「【返工要求】」这类标记或解释性标题。\n"
+    f"7. prompt 不超过 {SEEDANCE_PROMPT_MAX_CHARS} 个字符。\n"
+    "must_avoid 的要求：每条是简短祈使句、针对画面里可判定的事物（不得出现"
+    "文字或水印、不得位移、不得发光等）；最多 8 条；没有就给空数组。\n"
+    "只输出 JSON，不要任何前后缀说明。"
+)
+
+
 class DeepSeekPlanner:
     def __init__(self, model: Any, *, max_output_count: int = 4) -> None:
         # reasoning_effort / thinking 必须直接写进模型配置再 bind，
@@ -943,6 +1309,107 @@ class DeepSeekPlanner:
                 extra_body={"thinking": {"type": "disabled"}},
             )
         self.max_output_count = max_output_count
+        # 保留原始模型，供按需派生「融合模型」（见 _fuse_model）。
+        # 刻意不在构造期 bind：存量测试对构造期的 bind 次数有严格断言。
+        self._model = model
+
+    def _fuse_model(self) -> Any:
+        """派生出用于返工融合的模型副本：改写任务不需要推理预算，关掉思考。"""
+        model = self._model
+        if hasattr(model, "model_copy"):
+            return model.model_copy(
+                update={"extra_body": {"thinking": {"type": "disabled"}}}
+            )
+        return model
+
+    async def fuse_rework_prompt(
+        self,
+        original_prompt: str,
+        requirements: list[str],
+        *,
+        visual_context: str = "",
+    ) -> dict[str, Any] | None:
+        """把「原始提示词 + 全部历史返工要求」融合成提示词与必避清单。
+
+        返回 `{"prompt": str, "must_avoid": list[str]}`：口语要求被改写成可执行的
+        物理描述，正向的进 prompt、禁止项进 must_avoid（调用方并入
+        negative_constraints，会以「必须避免：…」整块附在提交文本末尾）。
+
+        任何失败（异常、空返回、非 JSON、缺 prompt）都返回 None，由调用方回退到
+        安全拼接——融合能力不可用绝不能让返工本身失败。
+        """
+        entries = [
+            item.strip()
+            for item in requirements
+            if isinstance(item, str) and item.strip()
+        ]
+        if not entries:
+            return None
+        user_content = "\n".join(
+            [
+                "原始提示词：",
+                original_prompt,
+                "",
+                *(
+                    [
+                        "上一版成片的实际画面（模型直接看过视频，不是你猜的）：",
+                        visual_context.strip(),
+                        "",
+                    ]
+                    if visual_context.strip()
+                    else []
+                ),
+                "历次返工要求（必须全部融入，一条都不能遗漏）：",
+                *[
+                    f"{index}. {item}"
+                    for index, item in enumerate(entries, 1)
+                ],
+            ]
+        )
+        messages = [
+            {"role": "system", "content": _REWORK_FUSION_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        fuse_model = self._fuse_model()
+        try:
+            fuse_model = fuse_model.bind(
+                response_format={"type": "json_object"}
+            )
+        except Exception:
+            pass
+        try:
+            with tracing_context(enabled=False, parent=False):
+                response = await fuse_model.ainvoke(
+                    messages,
+                    config={"callbacks": []},
+                )
+        except Exception:
+            _LOGGER.warning("返工提示词融合调用失败", exc_info=True)
+            return None
+        content = self._response_content(response)
+        if not isinstance(content, str):
+            return None
+        text = content.strip()
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        prompt = payload.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return None
+        entries = payload.get("must_avoid")
+        must_avoid: list[str] = []
+        if isinstance(entries, list):
+            must_avoid = [
+                str(item).strip()
+                for item in entries
+                if isinstance(item, str) and str(item).strip()
+            ]
+        return {"prompt": prompt.strip(), "must_avoid": must_avoid}
 
     async def plan(
         self,
@@ -953,6 +1420,9 @@ class DeepSeekPlanner:
         exact_system_prompt: str | None = None,
         mode: PlanningMode = "video",
         character_context: str | None = None,
+        knowledge_context: str | None = None,
+        media_parts: list[dict[str, Any]] | None = None,
+        history_context: str | None = None,
     ) -> TaskPlan:
         image_mode = mode == "image"
         if exact_system_prompt is not None:
@@ -979,9 +1449,43 @@ class DeepSeekPlanner:
                 "（role=reference_image），并在 prompt 中沿用该角色的既有形象，"
                 "不要用文档里的普通图片替代。"
             )
+        if history_context:
+            # 用户 2026-09-18 选的第 2 条：把**这条需求历次返工被要求改的地方**喂进规划，
+            # 让重新规划时直接避开上次被挑出来的问题 —— 少一轮"生成完才发现不对"。
+            # 不增加任何模型调用（这些要求本来就在我们自己的数据里）。
+            user_content = (
+                f"{user_content}\n\n"
+                "【这条需求以前返工被要求改过的地方（这次规划要直接做到，不要再犯）】\n"
+                f"{history_context}\n"
+                "以上是同一个需求在以往几版里被明确要求修的问题。请在本轮规划里就"
+                "写进对应镜头（写成可判定的画面描述），不要等生成完再被挑出来。"
+            )
+        if knowledge_context:
+            # 知识库经验要在**写 prompt 之前**给到模型，让它一次写对；
+            # 而不是等 planner 写完再回头改写（那样是两次加工，会互相打架）。
+            user_content = (
+                f"{user_content}\n\n"
+                "【知识库经验（写 prompt 时就要遵守）】\n"
+                f"{knowledge_context}\n"
+                "以上是平台实际踩过的坑与硬约束。请在生成 prompt 时就遵守，"
+                "不要产出一个之后再改；与文档要求冲突时以知识库为准，"
+                "并在计划里说明依据。"
+            )
+        # 多模态规划（用户 2026-09-17 批准）：把**原始图片/视频**直接放进用户消息，
+        # 模型就不用靠视觉描述去猜"哪张图是第几个素材、对应哪个镜头" —— 实测同一份
+        # 文档：纯文本流程 3 次重试全废（编号/顺序契约），多模态一次 29.6s 成功。
+        user_message: dict[str, Any] = {"role": "user", "content": user_content}
+        if media_parts:
+            user_message = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_content},
+                    *media_parts,
+                ],
+            }
         messages = [
             {"role": "system", "content": effective_system_prompt},
-            {"role": "user", "content": user_content},
+            user_message,
         ]
 
         def validate_payload(payload: dict[str, Any]) -> list[str]:
@@ -989,6 +1493,12 @@ class DeepSeekPlanner:
                 payload,
                 document,
             )
+            # 分镜行的 block id 由代码补齐（模型枚举不稳，实测必漏）。
+            _fill_storyboard_source_block_ids(payload, document)
+            # 视频只作分镜参考：从参考图里摘掉并排除（用户口径 2026-09-17）。
+            _exclude_video_references(payload, document)
+            # 「挂了却没被具体用起来」的素材摘掉并排除（两条规则互相夹住的死结）。
+            _exclude_unused_references(payload, document)
             return [
                 *normalization_issues,
                 *validate_plan(
@@ -1152,6 +1662,15 @@ class DeepSeekPlanner:
                     "为每个素材写具体中文语义；多分镜使用镜头 1/2/3，"
                     "每个镜头直接绑定相关素材，禁止绝对秒数，并补齐画质、"
                     "稳定、无水印和无 Logo 约束。"
+                ),
+                (
+                    "视频参考语义中的 camera_movement / editing_style summary "
+                    "必须写入对应 image_to_video 任务的 prompt，明确描述运镜和剪辑节奏；"
+                    "没有视频参考时也要写出每个镜头的运镜与动作逻辑。"
+                ),
+                (
+                    f"每个 image_to_video 任务的 prompt 总长度不得超过 {SEEDANCE_PROMPT_MAX_CHARS} 字；"
+                    "优先保留表情、动作、物理逻辑、运镜和硬性约束。"
                 ),
                 (
                     "分镜合并规则：同一分镜表的多行必须合并为一个视频任务，"
@@ -1394,12 +1913,27 @@ class DeepSeekPlanner:
         errors: list[str],
     ) -> AgentError:
         language_failure = language_validation_message(errors)
-        message_prefix = (
-            "模型三次返回的 JSON 均未通过中文规划校验："
-            f"{language_failure}"
-            if language_failure
-            else "模型三次返回的 JSON 均未通过校验"
-        )
+        # 分清两种失败：模型没吐出合法 JSON（response:/schema.），还是 JSON 合法但
+        # 计划不满足契约。以前一律报「JSON 未通过校验」，把用户往错方向带
+        # （2026-09-17 实测：超级大床连续失败，其实是契约问题）。
+        json_level = [
+            error
+            for error in errors
+            if error.startswith("response:") or error.startswith("schema.")
+        ]
+        contract_issues = [error for error in errors if error not in json_level]
+        if language_failure:
+            message_prefix = (
+                "模型三次返回的 JSON 均未通过中文规划校验："
+                f"{language_failure}"
+            )
+        elif contract_issues:
+            message_prefix = (
+                f"计划未通过契约校验（{len(errors)} 条），例如："
+                f"{contract_issues[0]}"
+            )
+        else:
+            message_prefix = "模型三次返回的 JSON 均未通过校验"
         return AgentError(
             ErrorDetail(
                 category=ErrorCategory.VALIDATION,

@@ -45,6 +45,7 @@ _VIDEO_SYSTEM_PROMPT = """你是严格的视频参考语义分析工具。
 4. representative_frame_index 选择最能代表该语义的帧序号（从 1 开始）。
 5. 不确定的内容只能写入 uncertainties，不得混入 summary。
 6. 严格按给定结构返回结果，不要附加解释或原始响应。
+7. camera_movement 必须结合帧间主体位移、画面边界变化和透视变化判断，summary 中写明具体运镜方式（如缓慢推近、手持跟随、从左向右摇镜），不得只写“有运镜”。
 """
 
 

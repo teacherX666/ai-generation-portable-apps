@@ -42,12 +42,26 @@ test("style preset buttons are rendered for image tasks", () => {
   assert.match(appSource, /task-style-presets/);
 });
 
-test("video tasks expose a task-level provider picker", () => {
+test("video tasks expose capability-driven model controls", () => {
   assert.match(appSource, /videoProviderPicker/);
-  assert.match(appSource, /video_provider: control\.value/);
-  assert.match(appSource, /videoProviderPicker\(task\)/);
+  assert.match(appSource, /normalizeVideoTaskPatch/);
+  assert.match(appSource, /video_provider: option\.value/);
+  assert.match(appSource, /durationInput/);
+  assert.match(appSource, /resolutionPicker/);
+  assert.match(appSource, /videoField/);
+  assert.match(appSource, /video-param-grid/);
+  assert.match(appSource, /task-model-capability/);
+  const gridRule = cssRule(".video-param-grid");
+  const controlRule = cssRule(".task-control");
+  assert.match(gridRule, /grid-template-columns/);
+  assert.match(controlRule, /height:\s*2\.5rem/);
 });
 
+test("artifact review exposes single-task rerun selection", () => {
+  assert.match(appSource, /artifactRetryTaskIds/);
+  assert.match(appSource, /artifact-retry-choice/);
+  assert.match(appSource, /body\.task_ids = \[\.\.\.state\.artifactRetryTaskIds\]/);
+});
 test("video-only controls stay out of the image branch", () => {
   const branchStart = appSource.indexOf('task.task_type === "image_to_image"');
   assert.ok(branchStart > 0, "找不到图片分支");

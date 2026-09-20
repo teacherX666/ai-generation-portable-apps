@@ -67,6 +67,20 @@ class _Runtime(Protocol):
     async def resume_pending_runs(self) -> None: ...
 
 
+def _annotate_claim(
+    task: BitableTaskSummary, binding: BitableBinding | None
+) -> BitableTaskSummary:
+    """把「这条记录已被领取」的事实挂到摘要上，而不是把记录整条滤掉。"""
+    if binding is None:
+        return task
+    return task.model_copy(
+        update={
+            "claim_status": binding.status,
+            "claimed_run_id": binding.run_id,
+        }
+    )
+
+
 class BitableMvpService:
     def __init__(
         self,
@@ -120,16 +134,17 @@ class BitableMvpService:
         location, schema = await self._prepared()
         tasks = await self._bitable.list_tasks(location, schema)
         active = {
-            binding.record_id
+            binding.record_id: binding
             for binding in await self._store.list_active(
                 location.app_token or "",
                 location.table_id,
             )
         }
+        # 已领取的记录留在列表里（附带领取状态），只有已经有结果的才剔除。
         return [
-            task
+            _annotate_claim(task, active.get(task.record_id))
             for task in tasks
-            if not task.has_result and task.record_id not in active
+            if not task.has_result
         ]
 
     async def active_runs(self) -> list[BitableBinding]:
@@ -147,17 +162,13 @@ class BitableMvpService:
         planning_prompt: PlanningPromptSnapshot | None = None,
     ) -> str:
         del category
-        location, schema = await self._prepared()
-        tasks = await self._bitable.list_tasks(location, schema)
+        location = await self.prepare()
         task = next(
-            (
-                item
-                for item in tasks
-                if item.record_id == record_id and not item.has_result
-            ),
+            (item for item in await self.scan() if item.record_id == record_id),
             None,
         )
-        if task is None:
+        # 列表现在会把已领取的记录带回来，所以这里必须自己挡住重复领取。
+        if task is None or task.claimed_run_id is not None:
             raise RunConflict("该记录当前不可领取")
         run_id = str(uuid4())
         thread_id = str(uuid4())
@@ -218,9 +229,13 @@ class BitableMvpService:
         binding = await self._store.get_by_run(run_id)
         if (
             binding is None
-            or binding.status is not TableTaskStatus.WRITEBACK_FAILED
+            or binding.status not in {
+                TableTaskStatus.COMPLETED,
+                TableTaskStatus.FAILED,
+                TableTaskStatus.WRITEBACK_FAILED,
+            }
         ):
-            raise RunConflict("只有交付失败的运行可以重试交付")
+            raise RunConflict("只有已生成完成的运行可以导出结果表")
         await self._runtime.retry_delivery(run_id)
         await self._store.set_status(run_id, TableTaskStatus.WRITING_BACK)
 

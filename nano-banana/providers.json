@@ -35,7 +35,8 @@
         },
         {
           "id": "qwen2511",
-          "label": "图片编辑 Qwen 2511（免费）"
+          "label": "图片编辑 Qwen 2511（免费）",
+          "capabilities": { "modes": ["img2img"] }
         },
         {
           "id": "flux2_klein_allinone",
@@ -43,7 +44,8 @@
         },
         {
           "id": "krea2_three_stage",
-          "label": "Krea 文生图（免费）"
+          "label": "Krea 文生图（免费）",
+          "capabilities": { "modes": ["text2img"] }
         },
         {
           "id": "anime2real_auto",
@@ -95,19 +97,96 @@
       "models": [
         {
           "id": "gemini-3-pro-image",
-          "label": "gemini-3-pro-image"
+          "label": "gemini-3-pro-image",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
         },
         {
           "id": "gemini-3.1-flash-image-preview",
-          "label": "gemini-3.1-flash-image-preview"
+          "label": "gemini-3.1-flash-image-preview",
+          "capabilities": {
+            "image_size": [
+              "1K"
+            ]
+          }
         },
         {
           "id": "gemini-3-pro-image-2k",
-          "label": "gemini-3-pro-image-2k"
+          "label": "gemini-3-pro-image-2k",
+          "capabilities": {
+            "image_size": [
+              "2K"
+            ]
+          }
         },
         {
           "id": "gemini-3-pro-image-4k",
-          "label": "gemini-3-pro-image-4k"
+          "label": "gemini-3-pro-image-4k",
+          "capabilities": {
+            "image_size": [
+              "4K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-flare",
+          "label": "GPT Image 2.5 Flare",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-flare-2k",
+          "label": "GPT Image 2.5 Flare 2K",
+          "capabilities": {
+            "image_size": [
+              "2K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-flare-4k",
+          "label": "GPT Image 2.5 Flare 4K",
+          "capabilities": {
+            "image_size": [
+              "4K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-sunburst",
+          "label": "GPT Image 2.5 Sunburst",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-sunburst-2k",
+          "label": "GPT Image 2.5 Sunburst 2K",
+          "capabilities": {
+            "image_size": [
+              "2K"
+            ]
+          }
+        },
+        {
+          "id": "gpt-image-2.5-sunburst-4k",
+          "label": "GPT Image 2.5 Sunburst 4K",
+          "capabilities": {
+            "image_size": [
+              "4K"
+            ]
+          }
         }
       ]
     },
@@ -138,15 +217,32 @@
       "models": [
         {
           "id": "banana2-ssvip",
-          "label": "banana2-ssvip"
+          "label": "banana2-ssvip",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
         },
         {
           "id": "nano-banana2[2K]-base",
-          "label": "nano-banana2[2K]-base"
+          "label": "nano-banana2[2K]-base",
+          "capabilities": {
+            "image_size": [
+              "2K"
+            ]
+          }
         },
         {
           "id": "gpt-image-2",
-          "label": "gpt-image-2"
+          "label": "gpt-image-2",
+          "capabilities": {
+            "image_size": [
+              "1K",
+              "2K"
+            ]
+          }
         }
       ]
     },
@@ -190,6 +286,5 @@
         }
       ]
     }
-  },
-  "cloud_fallback_provider": "t8star"
+  }
 }

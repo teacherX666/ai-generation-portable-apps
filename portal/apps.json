@@ -91,7 +91,7 @@
     "port_default": 8765,
     "mount": "iframe",
     "iframe_url": "/feishu-generation-agent/",
-    "managed": false,
+    "managed": true,
     "credential_scheme": "none",
     "job_type": "dynamic",
     "metrics": ["images", "seconds"],
@@ -139,5 +139,25 @@
     "metrics": ["images"],
     "unit_label": "次",
     "stats_combine": "images_or_seconds"
+  },
+  {
+    "_comment": "本地 AI Port 网关（模型机 8801）。它不是 Portal 拉起的子应用，只是借 Portal 的反代把 /local-ai/* 暴露给已登录浏览器（自由创作里的智能抠图 / 视频超分要用）。managed=false 很关键：否则看门狗会把它当成需要自己拉起的子应用去重启。",
+    "name": "local-ai",
+    "display_name": "本地 AI Port",
+    "port_env": "LOCAL_AI_PORT",
+    "port_default": 8801,
+    "managed": false,
+    "mount": "iframe",
+    "iframe_url": "/local-ai/image_segment/",
+    "color": "#0ea5e9",
+    "credential_scheme": "none",
+    "job_type": "dynamic",
+    "job_type_rules": [
+      {"keywords": ["video_upscale", "video_local"], "type": "video"},
+      {"keywords": ["image_segment", "image_local"], "type": "image"}
+    ],
+    "metrics": ["images", "seconds"],
+    "unit_label": "次",
+    "stats_combine": "images_and_seconds"
   }
 ]

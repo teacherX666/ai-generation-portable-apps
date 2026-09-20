@@ -33,7 +33,6 @@ from feishu_generation_agent.domain.errors import (
 )
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
-    ArtifactReviewDecision,
 )
 from feishu_generation_agent.graph.builder import build_graph
 from feishu_generation_agent.graph.nodes import GraphServices
@@ -456,6 +455,7 @@ async def test_admin_can_read_other_users_artifact_content(
 
         owner = await client.get(url, headers=_USER_A_HEADERS)
         assert owner.status_code == 200
+        assert owner.headers["content-disposition"] == 'attachment; filename="feishu-artifact-vid.mp4"'
 
         other = await client.get(url, headers=_USER_B_HEADERS)
         assert other.status_code == 404
@@ -580,7 +580,7 @@ async def test_planner_prompt_uses_only_portal_header_user_id(tmp_path: Path) ->
     assert profile.username == "甲"
 
 
-@pytest.mark.parametrize("prompt_text", [" \t\n", "文" * 20_001])
+@pytest.mark.parametrize("prompt_text", [" \t\n", "文" * 20_001], ids=["blank", "overlong"])
 async def test_planner_prompt_rejects_blank_and_overlong_values(
     tmp_path: Path, prompt_text: str
 ) -> None:
@@ -943,6 +943,77 @@ async def test_clone_run_for_approval_reuses_approved_draft_without_generation(
     assert graph.resume_calls == 0
 
 
+async def test_clone_run_for_approval_applies_selected_feedback(tmp_path: Path) -> None:
+    async with _environment(tmp_path) as (client, runtime, graph, _repository):
+        created = await client.post(
+            "/api/runs", json={"source_url": "https://tenant.feishu.cn/docx/rerun-feedback"}
+        )
+        original_run_id = created.json()["run_id"]
+        original = await _wait_for_status(client, original_run_id, "waiting_approval")
+        task = original["approval"]["tasks"][0]
+        graph.states[original["thread_id"]]["approved_tasks"] = [task]
+
+        cloned_run_id = await runtime.clone_run_for_approval(
+            original_run_id,
+            RequirementRequest(source_url=original["source_url"]),
+            run_id="rerun-feedback",
+            thread_id="rerun-feedback-thread",
+            task_ids=[task["task_id"]],
+            feedback="动作再慢一点",
+        )
+        cloned = await _wait_for_status(client, cloned_run_id, "waiting_approval")
+
+    assert cloned["approval"]["selected_task_ids"] == [task["task_id"]]
+    # 融合不可用 → 正文保持原样（2026-09-18「不要越叠越多」）；
+    # 要求仍被记进 rework_requirements，一条都不会丢。
+    assert "【返工要求】" not in cloned["approval"]["tasks"][0]["prompt"]
+    assert (
+        "动作再慢一点"
+        in cloned["approval"]["tasks"][0]["rework_requirements"]
+    )
+
+
+async def test_clone_run_for_approval_keeps_previous_rework_requirements(
+    tmp_path: Path,
+) -> None:
+    """多维表格重跑也必须「只累积不覆盖」。
+
+    旧实现会先把提示词里已有的【返工要求】段整段删掉再追加新的，
+    于是上一轮修好的问题在下一轮必然复发。
+    """
+    async with _environment(tmp_path) as (client, runtime, graph, _repository):
+        created = await client.post(
+            "/api/runs",
+            json={"source_url": "https://tenant.feishu.cn/docx/rerun-accumulate"},
+        )
+        original_run_id = created.json()["run_id"]
+        original = await _wait_for_status(client, original_run_id, "waiting_approval")
+        task = original["approval"]["tasks"][0]
+        seeded = copy.deepcopy(task)
+        seeded["rework_base_prompt"] = task["prompt"]
+        seeded["rework_requirements"] = ["手不要僵"]
+        seeded["prompt"] = f"{task['prompt']}\n【返工要求】手不要僵"
+        graph.states[original["thread_id"]]["approved_tasks"] = [seeded]
+
+        cloned_run_id = await runtime.clone_run_for_approval(
+            original_run_id,
+            RequirementRequest(source_url=original["source_url"]),
+            run_id="rerun-accumulate",
+            thread_id="rerun-accumulate-thread",
+            task_ids=[task["task_id"]],
+            feedback="背景太暗",
+        )
+        cloned = await _wait_for_status(client, cloned_run_id, "waiting_approval")
+
+    requirements = cloned["approval"]["tasks"][0]["rework_requirements"]
+    # 融合不可用时正文原样（2026-09-18），但历次要求**只累积不覆盖**。
+    assert requirements == ["手不要僵", "背景太暗"]
+    # 冻结基准仍是第一版（融合的输入，不能动）……
+    assert cloned["approval"]["tasks"][0]["rework_base_prompt"] == task["prompt"]
+    # ……但「改前原文」要指向**上一版**（这一版还没返工时的提示词），
+    # 审批页才能看到「这次改了什么」。
+    assert cloned["approval"]["tasks"][0]["rework_previous_prompt"] == seeded["prompt"]
+
 async def test_clone_prefers_approved_plan_when_approved_tasks_are_missing(
     tmp_path: Path,
 ) -> None:
@@ -1129,19 +1200,7 @@ async def _complete_run_with_approval_edits(
             tasks=[edited_task],
         ),
     )
-    # 生成完成后会停在「成片确认」门禁，确认后才回写结果列并到达终态。
-    for _ in range(200):
-        source = await runtime.get_run_view(run_id)
-        if source["status"] == "waiting_review":
-            break
-        await asyncio.sleep(0.01)
-    else:
-        raise AssertionError("run did not reach artifact review after approval")
-    await runtime.resume_artifact_review(
-        run_id,
-        ArtifactReviewDecision(action="confirm"),
-    )
-    # resume_run 现在异步执行生成与交付，需轮询到终态再断言。
+    # 生成完成即到达终态（succeeded），导出结果表是独立的按需操作。
     for _ in range(200):
         source = await runtime.get_run_view(run_id)
         if source["status"] in {"succeeded", "failed"}:
@@ -1168,6 +1227,45 @@ async def _complete_run_with_approval_edits(
     assert services.video_generator.submit_calls == 1
     return approved
 
+
+async def test_successful_run_exports_only_after_manual_request(
+    fake_services: GraphServices,
+) -> None:
+    graph = build_graph(fake_services, InMemorySaver())
+    runtime = GraphRuntime(
+        graph=graph,
+        repository=fake_services.repository,
+        file_store=fake_services.file_store,
+        settings=fake_services.settings,
+        delivery_writer=fake_services.delivery_writer,
+    )
+    try:
+        await _complete_run_with_approval_edits(
+            runtime,
+            graph,
+            fake_services,
+            run_id="manual-export-original",
+            thread_id="manual-export-original-thread",
+        )
+        before = await runtime.get_run_view("manual-export-original")
+        assert before["status"] == "succeeded"
+        assert before["delivery"] is None
+        assert fake_services.delivery_writer.deliver_calls == 0
+
+        await runtime.retry_delivery("manual-export-original")
+        for _ in range(200):
+            after = await runtime.get_run_view("manual-export-original")
+            if after["status"] != "delivering":
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("manual export did not finish")
+
+        assert after["status"] == "succeeded"
+        assert after["delivery"]["status"] == "succeeded"
+        assert fake_services.delivery_writer.deliver_calls == 1
+    finally:
+        await runtime.close()
 
 async def _assert_cloned_approval_matches(
     runtime: GraphRuntime,
@@ -1625,7 +1723,8 @@ async def test_run_view_recomputes_real_plan_and_audit_validation_issues(
         state["task_plan"] = copy.deepcopy(state["draft_plan"])
         state["audit_report"] = {
             "issues": [
-                "镜头动作缺少可执行细节",
+                "技术阻断：镜头动作缺少可执行细节",
+                "技术阻断：镜头动作缺少可执行细节",
                 "镜头动作缺少可执行细节",
             ],
             "corrections_required": True,
@@ -1635,10 +1734,13 @@ async def test_run_view_recomputes_real_plan_and_audit_validation_issues(
         response = await client.get(f"/api/runs/{run_id}")
         validation_issues = response.json()["approval"]["validation_issues"]
 
+        # 7c4978b 起审批校验只上浮「技术阻断/人工处理」类审计问题，
+        # 普通建议性审计问题不上浮（此断言同时锁定该行为）。
         assert validation_issues == [
             "tasks[0].source_block_ids: unknown block_id 'missing-block'",
-            "audit: 镜头动作缺少可执行细节",
+            "audit: 技术阻断：镜头动作缺少可执行细节",
         ]
+        assert "audit: 镜头动作缺少可执行细节" not in response.text
         assert "任意旧原文绝不能回传" not in response.text
 
 
@@ -2939,6 +3041,15 @@ async def test_health_reports_capabilities_without_secrets(tmp_path: Path):
     body = response.json()
     assert body["ready"] is False
     assert body["capabilities"]["feishu_read"]["configured"] is False
+    assert body["defaults"]["video_provider"] == "seedance2.5"
+    assert [item["name"] for item in body["providers"]["video"]] == [
+        "seedance2.0",
+        "seedance2.5",
+    ]
+    assert body["providers"]["video"][0]["label"] == "Seedance 2.0（最高 4K）"
+    assert body["providers"]["video"][1]["label"] == "Seedance 2.5（最长 30 秒）"
+    assert "4k" in body["providers"]["video"][0]["capabilities"]["resolutions"]
+    assert "4k" not in body["providers"]["video"][1]["capabilities"]["resolutions"]
     assert "secret" not in response.text.lower()
     assert "api_key" not in response.text.lower()
 

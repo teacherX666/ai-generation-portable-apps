@@ -190,7 +190,7 @@
       if (localStorage.getItem('portal_onboarded') === '1') { clearInterval(timer); return; }
       const label = document.getElementById('userLabel');
       if (label && label.textContent) {
-        if (document.body.classList.contains('portal-home-active')) return;
+        if (document.body.classList.contains('portal-home-active')) { clearInterval(timer); return; }
         clearInterval(timer);
         ensureHelpDialog().showModal();
       } else if (tries >= 20) {
@@ -299,6 +299,9 @@
     try {
       if (jobId === undefined || jobId === null || jobId === '') return;
       const norm = normalizeNotifyStatus(String(status));
+      window.dispatchEvent(new CustomEvent('portal:historyupdated', {
+        detail: { jobId: String(jobId), status: norm, label: label || '', tab: tab || '' },
+      }));
       const map = _notifyLoadSeen();
       if (map[jobId] === norm) return; // 已通知过（含子应用侧先弹）
       map[jobId] = norm;
@@ -355,7 +358,6 @@
     { tab: 'dreamina', app: 'dreamina', label: '即梦创作' },
     { tab: 'volcengine-portrait', app: 'volcengine-portrait', label: '人像视频' },
   ];
-  const POLL_MS = 15000;
   let username = '';
   let role = '';
   let state = { seeded: false, seen: {}, unread: {} };
@@ -364,6 +366,10 @@
   const latestActive = {};
   const latestQueue = {};
   const acknowledgeTimers = new Map();
+  const FALLBACK_POLL_MS = 15000;
+  let historyEventSource = null;
+  let statusRefreshTimer = null;
+  let fallbackPollTimer = null;
 
   function normalize(status) {
     const value = String(status || '').toLowerCase();
@@ -560,6 +566,47 @@
     saveState();
   }
 
+  function scheduleStatusRefresh() {
+    clearTimeout(statusRefreshTimer);
+    statusRefreshTimer = window.setTimeout(refresh, 250);
+  }
+
+  // SSE 是主通道，但反向代理/中间件可能掐断长连接且浏览器不再重连。
+  // 一旦 error 就回落到定时轮询，重连成功（open）再停掉，避免状态徽标静默停更。
+  function startFallbackPoll() {
+    if (fallbackPollTimer !== null) return;
+    fallbackPollTimer = window.setInterval(refresh, FALLBACK_POLL_MS);
+  }
+
+  function stopFallbackPoll() {
+    if (fallbackPollTimer === null) return;
+    window.clearInterval(fallbackPollTimer);
+    fallbackPollTimer = null;
+  }
+
+  function connectHistoryEvents() {
+    if (!('EventSource' in window)) {
+      startFallbackPoll();
+      return;
+    }
+    if (historyEventSource) return;
+    historyEventSource = new EventSource('/api/platform/history/events');
+    historyEventSource.addEventListener('open', () => {
+      stopFallbackPoll();
+      window.dispatchEvent(new CustomEvent('portal:historyupdated', { detail: { reason: 'connected' } }));
+      scheduleStatusRefresh();
+    });
+    historyEventSource.addEventListener('history', (event) => {
+      let detail = {};
+      try { detail = JSON.parse(event.data || '{}'); } catch (e) {}
+      window.dispatchEvent(new CustomEvent('portal:historyupdated', { detail }));
+      scheduleStatusRefresh();
+    });
+    historyEventSource.addEventListener('error', () => {
+      startFallbackPoll();
+    });
+  }
+
   document.addEventListener('portal:tabchange', (event) => {
     const tab = event.detail?.tab || '';
     acknowledgeTab(tab);
@@ -568,7 +615,7 @@
   });
   SPECS.forEach((spec) => { ensureBadge(spec); bindModuleInteractions(spec); });
   refresh();
-  setInterval(refresh, POLL_MS);
+  connectHistoryEvents();
 })();
 // === Contextual per-module help ===
 (function () {
@@ -714,4 +761,29 @@
   let seen = false;
   try { seen = localStorage.getItem('portal_release_seen') === VERSION; } catch (e) {}
   if (!seen) window.setTimeout(() => { notice.hidden = false; }, 180);
+})();
+
+// Force loaded module iframes to pick up frontend fixes once per asset revision.
+(function () {
+  const key = 'aiPortal.moduleAssetVersion';
+  const version = '20260914-task-live-fix3';
+  try {
+    if (localStorage.getItem(key) === version) return;
+    localStorage.setItem(key, version);
+  } catch (e) {
+    return;
+  }
+  const reloadLoadedFrames = () => {
+    let count = 0;
+    document.querySelectorAll('iframe.portal-iframe[src]').forEach((iframe) => {
+      try {
+        const url = new URL(iframe.getAttribute('src'), window.location.origin);
+        url.searchParams.set('portal_v', version);
+        iframe.src = url.toString();
+        count += 1;
+      } catch (e) {}
+    });
+    return count;
+  };
+  if (reloadLoadedFrames() === 0) window.setTimeout(reloadLoadedFrames, 1500);
 })();

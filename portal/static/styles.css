@@ -663,7 +663,10 @@ button:disabled,
 
 /* Volcengine Portrait — Blue/White Theme */
 .portrait-container { max-width: 100%; }
-.portrait-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.portrait-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }
+/* 资产库卡片撑满左列高度：与右列生成视频等高，下方不再留白空隙 */
+#vp-library { height: 100%; display: flex; flex-direction: column; }
+#vp-generate { height: 100%; display: flex; flex-direction: column; }
 @media (max-width: 900px) { .portrait-grid { grid-template-columns: 1fr; } }
 .portrait-grid .card.full-width { grid-column: 1 / -1; }
 .portrait-tabs-bar { display: flex; gap: 6px; margin-bottom: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px; }
@@ -2207,8 +2210,6 @@ body.portal-home-active .portal-home-panel {
 }
 body.portal-home-active #globalBanner,
 body.portal-home-active .portal-mobile-switcher { display: none !important; }
-#portalHomeExitBtn { display: none; }
-body.portal-home-active #portalHomeExitBtn { display: inline-flex; }
 /* ========================================================================
    RedCraft Home — RED INFINITY · 红海无限 AI 创作平台
    高端红色系落地页。仅作用于首页 tab，不改顶部栏与导航几何。
@@ -2237,40 +2238,6 @@ body.portal-home-active #portalHomeExitBtn { display: inline-flex; }
   background: linear-gradient(90deg, #7C0B18, #C4102A 34%, #E6303B 66%, #F25C3D);
 }
 
-/* ---- 品牌栏（首页内容内，独立于全局顶部栏） ---- */
-.rc-home__bar {
-  position: sticky; top: 0; z-index: 20;
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  padding: 18px clamp(28px, 5vw, 72px);
-  border-bottom: 1px solid var(--rc-line);
-  background: rgba(251, 250, 248, 0.94);
-}
-.rc-brand { display: flex; align-items: center; gap: 12px; }
-.rc-brand__mark {
-  flex: none; width: 40px; height: 40px; border-radius: 11px;
-  display: grid; place-items: center;
-  background: linear-gradient(135deg, #F14A5A, #C4102A);
-  color: #fff; font-size: 21px; font-weight: 800; line-height: 1;
-  box-shadow: 0 8px 18px rgba(193, 16, 42, 0.26);
-}
-.rc-brand__copy { display: flex; flex-direction: column; line-height: 1.18; }
-.rc-brand__copy strong { font-size: 18px; font-weight: 760; letter-spacing: -0.01em; }
-.rc-brand__copy span { font-size: 12px; color: var(--rc-ink-3); font-weight: 500; margin-top: 2px; }
-
-/* 返回工作台（首页内） */
-body.portal-home-active #portalHomeExitBtn {
-  display: inline-flex !important;
-  align-items: center; justify-content: center;
-  height: 40px; margin: 0 !important; padding: 0 20px;
-  border: 1px solid var(--rc-line); border-radius: 999px;
-  background: #fff; color: var(--rc-ink);
-  font-size: 13px; font-weight: 650; letter-spacing: 0.02em;
-  cursor: pointer;
-  transition: color .18s ease, border-color .18s ease, transform .18s ease;
-}
-body.portal-home-active #portalHomeExitBtn:hover {
-  color: var(--rc-red); border-color: var(--rc-red); transform: translateY(-1px);
-}
 
 /* ---- Hero ---- */
 .rc-hero {
@@ -2444,6 +2411,170 @@ body.portal-home-active #portalHomeExitBtn:hover {
 .vp-zoom-meta { display: flex; gap: 14px; padding: 8px 14px; font-size: 11.5px; color: #64748b; border-top: 1px solid #e2e8f0; }
 .vp-zoom-id { font-family: monospace; }
 
+/* ── 人像模块：任务矩阵（对齐 seedance/nano job-grid，2026-09-09） ── */
+.vp-job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.vp-job-tile {
+  border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; overflow: hidden;
+  display: flex; flex-direction: column; cursor: pointer; transition: border-color .15s, box-shadow .15s;
+}
+.vp-job-tile:hover { border-color: #2563eb; box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+.vp-job-tile-media { position: relative; height: 96px; background: #f1f5f9; display: grid; place-items: center; overflow: hidden; }
+.vp-job-tile-media video, .vp-job-tile-media img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+.vp-job-tile-ph { font-size: 26px; color: #94a3b8; }
+.vp-job-tile-cancelled {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.vp-cancel-stop {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border: 2px solid #94a3b8;
+  border-radius: 50%;
+  background: #f8fafc;
+}
+.vp-cancel-stop::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 2px;
+  background: #94a3b8;
+  border-radius: 2px;
+  transform: translateY(-50%);
+}
+.vp-job-tile-meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px 0; flex-wrap: wrap; }
+.vp-job-tile-badge {
+  font-size: 10px; font-weight: 600; color: #fff; background: #64748b;
+  padding: 1px 7px; border-radius: 999px; letter-spacing: .2px; text-transform: capitalize;
+}
+.vp-job-tile-badge.succeeded, .vp-job-tile-badge.success, .vp-job-tile-badge.completed { background: #16a34a; }
+.vp-job-tile-badge.failed, .vp-job-tile-badge.failure { background: #dc2626; }
+.vp-job-tile-badge.queued, .vp-job-tile-badge.pending, .vp-job-tile-badge.running, .vp-job-tile-badge.querying { background: #2563eb; }
+.vp-job-tile-badge.interrupted { background: #d97706; }
+.vp-job-tile-badge.cancelled, .vp-job-tile-badge.canceled { background: #94a3b8; }
+.vp-job-tile-time { font-size: 10.5px; color: #687386; margin-left: auto; }
+.vp-job-tile-prompt {
+  font-size: 11.5px; color: #334155; line-height: 1.45; padding: 4px 8px;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  min-height: 37px;
+}
+.vp-job-tile-foot { display: flex; gap: 6px; padding: 6px 8px 8px; flex-wrap: wrap; margin-top: auto; }
+.vp-job-tile-btn {
+  font-size: 10.5px; color: #475569; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 6px; padding: 3px 9px; cursor: pointer; line-height: 1.4;
+}
+.vp-job-tile-btn:hover { color: #2563eb; background: #eef5ff; border-color: #2563eb; }
+.vp-job-tile-btn--dl { color: #1d4ed8; border-color: #bfd4f8; background: #eaf1fe; }
+.vp-job-tile-btn--retry { color: #15803d; border-color: #bbf7d0; background: #e8f7ee; }
+.vp-job-tile-btn--cancel { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
+
+/* 详情弹窗内容区 */
+.vp-job-detail-body { max-height: 66vh; overflow-y: auto; padding: 12px 14px; font-size: 12.5px; color: #334155; }
+.vp-job-detail-status { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.vp-job-detail-prompt { color: #475569; line-height: 1.5; }
+.vp-job-detail-sec { border-top: 1px dashed #e2e8f0; padding: 8px 0; }
+.vp-job-detail-sec summary { cursor: pointer; font-weight: 600; color: #1e293b; font-size: 12px; }
+.vp-job-detail-summary { font-weight: 600; color: #1e293b; font-size: 12px; }
+.vp-job-detail-pre {
+  margin: 6px 0 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+  padding: 8px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+  max-height: 220px; overflow-y: auto; color: #334155;
+}
+.vp-job-detail-result { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.vp-job-detail-file { flex: 1; color: #64748b; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 矩阵分页控件 */
+.vp-job-pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 12px 0 2px; }
+.vp-job-pager-btn {
+  font-size: 12px; color: #475569; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 7px; padding: 5px 14px; cursor: pointer;
+}
+.vp-job-pager-btn:hover:not(:disabled) { color: #2563eb; border-color: #2563eb; background: #eef5ff; }
+.vp-job-pager-btn:disabled { color: #cbd5e1; cursor: not-allowed; }
+.vp-job-pager-info { font-size: 11.5px; color: #64748b; }
+
+/* ── 即梦模块：分段控制器 + 矩阵历史网格 + 放大弹窗操作区 ── */
+.dm-seg-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+
+.dm-history-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.dm-hist-tile {
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface);
+  cursor: pointer; transition: border-color .15s, box-shadow .15s;
+}
+.dm-hist-tile:hover { border-color: var(--accent); box-shadow: var(--shadow-md); }
+.dm-tile-media { position: relative; height: 110px; background: #edf2f8; display: grid; place-items: center; overflow: hidden; }
+.dm-tile-media img, .dm-tile-media video { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 并发生成：一个格子画多条产出的缩略图（最多 4 格，多出来的收进 +N 格子） */
+.dm-tile-media--multi { grid-template-columns: repeat(2, 1fr); grid-auto-rows: minmax(0, 1fr); gap: 2px; place-items: stretch; }
+.dm-tile-media--multi .dm-tile-thumb { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; border: 0; padding: 0; background: #dbe3ee; }
+.dm-tile-thumb--more { font-size: 13px; font-weight: 700; color: #334155; cursor: pointer; }
+.dm-tile-thumb-gone { display: grid; place-items: center; font-size: 18px; color: #94a3b8; background: #edf2f8; }
+.dm-tile-count {
+  position: absolute; right: 4px; top: 4px; z-index: 2; font-size: 10px; font-weight: 700; line-height: 1;
+  color: #fff; background: rgba(15, 23, 42, .62); border-radius: 999px; padding: 2px 6px; pointer-events: none;
+}
+/* 放大预览里的结果编号条：一个任务多条产出时逐条切换 */
+.preview-strip-item {
+  min-width: 28px; height: 24px; padding: 0 8px; border: 1px solid #cbd5e1; border-radius: 6px;
+  background: #f8fafc; color: #334155; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.preview-strip-item.is-active { border-color: var(--accent, #2563eb); background: var(--accent, #2563eb); color: #fff; }
+.dm-tile-zoom {
+  position: absolute; right: 4px; bottom: 4px; background: rgba(15, 23, 42, .55); color: #fff;
+  border-radius: 5px; font-size: 11px; line-height: 1; padding: 3px 5px; opacity: 0; transition: opacity .15s;
+}
+.dm-hist-tile:hover .dm-tile-zoom { opacity: 1; }
+.dm-tile-badge {
+  position: absolute; left: 6px; top: 6px; font-size: 10px; font-weight: 700;
+  border-radius: 999px; padding: 2px 8px; color: #fff; background: #64748b;
+}
+.dm-tile-badge.completed, .dm-tile-badge.succeeded { background: #16a34a; }
+.dm-tile-badge.failed { background: #dc2626; }
+.dm-tile-badge.running, .dm-tile-badge.querying, .dm-tile-badge.pending { background: #2563eb; }
+.dm-tile-placeholder { font-size: 26px; color: #94a3b8; }
+.dm-tile-cancelled {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.dm-cancel-stop {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border: 2px solid #94a3b8;
+  border-radius: 50%;
+  background: #f8fafc;
+}
+.dm-cancel-stop::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 2px;
+  background: #94a3b8;
+  border-radius: 2px;
+  transform: translateY(-50%);
+}
+.dm-tile-info { padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+.dm-tile-meta { font-size: 11px; color: var(--muted); }
+.dm-tile-prompt { font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-zoom-foot { padding: 10px 14px; border-top: 1px solid var(--border); }
 .rc-home::after {
   content: ""; position: absolute; z-index: 0; pointer-events: none;
   top: 0; right: -10%; width: min(720px, 70vw); height: 720px;
@@ -2478,10 +2609,9 @@ body.portal-home-active #portalHomeExitBtn:hover {
 .rc-hero__visual-ring--outer { inset: 7%; transform: rotate(-25deg) scaleX(.72); animation: rc-spin 26s linear infinite; }
 .rc-hero__visual-ring--inner { inset: 24%; border-color: rgba(225,29,46,.30); transform: rotate(25deg) scaleY(.72); animation: rc-spin-reverse 19s linear infinite; }
 .rc-hero__visual-core {
-  position: absolute; left: 50%; top: 50%; display: grid; place-items: center;
+  position: absolute; left: 50%; top: 50%; display: block;
   width: 90px; height: 90px; transform: translate(-50%, -50%);
-  border-radius: 28px; color: #fff; font-size: 44px; font-weight: 800;
-  background: linear-gradient(145deg, #F04A59, #B20E24);
+  border: 0; border-radius: 28px; object-fit: cover; background: transparent;
   box-shadow: 0 20px 48px rgba(193,16,42,.30), 0 0 0 12px rgba(225,29,46,.06);
   animation: rc-core-float 5s ease-in-out infinite;
 }

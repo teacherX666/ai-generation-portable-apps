@@ -71,6 +71,49 @@ class WorkspaceMediaTests(unittest.TestCase):
         module = load_module("nano_under_test", ROOT / "nano-banana" / "app.py")
         self.assert_reads_workspace_saved_media(module, "image_1")
 
+    def test_nano_copies_user_scoped_saved_media_into_job_workspace(self):
+        module = load_module("nano_scope_under_test", ROOT / "nano-banana" / "app.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            module.STATE_DIR = Path(tmp)
+            source_scope = "u_高大王"
+            job_scope = "ws-topic-a"
+            source_dir = module._ws_media_dir(source_scope)
+            source_dir.mkdir(parents=True)
+            (source_dir / "sample.png").write_bytes(b"user-scope-bytes")
+            values = {
+                "prompt": "test",
+                "saved_media": json.dumps({
+                    "image_1": {
+                        "stored": "sample.png",
+                        "filename": "sample.png",
+                        "mime": "image/png",
+                    }
+                }),
+            }
+
+            with mock.patch.object(module, "record_activity"), \
+                    mock.patch.object(module.threading, "Thread", FakeThread):
+                module.create_job(
+                    values,
+                    {},
+                    "page",
+                    "multipart",
+                    {"values": {}, "files": {}},
+                    job_scope,
+                    username="高大王",
+                )
+
+            destination = module._ws_media_dir(job_scope) / "sample.png"
+            self.assertEqual(destination.read_bytes(), b"user-scope-bytes")
+            self.assertEqual(
+                module.get_file_or_saved(
+                    {"saved_media": Field(values["saved_media"])},
+                    "image_1",
+                    job_scope,
+                ),
+                ("sample.png", b"user-scope-bytes"),
+            )
+
     def assert_create_job_passes_workspace_to_worker(self, module):
         FakeThread.last_args = None
         with mock.patch.object(module, "record_activity"), \

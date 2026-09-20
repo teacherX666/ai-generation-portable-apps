@@ -171,14 +171,44 @@ button {
 }
 .bitable-task h3 { margin-bottom: .25rem; }
 .bitable-task-meta { margin: 0; color: var(--muted); font-size: .76rem; }
+/* 已领取/进行中任务的状态徽章（#1：记录不再从列表消失，改为挂徽章） */
+.bitable-task-badge {
+  display: inline-block;
+  margin-top: .3rem;
+  padding: .1rem .45rem;
+  border: 1px solid var(--brand-border);
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand-dark);
+  font-size: .72rem;
+}
+.bitable-task-badge[data-tone="attention"] {
+  border-color: #e0c37a;
+  background: #fff0c9;
+  color: #68420d;
+}
+.bitable-task-badge[data-tone="danger"] {
+  border-color: #e6b3ad;
+  background: #fde4e1;
+  color: #7d241e;
+}
+.bitable-task-badge[data-tone="done"] {
+  border-color: #9bc1af;
+  background: #e1f1e8;
+  color: #14503c;
+}
 .bitable-task-warning { margin: .28rem 0 0; color: #a24b12; font-size: .76rem; }
 .bitable-task a { color: var(--brand); font-size: .8rem; overflow-wrap: anywhere; }
 .bitable-empty { margin: 0; color: var(--muted); font-size: .82rem; }
 .recent-runs { margin-top: 1.1rem; border-top: 1px solid var(--line); padding-top: .85rem; }
 .recent-runs h3 { margin: 0 0 .55rem; font-size: .9rem; }
 .recent-run-list { display: grid; gap: .45rem; }
-.recent-run { display: flex; align-items: center; justify-content: space-between; gap: .7rem; padding: .7rem .75rem; border: 1px solid var(--line); border-radius: .65rem; background: #fcfdfb; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
+.recent-run { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .7rem; padding: .7rem .75rem; border: 1px solid var(--line); border-radius: .65rem; background: #fcfdfb; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
 .recent-run.is-current { border-color: color-mix(in srgb, var(--brand) 55%, var(--line)); background: color-mix(in srgb, var(--brand) 7%, white); box-shadow: inset 3px 0 0 var(--brand); }
+/* 同一条需求的历史版本叠在当前版下面（重跑不新开任务记录） */
+.recent-run-history { flex-basis: 100%; display: grid; gap: .4rem; margin-top: .15rem; padding-left: .7rem; border-left: 2px solid var(--line); }
+.recent-run-version { padding: .5rem .6rem; background: #fff; }
+.recent-run-version strong { font-size: .84rem; font-weight: 600; }
 .recent-run-details { min-width: 0; }
 .recent-run-details strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent-run-actions .is-current { color: var(--brand); background: transparent; }
@@ -681,12 +711,46 @@ button {
 .artifact-review .mode-message {
   margin: 0;
 }
+.result-table-link {
+  display: inline-flex;
+  align-items: center;
+  margin-top: .3rem;
+  padding: .42rem .7rem;
+  border: 1px solid var(--brand-border);
+  border-radius: .55rem;
+  color: var(--brand-dark);
+  background: var(--brand-soft);
+  font-weight: 750;
+  text-decoration: none;
+}
+.result-table-link:hover { background: var(--brand-soft-hover); }
+.result-table-link[hidden] { display: none; }
 .artifact-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  /* 横向滑条：当前成片与历次成片并排一行，横向滚动，不再竖着堆 */
+  display: flex;
+  align-items: flex-start;
   gap: .8rem;
   margin: .8rem 0 0;
+  padding-bottom: .35rem;
+  overflow-x: auto;
 }
+.artifact-list > .artifact-card { flex: 0 0 240px; }
+/* 历史生成：往次成片与当前成片同栏并列，中间一个分隔标记 */
+.artifact-history-divider {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: .35rem .5rem;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: .78rem;
+  text-align: center;
+  writing-mode: vertical-rl;
+  letter-spacing: .12em;
+}
+.artifact-history-card { flex: 0 0 200px; background: #f6f8f5; }
+.artifact-history-card img,
+.artifact-history-card video { max-height: 200px; }
+.artifact-history-card figcaption { flex-direction: column; align-items: flex-start; }
 .artifact-card {
   margin: 0;
   overflow: hidden;
@@ -703,13 +767,267 @@ button {
   background: #0f1512;
 }
 .artifact-card figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
   padding: .5rem .65rem;
   color: var(--muted);
   font-size: .8rem;
 }
+.artifact-download-button {
+  min-height: 2rem;
+  margin-left: auto;
+  padding: .32rem .65rem;
+  border: 1px solid var(--line);
+  border-radius: .45rem;
+  color: var(--text);
+  background: #fff;
+  font-size: .78rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.artifact-download-button:hover { background: var(--brand-soft); border-color: var(--brand-border); }
+.artifact-download-button:disabled { cursor: wait; opacity: .65; }
 .artifact-review-actions {
   display: flex;
   flex-wrap: wrap;
   gap: .55rem;
   margin-top: .8rem;
+}
+
+.task-control {
+  width: 100%;
+  height: 2.5rem;
+  padding: .55rem .65rem;
+}
+
+.video-param-section {
+  grid-column: 1 / -1;
+  margin-top: .15rem;
+  padding-top: .9rem;
+  border-top: 1px solid var(--line);
+}
+
+.video-param-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: .65rem;
+}
+
+.video-param-title {
+  color: var(--ink);
+  font-size: .84rem;
+  font-weight: 800;
+}
+
+.video-param-model {
+  color: var(--brand);
+  font-size: .76rem;
+  font-weight: 750;
+}
+
+.video-param-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr 1fr .8fr .8fr .8fr;
+  gap: .65rem;
+  align-items: start;
+}
+
+.video-param-field {
+  display: grid;
+  grid-template-rows: auto 2.5rem auto;
+  min-width: 0;
+  align-items: start;
+}
+
+.video-param-label {
+  margin-bottom: .32rem;
+  color: var(--muted);
+  font-size: .76rem;
+  font-weight: 750;
+}
+
+.video-param-hint {
+  min-height: 1rem;
+  margin-top: .3rem;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: .7rem;
+  line-height: 1.35;
+}
+
+.task-model-capability {
+  grid-column: 1 / -1;
+  margin: .7rem 0 0;
+  color: var(--muted);
+  font-size: .78rem;
+}
+
+.artifact-retry-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  margin-left: .65rem;
+  color: var(--muted);
+  font-size: .78rem;
+}
+
+.artifact-retry-choice input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+@media (max-width: 1280px) {
+  .video-param-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .video-param-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .video-param-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .video-param-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: .2rem;
+  }
+}
+
+/* 返工对比：改前原文 / 历次要求 / 差异高亮（浅色主题，与卡片同色系） */
+.rework-compare {
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  padding: .6rem .75rem;
+  border: 1px solid var(--line);
+  border-radius: .65rem;
+  background: #fcfdfb;
+}
+
+.rework-compare-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .6rem;
+}
+
+.rework-compare-stats {
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+.rework-compare-label {
+  margin-top: .15rem;
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+.rework-compare-base,
+.rework-compare-diff {
+  max-height: 14rem;
+  margin: 0;
+  padding: .5rem .6rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  background: #fff;
+  color: var(--ink);
+  font-size: .85rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rework-compare-requirements {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--ink);
+  font-size: .85rem;
+}
+
+.diff-added {
+  padding: 0 .12rem;
+  border-radius: 3px;
+  background: #e1f1e8;
+  color: #14503c;
+}
+
+.diff-removed {
+  padding: 0 .12rem;
+  border-radius: 3px;
+  background: #fde4e1;
+  color: #7d241e;
+  text-decoration: line-through;
+}
+
+/* 模型审片：自动列疑似穿帮（用户 2026-09-18：「不要让我自己找问题」）。 */
+.take-findings {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.take-findings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.take-findings-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.take-finding {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+.take-finding-at {
+  color: var(--muted);
+  min-width: 42px;
+  font-variant-numeric: tabular-nums;
+}
+.take-finding-why {
+  color: var(--muted);
+  flex: 1;
+}
+.take-finding-adopt {
+  margin-left: auto;
+}
+.take-finding-kind {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  white-space: nowrap;
+}
+.take-finding.is-violation .take-finding-issue {
+  font-weight: 600;
+}
+#copy-document-title {
+  margin-top: 6px;
+  font-size: 12px;
+  padding: 2px 8px;
 }

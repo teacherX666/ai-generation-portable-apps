@@ -16,7 +16,12 @@ from pydantic import SecretStr
 from feishu_generation_agent.domain.artifact import ProviderSubmission
 from feishu_generation_agent.domain.document import MediaAsset
 from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
-from feishu_generation_agent.domain.plan import GenerationTask, ImageReference
+from feishu_generation_agent.domain.plan import (
+    GenerationTask,
+    ImageReference,
+    SEEDANCE_PROMPT_MAX_CHARS,
+    SEEDANCE_PROMPT_SUBMIT_MAX_CHARS,
+)
 from feishu_generation_agent.integrations.public_media import PublicMediaUploadError
 from feishu_generation_agent.integrations.seedance import SeedanceVideoGenerator
 
@@ -354,7 +359,8 @@ async def test_submit_preserves_explicit_reference_order_and_official_payload(
     assert body["watermark"] is False
     assert body["content"][0]["type"] == "text"
     assert "镜头一" in body["content"][0]["text"]
-    assert "不要添加字幕" in body["content"][0]["text"]
+    # 负向块会按概念合并（同义写法只留一条），所以断言"意思还在"而不是原始措辞。
+    assert "字幕" in body["content"][0]["text"]
     image_parts = body["content"][1:]
     assert [part["role"] for part in image_parts] == [
         "reference_image",
@@ -807,6 +813,69 @@ async def test_submit_enforces_single_and_total_input_limits_without_read_bytes(
 
 
 @pytest.mark.asyncio
+async def test_submit_allows_raw_total_over_limit_when_references_are_remapped(
+    tmp_path: Path,
+) -> None:
+    assets = _assets(tmp_path)
+    requests: list[httpx.Request] = []
+
+    async def resolve(
+        task: GenerationTask,
+        reference: ImageReference,
+        asset: MediaAsset,
+        content: bytes,
+    ) -> str:
+        del task, reference, content
+        return f"asset://{asset.asset_id}"
+
+    async with _recording_client(requests) as client:
+        generator = SeedanceVideoGenerator(
+            client,
+            base_url="https://ark.fictional.test/api/v3",
+            api_key="fictional-key",
+            model="fictional-model",
+            max_input_bytes=max(asset.size for asset in assets),
+            max_total_input_bytes=sum(asset.size for asset in assets) - 1,
+            enforce_total_input_bytes=False,
+            image_url_resolver=resolve,
+        )
+        submission = await generator.submit(_video_task(), assets)
+
+    assert submission.status == "queued"
+    payload = json.loads(requests[0].content)
+    assert [
+        item["image_url"]["url"]
+        for item in payload["content"]
+        if item["type"] == "image_url"
+    ] == ["asset://asset-blue", "asset://asset-green"]
+
+
+@pytest.mark.asyncio
+async def test_submit_allows_final_prompt_over_planning_limit(tmp_path: Path) -> None:
+    assets = _assets(tmp_path)
+    task = _video_task().model_copy(update={"prompt": "a" * 1490})
+    requests: list[httpx.Request] = []
+
+    async with _recording_client(requests) as client:
+        generator = SeedanceVideoGenerator(
+            client,
+            base_url="https://ark.fictional.test/api/v3",
+            api_key="fictional-key",
+            model="fictional-model",
+        )
+        final_prompt = generator._prompt(
+            task,
+            sorted(task.reference_images, key=lambda item: item.order),
+        )
+        assert len(task.prompt) <= SEEDANCE_PROMPT_MAX_CHARS
+        assert len(final_prompt) > SEEDANCE_PROMPT_MAX_CHARS
+        assert len(final_prompt) <= SEEDANCE_PROMPT_SUBMIT_MAX_CHARS
+        submission = await generator.submit(task, assets)
+
+    assert submission.status == "queued"
+    assert requests
+
+@pytest.mark.asyncio
 async def test_submit_detects_file_replacement_between_check_and_open(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1183,11 +1252,18 @@ async def test_poll_preserves_custom_provider_identity_while_running() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["failed", "cancelled", "canceled", "expired"])
-async def test_poll_terminal_status_is_non_retryable_and_redacted(
+async def test_poll_terminal_status_is_non_retryable_and_reports_reason(
     status: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    raw_secret = "provider-raw-secret-must-not-leak"
+    """任务失败时把火山的 code/message 带出来（用户 2026-09-18：「为什么还是用不了
+    参考视频」—— 实际原因 `InvalidParameter: invalid_media` 以前完全看不到，界面只报
+    `poll_http_failed`）。
+
+    旧口径是「供应商 message 一律不外泄」，只留 sanitized code；现在两个都记，
+    消息做截断 + 密钥脱敏（见下一条用例）。
+    """
+    upstream_message = "input media detect failed: invalid_media"
 
     def poll(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -1195,7 +1271,10 @@ async def test_poll_terminal_status_is_non_retryable_and_redacted(
             json={
                 "id": "task-ark-fictional-123",
                 "status": status,
-                "error": {"message": raw_secret},
+                "error": {
+                    "code": "InvalidParameter",
+                    "message": upstream_message,
+                },
             },
         )
 
@@ -1208,8 +1287,31 @@ async def test_poll_terminal_status_is_non_retryable_and_redacted(
     assert caught.value.detail.category == ErrorCategory.PROVIDER_TERMINAL
     assert caught.value.detail.retryable is False
     assert status in caught.value.detail.technical_detail
-    assert raw_secret not in str(caught.value.detail)
-    assert raw_secret not in caplog.text
+    assert upstream_message in caught.value.detail.message
+    assert "provider_code=InvalidParameter" in caught.value.detail.technical_detail
+
+
+@pytest.mark.asyncio
+async def test_poll_terminal_status_redacts_key_like_reason() -> None:
+    def poll(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "task-ark-fictional-123",
+                "status": "failed",
+                "error": {
+                    "code": "AuthenticationError",
+                    "message": "bad key ark-REDACTED",
+                },
+            },
+        )
+
+    generator, client = _generator_for_handler(poll)
+    async with client:
+        with pytest.raises(AgentError) as caught:
+            await generator.poll(_submission())
+
+    assert "ark-REDACTED" not in str(caught.value.detail)
 
 
 @pytest.mark.asyncio
@@ -1452,17 +1554,23 @@ async def test_poll_maps_http_status_without_leaking_body_or_key(
 
 
 @pytest.mark.asyncio
-async def test_submit_preserves_safe_provider_error_code_without_response_message(
+async def test_submit_records_provider_code_and_message_but_redacts_secrets(
     tmp_path: Path,
 ) -> None:
-    raw_secret = "private upstream detail must not leak"
+    """拒绝原因要记下来（用户 2026-09-18 要求），但密钥类片段必须抹掉。
+
+    旧行为是「只留 sanitized code、供应商 message 一律不外泄」—— 结果是
+    「生成服务拒绝了请求（submit_http_400）」这种没法排查的提示。现在两个都记，
+    消息做截断/折叠空白/密钥脱敏。
+    """
+    upstream_message = "The parameter duration is not valid for this model."
     generator, client = _generator_for_handler(
         lambda request: httpx.Response(
             400,
             json={
                 "error": {
                     "code": "InvalidParameter",
-                    "message": raw_secret,
+                    "message": upstream_message,
                 }
             },
         )
@@ -1472,8 +1580,33 @@ async def test_submit_preserves_safe_provider_error_code_without_response_messag
         with pytest.raises(AgentError) as caught:
             await generator.submit(_video_task(), _assets(tmp_path))
 
-    assert "provider_code=InvalidParameter" in caught.value.detail.technical_detail
-    assert raw_secret not in str(caught.value.detail)
+    detail = caught.value.detail
+    assert "provider_code=InvalidParameter" in detail.technical_detail
+    assert upstream_message in detail.technical_detail
+    assert upstream_message in detail.message  # 界面也要看得到
+
+
+@pytest.mark.asyncio
+async def test_submit_redacts_key_like_text_from_provider_message(
+    tmp_path: Path,
+) -> None:
+    generator, client = _generator_for_handler(
+        lambda request: httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": "AuthenticationError",
+                    "message": "bad key ark-REDACTED",
+                }
+            },
+        )
+    )
+
+    async with client:
+        with pytest.raises(AgentError) as caught:
+            await generator.submit(_video_task(), _assets(tmp_path))
+
+    assert "ark-REDACTED" not in str(caught.value.detail)
 
 
 @pytest.mark.asyncio

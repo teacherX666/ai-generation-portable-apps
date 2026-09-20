@@ -42,9 +42,10 @@
     };
   }
 
-  function createState() {
+  function createState(activeCategory = "animation") {
+    const selected = CATEGORY_NAMES.has(activeCategory) ? activeCategory : "animation";
     return {
-      activeCategory: "animation",
+      activeCategory: selected,
       categories: {
         animation: createCategoryState(),
         portrait: createCategoryState(),
@@ -81,9 +82,14 @@
 
   function scanSucceeded(state, category, tasks) {
     const current = categoryState(state, category);
+    const incoming = Array.isArray(tasks) ? JSON.parse(JSON.stringify(tasks)) : [];
+    const incomingIds = new Set(incoming.map((task) => task.record_id));
+    const claimed = current.tasks.filter(
+      (task) => task.claimed_run_id && !incomingIds.has(task.record_id),
+    );
     return withCategory(state, category, {
       ...current,
-      tasks: Array.isArray(tasks) ? JSON.parse(JSON.stringify(tasks)) : [],
+      tasks: [...incoming, ...claimed],
       scan: { phase: "ready", error: "" },
     });
   }
@@ -109,9 +115,11 @@
     const category = state.claim.category;
     const nextState = withCategory(state, category, {
       ...categoryState(state, category),
-      tasks: categoryState(state, category).tasks.filter(
-        (task) => task.record_id !== recordId,
-      ),
+      tasks: categoryState(state, category).tasks.map((task) => (
+        task.record_id === recordId
+          ? { ...task, claimed_run_id: runId, claim_status: "processing" }
+          : task
+      )),
     });
     return {
       ...nextState,
@@ -128,6 +136,66 @@
         error: String(error || "该任务已被领取"),
       },
     };
+  }
+
+  /**
+   * 已领取任务的徽章文案与配色。
+   *
+   * 后端 `claim_status` 是 `TableTaskStatus` 的中文值（处理中/待审批/生成中…），
+   * 而刚点完「开始分析」时本地乐观状态写的是 `"processing"`，两种都要认。
+   * 返回 null 表示这条记录还没被领取。
+   */
+  const CLAIM_STATUS_META = {
+    processing: { label: "分析中", tone: "busy" },
+    待处理: { label: "待处理", tone: "busy" },
+    处理中: { label: "处理中", tone: "busy" },
+    生成中: { label: "生成中", tone: "busy" },
+    回写中: { label: "回写中", tone: "busy" },
+    待审批: { label: "待审批", tone: "attention" },
+    待确认成片: { label: "待确认成片", tone: "attention" },
+    已完成: { label: "已完成", tone: "done" },
+    失败: { label: "失败", tone: "danger" },
+    回写失败: { label: "回写失败", tone: "danger" },
+  };
+
+  function claimBadge(task) {
+    if (!task || !task.claimed_run_id) return null;
+    const raw = task.claim_status;
+    const meta = CLAIM_STATUS_META[raw];
+    if (meta) return { ...meta };
+    const text = typeof raw === "string" && raw ? raw : "分析中";
+    return { label: text, tone: "busy" };
+  }
+
+  //: 运行状态文案（app.js 的 RUN_STATUS_UI）的 tone → 徽章 tone。
+  const BADGE_TONE_BY_RUN_TONE = {
+    running: "busy",
+    attention: "attention",
+    success: "done",
+    warning: "attention",
+    danger: "danger",
+    muted: "busy",
+  };
+
+  /**
+   * 徽章优先用「刚轮询到的运行状态」，拿不到才退回任务自带的 claim_status。
+   *
+   * `claim_status` 是扫描那一刻的快照，扫描要读整张飞书表，做不到高频；
+   * 而任务记录列表每隔几秒就会拉一次运行状态。两者取新鲜的那个，徽章才不会
+   * 一直停在「处理中」——这正是走查时看到的「状态不实时更新」。
+   *
+   * `runUi` 是 `{label, tone}`（由 app.js 的 statusUi 给出），传 null 表示
+   * 当前没有这个运行的新鲜状态。
+   */
+  function liveClaimBadge(task, claimedRunId, runUi) {
+    if (!claimedRunId) return null;
+    if (runUi && runUi.label) {
+      return {
+        label: runUi.label,
+        tone: BADGE_TONE_BY_RUN_TONE[runUi.tone] || "busy",
+      };
+    }
+    return claimBadge({ ...task, claimed_run_id: claimedRunId });
   }
 
   function retryStarted(state, runId) {
@@ -160,6 +228,88 @@
       ...state,
       recentRuns: Array.isArray(recentRuns) ? JSON.parse(JSON.stringify(recentRuns)) : [],
     };
+  }
+
+  /**
+   * 任务记录**一条记录一行**：同一条需求的历次尝试只占一行（重跑不再多出一行）。
+   *
+   * 展示的是「正在跑的那条」优先，否则最新的一条；历次版本不在这里展开 ——
+   * 它们是去成片预览的横向滑条里看/切的（用户明确要的是这个分工）。
+   * 没有 `record_id` 的（直连运行、老数据）各自成行，不猜。
+   */
+  /**
+   * 时间戳：带时区的 ISO 串直接用；万一拿到没有时区的裸串（历史数据 / 别的接口），
+   * 按 UTC 解析 —— 否则会被当成本地时间，比真实时间早 8 小时。
+   */
+  function runTimestamp(run) {
+    const parsed = parseServerTime(run && run.updated_at);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
+  function latestRunsByRecord(runs) {
+    const order = [];
+    const byKey = new Map();
+    (Array.isArray(runs) ? runs : []).forEach((run) => {
+      if (!run || !run.run_id) return;
+      const key = run.record_id || `run:${run.run_id}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, run);
+        order.push(key);
+        return;
+      }
+      // 同一个 key 之后又出现，按"对用户更有用"的顺序挑代表：
+      // ① 进行中的那条（正在跑，最该看）② **有成片的**（点进去能看片）
+      // ③ 保持先出现的那条。
+      //
+      // 用户 2026-09-18：「我的宿舍的任务怎么找不到了」—— 同一条记录里"失败的那次"
+      // 比"成功有片的那次"晚 7 秒，就当了代表，点进去看不到成片，看着像任务没了。
+      const current = byKey.get(key);
+      if (run.active && !current.active) {
+        byKey.set(key, run);
+        return;
+      }
+      if (current.active) return;
+      const runHasArtifacts = Number(run.artifact_count) > 0;
+      const currentHasArtifacts = Number(current.artifact_count) > 0;
+      if (runHasArtifacts && !currentHasArtifacts) byKey.set(key, run);
+    });
+    // 按时间**倒序**（最新的在最上面）：以前完全按接口返回的顺序，接口顺序一变
+    // 界面上看起来就是乱序（用户 2026-09-18：「历史记录的顺序没按时间顺序」）。
+    // 时间相同保持原顺序（稳定排序），避免同一秒的几条每次刷新都在跳。
+    return order
+      .map((key) => byKey.get(key))
+      .map((run, index) => ({ run, index }))
+      .sort((left, right) => {
+        const leftAt = runTimestamp(left.run);
+        const rightAt = runTimestamp(right.run);
+        // 有一边没有时间戳（进行中的 run 接口以前不带 updated_at）就保持原顺序 ——
+        // 不能把"没有时间"当成最旧或最新，否则列表会莫名其妙地跳。
+        if (!leftAt || !rightAt) return left.index - right.index;
+        const diff = rightAt - leftAt;
+        return diff !== 0 ? diff : left.index - right.index;
+      })
+      .map((entry) => entry.run);
+  }
+
+  /**
+   * 同一条多维表格记录的**其它尝试**（不含当前这条）。
+   *
+   * 重跑会在同一个 record_id 下留下多个 run。成片预览靠它把「往次生成的片子」
+   * 摆出来一起看；而**任务记录仍然一版一行** —— 用户要的是「预览里能看到历史
+   * 生成的」，不是把历次尝试合并成一条记录。
+   *
+   * `record_id` 缺失（老数据、测试替身）时返回空：没有归组依据就不猜。
+   */
+  function siblingRuns(runs, currentRunId) {
+    const list = Array.isArray(runs) ? runs : [];
+    const current = list.find((run) => run && run.run_id === currentRunId);
+    if (!current || !current.record_id) return [];
+    return list.filter(
+      (run) =>
+        run
+        && run.record_id === current.record_id
+        && run.run_id !== currentRunId,
+    );
   }
 
   function resetRunContext(state) {
@@ -198,15 +348,74 @@
     return null;
   }
 
+  /**
+   * 解析服务端时间：带时区的 ISO 直接用；**没有时区的裸串按 UTC** 解析。
+   *
+   * 后端以前返回 `2026-09-18 06:07:37`（UTC 但没有时区标记），JS 会当本地时间 →
+   * 显示比真实时间早 8 小时、耗时也算错（用户 2026-09-18：「时间还是不对」）。
+   * 后端已改成带时区输出，这里再兜一层，历史数据/别的接口也不会再踩。
+   */
+  function parseServerTime(value) {
+    const raw = value === null || value === undefined ? "" : String(value).trim();
+    if (!raw) return NaN;
+    const text = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(raw)
+      ? `${raw.replace(" ", "T")}Z`
+      : raw;
+    return Date.parse(text);
+  }
+
   function runElapsedMs(view, now = Date.now()) {
     if (!view || typeof view !== "object") return null;
-    const started = Date.parse(view.created_at);
-    const finished = Date.parse(view.updated_at);
+    const started = parseServerTime(view.created_at);
+    const finished = parseServerTime(view.updated_at);
     if (!Number.isFinite(started)) return null;
     const end = TERMINAL_RUN_STATUSES.has(view.status) && Number.isFinite(finished)
       ? finished
       : now;
     return Math.max(0, end - started);
+  }
+
+  /**
+   * 把墙钟总耗时拆成「系统耗时」与「人工耗时」。
+   *
+   * `runElapsedMs` 是 created_at→updated_at 的墙钟时间，会把用户在审批页/审片页
+   * 停留的时间也算进去（实测某单 16分37秒 里有 2分15秒是用户在读计划），
+   * 于是数字虚高、看不出真正的瓶颈。这里按事件流把人工停留扣出来：
+   *  - `human_approval/started` 与前一个事件之间的间隔 = 计划审批停留
+   *  - `verify_and_download_artifacts/completed` 之后的第一个事件之前的间隔
+   *    = 成片审核停留
+   */
+  function runElapsedBreakdown(view, now = Date.now()) {
+    const totalMs = runElapsedMs(view, now);
+    if (totalMs === null) {
+      return { totalMs: null, humanMs: 0, systemMs: null };
+    }
+    const events = Array.isArray(view.events) ? view.events : [];
+    let humanMs = 0;
+    let awaitingReview = false;
+    for (let index = 0; index < events.length; index += 1) {
+      const current = events[index] || {};
+      const previous = index > 0 ? events[index - 1] || {} : null;
+      const currentMs = parseServerTime(current.created_at);
+      const previousMs = previous ? parseServerTime(previous.created_at) : NaN;
+      const gap =
+        Number.isFinite(currentMs) && Number.isFinite(previousMs)
+          ? Math.max(0, currentMs - previousMs)
+          : 0;
+      if (
+        current.node === "human_approval" &&
+        current.status === "started"
+      ) {
+        humanMs += gap;
+      } else if (awaitingReview) {
+        humanMs += gap;
+      }
+      awaitingReview =
+        current.node === "verify_and_download_artifacts" &&
+        current.status === "completed";
+    }
+    const human = Math.min(humanMs, totalMs);
+    return { totalMs, humanMs: human, systemMs: Math.max(0, totalMs - human) };
   }
 
   return {
@@ -219,12 +428,18 @@
     claimStarted,
     claimSucceeded,
     claimConflict,
+    claimBadge,
+    liveClaimBadge,
     retryStarted,
     retrySucceeded,
     retryFailed,
     recentSucceeded,
+    latestRunsByRecord,
+    parseServerTime,
+    siblingRuns,
     resetRunContext,
     runStage,
     runElapsedMs,
+    runElapsedBreakdown,
   };
 });

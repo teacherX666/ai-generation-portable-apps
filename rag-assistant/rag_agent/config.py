@@ -39,8 +39,6 @@ class Settings:
 
     openai_embedding_model: str = "text-embedding-3-small"
     vision_model: str = "gpt-4o"
-    # 实际调用走 shared/model_gateway 的 deepseek provider（见 llm/deepseek.py），
-    # 这两个字段只为兼容旧配置保留；2026-09-15 起统一指向火山方舟。
     deepseek_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     deepseek_model: str = "deepseek-v4-1-flash-260910"
 

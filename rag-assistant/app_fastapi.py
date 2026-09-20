@@ -19,6 +19,7 @@ import urllib.request
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_openai import OpenAIEmbeddings
 from pydantic import BaseModel
@@ -152,6 +153,13 @@ def _validate_images(body: dict) -> tuple[list[str] | None, str | None]:
             return None, "单张截图不能超过 5MB"
         out.append(s)
     return out, None
+
+
+# 静态资源：index.html 引用的 ui/portal-ui-core.css（含 styles/tokens 子文件）
+# 此前从未挂载——CSS 请求全部 404 且以 JSON 响应（MIME 不匹配被浏览器拒绝），
+# 报错助手 UI 样式一直是坏的（2026-09-10 巡检实锤）。
+if (STATIC_DIR / "ui").exists():
+    app.mount("/ui", StaticFiles(directory=str(STATIC_DIR / "ui")), name="rag-ui")
 
 
 @app.get("/")
@@ -375,6 +383,9 @@ _PHONE_EXPLICIT_OVERRIDE_PHRASES = (
 )
 
 
+_PHONE_GAMING_RE = re.compile(r"(?:打|玩|正在玩|在打|打一局|玩一局)[^，。；;\n]{0,12}手游")
+
+
 _PHONE_NEGATED_PHRASES = (
     "没有手机", "没手机", "不要手机", "不要出现手机", "无手机",
     "不出现手机", "没有出现手机", "禁止出现手机",
@@ -415,7 +426,8 @@ def _rule_match(prompt: str, doc, title: str) -> tuple[bool, float]:
     if kind == "phone":
         if _contains_phrase(prompt, _PHONE_NEGATED_PHRASES):
             return False, 0.0
-        if not _contains_phrase(prompt, _PHONE_TRIGGER_PHRASES):
+        gaming = bool(_PHONE_GAMING_RE.search(prompt))
+        if not _contains_phrase(prompt, _PHONE_TRIGGER_PHRASES) and not gaming:
             return False, 0.0
         if _contains_phrase(prompt, _PHONE_SATISFIED_PHRASES):
             return False, 0.0
@@ -423,7 +435,7 @@ def _rule_match(prompt: str, doc, title: str) -> tuple[bool, float]:
         # missing constraint. Do not override it with the KB recommendation.
         if _contains_phrase(prompt, _PHONE_EXPLICIT_OVERRIDE_PHRASES):
             return False, 0.0
-        score = sum(1 for phrase in _PHONE_TRIGGER_PHRASES if phrase in prompt)
+        score = sum(1 for phrase in _PHONE_TRIGGER_PHRASES if phrase in prompt) + (1 if gaming else 0)
         return True, float(score)
 
     return False, 0.0
@@ -625,10 +637,20 @@ def _director_optimize_prompt(prompt: str) -> str:
         logger.warning("director rag prompt optimization unavailable; using KB context")
     return ""
 
+def _is_loopback_request(request: Request) -> bool:
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None) if client else None
+    return host in ("127.0.0.1", "::1")
+
+
 @app.post("/api/rag/preflight")
 async def rag_preflight(request: Request):
     token = portal_token()
-    if token and verify_portal_identity(request.headers) is None:
+    if (
+        token
+        and verify_portal_identity(request.headers) is None
+        and not _is_loopback_request(request)
+    ):
         return JSONResponse(status_code=403, content={"error": "forbidden"})
     try:
         body = await request.json()

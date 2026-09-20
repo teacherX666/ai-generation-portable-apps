@@ -106,6 +106,9 @@ def _translate_nano_error(category: str, message: str) -> str:
     """
     if category == "auth_failed":
         return "密钥无效或已被禁用，请联系管理员更换"
+    low = (message or "").lower()
+    if "model_not_found" in low or "no available channel for model" in low or "does not exist" in low:
+        return "当前模型不可用，请更换模型后重试"
     m = re.search(r'"code"\s*:\s*"([^"]+)"', message or "")
     if m:
         return translate_ark_error(m.group(1), message) or ""
@@ -153,6 +156,8 @@ def sniff_is_image(head: bytes) -> bool:
         return True  # TIFF
     if head[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1"):
         return True  # HEIC
+    if head[4:12] in (b"ftypavif", b"avif"):
+        return True  # AVIF
     return False
 
 
@@ -249,6 +254,35 @@ def _decode_username(handler) -> str:
         return raw
 
 
+def _config_scope_for(ws_id: str, username: str) -> str:
+    if username:
+        user_part = _sanitize_username(username)
+        legacy_scope = "u_" + user_part
+        combined_prefix = legacy_scope + "_"
+        if ws_id == legacy_scope:
+            return legacy_scope
+        if ws_id.startswith(combined_prefix):
+            return ws_id
+        return combined_prefix + ws_id
+    return ws_id
+
+
+def _config_scope(handler) -> str:
+    """Config/archive/media scope: logged-in user + browser workspace theme."""
+    return _config_scope_for(_workspace_id(handler), _decode_username(handler))
+
+def _legacy_config_scope(ws_id: str) -> str | None:
+    """Return the pre-isolation per-user scope for read-only media fallback.
+
+    Old data was stored under u_<user>; new data uses u_<user>_<workspace>.
+    Keep old media readable when a theme has not yet written a new copy.
+    """
+    if not ws_id.startswith("u_"):
+        return None
+    legacy = ws_id.rsplit("_", 1)[0]
+    return legacy if legacy.startswith("u_") and legacy != ws_id else None
+
+
 APP_NAME = "nano-banana"
 PORTAL_INTERNAL_TOKEN = os.environ.get("PORTAL_INTERNAL_TOKEN", "")
 PORTAL_PORT_FOR_CALLBACK = int(os.environ.get("PORTAL_PORT", "9090"))
@@ -278,13 +312,13 @@ def _workspace_id(handler) -> str:
     """Extract workspace_id: 1) X-Workspace-Id header  2) ?ws= query  3) localhost."""
     ws = (handler.headers.get("X-Workspace-Id") or "").strip()
     if ws:
-        return re.sub(r"[^a-zA-Z0-9_\-]", "_", ws)[:64]
+        return re.sub(r"[^\w\-]+", "_", ws, flags=re.UNICODE)[:64]
     # Fallback to query parameter (read from raw path since self.path is stripped of query in do_GET/do_POST)
     raw = getattr(handler, "_raw_path", None) or handler.path
     qs = urllib.parse.urlparse(raw).query
     params = urllib.parse.parse_qs(qs)
     if "ws" in params:
-        return re.sub(r"[^a-zA-Z0-9_\-]", "_", str(params["ws"][0]))[:64]
+        return re.sub(r"[^\w\-]+", "_", str(params["ws"][0]), flags=re.UNICODE)[:64]
     return "localhost"
 
 
@@ -410,7 +444,7 @@ FALLBACK_PROVIDERS = {
             "base_url": DEFAULT_BASE_URL,
             "api_style": "openai_images",
             "defaults": {"mode": "img2img", "model": "gemini-3-pro-image", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 900, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
-            "models": [{"id": "nano-banana-2", "label": "nano-banana-2"}, {"id": "gemini-3.1-flash-image-preview", "label": "gemini-3.1-flash-image-preview"}, {"id": "gemini-3-pro-image-2k", "label": "gemini-3-pro-image-2k"}, {"id": "gemini-3-pro-image-4k", "label": "gemini-3-pro-image-4k"}],
+            "models": [{"id": "nano-banana-2", "label": "nano-banana-2"}, {"id": "gemini-3.1-flash-image-preview", "label": "gemini-3.1-flash-image-preview"}, {"id": "gemini-3-pro-image-2k", "label": "gemini-3-pro-image-2k"}, {"id": "gemini-3-pro-image-4k", "label": "gemini-3-pro-image-4k"}, {"id": "gpt-image-2.5-flare", "label": "GPT Image 2.5 Flare"}, {"id": "gpt-image-2.5-flare-2k", "label": "GPT Image 2.5 Flare 2K"}, {"id": "gpt-image-2.5-flare-4k", "label": "GPT Image 2.5 Flare 4K"}, {"id": "gpt-image-2.5-sunburst", "label": "GPT Image 2.5 Sunburst"}, {"id": "gpt-image-2.5-sunburst-2k", "label": "GPT Image 2.5 Sunburst 2K"}, {"id": "gpt-image-2.5-sunburst-4k", "label": "GPT Image 2.5 Sunburst 4K"}],
         },
         "gemini": {
             "label": "Chiyun",
@@ -503,6 +537,61 @@ def provider_defaults(config: dict[str, Any], provider: str, model: str = "") ->
     return defaults
 
 
+def model_capabilities(config: dict[str, Any], provider: str, model: str) -> dict[str, Any]:
+    providers = config.get("providers") or {}
+    provider_cfg = providers.get(provider) or {}
+    models = provider_cfg.get("models") if isinstance(provider_cfg.get("models"), list) else []
+    selected: dict[str, Any] = {}
+    for item in models:
+        if isinstance(item, dict) and item.get("id") == model:
+            selected = item
+            break
+    cap = selected.get("capabilities") if isinstance(selected.get("capabilities"), dict) else {}
+    image_size = cap.get("image_size") or selected.get("image_size") or provider_cfg.get("image_size_options")
+    aspect_ratio = cap.get("aspect_ratio") or selected.get("aspect_ratios") or provider_cfg.get("aspect_ratios")
+    max_ref = cap.get("max_reference_images", selected.get("max_reference_images", provider_cfg.get("max_reference_images")))
+    supports_seed = cap.get("supports_seed", selected.get("supports_seed", provider_cfg.get("supports_seed", True)))
+    return {
+        "image_size": list(image_size) if isinstance(image_size, (list, tuple)) else None,
+        "aspect_ratio": list(aspect_ratio) if isinstance(aspect_ratio, (list, tuple)) else None,
+        "max_reference_images": None if max_ref is None else int(max_ref),
+        "supports_seed": bool(supports_seed),
+    }
+
+
+def validate_model_capabilities(values: dict[str, Any], files: dict[str, tuple[str, bytes]]) -> None:
+    config, _ = load_provider_config()
+    provider = str(values.get("provider") or "t8star")
+    model = str(values.get("custom_model") or values.get("model") or "").strip()
+    provider_cfg = (config.get("providers") or {}).get(provider) or {}
+    selected = next((
+        item for item in (provider_cfg.get("models") or [])
+        if isinstance(item, dict) and str(item.get("id") or "") == model
+    ), {})
+    if selected.get("disabled"):
+        label = str(selected.get("label") or model)
+        raise ValueError(f"模型「{label}」已失效，暂时不可用，请选择其他模型。")
+    caps = model_capabilities(config, provider, model)
+    if not caps:
+        return
+    problems: list[str] = []
+    image_size = str(values.get("image_size") or "").strip()
+    aspect_ratio = str(values.get("aspect_ratio") or "auto").strip()
+    if caps.get("image_size") and image_size not in ("", "auto", "adaptive") and image_size not in caps["image_size"]:
+        problems.append("尺寸 " + image_size + " 不支持，可用：" + " / ".join(caps["image_size"]))
+    if caps.get("aspect_ratio") and aspect_ratio not in ("", "auto", "adaptive") and aspect_ratio not in caps["aspect_ratio"]:
+        problems.append("比例 " + aspect_ratio + " 不支持，可用：" + " / ".join(caps["aspect_ratio"]))
+    if caps.get("max_reference_images") is not None:
+        ref_count = sum(1 for key in files if str(key).startswith("image_"))
+        if ref_count > int(caps["max_reference_images"]):
+            problems.append("最多支持 " + str(caps["max_reference_images"]) + " 张参考图")
+    seed_raw = str(values.get("seed") or "0").strip()
+    if seed_raw.isdigit() and int(seed_raw) > 0 and caps.get("supports_seed") is False:
+        problems.append("该模型不支持固定 seed")
+    if problems:
+        raise ValueError("；".join(problems))
+
+
 def now_text() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -592,6 +681,19 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict[str, Any]:
             counts[source] += 1
         if status in counts:
             counts[status] += 1
+        first_url = ""
+        first_filename = ""
+        try:
+            for run in ((item.get("result") or {}).get("results") or []):
+                for im in (run.get("images") or []):
+                    if im.get("download_url"):
+                        first_url = im["download_url"]
+                        first_filename = im.get("filename") or first_filename
+                        break
+                if first_url:
+                    break
+        except Exception:
+            first_url = ""
         summary.append({
             "id": item.get("id"),
             "job_id": item.get("job_id"),
@@ -601,9 +703,13 @@ def activity_list(sees_all: bool = True, username: str = "") -> dict[str, Any]:
             "updated_at": item.get("updated_at"),
             "title": item.get("title"),
             "request_kind": item.get("request_kind"),
+            "model": item.get("model", ""),
+            "provider": item.get("provider", ""),
             "username": item.get("username", ""),
             "started_at": item.get("started_at"),
             "finished_at": item.get("finished_at"),
+            "first_url": first_url,
+            "first_filename": first_filename,
         })
     summary.reverse()
     return {"counts": counts, "records": summary}
@@ -691,6 +797,18 @@ def media_item_to_file(field: str, item: Any) -> tuple[str, bytes] | None:
     raise ValueError(f"media.{field} must include data_url or url")
 
 
+def public_job_snapshot(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not job:
+        return None
+    data = json.loads(json.dumps(job))
+    data.pop("api_key", None)
+    if isinstance(data.get("provider_tasks"), list):
+        data["provider_tasks"] = [
+            {"task_id": str(item.get("task_id") or "")}
+            for item in data["provider_tasks"] if isinstance(item, dict)
+        ]
+    return data
+
 def job_id_response(job_id: str) -> dict[str, Any]:
     return {"ok": True, "job_id": job_id, "status_url": f"/api/jobs/{job_id}"}
 
@@ -770,8 +888,6 @@ def resolve_effective_provider(config: dict[str, Any], requested_provider: str =
              if isinstance(cfg, dict) and cfg.get("api_style") != "comfyui_workflow"]
     fallback = default if default in cloud else (cloud[0] if cloud else (local[0] if local else ""))
     if requested in providers:
-        if requested in local and not local_gateway_available(timeout=0.8):
-            return fallback
         return requested
     for candidate in local:
         if local_gateway_available(timeout=0.8):
@@ -922,7 +1038,7 @@ def preset_for_client(ws_id: str = "localhost") -> dict[str, Any]:
     return preset_to_client(read_preset(ws_id), ws_id)
 
 
-def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, bytes]], prefix: str, ws_id: str = "localhost") -> dict[str, Any]:
+def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, bytes]], prefix: str, ws_id: str = "localhost", source_media_scope: str = "") -> dict[str, Any]:
     safe_values = {
         key: value for key, value in values.items()
         if key not in {"saved_media", "_auto_seed_base", "api_key", "api_key_override"}
@@ -930,6 +1046,7 @@ def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, by
     media: dict[str, Any] = {}
     media_dir = _ws_media_dir(ws_id)
     media_dir.mkdir(parents=True, exist_ok=True)
+    source_media_dir = _ws_media_dir(source_media_scope) if source_media_scope else media_dir
     try:
         saved_media = json.loads(str(values.get("saved_media") or "{}"))
     except Exception:
@@ -939,12 +1056,19 @@ def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, by
             if key not in FILE_FIELDS or not isinstance(item, dict):
                 continue
             stored = Path(str(item.get("stored", ""))).name
-            if stored and (media_dir / stored).exists():
-                media[key] = {
-                    "filename": item.get("filename", stored),
-                    "stored": stored,
-                    "mime": item.get("mime") or mimetypes.guess_type(stored)[0] or "image/png",
-                }
+            if not stored:
+                continue
+            source_path = source_media_dir / stored
+            destination_path = media_dir / stored
+            if source_path.exists() and source_path.resolve() != destination_path.resolve():
+                shutil.copyfile(source_path, destination_path)
+            if not destination_path.exists():
+                continue
+            media[key] = {
+                "filename": item.get("filename", stored),
+                "stored": stored,
+                "mime": item.get("mime") or mimetypes.guess_type(stored)[0] or "image/png",
+            }
     for key, file_data in files.items():
         if key not in FILE_FIELDS:
             continue
@@ -1043,13 +1167,15 @@ def retry_job(job_id: str) -> str:
     files = _files_from_restore(restore, ws_id)
     username = str((act or {}).get("username") or "")
     return create_job(values, files, source="retry", request_kind="retry",
-                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username)
+                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username, media_scope=_config_scope_for(ws_id, username))
 
 
 def recover_backlog() -> tuple[int, int]:
-    """启动时恢复：queued → 自动重新入队；started → 标记服务更新中断。"""
+    """启动时恢复：queued/started → 原 job_id 重新入队继续跑（重启前后无感）。"""
     recovered = 0
     interrupted = 0
+    dropped = 0
+    stale_cleared = 0
     backlog = _backlog_load()
     if not backlog:
         return 0, 0
@@ -1058,6 +1184,15 @@ def recover_backlog() -> tuple[int, int]:
         activity_id = str(meta.get("activity_id") or "")
         try:
             act = activities.get(activity_id) or {}
+            # 终态守卫：活动记录已收尾（成功/失败/取消）说明任务早已走完完成
+            # 路径、只是 backlog 条目没清掉——只清条目，绝不做中断改写
+            # （否则会把成功任务在重启时翻成失败，2026-09-09 用户实锤）。
+            act_status = str(act.get("status") or "").lower()
+            if act and act_status in {"succeeded", "success", "completed", "failed", "failure", "cancelled", "canceled"}:
+                with LOCK:
+                    _backlog_remove_locked(job_id)
+                stale_cleared += 1
+                continue
             restore = act.get("restore") or {}
             if not isinstance(restore, dict) or "values" not in restore:
                 raise ValueError("restore 数据缺失")
@@ -1065,27 +1200,12 @@ def recover_backlog() -> tuple[int, int]:
             # restore 有意剥离 api_key：重放时回填服务端统一配置
             values.setdefault("api_key", resolve_provider_api_key(str(values.get("provider") or "")))
             ws_id = str(meta.get("ws_id") or "localhost")
+            media_scope = _config_scope_for(ws_id, str(meta.get("username") or ""))
             files = _files_from_restore(restore, ws_id)
-            if meta.get("stage") == "started":
-                with LOCK:
-                    JOBS[job_id] = {
-                        "id": job_id, "status": "failed",
-                        "events": [{"time": time.strftime("%H:%M:%S"),
-                                    "message": "服务更新重启，任务中断"}],
-                        "results": [], "errors": ["服务更新重启，任务中断——请点击「重试」重新提交。"],
-                        "done": 0, "total": 0,
-                        "username": str(meta.get("username") or ""),
-                        "workspace_id": ws_id,
-                        "submitted_at": time.time(), "started_at": None,
-                        "finished_at": time.time(),
-                        "retryable": True,
-                    }
-                    _backlog_remove_locked(job_id)
-                update_activity(activity_id, status="failed",
-                                error="服务更新重启，任务中断——请点击重试",
-                                finished_at=time.time())
-                interrupted += 1
-                continue
+            # 排队中/运行中统一语义（2026-09-09 用户确认）：
+            # 重启后原 job_id 重新入队、自动继续跑，活动记录保持 running——
+            # 重启前后用户无感。failed/succeeded 的任务由上方终态守卫保护。
+            # （重新执行会重跑生成，可能重复计费——用户明确选择无感优先。）
             with LOCK:
                 JOBS[job_id] = {
                     "id": job_id, "status": "queued", "events": [{"time": time.strftime("%H:%M:%S"),
@@ -1093,12 +1213,28 @@ def recover_backlog() -> tuple[int, int]:
                     "results": [], "errors": [], "done": 0, "total": 0,
                     "username": str(meta.get("username") or ""),
                     "workspace_id": ws_id,
+                    "activity_id": activity_id,
+                    "created_at": str(act.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S")),
+                    "title": str(act.get("title") or values.get("prompt") or "Nano Banana task")[:80],
+                    "prompt": str(values.get("prompt") or act.get("title") or ""),
+                    "params": {
+                        key: value for key, value in values.items()
+                        if key not in {"api_key", "saved_media"} and key not in FILE_FIELDS
+                    },
+                    "model": str(values.get("custom_model") or values.get("model") or "").strip(),
+                    "provider": str(values.get("provider") or "").strip(),
                     "submitted_at": time.time(), "started_at": None, "finished_at": None,
                 }
                 _backlog_set_locked(job_id, stage="queued", activity_id=activity_id, ws_id=ws_id)
-            threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True).start()
-            recovered += 1
+            threading.Thread(target=run_job, args=(job_id, values, files, activity_id, media_scope), daemon=True).start()
         except Exception as exc:
+            # 数据残缺无法重放：活动记录还在 → 标记中断；记录已被 100 条上限
+            # 滚出日志 → 直接丢弃，绝不造无主失败条目污染任务列表
+            with LOCK:
+                _backlog_remove_locked(job_id)
+            if not act:
+                dropped += 1
+                continue
             with LOCK:
                 JOBS[job_id] = {
                     "id": job_id, "status": "failed",
@@ -1107,11 +1243,49 @@ def recover_backlog() -> tuple[int, int]:
                     "done": 0, "total": 0,
                     "username": str(meta.get("username") or ""),
                     "workspace_id": str(meta.get("ws_id") or "localhost"),
+                    "activity_id": activity_id,
+                    "created_at": str(act.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S")),
+                    "title": str(act.get("title") or "Nano Banana task")[:80],
+                    "prompt": str(act.get("prompt") or act.get("title") or ""),
+                    "model": str(act.get("model") or ""),
+                    "provider": str(act.get("provider") or ""),
                     "submitted_at": time.time(), "started_at": None, "finished_at": time.time(),
                 }
-                _backlog_remove_locked(job_id)
+            update_activity(
+                activity_id,
+                status="failed",
+                error="服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）",
+                finished_at=time.time(),
+            )
             interrupted += 1
+    # 孤儿自愈：恢复流程结束后仍处于进行中状态、且内存里没有对应任务的活动记录
+    # （fastapi 引擎此前从不跑恢复、或运行线程异常消失等）统一标记中断，
+    # 避免「永久 running」的幽灵任务继续被前端与统计当作进行中。
+    with LOCK:
+        live_ids = set(JOBS.keys())
+    orphaned = 0
+    for act in activities.values():
+        status = str(act.get("status") or "").lower()
+        if status not in {"running", "pending", "queued", "processing", "submitted"}:
+            continue
+        jid = str(act.get("job_id") or "")
+        if jid and jid in live_ids:
+            continue
+        update_activity(
+            str(act.get("id") or ""),
+            status="failed",
+            error="任务因服务重启/异常中断（恢复流程未找到该任务），请点击重试或重新提交",
+            finished_at=time.time(),
+        )
+        orphaned += 1
+    if orphaned:
+        print(f"Orphaned running activities marked interrupted: {orphaned}", flush=True)
+    if dropped:
+        print(f"Stale backlog entries dropped (activity rolled out): {dropped}", flush=True)
+    if stale_cleared:
+        print(f"Backlog entries cleared for already-final records: {stale_cleared}", flush=True)
     return recovered, interrupted
+
 
 
 def activity_record_for_client(record: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1240,7 +1414,7 @@ def archive_path(name: str, ws_id: str = "localhost") -> Path:
 
 
 def list_archives(handler: SimpleHTTPRequestHandler | None = None) -> list[dict[str, Any]]:
-    ws = _workspace_id(handler) if handler else "localhost"
+    ws = _config_scope(handler) if handler else "localhost"
     dir_path = STATE_DIR / "workspaces" / ws / "archives"
     dir_path.mkdir(parents=True, exist_ok=True)
     # rglob so archives saved under future <user>/<date>/ subdirs are also
@@ -1267,7 +1441,7 @@ def save_archive_file(name: str, preset: dict[str, Any], ws_id: str = "localhost
 
 
 def load_archive_file(name: str, handler: SimpleHTTPRequestHandler | None = None) -> dict[str, Any]:
-    ws = _workspace_id(handler) if handler else "localhost"
+    ws = _config_scope(handler) if handler else "localhost"
     path = archive_path(name, ws)
     migrated = False
     if not path.exists():
@@ -1555,15 +1729,37 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     return values, files
 
 
-def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], source: str, request_kind: str, request_data: dict[str, Any], ws_id: str = "localhost", username: str = "") -> str:
+def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], source: str, request_kind: str, request_data: dict[str, Any], ws_id: str = "localhost", username: str = "", media_scope: str | None = None) -> str:
+    validate_model_capabilities(values, files)
+    media_scope = media_scope or _config_scope_for(ws_id, username)
     job_id = uuid.uuid4().hex
     activity_id = uuid.uuid4().hex
+    prompt = str(values.get("prompt") or "")
+    created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    source_media_scope = media_scope
+    safe_params = {
+        key: value for key, value in values.items()
+        if key not in {"api_key", "saved_media"} and key not in FILE_FIELDS
+    }
+    response = job_id_response(job_id)
+    # 与 seedance 同步（2026-09-15）：会抛异常的准备工作（copy_files_to_restore
+    # 会往 workspace 素材目录写盘）必须在作业入库之前做完。否则「已入库、线程
+    # 未起」会留下永远 queued/total=0 的僵尸任务，前端只看到一次 400，
+    # 队列里却挂着不动、取消也没用。
+    restore_payload = copy_files_to_restore(values, files, activity_id, ws_id, source_media_scope)
     with LOCK:
         JOBS[job_id] = {
             "id": job_id, "status": "queued", "events": [], "results": [], "errors": [],
             "done": 0, "total": 0,
             "username": username,
             "workspace_id": ws_id,
+            "activity_id": activity_id,
+            "created_at": created_at,
+            "title": prompt[:80] or "Nano Banana task",
+            "prompt": prompt,
+            "params": safe_params,
+            "model": str(values.get("custom_model") or values.get("model") or "").strip(),
+            "provider": str(values.get("provider") or "").strip(),
             "submitted_at": time.time(),
             "started_at": None,
             "finished_at": None,
@@ -1572,22 +1768,39 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
         _backlog_set_locked(job_id, stage="queued", activity_id=activity_id,
                             ws_id=ws_id, username=username)
         _prune_jobs_locked()
-    response = job_id_response(job_id)
-    record_activity({
-        "id": activity_id,
-        "job_id": job_id,
-        "source": source,
-        "request_kind": request_kind,
-        "status": "running",
-        "title": str(values.get("prompt") or "")[:80] or "Nano Banana task",
-        "request": request_data,
-        "response": response,
-        "workspace_id": ws_id,
-        "username": username,
-        "started_at": time.time(),
-        "restore": copy_files_to_restore(values, files, activity_id, ws_id),
-    })
-    threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True).start()
+    try:
+        record_activity({
+            "id": activity_id,
+            "job_id": job_id,
+            "source": source,
+            "request_kind": request_kind,
+            "status": "running",
+            "title": str(values.get("prompt") or "")[:80] or "Nano Banana task",
+            "model": str(values.get("custom_model") or values.get("model") or "").strip(),
+            "provider": str(values.get("provider") or "").strip(),
+            "request": request_data,
+            "response": response,
+            "workspace_id": ws_id,
+            "username": username,
+            "started_at": time.time(),
+            "restore": restore_payload,
+        })
+        threading.Thread(target=run_job, args=(job_id, values, files, activity_id, source_media_scope), daemon=True).start()
+    except Exception:
+        # 入库后、worker 起来前失败：把作业整个摘掉，绝不留下僵尸
+        with LOCK:
+            JOBS.pop(job_id, None)
+            _backlog_remove_locked(job_id)
+        try:
+            update_activity(
+                activity_id,
+                status="failed",
+                error="任务创建失败（队列未启动）：" + str(sys.exc_info()[1])[:160],
+                finished_at=time.time(),
+            )
+        except Exception:
+            pass
+        raise
     return job_id
 
 
@@ -1651,6 +1864,28 @@ def save_image_item(item: dict[str, Any], out_dir: Path, prefix: str, idx: int) 
         return "", str(out_path)
     raise RuntimeError(f"No image data in result item: {item}")
 
+
+def _gpt_image_size(aspect_ratio: str, image_size: str) -> str:
+    if isinstance(image_size, str):
+        candidate = image_size.strip().lower()
+        if candidate in {"1024x1024", "1024x1536", "1536x1024"}:
+            return candidate
+    ratio = (aspect_ratio or "").strip()
+    if ratio in {"1:1", "auto", ""}:
+        return "1024x1024" if ratio == "1:1" else "auto"
+    parts = ratio.split(":")
+    if len(parts) == 2:
+        try:
+            width, height = float(parts[0]), float(parts[1])
+        except ValueError:
+            return "auto"
+        if width > 0 and height > 0:
+            if width > height:
+                return "1536x1024"
+            if height > width:
+                return "1024x1536"
+            return "1024x1024"
+    return "auto"
 
 def extract_gemini_images(result: dict[str, Any]) -> list[dict[str, str]]:
     images: list[dict[str, str]] = []
@@ -1917,6 +2152,50 @@ def add_event(job_id: str, message: str) -> None:
         JOBS[job_id].setdefault("events", []).append({"time": time.strftime("%H:%M:%S"), "message": message})
 
 
+# 僵尸作业阈值：正常提交在同一次请求里就会把状态推到 running，因此「排队超过
+# 这么久 + 完全没进度」只可能是 worker 从未起来的僵尸（与 seedance 同步的
+# 2026-09-15 修复：create_job 先入库后起线程，中间抛异常就留下永久 queued）。
+ZOMBIE_QUEUE_GRACE_SECONDS = 180.0
+
+
+def _sweep_zombie_jobs(grace: float = ZOMBIE_QUEUE_GRACE_SECONDS) -> int:
+    """把「从未启动过 worker」的 queued 作业自愈成 failed，避免永久卡在排队中。"""
+    now = time.time()
+    zombies: list[tuple[str, str]] = []
+    with LOCK:
+        for jid, job in list(JOBS.items()):
+            status = str(job.get("status") or "").lower()
+            if status not in {"queued", "pending"}:
+                continue
+            if job.get("started_at") or job.get("local_job_ids") or job.get("provider_tasks"):
+                continue
+            if int(job.get("done") or 0) > 0 or int(job.get("total") or 0) > 0:
+                continue
+            submitted = float(job.get("submitted_at") or 0)
+            if not submitted or (now - submitted) < grace:
+                continue
+            job["status"] = "failed"
+            job["errors"] = list(job.get("errors") or []) + ["任务未能启动（队列线程缺失），已自动标记失败，请重试。"]
+            job["finished_at"] = now
+            _backlog_remove_locked(jid)
+            zombies.append((jid, str(job.get("activity_id") or "")))
+    for jid, activity_id in zombies:
+        try:
+            update_activity(
+                activity_id,
+                status="failed",
+                error="任务未能启动（队列线程缺失），已自动标记失败，请重试。",
+                finished_at=now,
+            )
+        except Exception:
+            pass
+        try:
+            report_final_to_portal(jid, "failed")
+        except Exception:
+            pass
+    return len(zombies)
+
+
 def truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"on", "true", "1", "yes"}
 
@@ -1987,24 +2266,46 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             values_payload["seed"] = seed
         values_payload["timeout"] = int(values.get("timeout") or 2400)
         values_payload["poll_interval"] = max(2, int(values.get("poll_interval") or 3))
+        file_signature = [
+            (str(key), str(item.get("filename") or ""), len(str(item.get("data_url") or "")))
+            for key, item in sorted(files_payload.items())
+        ]
+        request_id = local_gateway.job_request_id(
+            job_id, index, model_kind, file_signature
+        )
         submit = request_json(
             "POST",
             f"{base_url}/api/image_local/jobs/json",
             "",
-            {"values": values_payload, "files": files_payload},
+            {"values": values_payload, "files": files_payload, "request_id": request_id},
             timeout=int(values.get("timeout") or 2400),
         )
         local_job_id = submit.get("job_id")
         if not local_job_id:
             raise RuntimeError("Local ComfyUI did not return a job id")
+        with LOCK:
+            JOBS[job_id].setdefault("local_job_ids", []).append(local_job_id)
         poll_interval = max(2, int(values.get("poll_interval") or 3))
         timeout = int(values.get("timeout") or 2400)
         start = time.time()
         results: list[dict[str, Any]] = []
         while True:
             if time.time() - start > timeout:
+                try:
+                    request_json(
+                        "POST",
+                        f"{base_url}/api/image_local/jobs/{local_job_id}/cancel",
+                        "",
+                        None,
+                        timeout=5,
+                        max_retries=1,
+                    )
+                except Exception:
+                    pass
                 raise RuntimeError(f"Local ComfyUI job {local_job_id} timed out after {timeout}s")
             time.sleep(poll_interval)
+            if _job_cancel_requested(job_id):
+                raise TaskCancelled("任务已取消。")
             status = request_json(
                 "GET",
                 f"{base_url}/api/image_local/jobs/{local_job_id}",
@@ -2043,6 +2344,9 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                 flat_items.append((str(item["download_url"]), base_name))
         if not flat_items:
             raise RuntimeError("Local ComfyUI returned no images")
+        # Krea2 three-stage upstream emits the draft and final SaveImage nodes; keep only the final one.
+        if model_kind == "krea2_three_stage" and len(flat_items) > 1:
+            flat_items = flat_items[-1:]
         for item_index, (rel_url, base_name) in enumerate(flat_items, 1):
             suffix = Path(base_name).suffix or ".png"
             out_path = out_dir / f"{prefix}_{item_index}{suffix}"
@@ -2124,65 +2428,56 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
 
     if provider == "gemini":
         image_count = 0
-        if common["model"] == "gpt-image-2":
-            content: list[dict[str, Any]] = [{"type": "text", "text": common["prompt"]}]
+        if str(common["model"]).startswith("gpt-image-"):
+            # gpt-image 是 OpenAI 风格图片模型：文生图走 /v1/images/generations，
+            # 图生图走 /v1/images/edits（参考图以 image[] 字段逐个上传）。
+            reference_files: list[tuple[str, bytes, str]] = []
             for i in range(1, 15):
                 file_data = get_file_or_saved(form, f"image_{i}", ws_id)
                 if not file_data:
                     continue
                 filename, blob = file_data
-                content.append({"type": "image_url", "image_url": {"url": file_to_data_url(filename, blob)}})
+                mime = mimetypes.guess_type(filename)[0] or "image/png"
+                reference_files.append((filename, blob, mime))
                 image_count += 1
-            payload = {
+
+            size = _gpt_image_size(
+                str(common.get("aspect_ratio") or "auto"),
+                str(common.get("image_size") or ""),
+            )
+            fields = {
                 "model": common["model"],
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": 256,
+                "prompt": common["prompt"],
+                "n": 1,
+                "size": size,
             }
-            # chiyun 是多上游负载均衡:部分通道不支持 /v1/chat/completions,
-            # 会用 HTTP 200 包一个业务错误({code:404,msg:'No endpoint POST
-            # /v1/chat/completions'}),request_json 的 HTTP 层重试对此不触发。
-            # 这就是「并发2偶尔成一张、单发常失败」的真因——多打几次才命中
-            # 好通道。这里把「请求+解析」包成软错误重试,把碰运气变成确定成功。
-            # 图生图实测单次约 99s,超时给足 300s。
-            task_id = f"chat_{uuid.uuid4().hex[:12]}"
-            items = []
-            last_result: Any = None
-            soft_attempts = 4
-            for soft_try in range(soft_attempts):
-                result = request_chat_completion(
-                    f"{base_url}/v1/chat/completions", api_key, payload, timeout=300)
-                last_result = result
-                biz_code = result.get("code") if isinstance(result, dict) else None
-                biz_msg = str(result.get("msg") or "") if isinstance(result, dict) else ""
+            if mode == "text2img" and not reference_files:
+                result = request_json(
+                    "POST",
+                    f"{base_url}/v1/images/generations",
+                    api_key,
+                    fields,
+                    timeout=300,
+                )
+            else:
+                if not reference_files:
+                    raise ValueError("图生图模式至少需要一张参考图，请重新上传图片或切换到文生图")
+                files_payload = [
+                    ("image[]", filename, blob, mime)
+                    for filename, blob, mime in reference_files
+                ]
+                result = multipart_post(
+                    f"{base_url}/v1/images/edits",
+                    api_key,
+                    fields,
+                    files_payload,
+                    timeout=300,
+                )
 
-                # 确定性拒绝:内容审核未过 / 端点缺失等,重试再多次也必然同样结果。
-                # 立即失败,不再空耗——实测这类失败原本要重试满 4 次、白等十几分钟。
-                # 说明:gpt-image 的 chat/completions 通道对「未通过审核的参考图」
-                # 会把审核拒绝错误地包装成 404 "No endpoint POST /v1/chat/completions"
-                # (已由「同一 key 换张图即成功」证实),文案极具误导性,这里翻译成人话。
-                if _is_deterministic_reject(biz_code, biz_msg):
-                    add_event(job_id, f"Run {index}: 生成被拒(code={biz_code}),疑似参考图未通过内容审核")
-                    raise RuntimeError(_friendly_reject_message(result))
-
-                # 其它业务错误码(如瞬时通道抖动)→ 换通道重试
-                if biz_code not in (None, 200, "200"):
-                    if soft_try < soft_attempts - 1:
-                        add_event(job_id, f"Run {index}: 通道返回 code={biz_code},重试 {soft_try + 1}/{soft_attempts - 1}")
-                        time.sleep(min(2 ** soft_try, 8))
-                        continue
-                    break
-                items = extract_chat_completion_images(result)
-                if items:
-                    break
-                # 200 且无 code 错误,但解析不出图 → 也换一路再试
-                if soft_try < soft_attempts - 1:
-                    add_event(job_id, f"Run {index}: 未解析到图片,重试 {soft_try + 1}/{soft_attempts - 1}")
-                    time.sleep(min(2 ** soft_try, 8))
+            task_id = f"gptimg_{uuid.uuid4().hex[:12]}"
+            items = extract_items(result)
             if not items:
-                # 到这里说明重试用尽仍无图(非确定性拒绝)。给友好提示,原始
-                # 响应记进日志备查,不再把整坨 raw JSON 甩给用户。
-                print(f"[nano] gpt-image-2 no result after retries: {str(last_result)[:500]}", flush=True)
-                raise RuntimeError(_friendly_reject_message(last_result))
+                raise RuntimeError(f"No image result found: {result}")
             _ensure_output_dir(values, job_id)
             out_dir = resolve_output_dir(values.get("output_dir"))
             file_token_results = []
@@ -2205,8 +2500,13 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                     "local_path": local_path,
                 })
             add_event(job_id, f"Run {index}: saved {len(file_token_results)} image(s), input_images:{image_count}")
-            return {"index": index, "task_id": task_id, "status": "succeeded", "seed": seed or None, "images": file_token_results}
-
+            return {
+                "index": index,
+                "task_id": task_id,
+                "status": "succeeded",
+                "seed": seed or None,
+                "images": file_token_results,
+            }
         parts: list[dict[str, Any]] = [{"text": common["prompt"]}]
         for i in range(1, 15):
             file_data = get_file_or_saved(form, f"image_{i}", ws_id)
@@ -2279,6 +2579,8 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             payload["seed"] = seed
         result = request_json("POST", f"{base_url}/v1/images/generations?async=true", api_key, payload)
     else:
+        if image_count == 0:
+            raise ValueError("图生图模式至少需要一张参考图，请重新上传图片或切换到文生图")
         result = multipart_post(f"{base_url}/v1/images/edits?async=true", api_key, common, files_payload)
 
     task_id = result.get("task_id") or result.get("id") or f"sync_{uuid.uuid4().hex[:12]}"
@@ -2287,6 +2589,14 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         final = result
     else:
         status_url = f"{base_url}/v1/images/tasks/{task_id}"
+        with LOCK:
+            job = JOBS.get(job_id)
+            if job is not None:
+                job.setdefault("provider_tasks", []).append({
+                    "task_id": task_id,
+                    "status_url": status_url,
+                    "api_key": api_key,
+                })
         timeout = int(values.get("timeout") or 900)
         interval = int(values.get("poll_interval") or 10)
         start = time.time()
@@ -2307,7 +2617,14 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                 final = data
                 break
             if state in {"failed", "failure", "error", "cancelled", "canceled"}:
-                raise RuntimeError(f"Task {task_id} ended as {state}: {status}")
+                reason = ""
+                if isinstance(data, dict):
+                    reason = str(data.get("fail_reason") or data.get("error") or data.get("message") or "").strip()
+                if not reason and isinstance(status, dict):
+                    reason = str(status.get("fail_reason") or status.get("error") or status.get("message") or "").strip()
+                if not reason:
+                    reason = str(status)
+                raise RuntimeError(f"任务 {task_id} 失败：{reason}")
 
     items = extract_items(final)
     if not items:
@@ -2341,10 +2658,10 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
 
 
 _LOCAL_AUTO_MODEL_CHAIN = {
-    0: ["krea2_three_stage"],
-    1: ["qwen2511"],
-    2: ["qwen2511"],
-    3: ["qwen2511"],
+    0: "krea2_three_stage",
+    1: "qwen2511",
+    2: "qwen2511",
+    3: "qwen2511",
 }
 
 
@@ -2352,17 +2669,25 @@ def _local_auto_candidates(model: str, file_count: int) -> list[str]:
     model = str(model or "").strip().lower()
     if model != "auto":
         return [model]
-    return _LOCAL_AUTO_MODEL_CHAIN.get(file_count, ["qwen2511", "flux2_klein_allinone"])
+    return [_LOCAL_AUTO_MODEL_CHAIN.get(file_count, "qwen2511")]
 
 
-def _prepare_model_attempt(values: dict[str, Any], model: str) -> dict[str, Any]:
+def _prepare_model_attempt(
+    values: dict[str, Any],
+    model: str,
+    files: dict[str, tuple[str, bytes]],
+) -> dict[str, Any]:
     attempt = dict(values)
     attempt["model"] = model
     attempt["custom_model"] = ""
     if model == "flux2_klein_allinone":
         attempt["flux2_mode"] = "auto"
     elif model == "zimage_multifunction":
-        attempt["zimage_mode"] = "auto"
+        requested_mode = str(attempt.get("mode") or "").strip().lower()
+        if requested_mode == "text2img" or not files:
+            attempt["zimage_mode"] = "t2i"
+        else:
+            attempt["zimage_mode"] = "img2img"
     return attempt
 
 
@@ -2403,7 +2728,10 @@ def run_one_with_fallback(job_id: str, index: int, values: dict[str, Any], files
     provider = str(values.get("provider") or config.get("default_provider") or "t8star")
     provider_cfg = (config.get("providers") or {}).get(provider) or {}
     if provider_cfg.get("api_style") != "comfyui_workflow":
-        return run_one(job_id, index, values, files, ws_id)
+        result = run_one(job_id, index, values, files, ws_id)
+        result.setdefault("model", str(values.get("custom_model") or values.get("model") or "").strip())
+        result.setdefault("provider", provider)
+        return result
 
     requested_model = str(values.get("custom_model") or values.get("model") or "").strip().lower()
     if len(files) > 3:
@@ -2417,35 +2745,18 @@ def run_one_with_fallback(job_id: str, index: int, values: dict[str, Any], files
             add_event(job_id, f"Run {index}: batch {chunk_no}/{len(chunks)} completed")
         return _merge_local_batch_results(batch_results, index)
 
-    candidates = _local_auto_candidates(requested_model, len(files))
-    last_error = None
-    for candidate in candidates:
-        attempt_values = _prepare_model_attempt(values, candidate)
-        try:
-            return run_one(job_id, index, attempt_values, files, ws_id)
-        except Exception as exc:
-            last_error = exc
-            add_event(job_id, f"Run {index}: auto model {candidate} failed: {exc}")
-    fallback_provider = str(config.get("cloud_fallback_provider") or "")
-    cloud_cfg = (config.get("providers") or {}).get(fallback_provider) or {}
-    if files:
-        raise RuntimeError(
-            "本地图像生成失败；检测到参考素材。为避免未经确认上传到云端，"
-            "系统未自动切换，请确认后选择云端重试。"
-        ) from last_error
-    if fallback_provider and cloud_cfg.get("api_style") != "comfyui_workflow":
-        add_event(job_id, f"Run {index}: local models failed, falling back to cloud provider {fallback_provider}")
-        fallback_values = dict(values)
-        cloud_defaults = provider_defaults(config, fallback_provider)
-        fallback_values["provider"] = fallback_provider
-        fallback_values["api_key"] = resolve_provider_api_key(fallback_provider)
-        fallback_values["base_url"] = cloud_defaults.get("base_url", cloud_cfg.get("base_url", ""))
-        fallback_values["model"] = cloud_defaults.get("model", "")
-        fallback_values["custom_model"] = ""
-        if fallback_values["api_key"]:
-            return run_one(job_id, index, fallback_values, files, ws_id)
-        last_error = RuntimeError(f"云端兜底 {fallback_provider} 未配置 API Key")
-    raise RuntimeError(f"Auto model routing exhausted: {last_error}")
+    candidate = _local_auto_candidates(requested_model, len(files))[0]
+    attempt_values = _prepare_model_attempt(values, candidate, files)
+    try:
+        result = run_one(job_id, index, attempt_values, files, ws_id)
+        result.setdefault("model", candidate)
+        result.setdefault("provider", provider)
+        return result
+    except TaskCancelled:
+        raise
+    except Exception as exc:
+        add_event(job_id, f"Run {index}: model {candidate} failed: {exc}")
+        raise RuntimeError(f"模型 {candidate} 不可用，请更换模型后重试。原因：{exc}") from exc
 
 def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, bytes]], activity_id: str | None = None, ws_id: str = "localhost") -> None:
     try:
@@ -2487,6 +2798,10 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
                             continue
                         JOBS[job_id]["results"].append(result)
                         JOBS[job_id]["done"] += 1
+                        if result.get("model"):
+                            JOBS[job_id]["model"] = result.get("model")
+                        if result.get("provider"):
+                            JOBS[job_id]["provider"] = result.get("provider")
                 except TaskCancelled:
                     # 取消不是错误：不记 errors、不计 done
                     add_event(job_id, "Run cancelled")
@@ -2514,7 +2829,7 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
         with LOCK:
             cancelled = bool(JOBS[job_id].get("cancel_requested"))
             errors = JOBS[job_id]["errors"]
-            final_job = json.loads(json.dumps(JOBS[job_id]))
+            final_job = public_job_snapshot(JOBS[job_id]) or {}
         if cancelled:
             # 已完成的条目保留（已真实生成且计费）；未完成条目不计
             final_status = "cancelled"
@@ -2526,18 +2841,23 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
         final_job["status"] = final_status
         final_job["errors"] = errors
         error_summary = "; ".join(errors[:3])[:500] if errors else None
-        update_activity(activity_id, status=final_status, result=final_job, finished_at=time.time(),
+        final_model = final_job.get("model") or str(values.get("custom_model") or values.get("model") or "").strip()
+        final_provider = final_job.get("provider") or str(values.get("provider") or "").strip()
+        update_activity(activity_id, status=final_status, result=final_job, finished_at=time.time(), model=final_model, provider=final_provider,
                         **({"error": error_summary} if error_summary else {}))
         add_event(job_id, "任务已取消。" if cancelled else "Finished")
         report_final_to_portal(job_id, final_status)
         with LOCK:
             _backlog_remove_locked(job_id)
     except Exception as exc:
-        set_job(job_id, status="failed", errors=[str(exc)], finished_at=time.time())
+        try:
+            set_job(job_id, status="failed", errors=[str(exc)], finished_at=time.time())
+        except KeyError:
+            print(f"[run_job] JOBS 条目缺失（异常前已被移出？）: {job_id}: {exc}", flush=True)
         with LOCK:
-            final_job = json.loads(json.dumps(JOBS.get(job_id, {})))
+            final_job = public_job_snapshot(JOBS.get(job_id, {})) or {}
             _backlog_remove_locked(job_id)
-        update_activity(activity_id, status="failed", error=str(exc), result=final_job, finished_at=time.time())
+        update_activity(activity_id, status="failed", error=str(exc), result=final_job, finished_at=time.time(), model=final_job.get("model", ""), provider=final_job.get("provider", ""))
         add_event(job_id, f"Fatal: {exc}")
         report_final_to_portal(job_id, "failed")
 
@@ -2609,7 +2929,7 @@ class Handler(SimpleHTTPRequestHandler):
             json_response(self, 200, request_template())
             return
         if self.path == "/api/preset":
-            json_response(self, 200, preset_for_client(_workspace_id(self)))
+            json_response(self, 200, preset_for_client(_config_scope(self)))
             return
         if self.path == "/api/archives":
             json_response(self, 200, {"archives": list_archives(self)})
@@ -2621,6 +2941,11 @@ class Handler(SimpleHTTPRequestHandler):
             sees_all, username = _view_scope(self)
             json_response(self, 200, activity_list(sees_all=sees_all, username=username))
             return
+        if self.path.startswith("/api/activity/by-job/"):
+            job_id = urllib.parse.unquote(self.path.rsplit("/", 1)[-1])
+            record = find_activity_by_job_id(job_id)
+            json_response(self, 200 if record else 404, activity_record_for_client(record) or {"error": "activity not found"})
+            return
         if self.path.startswith("/api/activity/"):
             activity_id = self.path.rsplit("/", 1)[-1]
             record = next((item for item in read_activity_log() if item.get("id") == activity_id), None)
@@ -2631,10 +2956,16 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self.path.startswith("/api/preset-media/"):
             field = self.path.rsplit("/", 1)[-1]
-            ws = _workspace_id(self)
+            ws = _config_scope(self)
             item = read_preset(ws).get("media", {}).get(field)
             stored_name = Path(item.get("stored", "")).name if item else ""
             path = _ws_media_dir(ws) / stored_name if stored_name else None
+            if (path) and not path.exists():
+                legacy = _legacy_config_scope(ws)
+                if legacy:
+                    legacy_path = _ws_media_dir(legacy) / stored_name
+                    if legacy_path.exists():
+                        path = legacy_path
             if not item or not path or not path.exists():
                 json_response(self, 404, {"error": "media not found"})
                 return
@@ -2652,8 +2983,14 @@ class Handler(SimpleHTTPRequestHandler):
         if urllib.parse.urlparse(self.path).path.startswith("/api/media/"):
             raw_name = urllib.parse.urlparse(self.path).path.rsplit("/", 1)[-1]
             stored = Path(urllib.parse.unquote(raw_name)).name
-            ws = _workspace_id(self)
+            ws = _config_scope(self)
             path = _ws_media_dir(ws) / stored
+            if (path) and not path.exists():
+                legacy = _legacy_config_scope(ws)
+                if legacy:
+                    legacy_path = _ws_media_dir(legacy) / stored
+                    if legacy_path.exists():
+                        path = legacy_path
             if not path.exists():
                 json_response(self, 404, {"error": "media not found"})
                 return
@@ -2670,6 +3007,9 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/jobs":
             sees_all, username = _view_scope(self)
             items = []
+            # 僵尸自愈（2026-09-15，与 seedance 同步）：worker 线程从未启动的
+            # 作业会永久停在 queued/total=0，前端只能一直显示「排队中」。
+            _sweep_zombie_jobs()
             with LOCK:
                 for jid, j in JOBS.items():
                     if not sees_all and j.get("username", "") != username:
@@ -2713,7 +3053,7 @@ class Handler(SimpleHTTPRequestHandler):
             job_id = self.path.rsplit("/", 1)[-1]
             with LOCK:
                 job = JOBS.get(job_id)
-                data = json.loads(json.dumps(job)) if job else None
+                data = public_job_snapshot(job)
             json_response(self, 200 if data else 404, data or {"error": "job not found"})
             return
         if self.path.startswith("/api/download/"):
@@ -2790,7 +3130,22 @@ class Handler(SimpleHTTPRequestHandler):
                 job["status"] = "cancelled"
                 job["errors"] = ["任务已取消。"]
                 job["finished_at"] = time.time()
+                local_job_ids = list(job.get("local_job_ids") or [])
+                provider_tasks = list(job.get("provider_tasks") or [])
                 _backlog_remove_locked(job_id)
+            for lid in local_job_ids:
+                try:
+                    request_json("POST", f"{_force_ipv4(LOCAL_GATEWAY_BASE_URL)}/api/image_local/jobs/{lid}/cancel", "", None, timeout=5, max_retries=1)
+                except Exception:
+                    pass
+            for task in provider_tasks:
+                status_url = str(task.get("status_url") or "")
+                if not status_url:
+                    continue
+                try:
+                    request_json("DELETE", status_url, str(task.get("api_key") or ""), None, timeout=5, max_retries=1)
+                except Exception:
+                    pass
             add_event(job_id, "任务已取消。")
             report_final_to_portal(job_id, "cancelled")
             json_response(self, 200, {"ok": True, "status": "cancelled"})
@@ -2829,14 +3184,14 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/workspace/snapshot":
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
             try:
-                ws = _workspace_id(self)
+                ws = _config_scope(self)
                 json_response(self, 200, preset_to_client(collect_workspace_snapshot_from_form(form, ws), ws))
             except Exception as exc:
                 json_response(self, 500, {"error": str(exc)})
             return
         if self.path == "/api/preset":
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
-            ws = _workspace_id(self)
+            ws = _config_scope(self)
             preset = collect_preset_from_form(form, ws)
             write_active_preset(preset, ws)
             archive_name = get_field(form, "archive_name")
@@ -2847,7 +3202,7 @@ class Handler(SimpleHTTPRequestHandler):
             json_response(self, 200, data)
             return
         if self.path == "/api/media/upload":
-            ws = _workspace_id(self)
+            ws = _config_scope(self)
             ctype = self.headers.get("Content-Type", "")
             if not ctype.startswith("multipart/form-data"):
                 json_response(self, 400, {"error": "expected multipart/form-data"})
@@ -2919,6 +3274,20 @@ class Handler(SimpleHTTPRequestHandler):
                 "url": url,
             })
             return
+        if self.path == "/api/archive/save":
+            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
+            name = (get_field(form, "archive_name") or "").strip()
+            if not name:
+                json_response(self, 400, {"ok": False, "error": "方案名不能为空"})
+                return
+            if safe_archive_name(name) == "默认方案":
+                json_response(self, 400, {"ok": False, "error": "默认方案为只读，不可保存"})
+                return
+            ws = _config_scope(self)
+            preset = collect_preset_from_form(form, ws)
+            saved_path = save_archive_file(name, preset, ws)
+            json_response(self, 200, {"ok": True, "archive": saved_path.stem, "archives": list_archives(self)})
+            return
         if self.path == "/api/archive/load":
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
             try:
@@ -2928,12 +3297,47 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 json_response(self, 400, {"error": str(exc)})
             return
+        if self.path == "/api/archive/rename":
+            if not _is_local(self):
+                json_response(self, 403, {"ok": False, "error": "admin only"})
+                return
+            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
+            old_name = get_field(form, "archive_name")
+            new_name = get_field(form, "new_name")
+            if safe_archive_name(old_name) == "默认方案":
+                json_response(self, 400, {"ok": False, "error": "默认方案不可重命名"})
+                return
+            if safe_archive_name(new_name) == "默认方案":
+                json_response(self, 400, {"ok": False, "error": "不能重命名为默认方案"})
+                return
+            if not safe_archive_name(new_name):
+                json_response(self, 400, {"ok": False, "error": "新方案名不能为空"})
+                return
+            ws = _config_scope(self)
+            old_path = archive_path(old_name, ws)
+            new_path = archive_path(new_name, ws)
+            if old_path == new_path:
+                json_response(self, 200, {"ok": True, "archive": new_path.stem, "archives": list_archives(self)})
+                return
+            if not old_path.exists():
+                json_response(self, 400, {"ok": False, "error": "方案不存在"})
+                return
+            if new_path.exists():
+                json_response(self, 400, {"ok": False, "error": "方案名已存在"})
+                return
+            old_path.rename(new_path)
+            json_response(self, 200, {"ok": True, "archive": new_path.stem, "archives": list_archives(self)})
+            return
         if self.path == "/api/archive/delete":
             if not _is_local(self):
                 json_response(self, 403, {"ok": False, "error": "admin only"})
                 return
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
-            path = archive_path(get_field(form, "archive_name"), _workspace_id(self))
+            name = get_field(form, "archive_name")
+            if safe_archive_name(name) == "默认方案":
+                json_response(self, 400, {"ok": False, "error": "默认方案不可删除"})
+                return
+            path = archive_path(name, _config_scope(self))
             if path.exists():
                 path.unlink()
             json_response(self, 200, {"archives": list_archives(self)})
@@ -2983,7 +3387,7 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 request_data = {"raw": summarize_payload(payload), "parsed": summarize_values_files(values, files)}
                 ws = _workspace_id(self)
-                job_id = create_job(values, files, "api", "json", request_data, ws, username=_decode_username(self))
+                job_id = create_job(values, files, "api", "json", request_data, ws, username=_decode_username(self), media_scope=_config_scope(self))
                 json_response(self, 200, job_id_response(job_id))
             except Exception as exc:
                 json_response(self, 400, api_error("invalid_request", str(exc)))
@@ -3015,7 +3419,11 @@ class Handler(SimpleHTTPRequestHandler):
                     files[key] = (Path(item.filename).name, blob)
         request_data = summarize_values_files(values, files)
         ws = _workspace_id(self)
-        job_id = create_job(values, files, "page", "multipart", request_data, ws, username=_decode_username(self))
+        try:
+            job_id = create_job(values, files, "page", "multipart", request_data, ws, username=_decode_username(self), media_scope=_config_scope(self))
+        except Exception as exc:
+            json_response(self, 400, api_error("invalid_request", str(exc)))
+            return
         json_response(self, 200, job_id_response(job_id))
 
 

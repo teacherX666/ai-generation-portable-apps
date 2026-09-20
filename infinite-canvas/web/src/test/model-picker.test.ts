@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { parameterControls } from "@/components/model-picker";
+import { firstSelectableModel, modelOptionDisplayName, parameterControls } from "@/components/model-picker";
+import type { ModelSpec } from "@/api/contracts";
 
 
 describe("parameterControls", () => {
@@ -36,5 +37,21 @@ describe("parameterControls", () => {
             additionalProperties: false,
         });
         expect(controls[0]).toMatchObject({ name: "ratio", type: "enum", default: "1:1", title: "比例" });
+    });
+});
+
+describe("model availability", () => {
+    const base: ModelSpec = {
+        model_id: "enabled", service_id: "demo", display_name: "Enabled",
+        operations: ["image.generate"], input_media: ["text"], parameter_schema: {},
+    };
+
+    it("selects the first enabled model when disabled entries are present", () => {
+        const disabled = { ...base, model_id: "disabled", display_name: "Disabled", disabled: true };
+        expect(firstSelectableModel([disabled, base])).toBe(base);
+    });
+
+    it("labels disabled model options with the shared failure suffix", () => {
+        expect(modelOptionDisplayName({ ...base, model_id: "disabled", disabled: true })).toBe("Enabled（已失效）");
     });
 });

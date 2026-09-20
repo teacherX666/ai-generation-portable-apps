@@ -885,11 +885,11 @@ class FileStore:
         Execution-unit IDs intentionally contain ``::output:``.  They are
         valid logical IDs but ``:`` is illegal in Windows directory names.
         Keep ordinary IDs readable and hash only values that Windows cannot
-        represent safely.
+        represent safely. Applied on every platform so a storage layout
+        produced on macOS stays portable to Windows (future cloud migration);
+        this also keeps the contract deterministic for tests.
         """
         FileStore._validate_segment(value)
-        if os.name != "nt":
-            return value
         invalid = '<>:"|?*'
         stem = value.split(".", 1)[0].upper()
         reserved = {"CON", "PRN", "AUX", "NUL"} | {

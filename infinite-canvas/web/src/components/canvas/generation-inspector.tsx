@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 
 import type { ModelOperation, ModelSpec } from "@/api/contracts";
-import { modelsForOperation, parameterControls, type ParameterControl } from "@/components/model-picker";
+import { firstSelectableModel, modelOptionDisplayName, modelsForOperation, parameterControls, type ParameterControl } from "@/components/model-picker";
 
 
 export type GenerationInspectorValue = { prompt: string; modelId: string; params: Record<string, unknown> };
@@ -27,7 +27,7 @@ function invalid(control: ParameterControl, value: unknown) {
 
 export function GenerationInspector({ models, operation, value, disabled, message, onChange, onSubmit }: Props) {
     const available = useMemo(() => modelsForOperation(models, operation, "text"), [models, operation]);
-    const selected = available.find((model) => model.model_id === value.modelId) || available[0];
+    const selected = available.find((model) => model.model_id === value.modelId && !model.disabled) || firstSelectableModel(available);
     const isVideo = operation.startsWith("video.");
     const generationLabel = isVideo ? "视频生成" : "图片生成";
     const generationKicker = isVideo ? "VIDEO GENERATION" : "IMAGE GENERATION";
@@ -41,16 +41,17 @@ export function GenerationInspector({ models, operation, value, disabled, messag
 
     const chooseModel = (modelId: string) => {
         const model = available.find((item) => item.model_id === modelId);
-        onChange({ ...value, modelId, params: defaultsFor(parameterControls(model?.parameter_schema || {})) });
+        if (!model || model.disabled) return;
+        onChange({ ...value, modelId, params: defaultsFor(parameterControls(model.parameter_schema || {})) });
     };
 
     return <aside data-testid="generation-inspector" data-canvas-no-zoom className="max-h-[45%] shrink-0 overflow-auto border-t border-[#20293d] bg-[#ffffff] p-4 text-[#172033] lg:h-full lg:max-h-none lg:border-l lg:border-t-0 lg:p-5">
         <p className="text-xs tracking-[0.18em] text-[#235fd6]">{generationKicker}</p><h2 className="mt-2 text-lg font-semibold">{generationLabel}</h2>
         <label className="mt-5 block text-sm" htmlFor="studio-prompt">提示词</label><textarea disabled={disabled} id="studio-prompt" className="mt-2 min-h-28 w-full resize-y rounded-lg border border-[#d9e0ea] bg-[#f3f6fa] p-3 text-sm disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#235fd6]" value={value.prompt} onChange={(event) => onChange({ ...value, prompt: event.target.value })} />
-        <label className="mt-4 block text-sm">模型<select disabled={disabled} aria-label="模型" className="mt-2 block w-full rounded-lg border border-[#d9e0ea] bg-[#f3f6fa] p-2.5 disabled:cursor-not-allowed disabled:opacity-50" value={selected?.model_id || ""} onChange={(event) => chooseModel(event.target.value)}>{available.map((model) => <option key={model.model_id} value={model.model_id}>{model.display_name}</option>)}</select></label>
+        <label className="mt-4 block text-sm">模型<select disabled={disabled} aria-label="模型" className="mt-2 block w-full rounded-lg border border-[#d9e0ea] bg-[#f3f6fa] p-2.5 disabled:cursor-not-allowed disabled:opacity-50" value={selected?.model_id || ""} onChange={(event) => chooseModel(event.target.value)}>{available.map((model) => <option key={model.model_id} value={model.model_id} disabled={model.disabled}>{modelOptionDisplayName(model)}</option>)}</select></label>
         {controls.map((control) => <label key={control.name} className="mt-4 block text-sm">{control.name}{control.type === "enum" ? <select disabled={disabled} aria-label={control.name} className="mt-2 block w-full rounded-lg border border-[#d9e0ea] bg-[#f3f6fa] p-2.5 disabled:cursor-not-allowed disabled:opacity-50" value={String((control.enum || []).findIndex((item) => Object.is(item, value.params[control.name])))} onChange={(event) => onChange({ ...value, params: { ...value.params, [control.name]: control.enum?.[Number(event.target.value)] } })}>{control.enum?.map((item, index) => <option key={index} value={index}>{String(item)}</option>)}</select> : control.type === "boolean" ? <input disabled={disabled} aria-label={control.name} type="checkbox" className="ml-3 accent-[#235fd6] disabled:cursor-not-allowed disabled:opacity-50" checked={value.params[control.name] === true} onChange={(event) => onChange({ ...value, params: { ...value.params, [control.name]: event.target.checked } })} /> : <input disabled={disabled} aria-label={control.name} className="mt-2 block w-full rounded-lg border border-[#d9e0ea] bg-[#f3f6fa] p-2.5 disabled:cursor-not-allowed disabled:opacity-50" value={value.params[control.name] === undefined ? "" : String(value.params[control.name])} onChange={(event) => onChange({ ...value, params: { ...value.params, [control.name]: control.type === "number" || control.type === "integer" ? (event.target.value === "" ? undefined : Number(event.target.value)) : event.target.value } })} />}</label>)}
         {invalidParams ? <p className="mt-3 text-sm text-[#92400e]">请填写有效参数。</p> : null}
-        <button type="button" className="mt-5 w-full rounded-lg bg-[#3b76e0] px-4 py-2.5 text-sm font-semibold text-[#f3f6fa] disabled:opacity-40" disabled={disabled || !value.prompt.trim() || !selected || invalidParams} onClick={() => selected && onSubmit(selected, safeParams)}>加入任务队列</button>
+        <button type="button" className="mt-5 w-full rounded-lg bg-[#3b76e0] px-4 py-2.5 text-sm font-semibold text-[#f3f6fa] disabled:opacity-40" disabled={disabled || !value.prompt.trim() || !selected || selected.disabled || invalidParams} onClick={() => selected && onSubmit(selected, safeParams)}>加入任务队列</button>
         {message ? <p className="mt-3 text-sm text-[#92400e]">{message}</p> : null}<p className="mt-4 text-xs leading-5 text-[#8b95a7]">仅通过当前站点的受控任务接口提交；服务密钥不会进入浏览器。</p>
     </aside>;
 }

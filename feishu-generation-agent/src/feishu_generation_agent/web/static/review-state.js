@@ -367,6 +367,43 @@
       });
   }
 
+  /**
+   * **没被任何任务引用、也没被排除**的素材。
+   *
+   * 覆盖门要求「每个素材要么被引用、要么被排除」，而审批页过去没有排除入口 ——
+   * 未使用的素材只能靠手改提示词绕开（2026-09-17 超级大床：批准按钮一直灰着）。
+   * 这里把它们列出来给用户一个「排除」按钮。
+   */
+  function uncoveredAssetRows(view) {
+    const approval = view?.approval || {};
+    const successful = (approval.media_assets || []).filter(
+      (asset) => asset?.download_failed !== true,
+    );
+    const referencedIds = new Set(
+      (approval.tasks || []).flatMap((task) => (
+        (task?.reference_images || []).map((reference) => reference?.asset_id)
+      )),
+    );
+    const excludedIds = new Set(
+      (approval.excluded_assets || []).map((item) => item?.asset_id),
+    );
+    // 视频抽帧素材（video-1-frame）算它原视频的别名：引用帧就等于引用了视频。
+    const isCovered = (assetId) => {
+      if (referencedIds.has(assetId) || excludedIds.has(assetId)) return true;
+      if (!String(assetId).endsWith("-frame")) return false;
+      const base = String(assetId).slice(0, -"-frame".length);
+      return referencedIds.has(base) || excludedIds.has(base);
+    };
+    return successful
+      .filter((asset) => !isCovered(asset.asset_id))
+      .map((asset) => ({
+        asset_id: asset.asset_id,
+        preview_url: asset.preview_url || null,
+        mime_type: asset.mime_type || "",
+        media_kind: mediaKind(asset.mime_type || ""),
+      }));
+  }
+
   function canApprove(state) {
     const view = draftView(state);
     return Boolean(
@@ -453,14 +490,40 @@
     }));
   }
 
+  /**
+   * 采纳「**自己刚保存的**」服务端视图。
+   *
+   * 热保存链路：打字（600ms 防抖）→ PATCH 到服务端 → 立刻 poll()。这一步会让服务端
+   * 计划"变"一次 —— 如果不认领，下一秒轮询就把它当成**别人改了**：弹
+   * 「服务端计划已更新」并重建任务列表，用户正在敲的字和光标一起被冲掉。
+   * 用户 2026-09-18：「怎么一直服务端计划更新啊，我改提示词一直被打断」就是这个。
+   *
+   * 只对齐 `serverView` / `serverIdentity`，**保留**本地草稿与已选任务。
+   */
+  function adoptSelfSavedView(state, view) {
+    if (!state || !state.serverView) return adoptServerView(view);
+    return {
+      ...state,
+      serverView: clone(view),
+      serverIdentity: serverIdentity(view),
+      conflict: "",
+      pendingServerView: null,
+    };
+  }
+
   function shouldRefreshTaskEditor(
     previousState,
     nextState,
     hasRenderedTasks,
   ) {
     if (!hasRenderedTasks) return true;
-    return taskEditorIdentity(draftView(previousState))
-      !== taskEditorIdentity(draftView(nextState));
+    // 用户有未保存修改时**绝不重建**编辑器 —— 重建会连同输入内容和光标一起冲掉。
+    // （旧行为靠 draftView 比对"恰好"覆盖了冲突场景，但代价是用户一敲字就判定为
+    // "变了"，配合每秒轮询就变成"改提示词一直被刷新打断"。）
+    if (hasDirty(nextState)) return false;
+    // 只比**服务端**数据：以前比 draftView（含本地草稿），本地任何改动都会触发重建。
+    return taskEditorIdentity(previousState?.serverView)
+      !== taskEditorIdentity(nextState?.serverView);
   }
 
   return {
@@ -476,10 +539,12 @@
     discardLocalChanges,
     draftView,
     excludedAssetRows,
+    uncoveredAssetRows,
     failApprovalSubmit,
     hasDirty,
     isSubmitting,
     mergeServerView,
+    adoptSelfSavedView,
     patchTask,
     referenceMutationDirective,
     selectedTaskIds,

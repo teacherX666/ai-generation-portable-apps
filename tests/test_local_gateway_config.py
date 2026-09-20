@@ -67,6 +67,24 @@ class LocalGatewayConfigTests(unittest.TestCase):
         ):
             self.assertEqual(self.module.configured_url(), self.module.DEFAULT_URL)
 
+    def test_explicit_loopback_is_not_rewritten(self):
+        with mock.patch.dict(
+            self.module.os.environ,
+            {"AIPORT_BASE_URL": "http://127.0.0.1:8801"},
+            clear=True,
+        ):
+            self.assertEqual(
+                self.module.configured_url(),
+                "http://127.0.0.1:8801",
+            )
+
+    def test_job_request_id_is_stable_and_run_scoped(self):
+        first = self.module.job_request_id("job-1", 1, "qwen2511", "image_1")
+        retry = self.module.job_request_id("job-1", 1, "qwen2511", "image_1")
+        second_run = self.module.job_request_id("job-1", 2, "qwen2511", "image_1")
+        self.assertEqual(first, retry)
+        self.assertNotEqual(first, second_run)
+
     def test_force_ipv4_resolves_hostname(self):
         with mock.patch.object(
             self.module.socket,
@@ -81,6 +99,9 @@ class LocalGatewayConfigTests(unittest.TestCase):
     def test_probe_uses_resolved_health_url(self):
         class Response:
             status = 200
+
+            def read(self):
+                return b'{"modules":[{"id":"image_local"}]}'
 
             def __enter__(self):
                 return self

@@ -23,11 +23,17 @@ def _task(task_type: str) -> GenerationTask:
 
 
 async def test_real_person_video_uses_portrait_generator() -> None:
-    portrait = SimpleNamespace(for_run=lambda run_id: f"portrait:{run_id}")
+    calls: list[tuple[str, str | None]] = []
+
+    def for_run(run_id, *, model_key=None):
+        calls.append((run_id, model_key))
+        return f"portrait:{run_id}"
+
+    portrait = SimpleNamespace(for_run=for_run)
 
     class Store:
         async def get_by_run(self, run_id):
-            return SimpleNamespace(snapshot=SimpleNamespace(task_type="真人类"))
+            return SimpleNamespace(snapshot=SimpleNamespace(task_type="\u771f\u4eba\u7c7b"))
 
     services = SimpleNamespace(
         image_generator="chiyun",
@@ -39,11 +45,12 @@ async def test_real_person_video_uses_portrait_generator() -> None:
     provider, generator = await _generator_for_task("run-real", _task("image_to_video"), services)
 
     assert (provider, generator) == ("volcengine_portrait", "portrait:run-real")
+    assert calls == [("run-real", "seedance2.5")]
 
 async def test_real_person_video_uses_local_aiport_when_configured() -> None:
     class Store:
         async def get_by_run(self, run_id):
-            return SimpleNamespace(snapshot=SimpleNamespace(task_type="真人类"))
+            return SimpleNamespace(snapshot=SimpleNamespace(task_type="\u771f\u4eba\u7c7b"))
 
     services = SimpleNamespace(
         image_generator="chiyun",
@@ -62,7 +69,7 @@ async def test_real_person_video_uses_local_aiport_when_configured() -> None:
 async def test_real_person_video_uses_local_aiport_without_portrait_generator() -> None:
     class Store:
         async def get_by_run(self, run_id):
-            return SimpleNamespace(snapshot=SimpleNamespace(task_type="真人类"))
+            return SimpleNamespace(snapshot=SimpleNamespace(task_type="\u771f\u4eba\u7c7b"))
 
     services = SimpleNamespace(
         image_generator="chiyun",

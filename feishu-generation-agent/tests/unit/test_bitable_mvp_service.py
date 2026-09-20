@@ -153,7 +153,7 @@ async def _service(tmp_path: Path, *, tasks=None, runtime=None):
 
 
 @pytest.mark.asyncio
-async def test_scan_excludes_results_and_active_claims_but_ignores_executor(
+async def test_scan_drops_results_but_keeps_active_claims_annotated(
     tmp_path: Path,
 ) -> None:
     tasks = [
@@ -177,8 +177,27 @@ async def test_scan_excludes_results_and_active_claims_but_ignores_executor(
     try:
         scanned = await service.scan()
 
-        assert [task.record_id for task in scanned] == ["rec-open"]
+        # #1：已领取的记录留在列表里（带领取信息），否则用户一点「开始分析」
+        # 它就消失了；已有结果的记录仍然不出现在可处理列表。
+        assert [task.record_id for task in scanned] == ["rec-open", "rec-active"]
         assert scanned[0].executor_open_ids == ["ou_someone_else"]
+        assert scanned[0].claimed_run_id is None
+        assert scanned[0].claim_status is None
+        assert scanned[1].claimed_run_id == "run-active"
+        assert scanned[1].claim_status is TableTaskStatus.PROCESSING
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_refuses_an_already_claimed_record(tmp_path: Path) -> None:
+    """列表会带回已领取的记录，所以领取入口必须自己挡住重复领取。"""
+
+    service, _ = await _service(tmp_path)
+    try:
+        await service.claim("rec-1")
+        with pytest.raises(RunConflict, match="不可领取"):
+            await service.claim("rec-1")
     finally:
         await service.close()
 
@@ -412,7 +431,7 @@ async def test_retry_delivery_rejects_non_delivery_failure(tmp_path: Path) -> No
     service, _ = await _service(tmp_path)
     try:
         run_id = await service.claim("rec-1")
-        with pytest.raises(RunConflict, match="交付失败"):
+        with pytest.raises(RunConflict, match="导出结果表"):
             await service.retry_delivery(run_id)
     finally:
         await service.close()

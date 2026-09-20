@@ -19,6 +19,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -28,6 +29,12 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as _xml_escape
+
+try:
+    import video_check
+except Exception as _video_check_exc:  # cv2 等依赖缺失时不能让 Portal 起不来
+    video_check = None
+    print(f"  [video-check] 模块不可用: {_video_check_exc}", flush=True)
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
@@ -122,6 +129,9 @@ REDIRECT_PORT = int(os.environ.get("REDIRECT_PORT", "9089"))
 THUMB_DIR = STATE_DIR / "thumbnails"
 _THUMB_SEM = threading.Semaphore(2)
 
+# 视频体检：单次最多取多少字节，超过直接拒，避免把内存和临时盘打满
+MAX_VIDEO_CHECK_BYTES = 200 * 1024 * 1024
+
 
 def _default_allowed_origins() -> frozenset[str]:
     """Origins allowed to make credentialed cross-origin requests.
@@ -176,10 +186,68 @@ _METADATA_WHITELIST = {
     "prompt", "text", "content", "aspect_ratio", "ratio", "duration",
     "resolution", "image_size", "count", "mode", "style",
     "negative_prompt", "seed", "generate_audio", "model",
+    "custom_model", "model_name", "model_version",
 }
+_MODEL_FIELDS = {"model", "custom_model", "model_name", "model_version"}
 _METADATA_BLOCKLIST_SUBSTR = ("key", "token", "secret", "password")
-_METADATA_MAX_BODY = 5 * 1024 * 1024
+_METADATA_MAX_BODY = 256 * 1024 * 1024
+_METADATA_MAX_TEXT_VALUE = 128 * 1024
 
+
+def _extract_multipart_text_fields(content_type: str, body: bytes) -> dict:
+    """Extract text form fields without decoding large file payloads.
+
+    Job creation often includes multi-megabyte reference videos. The previous
+    parser skipped every multipart body above 5 MiB, which silently dropped the
+    prompt/model from Portal history. This scanner keeps non-file fields and
+    ignores file parts.
+    """
+    fields: dict[str, str] = {}
+    try:
+        match = re.search(r'(?:^|;)\s*boundary=(?:"([^"]+)"|([^;\s]+))', content_type or "")
+        if not match:
+            return fields
+        boundary = (match.group(1) or match.group(2) or "").encode("utf-8", errors="replace")
+        if not boundary:
+            return fields
+        marker = b"--" + boundary
+        pos = body.find(marker)
+        while pos >= 0:
+            start = pos + len(marker)
+            if body[start:start + 2] == b"--":
+                break
+            if body[start:start + 2] == b"\r\n":
+                start += 2
+            next_pos = body.find(marker, start)
+            if next_pos < 0:
+                break
+            part = body[start:next_pos]
+            if part.endswith(b"\r\n"):
+                part = part[:-2]
+            header_end = part.find(b"\r\n\r\n")
+            if header_end < 0:
+                pos = next_pos
+                continue
+            raw_headers = part[:header_end].decode("latin-1", errors="replace")
+            disposition = ""
+            for line in raw_headers.split("\r\n"):
+                if line.lower().startswith("content-disposition:"):
+                    disposition = line
+                    break
+            if "form-data" not in disposition.lower() or "filename=" in disposition.lower():
+                pos = next_pos
+                continue
+            name_match = re.search(r'name="([^"]*)"', disposition, flags=re.IGNORECASE)
+            if not name_match:
+                pos = next_pos
+                continue
+            value_bytes = part[header_end + 4:]
+            if len(value_bytes) <= _METADATA_MAX_TEXT_VALUE:
+                fields[name_match.group(1)] = value_bytes.decode("utf-8", errors="replace")
+            pos = next_pos
+    except Exception:
+        return fields
+    return fields
 
 def extract_job_metadata(content_type: str, body: bytes) -> dict:
     """从任务创建请求体提取提示词与白名单参数。永不采集密钥类字段。
@@ -195,24 +263,7 @@ def extract_job_metadata(content_type: str, body: bytes) -> dict:
             if isinstance(data, dict):
                 fields = data
         elif ctype == "multipart/form-data":
-            import cgi
-            import io
-            # 只走 environ 的 CONTENT_TYPE：headers 参数用普通 dict 时
-            # 内部大小写不敏感查找会静默失效，导致 multipart 被当 urlencoded
-            form = cgi.FieldStorage(
-                fp=io.BytesIO(body),
-                environ={"REQUEST_METHOD": "POST",
-                         "CONTENT_TYPE": content_type,
-                         "CONTENT_LENGTH": str(len(body))},
-                keep_blank_values=True,
-            )
-            for key in form.keys():
-                item = form[key]
-                if isinstance(item, list):
-                    item = item[0] if item else None
-                if item is None or getattr(item, "filename", None):
-                    continue
-                fields[key] = item.value
+            fields = _extract_multipart_text_fields(content_type, body)
         else:
             return result
         for key, value in fields.items():
@@ -224,8 +275,12 @@ def extract_job_metadata(content_type: str, body: bytes) -> dict:
                 if isinstance(value, (str, int, float, bool)):
                     if low == "prompt":
                         result["prompt"] = str(value).strip()
-                    elif low == "model":
-                        result["model"] = str(value).strip()
+                    elif low in _MODEL_FIELDS:
+                        candidate = str(value).strip()
+                        if not candidate:
+                            continue
+                        if low == "custom_model" or not result["model"]:
+                            result["model"] = candidate
                     else:
                         result["params"][low] = value
         return result
@@ -361,8 +416,7 @@ def _find_openssl() -> str | None:
     if which:
         return which
     if sys.platform == "win32":
-        for p in [r"C:\Program Files\Git\usr\bin\openssl.exe", r"C:\Program Files\OpenSSL\bin\openssl.exe"]:
-            if Path(p).exists():
+        for p in [r"C:\Program Files\Git\usr\bin\openssl.exe", r"C:\Program Files\OpenSSL\bin\openssl.exe", r"C:\Users\123\.workbuddy\binaries\PortableGit\versions\1.2.0\usr\bin\openssl.exe"]:
                 return p
     return None
 
@@ -671,12 +725,40 @@ class AppManager:
 
     def _kill_port_squatter(self, port: int):
         """Kill any process holding `port` that we didn't start ourselves.
-        Retries once if a listener still survives after the first SIGKILL pass —
-        macOS launchd 偶尔会先收养孤儿进程导致首轮 lsof 抢在 launchd 完成 reap 之前。"""
-        lsof_candidates = ["/usr/sbin/lsof", "/usr/bin/lsof", "/opt/homebrew/bin/lsof", "lsof"]
+
+        macOS/Linux use lsof. Windows falls back to netstat + taskkill because
+        lsof is usually absent there and orphaned child processes must not wedge
+        a port after Portal or an app restarts.
+        """
+        def _windows_listeners() -> list[int] | None:
+            try:
+                raw = subprocess.check_output(
+                    ["netstat", "-ano", "-p", "TCP"],
+                    stderr=subprocess.DEVNULL, text=True, timeout=5,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+                return None
+            pids: list[int] = []
+            suffix = f":{port}"
+            for line in raw.splitlines():
+                columns = line.split()
+                if len(columns) < 5 or columns[0].upper() != "TCP":
+                    continue
+                if columns[3].upper() not in ("LISTENING", "LISTEN"):
+                    continue
+                if not columns[1].endswith(suffix):
+                    continue
+                try:
+                    pids.append(int(columns[4]))
+                except ValueError:
+                    continue
+            return pids
 
         def _query_listeners() -> list[int] | None:
-            """Return a list of PIDs holding the port in LISTEN; None if lsof unavailable."""
+            """Return listener PIDs, or None if no supported probe is available."""
+            if os.name == "nt":
+                return _windows_listeners()
+            lsof_candidates = ["/usr/sbin/lsof", "/usr/bin/lsof", "/opt/homebrew/bin/lsof", "lsof"]
             for lsof_bin in lsof_candidates:
                 try:
                     out = subprocess.check_output(
@@ -691,7 +773,7 @@ class AppManager:
                             continue
                     return pids
                 except subprocess.CalledProcessError:
-                    return []  # lsof ran cleanly, no listeners
+                    return []
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     continue
             return None
@@ -699,24 +781,37 @@ class AppManager:
         for attempt in range(2):
             pids = _query_listeners()
             if pids is None:
-                print(f"  [port-cleanup] WARNING: lsof not found, cannot probe port {port}", flush=True)
+                print(f"  [port-cleanup] WARNING: no supported listener probe for port {port}", flush=True)
                 return
             own_pids = {proc.pid for proc in self.processes.values() if proc.poll() is None}
             killed_any = False
             for pid in pids:
                 if pid in own_pids or pid == os.getpid():
                     continue
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                    killed_any = True
-                    print(f"  [port-cleanup] killed orphan PID {pid} on port {port}"
-                          + (f" (retry)" if attempt > 0 else ""), flush=True)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                if os.name == "nt":
+                    try:
+                        result = subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/F", "/T"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            check=False, timeout=10,
+                        )
+                        if result.returncode == 0:
+                            killed_any = True
+                            print(f"  [port-cleanup] killed orphan PID {pid} on port {port}"
+                                  + (f" (retry)" if attempt > 0 else ""), flush=True)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                else:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        killed_any = True
+                        print(f"  [port-cleanup] killed orphan PID {pid} on port {port}"
+                              + (f" (retry)" if attempt > 0 else ""), flush=True)
+                    except (ProcessLookupError, PermissionError):
+                        pass
             if not killed_any:
                 return
             time.sleep(0.5 if attempt == 0 else 1.0)
-
     def start_all(self):
         for name, config in APPS.items():
             if config["spec"].managed:
@@ -964,6 +1059,13 @@ class AppManager:
 
 # ─── Usage Tracker ─────────────────────────────────────────────────────────────
 
+def _cache_path_of(target_path: str) -> str:
+    """静态资源缓存判定用纯路径：?v= 之类的版本参数拼在 target_path 里
+    会让 endswith('.js') 失配（2026-09-10 实锤：app.js?v=20260910-refresh-fix3
+    因带 query 不加 no-cache，用户浏览器启发式缓存旧 JS，页面按钮全死）。"""
+    return target_path.split("?", 1)[0]
+
+
 def _append_usage_jsonl(entry: dict, today: str):
     """Append a single usage entry to state/logs/usage-YYYY-MM-DD.jsonl.
     Failures are logged but do NOT propagate — primary usage.json save must not be blocked."""
@@ -1130,7 +1232,6 @@ def ensure_cleanup_job(*, plist_path: Path | None = None, runner=None,
             continue
     return "installed"
 
-
 def _append_analytics_jsonl(entry: dict):
     """Append one analytics event to state/logs/analytics-events.jsonl. Best-effort."""
     try:
@@ -1141,6 +1242,36 @@ def _append_analytics_jsonl(entry: dict):
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as exc:
         print(f"  [analytics] jsonl append failed: {exc}", flush=True)
+
+_HISTORY_EVENT_COND = threading.Condition()
+_HISTORY_EVENT_SEQ = 0
+_HISTORY_EVENTS: list[tuple[int, dict]] = []
+_HISTORY_EVENT_LIMIT = 200
+
+
+def _publish_history_event(record: dict) -> None:
+    """Queue a terminal history update for connected portal pages."""
+    global _HISTORY_EVENT_SEQ
+    try:
+        status = normalize_history_status(str(record.get("status") or ""))
+        if status not in {"done", "failed"}:
+            return
+        payload = {
+            "app": str(record.get("app") or ""),
+            "job_id": str(record.get("job_id") or ""),
+            "username": str(record.get("username") or ""),
+            "kind": str(record.get("kind") or ""),
+            "status": status,
+        }
+        with _HISTORY_EVENT_COND:
+            _HISTORY_EVENT_SEQ += 1
+            _HISTORY_EVENTS.append((_HISTORY_EVENT_SEQ, payload))
+            if len(_HISTORY_EVENTS) > _HISTORY_EVENT_LIMIT:
+                del _HISTORY_EVENTS[:-_HISTORY_EVENT_LIMIT]
+            _HISTORY_EVENT_COND.notify_all()
+    except Exception:
+        pass
+
 
 class UsageTracker:
     def __init__(self):
@@ -1344,6 +1475,8 @@ class UsageTracker:
             self.history_upsert({
                 "app": app, "job_id": job_id, "username": username,
                 "kind": "video" if job_type == "video" else "image",
+                "activity_id": str(meta.get("activity_id", "")).strip()[:100],
+                "title": str(meta.get("title", "") or meta.get("prompt", "")).strip()[:200],
                 "prompt": str(meta.get("prompt", "")).strip()[:2000],
                 "model": str(meta.get("model", ""))[:200],
                 "params": meta.get("params") if isinstance(meta.get("params"), dict) else {},
@@ -1412,6 +1545,8 @@ class UsageTracker:
             rec = self.history_records().get(f"{app}:{job_id}")
             if not rec:
                 return
+            if _backfill_history_record(rec):
+                self.history_upsert(rec)
             nested = data.get("job") if isinstance(data.get("job"), dict) else {}
             done = int(data.get("done") or nested.get("done") or 0)
             per_item = (int(data.get("duration") or 0)
@@ -1425,6 +1560,15 @@ class UsageTracker:
                 first = errors[0]
                 error_text = str(first.get("message") or first.get("error") or first
                                  if isinstance(first, dict) else first).strip()
+            if not str(rec.get("model") or "").strip():
+                model = data.get("model") or nested.get("model") or ""
+                if model:
+                    rec["model"] = str(model).strip()[:200]
+            if not str(rec.get("prompt") or "").strip():
+                prompt = data.get("prompt") or nested.get("prompt") or rec.get("title") or ""
+                if prompt:
+                    rec["prompt"] = str(prompt).strip()[:2000]
+
             rec["status"] = normalize_history_status(status)
             rec["completed_at"] = time.time()
             rec["duration"] = int(done * per_item) if done > 0 and per_item else 0
@@ -1434,6 +1578,45 @@ class UsageTracker:
             self.history_upsert(rec)
         except Exception:
             pass
+
+    def refresh_history_from_child(self, app: str, job_id: str, status: str) -> None:
+        """Synchronize a terminal job callback into the persisted history.
+
+        Child backends call /api/internal/jobs/finalize as soon as a task ends.
+        Reading the child job snapshot here makes the history record complete
+        immediately instead of waiting for Portal's fallback poll.
+        """
+        key = f"{app}:{job_id}"
+        record = self.history_records().get(key)
+        if not isinstance(record, dict):
+            return
+        conn = None
+        data: dict = {}
+        try:
+            spec = SPEC_BY_NAME.get(app)
+            if spec is not None:
+                conn = http.client.HTTPConnection("127.0.0.1", spec.port, timeout=5)
+                conn.request("GET", "/api/jobs/" + urllib.parse.quote(job_id, safe=""))
+                response = conn.getresponse()
+                if response.status == 200:
+                    parsed = json.loads(response.read().decode("utf-8", errors="replace"))
+                    if isinstance(parsed, dict):
+                        data = parsed
+        except Exception:
+            data = {}
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        if data:
+            job_type = "video" if record.get("kind") == "video" else "image"
+            self.history_update_terminal(app, job_id, status, data, job_type)
+            return
+        record["status"] = normalize_history_status(status)
+        record["completed_at"] = time.time()
+        self.history_upsert(record)
 
     def query_history(self, *, username: str, is_admin: bool,
                       days: int = 30, kind: str = "all", status: str = "all",
@@ -1474,6 +1657,13 @@ class UsageTracker:
             with self._history_lock:
                 data = self._load_history()
                 key = f"{record['app']}:{record['job_id']}"
+                previous = data.get(key) if isinstance(data.get(key), dict) else {}
+                previous_status = normalize_history_status(str(previous.get("status") or ""))
+                current_status = normalize_history_status(str(record.get("status") or ""))
+                should_publish = (
+                    current_status in {"done", "failed"}
+                    and current_status != previous_status
+                )
                 data[key] = record
                 cutoff = time.time() - HISTORY_DAYS * 86400
                 data = {k: v for k, v in data.items()
@@ -1488,6 +1678,8 @@ class UsageTracker:
                 tmp = HISTORY_PATH.with_suffix(".tmp")
                 tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 tmp.replace(HISTORY_PATH)
+            if should_publish:
+                _publish_history_event(record)
         except Exception:
             pass
 
@@ -1951,6 +2143,179 @@ cat_skin_generator = CatSkinGenerator(
     key_loader=lambda: _daily_report_module._load_deepseek_key(STATE_DIR),
     concept_store=cat_concept_store,
 )
+_ACTIVITY_BACKFILL_APPS = {"seedance", "nano-banana", "volcengine-portrait"}
+_ACTIVITY_BACKFILL_TIMEOUT = 1.2
+_ACTIVITY_BACKFILL_MISS_TTL = 300.0
+_ACTIVITY_BACKFILL_MISSES: dict[str, float] = {}
+_ACTIVITY_METADATA_FIELDS = {
+    "aspect_ratio", "ratio", "duration", "resolution", "image_size",
+    "count", "mode", "style", "negative_prompt", "seed", "generate_audio",
+    "custom_model", "model_name", "model_version",
+}
+
+
+def _coerce_epoch(value: Any) -> float:
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = str(value).strip()
+    if not raw:
+        return 0.0
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OSError):
+        return 0.0
+
+
+def _activity_request_values(record: dict) -> dict:
+    request = record.get("request") if isinstance(record.get("request"), dict) else {}
+    parsed = request.get("parsed") if isinstance(request.get("parsed"), dict) else {}
+    values = parsed.get("values") if isinstance(parsed.get("values"), dict) else None
+    if not values and isinstance(request.get("values"), dict):
+        values = request["values"]
+    if not values:
+        restore = record.get("restore") if isinstance(record.get("restore"), dict) else {}
+        values = restore.get("values") if isinstance(restore.get("values"), dict) else {}
+    return values if isinstance(values, dict) else {}
+
+
+def _activity_history_metadata(record: dict) -> dict:
+    values = _activity_request_values(record)
+    title = str(record.get("title") or values.get("prompt") or "").strip()
+    prompt = str(values.get("prompt") or record.get("prompt") or title).strip()
+    model = str(record.get("model") or values.get("custom_model") or values.get("model") or "").strip()
+    params: dict[str, Any] = {}
+    for key in _ACTIVITY_METADATA_FIELDS:
+        value = values.get(key)
+        if value not in (None, ""):
+            params[key] = value
+    result = record.get("result") if isinstance(record.get("result"), dict) else {}
+    raw_results = result.get("results") if isinstance(result.get("results"), list) else []
+    results = []
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or item.get("download_url") or item.get("file_url")
+        if url:
+            results.append({"url": str(url), "kind": item.get("kind") or item.get("type") or "video"})
+    finished_at = _coerce_epoch(record.get("finished_at") or result.get("finished_at"))
+    return {
+        "activity_id": str(record.get("id") or record.get("activity_id") or "").strip(),
+        "title": title[:200],
+        "prompt": prompt[:2000],
+        "model": model[:200],
+        "params": params,
+        "results": results,
+        "thumb_url": results[0]["url"] if results else "",
+        "error": str(record.get("error") or result.get("error") or "").strip()[:500],
+        "completed_at": finished_at,
+    }
+
+
+def _fetch_activity_history_record(app: str, job_id: str, username: str = "") -> dict | None:
+    if app not in _ACTIVITY_BACKFILL_APPS or not job_id:
+        return None
+    cache_key = f"{app}:{job_id}"
+    now = time.time()
+    miss_at = _ACTIVITY_BACKFILL_MISSES.get(cache_key, 0.0)
+    if miss_at and now - miss_at < _ACTIVITY_BACKFILL_MISS_TTL:
+        return None
+    spec = SPEC_BY_NAME.get(app)
+    if spec is None:
+        return None
+    conn = None
+    try:
+        ts = int(time.time())
+        username_encoded = urllib.parse.quote(username or "", safe="")
+        headers = {
+            "X-Is-Admin": "1",
+            "X-Username": username_encoded,
+            "X-Portal-Ts": str(ts),
+            "X-Portal-Sig": _sign_admin_header(username_encoded, True, ts),
+        }
+        conn = http.client.HTTPConnection("127.0.0.1", spec.port, timeout=_ACTIVITY_BACKFILL_TIMEOUT)
+        conn.request("GET", "/api/activity/by-job/" + urllib.parse.quote(job_id, safe=""), headers=headers)
+        resp = conn.getresponse()
+        body = resp.read()
+        if resp.status != 200:
+            _ACTIVITY_BACKFILL_MISSES[cache_key] = now
+            return None
+        data = json.loads(body.decode("utf-8", errors="replace"))
+        # A persisted activity record may legitimately contain a task-level
+        # ``error`` field (for example an upstream provider failure). Only a
+        # missing record / explicit API failure should be cached as a miss.
+        if (not isinstance(data, dict)
+                or data.get("ok") is False
+                or not data.get("id")):
+            _ACTIVITY_BACKFILL_MISSES[cache_key] = now
+            return None
+        _ACTIVITY_BACKFILL_MISSES.pop(cache_key, None)
+        return data
+    except Exception:
+        _ACTIVITY_BACKFILL_MISSES[cache_key] = now
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _history_record_needs_activity_backfill(record: dict) -> bool:
+    return (
+        str(record.get("app") or "") in _ACTIVITY_BACKFILL_APPS
+        and bool(record.get("job_id"))
+        and (
+            not str(record.get("prompt") or "").strip()
+            or not str(record.get("model") or "").strip()
+            or not isinstance(record.get("params"), dict)
+            or not record.get("params")
+            or not record.get("activity_id")
+        )
+    )
+
+
+def _backfill_history_record(record: dict) -> bool:
+    if not _history_record_needs_activity_backfill(record):
+        return False
+    activity = _fetch_activity_history_record(
+        str(record.get("app") or ""),
+        str(record.get("job_id") or ""),
+        str(record.get("username") or ""),
+    )
+    if not activity:
+        return False
+    meta = _activity_history_metadata(activity)
+    changed = False
+    for key in ("activity_id", "model", "completed_at"):
+        value = meta.get(key)
+        if value not in (None, "", 0.0) and not record.get(key):
+            record[key] = value
+            changed = True
+    if meta.get("prompt") and not str(record.get("prompt") or "").strip():
+        record["prompt"] = meta["prompt"]
+        changed = True
+    if meta.get("title") and not str(record.get("title") or "").strip():
+        record["title"] = meta["title"]
+        changed = True
+    if meta.get("params") and not record.get("params"):
+        record["params"] = meta["params"]
+        changed = True
+    if meta.get("results") and not record.get("results"):
+        record["results"] = meta["results"]
+        record["thumb_url"] = meta.get("thumb_url") or ""
+        changed = True
+    if meta.get("error") and not str(record.get("error") or "").strip():
+        record["error"] = meta["error"]
+        changed = True
+    return changed
+
 def _fetch_feishu_history(user_id: str, username: str, limit: int = 200) -> list[dict]:
     """Read one Portal user's independently persisted Feishu Agent runs."""
     spec = SPEC_BY_NAME.get("feishu-generation-agent")
@@ -2008,7 +2373,7 @@ cat_experiment_service = CatExperimentService(CAT_SKINS_DIR, cat_skin_generator)
 
 # ─── HTTP Handler ──────────────────────────────────────────────────────────────
 
-_AUTH_EXEMPT = {"/login", "/api/auth/login", "/api/auth/register"}
+_AUTH_EXEMPT = {"/login", "/healthz", "/api/auth/login", "/api/auth/register"}
 # 登录页在认证前就需要 UI Core。这里只公开无业务数据的共享样式目录；
 # 其他 Portal 静态资源仍然经过认证，避免意外扩大匿名访问范围。
 _AUTH_EXEMPT_PREFIXES = ("/ui/",)
@@ -2089,12 +2454,18 @@ class Handler(SimpleHTTPRequestHandler):
     def handle_one_request(self):
         try:
             super().handle_one_request()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        except (BrokenPipeError, ConnectionResetError) as e:
+            # The client hung up mid-exchange. Routine browser noise on GET,
+            # but an aborted POST is exactly what silently ate an upload and
+            # left no trace anywhere, so state-changing methods get a line.
+            method = getattr(self, "command", "")
+            if method in ("POST", "PUT", "PATCH", "DELETE"):
+                print(f"  [CONN RESET] {method} {getattr(self, 'path', '-')} "
+                      f"ip={self.client_address[0]} {type(e).__name__}", flush=True)
         except ssl.SSLError as e:
-            print(f"  [SSL ERROR] {e}")
+            print(f"  [SSL ERROR] {e} (ip={self.client_address[0]} path={getattr(self, 'path', '-')})", flush=True)
         except OSError as e:
-            print(f"  [OS ERROR] {e}")
+            print(f"  [OS ERROR] {e} (ip={self.client_address[0]} path={getattr(self, 'path', '-')})", flush=True)
 
     # ── Auth helpers ──────────────────────────────────────────────────────────
 
@@ -2102,7 +2473,16 @@ class Handler(SimpleHTTPRequestHandler):
         for part in self.headers.get("Cookie", "").split(";"):
             part = part.strip()
             if part.startswith("session="):
-                return auth.get_user(part[8:].strip())
+                user = auth.get_user(part[8:].strip())
+                if user:
+                    return user
+        token = (self.headers.get("X-Session") or "").strip()
+        if not token:
+            authz = self.headers.get("Authorization") or ""
+            if authz.lower().startswith("bearer "):
+                token = authz[7:].strip()
+        if token:
+            return auth.get_user(token)
         return None
 
     def _is_https(self) -> bool:
@@ -2128,8 +2508,18 @@ class Handler(SimpleHTTPRequestHandler):
         user = self._current_user()
         if user:
             return user
-        if path.startswith("/api/"):
+        # Every API surface answers JSON 401, never a redirect. Sub-app paths
+        # such as /seedance/api/media/upload do not start with /api/, so the
+        # old startswith("/api/") test sent them a 302 to the login page —
+        # XHR/fetch callers follow it, receive HTML, and their JSON parse
+        # fails, which surfaced as a bogus "server rejected the file" error.
+        if path.startswith("/api/") or "/api/" in path:
             self._json(401, {"ok": False, "error": "unauthorized"})
+        elif path == "/login":
+            # Never chain /login -> /login?next=...: each hop would re-encode
+            # the previous next value, growing it exponentially (observed as
+            # an unbounded redirect loop on POST /login).
+            self._redirect("/login")
         else:
             next_url = urllib.parse.quote(self.path, safe="")
             self._redirect(f"/login?next={next_url}")
@@ -2137,8 +2527,29 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ── Request dispatch ──────────────────────────────────────────────────────
 
+    def _log_req(self, method: str):
+        try:
+            cookies = self.headers.get("Cookie") or ""
+            token = ""
+            for part in cookies.split(";"):
+                part = part.strip()
+                if part.startswith("session="):
+                    token = part[8:].strip()
+                    break
+            valid = bool(auth.get_user(token)) if token else False
+            x = (self.headers.get("X-Session") or "").strip()
+            ua = (self.headers.get("User-Agent") or "")[:50]
+            tok = (token[:8] + "..") if token else ""
+            print(f"  [req] {method} {self.path} ip={self.client_address[0]} tok={tok} valid={valid} xsess={'Y' if x else 'N'} ua={ua}", flush=True)
+        except Exception:
+            pass
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        self._log_req("GET")
+        if path == "/healthz":
+            self._json(200, {"ok": True, "service": "portal"})
+            return
         if path == "/api/auth/first-run":
             self._json(200, {"ok": True, "first_run": auth.first_run(), "signup_enabled": auth.signup_enabled()})
             return
@@ -2168,8 +2579,12 @@ class Handler(SimpleHTTPRequestHandler):
         # 判断，否则被前缀匹配吞掉，前端用户下拉永远只有「全部用户」。
         elif path == "/api/platform/history-users":
             self._platform_history_users(user)
+        elif path == "/api/platform/history/events":
+            self._platform_history_events(user)
         elif path.startswith("/api/platform/history"):
             self._platform_history(user)
+        elif path == "/api/video-check":
+            self._platform_video_check(user)
         elif path == "/api/platform/me":
             self._json(200, {"ok": True, "username": user["username"], "role": user["role"]})
         elif path == "/api/platform/thumb":
@@ -2235,11 +2650,18 @@ class Handler(SimpleHTTPRequestHandler):
         if self._reject_oversized_upload():
             return
         path = urllib.parse.urlparse(self.path).path
+        self._log_req("POST")
         if path == "/api/auth/login":
             self._auth_login()
             return
         if path == "/api/auth/register":
             self._auth_register()
+            return
+        if path == "/auth/login":
+            self._auth_form_login()
+            return
+        if path == "/auth/register":
+            self._auth_form_register()
             return
         if path == "/api/internal/jobs/finalize":
             self._internal_finalize_job()
@@ -2499,7 +2921,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self._set_cookie(token)
         self._cors_headers()
-        raw = json.dumps({"ok": True, "username": user["username"], "role": user["role"]}).encode()
+        raw = json.dumps({"ok": True, "username": user["username"], "role": user["role"], "token": token}).encode()
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -2529,10 +2951,64 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self._set_cookie(token)
         self._cors_headers()
-        raw = json.dumps({"ok": True, "username": username, "role": role}).encode()
+        raw = json.dumps({"ok": True, "username": username, "role": role, "token": token}).encode()
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _safe_next(self, value: str) -> str:
+        v = (value or "").strip()
+        if not v or not v.startswith("/") or v.startswith("//"):
+            return "/"
+        return v
+
+    def _read_form(self) -> dict | None:
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+            raw = self.rfile.read(length) if length > 0 else b""
+            pairs = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+            return {k: v[0] for k, v in pairs.items()}
+        except Exception:
+            return None
+
+    def _auth_form_login(self):
+        body = self._read_form()
+        if body is None:
+            self._redirect("/login?error=bad_request")
+            return
+        username = (body.get("username") or "").strip()
+        pw = body.get("password") or ""
+        nxt = self._safe_next(body.get("next") or "/")
+        token = auth.login(username, pw)
+        if not token:
+            self._redirect(f"/login?error=invalid_credentials&mode=login&next={urllib.parse.quote(nxt, safe='')}")
+            return
+        self._redirect(nxt, set_cookie_token=token)
+
+    def _auth_form_register(self):
+        body = self._read_form()
+        if body is None:
+            self._redirect("/login?error=bad_request")
+            return
+        username = (body.get("username") or "").strip()
+        pw = body.get("password") or ""
+        nxt = self._safe_next(body.get("next") or "/")
+        first_run = auth.first_run()
+        if not first_run and not auth.signup_enabled():
+            self._redirect(f"/login?error=registration_disabled&mode=register&next={urllib.parse.quote(nxt, safe='')}")
+            return
+        if not username or not pw or len(pw) < 6:
+            mode = "setup" if first_run else "register"
+            self._redirect(f"/login?error=password_min_6&mode={mode}&next={urllib.parse.quote(nxt, safe='')}")
+            return
+        role = "admin" if first_run else "user"
+        user = auth.create_user(username, pw, role=role)
+        if not user:
+            mode = "setup" if first_run else "register"
+            self._redirect(f"/login?error=already_exists&mode={mode}&next={urllib.parse.quote(nxt, safe='')}")
+            return
+        token = auth.login(username, pw)
+        self._redirect(nxt, set_cookie_token=token)
 
     def _update_user(self, path: str):
         # PATCH-like via POST /api/users/<id>
@@ -2897,6 +3373,59 @@ class Handler(SimpleHTTPRequestHandler):
         merged.sort(key=lambda x: x.get("created_at") or x.get("time") or "", reverse=True)
         self._json(200, {"ok": True, "activity": merged[:50]})
 
+    def _platform_video_check(self, user: dict):
+        """确定性视频体检：抽帧算画面指标，不调用任何模型。
+
+        与 _platform_thumb() 的关键差别：这台机器没有 ffmpeg，不能把媒体 URL
+        直接交给 ffmpeg 的 http demuxer，所以先把媒体取到本地临时文件，再交给
+        cv2 解码。只在用户显式请求时跑，不阻塞生成流程。
+        结论全部带数值证据，语义判读（多余肢体等）留给后续接模型。
+        """
+        if video_check is None:
+            self._json(503, {"ok": False, "error": "视频体检不可用：cv2 未安装"})
+            return
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        app = (qs.get("app", [None])[0] or "").strip()
+        url = (qs.get("url", [None])[0] or "").strip()
+        if app not in APPS or not url or len(url) > 512:
+            self._json(400, {"ok": False, "error": "bad request"})
+            return
+        if not re.fullmatch(r"/[A-Za-z0-9._/-]+", url) or ".." in url:
+            self._json(400, {"ok": False, "error": "bad request"})
+            return
+        port = APPS[app].get("port")
+        if not port:
+            self._json(404, {"ok": False, "error": "unknown app"})
+            return
+
+        expected: dict[str, Any] = {}
+        declared = (qs.get("duration", [None])[0] or "").strip()
+        if declared:
+            expected["duration"] = declared
+
+        source = f"http://127.0.0.1:{port}{url}"
+        tmp_path = None
+        try:
+            with _THUMB_SEM:
+                with urllib.request.urlopen(source, timeout=60) as resp:
+                    payload = resp.read(MAX_VIDEO_CHECK_BYTES + 1)
+            if len(payload) > MAX_VIDEO_CHECK_BYTES:
+                self._json(413, {"ok": False, "error": "视频过大，暂不支持体检"})
+                return
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as handle:
+                handle.write(payload)
+                tmp_path = handle.name
+            result = video_check.analyze(tmp_path, expected=expected or None)
+            self._json(200 if result.get("ok") else 422, result)
+        except Exception as exc:
+            self._json(502, {"ok": False, "error": f"体检失败: {str(exc)[:200]}"})
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
     def _platform_thumb(self, user: dict):
         """服务端视频缩略图（上游 77c4802+cfe65c3 方案 A）：把媒体 URL 直接喂给
         ffmpeg 抽帧。ffmpeg 的 http demuxer 支持 Range 寻址，能自己找到 MP4
@@ -3037,6 +3566,10 @@ class Handler(SimpleHTTPRequestHandler):
         merged.sort(key=lambda rec: float(rec.get("submitted_at") or 0), reverse=True)
         total = len(merged)
         items = merged[offset:offset + limit]
+        # Repair older records on demand; cap network lookups so history stays responsive.
+        for rec in items[:12]:
+            if _history_record_needs_activity_backfill(rec) and _backfill_history_record(rec):
+                tracker.history_upsert(rec)
         queue_map = {
             f"{q['app']}:{q['job_id']}": q
             for q in tracker.queue_snapshot(user.get("username", ""), is_admin=is_admin)
@@ -3050,6 +3583,44 @@ class Handler(SimpleHTTPRequestHandler):
                         "queue_position": q.get("queue_position") if q else None,
                         "eta_minutes": q.get("eta_minutes") if q else None})
         self._json(200, {"ok": True, "total": total, "items": out})
+
+    def _platform_history_events(self, user: dict):
+        """Server-sent event stream for terminal history updates."""
+        is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
+        username = user.get("username", "")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self._cors_headers()
+        self.end_headers()
+        with _HISTORY_EVENT_COND:
+            cursor = _HISTORY_EVENT_SEQ
+        try:
+            self.wfile.write(b"retry: 3000\n\n")
+            self.wfile.flush()
+            while True:
+                with _HISTORY_EVENT_COND:
+                    if _HISTORY_EVENT_SEQ <= cursor:
+                        _HISTORY_EVENT_COND.wait(timeout=15)
+                    pending = [
+                        payload for seq, payload in _HISTORY_EVENTS
+                        if seq > cursor
+                    ]
+                    cursor = _HISTORY_EVENT_SEQ
+                if not pending:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                    continue
+                for payload in pending:
+                    if not is_admin and payload.get("username") != username:
+                        continue
+                    raw = json.dumps(payload, ensure_ascii=False)
+                    self.wfile.write(f"event: history\ndata: {raw}\n\n".encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError, ssl.SSLError):
+            return
 
     def _platform_history_users(self, user: dict):
         if not (auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"):
@@ -3189,11 +3760,14 @@ class Handler(SimpleHTTPRequestHandler):
             # the proxy thread waiting for resp.read() to complete.
             if is_job and resp.status in (200, 201):
                 jid_header = resp.getheader("X-Job-Id", "").strip()
+                aid_header = resp.getheader("X-Activity-Id", "").strip()
                 if jid_header:
                     metadata = {}
                     if method == "POST" and body:
                         metadata = extract_job_metadata(
                             self.headers.get("Content-Type", ""), body)
+                    if aid_header:
+                        metadata["activity_id"] = aid_header
                     tracker.register_job(app_name, jid_header, user["username"],
                                          job_type, metadata=metadata)
                     tracker.inc_daily_jobs(app_name)
@@ -3211,7 +3785,7 @@ class Handler(SimpleHTTPRequestHandler):
                     if key.lower() in ("transfer-encoding", "connection", "server", "date", "content-length"):
                         continue
                     self.send_header(key, value)
-                if target_path.endswith((".html", ".js", ".css", ".mjs")):
+                if _cache_path_of(target_path).endswith((".html", ".js", ".css", ".mjs")):
                     self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self._cors_headers()
                 self.send_header("Content-Length", str(len(resp_body)))
@@ -3224,13 +3798,22 @@ class Handler(SimpleHTTPRequestHandler):
                     if key.lower() in ("transfer-encoding", "connection", "server", "date"):
                         continue
                     self.send_header(key, value)
-                if target_path.endswith((".html", ".js", ".css", ".mjs")):
+                if _cache_path_of(target_path).endswith((".html", ".js", ".css", ".mjs")):
                     self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self._cors_headers()
                 self.end_headers()
                 shutil.copyfileobj(resp, self.wfile, length=65536)
-        except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
-            pass
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError) as exc:
+            # The client or the TLS session went away before we could answer.
+            # Swallowing this silently is why an aborted upload produced no log
+            # line anywhere; record it, and still try to hand back a JSON error
+            # (the write will simply fail again when the socket is truly gone).
+            print(f"  [PROXY ABORT] {method} {target_path} ip={client_ip} "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            try:
+                self._json(502, {"ok": False, "error": f"proxy aborted: {type(exc).__name__}"})
+            except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
+                pass
         except Exception as exc:
             msg = str(exc)[:300]
             try:
@@ -3280,9 +3863,11 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _redirect(self, url: str):
+    def _redirect(self, url: str, set_cookie_token: str | None = None):
         self.send_response(302)
         self.send_header("Location", url)
+        if set_cookie_token:
+            self._set_cookie(set_cookie_token)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -3306,6 +3891,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(400, {"ok": False, "error": "missing fields"})
             return
         rolled = tracker.finalize_job(app, job_id, status)
+        tracker.refresh_history_from_child(app, job_id, status)
         self._json(200, {"ok": True, "rolled_back": rolled})
 
     def _cors_headers(self):

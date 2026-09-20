@@ -6,12 +6,15 @@ from datetime import UTC, datetime
 import hashlib
 import hmac
 from inspect import Parameter, signature
+import json
 import logging
+import mimetypes
 import os
 from pathlib import Path
 import time
 from typing import Annotated, Any, AsyncIterator, Literal
 from urllib.parse import unquote_to_bytes, urlsplit
+from urllib.request import ProxyHandler, Request, build_opener
 
 from fastapi import (
     Depends,
@@ -42,6 +45,10 @@ from feishu_generation_agent.domain.document import (
     build_planning_prompt_snapshot,
 )
 from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
+from feishu_generation_agent.domain.video_models import (
+    VIDEO_MODELS,
+    resolve_video_model_key,
+)
 from feishu_generation_agent.graph.nodes import GraphServices
 from feishu_generation_agent.graph.runtime import (
     GraphRuntime,
@@ -76,16 +83,23 @@ from feishu_generation_agent.web.schemas import (
     CreateRunRequest,
     DecisionRequest,
     PlannerPromptResponse,
+    ExcludedAssetRequest,
     PlannerPromptUpdate,
     ProviderPreferencesResponse,
     ProviderPreferencesUpdate,
     ReferenceListRequest,
     TaskPatchRequest,
 )
+from feishu_generation_agent.integrations.video_insight import (
+    analyze_artifacts,
+)
 
 ProductionCategory = Literal["animation", "portrait", "image"]
 _MAX_IDENTITY_LENGTH = 255
 _LOGGER = logging.getLogger(__name__)
+#: 审片结果缓存：`(run_id, 产物签名) -> findings`。同一条成片只让模型看一次
+#: （每次审片都是一次真实模型调用）。超量直接清空，不做 LRU。
+_take_findings_cache: dict[tuple[str, str], dict] = {}
 _WORKSPACE_STYLESHEET_LINK = (
     '<link rel="stylesheet" href="static/styles.css">'
 )
@@ -209,23 +223,110 @@ def _iso_timestamp(value: str) -> float:
         return 0.0
 
 
-async def _probe_aiport(base_url: str) -> bool:
-    """探活本地 AI Port 网关（127.0.0.1:8801）。TCP 连上即视为在线。"""
+def _iso_utc_string(value: str) -> str:
+    """把多维表格的裸 UTC 时间串转成**带时区**的 ISO 串再返回。
+
+    以前直接返回 `2026-09-18 06:07:37`（UTC 但没有时区标记），前端 `new Date(...)`
+    会当**本地时间**解析 —— 界面显示的时间比真实时间早 8 小时，而且跟事件时间对不上，
+    用户看到的就是「时间是乱的」（用户 2026-09-18）。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
     try:
-        parts = urlsplit(base_url)
-        host = parts.hostname or "127.0.0.1"
-        port = parts.port or 80
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=1.5
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.isoformat()
+
+
+def _feishu_run_model_label(settings: Settings, kind: str, providers: list[str]) -> str:
+    image_models = {
+        "banana": settings.banana_model,
+        "gpt-image2": settings.gpt_image_model,
+        "seedream": settings.seedream_model,
+        "chiyun": settings.chiyun_model or settings.banana_model,
+        "aiport": settings.aiport_image_model,
+        "aiport_klein": "flux2_klein_allinone",
+        "aiport_klein_v3": "klein_true_v3_assets",
+        "aiport_anime2real": "anime2real_auto",
+        "aiport_zimage": "zimage_multifunction",
+        "aiport_style": "krea2_style_transfer",
+    }
+    video_models = {
+        capability.key: capability.model for capability in VIDEO_MODELS
+    }
+    video_models.update(
+        {
+            "seedance": settings.seedance_model,
+            "aiport": settings.aiport_video_model,
+            "volcengine_portrait": settings.seedance_model,
+        }
+    )
+    labels: list[str] = []
+    for provider in providers:
+        provider = str(provider or "").strip()
+        if not provider:
+            continue
+        if kind == "video":
+            label = video_models.get(provider)
+        elif kind == "image":
+            label = image_models.get(provider)
+        else:
+            label = video_models.get(provider) or image_models.get(provider)
+        if not label:
+            label = provider
+        if label and label not in labels:
+            labels.append(label)
+    return ", ".join(labels)
+
+
+def _effective_provider_preferences(
+    settings: Settings,
+    preferences: ProviderPreferences,
+) -> ProviderPreferences:
+    image_provider = preferences.image_provider
+    if image_provider == "aiport" and not settings.aiport_image_enabled:
+        image_provider = "seedream"
+    if settings.video_provider == "aiport":
+        video_provider = "aiport"
+    else:
+        fallback = resolve_video_model_key(
+            settings.seedance_model,
+            fallback="seedance2.5",
+        ) or "seedance2.5"
+        preferred = resolve_video_model_key(
+            preferences.video_provider,
+            fallback="",
         )
-        writer.close()
+        video_provider = preferred or fallback
+    return ProviderPreferences(
+        video_provider=video_provider,
+        image_provider=image_provider,
+        planning_pipeline=preferences.planning_pipeline,
+    )
+
+
+async def _probe_aiport(base_url: str) -> bool:
+    """Probe the AI Port module API instead of trusting a TCP connection."""
+
+    def _probe_sync() -> bool:
+        url = base_url.rstrip("/") + "/api/modules"
         try:
-            await writer.wait_closed()
+            request = Request(url, method="GET")
+            opener = build_opener(ProxyHandler({}))
+            with opener.open(request, timeout=1.5) as response:
+                if not 200 <= int(response.status) < 300:
+                    return False
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+                modules = payload.get("modules") if isinstance(payload, dict) else None
+                return isinstance(modules, list) and bool(modules)
         except Exception:
-            pass
-        return True
-    except Exception:
-        return False
+            return False
+
+    return await asyncio.to_thread(_probe_sync)
 
 
 
@@ -290,6 +391,13 @@ def create_app(
                 delivery_writer=active_services.delivery_writer,
                 document_source=active_services.document_source,
                 vision_analyzer=active_services.vision_analyzer,
+                rework_fuser=getattr(
+                    active_services.planner, "fuse_rework_prompt", None
+                ),
+                # 返工时把上一版成片直接送能看视频的模型（不抽帧）。
+                video_analyzer=getattr(
+                    active_services, "video_analyzer", None
+                ),
             )
             try:
                 if resume:
@@ -480,12 +588,7 @@ def create_app(
             "vision": configured("claude_api_key", "claude_model"),
             "image_generation": configured("chiyun_api_key", "chiyun_model")
             or configured("ark_api_key", "seedream_model"),
-            "video_generation": (
-                configured("ark_api_key", "seedance_model")
-                or await _probe_aiport(
-                    getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
-                )
-            ),
+            "video_generation": configured("ark_api_key", "seedance_model"),
         }
         capabilities = {
             name: {
@@ -497,12 +600,13 @@ def create_app(
             for name, value in checks.items()
         }
         local_image = bool(getattr(active_settings, "aiport_image_enabled", False))
-        local_reachable = await _probe_aiport(
-            getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
-        )
-        checks["video_generation"] = (
-            checks["video_generation"]
-            or local_reachable
+        video_provider = getattr(active_settings, "video_provider", "seedance")
+        local_reachable = (
+            await _probe_aiport(
+                getattr(active_settings, "aiport_base_url", "http://127.0.0.1:8801")
+            )
+            if local_image or video_provider == "aiport"
+            else False
         )
         providers: dict[str, list[dict[str, Any]]] = {"image": [], "video": []}
         if local_image:
@@ -526,20 +630,27 @@ def create_app(
             providers["image"].append(
                 {"name": "seedream", "label": "Seedream 国风", "mode": "cloud", "configured": True}
             )
-        providers["video"].append(
-            {
-                "name": "aiport",
-                "label": "本地 MiniMax H3",
-                "mode": "local",
-                "configured": True,
-                "reachable": local_reachable,
-            }
-        )
-        if configured("ark_api_key", "seedance_model"):
+        if video_provider == "aiport":
             providers["video"].append(
-                {"name": "seedance", "label": "Seedance", "mode": "cloud", "configured": True}
+                {
+                    "name": "aiport",
+                    "label": "\u672c\u5730 MiniMax H3",
+                    "mode": "local",
+                    "configured": True,
+                    "reachable": local_reachable,
+                }
             )
-        preferences = await provider_preferences_from_request(request)
+        else:
+            for capability in VIDEO_MODELS:
+                providers["video"].append(
+                    capability.public_payload(
+                        configured=configured("ark_api_key", "seedance_model")
+                    )
+                )
+        preferences = _effective_provider_preferences(
+            active_settings,
+            await provider_preferences_from_request(request),
+        )
         defaults = {
             "video_provider": preferences.video_provider,
             "image_provider": preferences.image_provider,
@@ -586,6 +697,23 @@ def create_app(
                 detail="运行时尚未配置",
             )
         return active
+
+    async def artifact_counts(request: Request, bindings: Any) -> dict[str, int]:
+        """各条运行已有多少成片 —— 任务记录在外面显示「已成片 N 条」。
+
+        取不到就返回空（任务列表不该因为计数失败而打不开）。
+        """
+        counter = getattr(
+            getattr(get_runtime(request), "repository", None),
+            "count_artifacts_by_run",
+            None,
+        )
+        if counter is None:
+            return {}
+        try:
+            return await counter([binding.run_id for binding in bindings])
+        except Exception:
+            return {}
 
     def get_bitable_service(request: Request) -> Any:
         active = getattr(request.app.state, "bitable_service", None)
@@ -695,6 +823,13 @@ def create_app(
             return await store.get()
         return ProviderPreferences()
 
+    def active_settings_for_request(request: Request) -> Settings:
+        if services is not None:
+            return services.settings
+        if runtime is not None:
+            return runtime.settings
+        return settings or Settings()
+
     def planner_prompt_response(
         identity: RequestIdentity,
         profile: Any | None = None,
@@ -780,10 +915,15 @@ def create_app(
 
     @app.get("/api/provider-preferences", response_model=ProviderPreferencesResponse)
     async def get_provider_preferences(request: Request) -> ProviderPreferencesResponse:
-        preferences = await provider_preferences_from_request(request)
+        active_settings = active_settings_for_request(request)
+        preferences = _effective_provider_preferences(
+            active_settings,
+            await provider_preferences_from_request(request),
+        )
         return ProviderPreferencesResponse(
             video_provider=preferences.video_provider,
             image_provider=preferences.image_provider,
+            planning_pipeline=preferences.planning_pipeline,
         )
 
     @app.put("/api/provider-preferences", response_model=ProviderPreferencesResponse)
@@ -791,10 +931,25 @@ def create_app(
         request: Request,
         payload: ProviderPreferencesUpdate,
     ) -> ProviderPreferencesResponse:
+        active_settings = active_settings_for_request(request)
         try:
+            video_provider = payload.video_provider
+            if active_settings.video_provider == "aiport":
+                video_provider = "aiport"
+            else:
+                video_provider = resolve_video_model_key(
+                    video_provider,
+                    fallback="",
+                )
+                if video_provider is None:
+                    raise ValueError("不支持的视频模型")
+            image_provider = payload.image_provider
+            if image_provider == "aiport" and not active_settings.aiport_image_enabled:
+                image_provider = "seedream"
             preferences = await get_provider_preference_store(request).save(
-                video_provider=payload.video_provider,
-                image_provider=payload.image_provider,
+                video_provider=video_provider,
+                image_provider=image_provider,
+                planning_pipeline=payload.planning_pipeline,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -805,9 +960,11 @@ def create_app(
             # 持有同一引用，改它即可让图执行层的路由立即生效，无需重启服务。
             current.video_provider = preferences.video_provider
             current.image_provider = preferences.image_provider
+            current.planning_pipeline = preferences.planning_pipeline
         return ProviderPreferencesResponse(
             video_provider=preferences.video_provider,
             image_provider=preferences.image_provider,
+            planning_pipeline=preferences.planning_pipeline,
         )
 
     def raise_bitable_error(exc: Exception) -> None:
@@ -868,6 +1025,14 @@ def create_app(
                 "maker_name": task.maker_name,
                 "deliverable": task.deliverable,
                 "delivery_block_reason": task.delivery_block_reason,
+                # 已领取的记录现在会留在列表里，前端据此渲染状态徽章并跳回
+                # 对应运行（#1：以前这些记录直接消失，用户找不回来）。
+                "claim_status": (
+                    task.claim_status.value
+                    if task.claim_status is not None
+                    else None
+                ),
+                "claimed_run_id": task.claimed_run_id,
             }
         return task.model_dump(mode="json")
 
@@ -890,11 +1055,17 @@ def create_app(
                 )
         except Exception as exc:
             raise_bitable_error(exc)
+        counts = await artifact_counts(request, bindings)
         return [
             {
                 "run_id": binding.run_id,
+                "record_id": binding.record_id,
                 "display_text": binding.display_text,
                 "status": binding.status.value,
+                # 带上时间（带时区）：前端按时间倒序排历史记录，缺了这个字段就只能
+                # 保持接口顺序，看起来就是乱序的（用户 2026-09-18）。
+                "updated_at": _iso_utc_string(getattr(binding, "updated_at", "")),
+                "artifact_count": counts.get(binding.run_id, 0),
             }
             for binding in bindings
         ]
@@ -917,6 +1088,7 @@ def create_app(
         except Exception as exc:
             raise_bitable_error(exc)
         payload: list[dict] = []
+        counts = await artifact_counts(request, bindings)
         for binding in bindings:
             try:
                 result_table_url = await active.result_table_url(
@@ -931,9 +1103,13 @@ def create_app(
             payload.append(
                 {
                     "run_id": binding.run_id,
+                    # 同一条多维表格记录的历次尝试共用一个 record_id：
+                    # 前端据此把它们叠在同一条任务记录下（重跑不新开一条）。
+                    "record_id": binding.record_id,
                     "display_text": binding.display_text,
                     "status": binding.status.value,
-                    "updated_at": binding.updated_at,
+                    "updated_at": _iso_utc_string(getattr(binding, "updated_at", "")),
+                    "artifact_count": counts.get(binding.run_id, 0),
                     "result_table_url": result_table_url,
                     "rerunnable": binding.status in {
                         TableTaskStatus.COMPLETED,
@@ -941,7 +1117,88 @@ def create_app(
                     },
                 }
             )
+        # 按时间倒序（最新的在最上面）—— 以前直接透传多维表格返回的顺序，
+        # 界面上的历史记录看起来就是乱序的。
+        payload.sort(
+            key=lambda item: _iso_timestamp(item.get("updated_at") or ""),
+            reverse=True,
+        )
         return payload
+
+    @app.get("/api/runs/{run_id}/take-findings")
+    async def get_take_findings(run_id: str, request: Request) -> dict:
+        """让能看视频的模型审一遍这一版的成片，返回疑似穿帮清单。
+
+        用户要求（2026-09-18）：「现在重做他会不会自动看视频分析穿帮镜头啊，还是必须
+        要我自己找问题」—— 审批/成片确认页点一下就能拿到清单，再一键采纳成返工反馈。
+        按 (run_id, 产物签名) 缓存，同一条成片只审一次（每次审片都是一次真实模型调用）。
+        """
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+        except RunNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        with runtime_owner_scope(active, identity.owner_user_id):
+            view = await active.get_run_view(run_id)
+        artifacts = view.get("artifacts") if isinstance(view, dict) else []
+        signature = "|".join(
+            str(item.get("artifact_id") or item.get("sha256") or "")
+            for item in (artifacts or [])
+            if isinstance(item, dict)
+        )
+        cache_key = (run_id, signature)
+        cached = _take_findings_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        # 视图里的产物**不含 local_path**（接口刻意不暴露本地路径）——
+        # 用内容接口同一套解析拿到真实文件。
+        videos = [
+            item
+            for item in (artifacts or [])
+            if isinstance(item, dict) and item.get("kind") == "video"
+        ]
+        # 把当初的生成提示词一起给模型，让它**逐条核对**要求做到了没有
+        #（用户 2026-09-18：「没有抓住关键点，比如提示词明确了第 1 根枝桠三只绿色小鸟」）。
+        tasks = (view.get("approval") or {}).get("tasks") or []
+        task_prompt = ""
+        for task in tasks:
+            if isinstance(task, dict) and str(task.get("prompt") or "").strip():
+                task_prompt = str(task["prompt"])
+                break
+        findings: dict | None = None
+        for item in videos[:1]:
+            try:
+                with runtime_owner_scope(active, identity.owner_user_id):
+                    path, mime_type = await active.get_artifact_file(
+                        run_id, str(item.get("artifact_id"))
+                    )
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning(
+                    "审片：解析成片文件失败 run=%s artifact=%s",
+                    run_id,
+                    item.get("artifact_id"),
+                    exc_info=True,
+                )
+                continue
+            findings = await analyze_artifacts(
+                getattr(active, "video_analyzer", None),
+                [{**item, "local_path": str(path), "mime_type": mime_type}],
+                prompt=task_prompt,
+            )
+            break
+        if findings is None:
+            findings = {
+                "available": False,
+                "reason": "这一版没有可分析的成片文件",
+                "summary": "",
+                "problems": [],
+                "uncertainties": [],
+            }
+        if len(_take_findings_cache) > 40:
+            _take_findings_cache.clear()
+        _take_findings_cache[cache_key] = findings
+        return findings
 
     @app.get("/api/bitable/archived-runs")
     async def list_archived_bitable_runs(request: Request) -> list[dict]:
@@ -965,9 +1222,13 @@ def create_app(
                     "run_id": binding.run_id,
                     "display_text": binding.display_text,
                     "status": binding.status.value,
-                    "updated_at": binding.updated_at,
+                    "updated_at": _iso_utc_string(getattr(binding, "updated_at", "")),
                 }
             )
+        payload.sort(
+            key=lambda item: _iso_timestamp(item.get("updated_at") or ""),
+            reverse=True,
+        )
         return payload
 
     @app.post("/api/bitable/runs/{run_id}/archive")
@@ -1091,6 +1352,42 @@ def create_app(
             raise_bitable_error(exc)
         return BitableClaimResponse(run_id=new_run_id)
 
+    @app.post(
+        "/api/bitable/runs/{run_id}/rerun-selected",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def rerun_selected_bitable_run(
+        run_id: str,
+        payload: ArtifactReviewRequest,
+        request: Request,
+    ) -> BitableClaimResponse:
+        if payload.action != "adjust":
+            raise HTTPException(status_code=422, detail="\u53ea\u652f\u6301\u8fd4\u5de5\u91cd\u8dd1")
+        if not payload.feedback or not payload.feedback.strip():
+            raise HTTPException(status_code=422, detail="\u8bf7\u586b\u5199\u8fd4\u5de5\u8981\u6c42")
+        if not payload.task_ids:
+            raise HTTPException(status_code=422, detail="\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u6761\u4efb\u52a1")
+        active = get_bitable_service(request)
+        identity = current_identity(request)
+        try:
+            runtime_for_owner = get_runtime(request)
+            await ensure_owned_run(
+                runtime_for_owner, run_id, identity.owner_user_id
+            )
+            with runtime_owner_scope(
+                runtime_for_owner, identity.owner_user_id
+            ):
+                new_run_id = await active.rerun(
+                    run_id,
+                    task_ids=payload.task_ids,
+                    feedback=payload.feedback.strip(),
+                    # 刻意不传 auto_approve：重跑只负责把提示词重写好，
+                    # 必须停在审批页让用户过目、改参数/换模型后再放行。
+                    **owner_argument(active.rerun, identity.owner_user_id),
+                )
+        except Exception as exc:
+            raise_bitable_error(exc)
+        return BitableClaimResponse(run_id=new_run_id)
     @app.post("/api/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(payload: CreateRunRequest, request: Request) -> dict[str, str]:
         active = get_runtime(request)
@@ -1157,13 +1454,24 @@ def create_app(
                 item_kind = "image"
             else:
                 item_kind = "agent"
+            providers = []
+            try:
+                operations = await active.repository.list_operations(run_id)
+                providers = [
+                    str(operation.get("provider") or "").strip()
+                    for operation in operations
+                    if operation.get("provider")
+                ]
+            except Exception:
+                providers = []
+            model_label = _feishu_run_model_label(active.settings, item_kind, providers)
             items.append({
                 "app": "feishu-generation-agent",
                 "job_id": run_id,
                 "username": identity.username,
                 "kind": item_kind,
                 "prompt": "飞书任务 Agent 生成任务",
-                "model": "",
+                "model": model_label,
                 "params": {"source_url": str(row.get("source_url") or "")},
                 "status": portal_status,
                 "submitted_at": _iso_timestamp(created_at),
@@ -1205,9 +1513,36 @@ def create_app(
                 raise_bitable_error(exc)
         try:
             with runtime_owner_scope(active, identity.owner_user_id):
-                return await active.get_run_view(run_id)
+                view = await active.get_run_view(run_id)
         except RunNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from None
+        if isinstance(view, dict) and active_bitable is not None:
+            if not view.get("result_table_url"):
+                try:
+                    with runtime_owner_scope(
+                        active, identity.owner_user_id
+                    ):
+                        result_table_url = (
+                            await active_bitable.result_table_url(
+                                run_id,
+                                **owner_argument(
+                                    active_bitable.result_table_url,
+                                    identity.owner_user_id,
+                                ),
+                            )
+                        )
+                except AttributeError:
+                    result_table_url = None
+                except Exception:
+                    _LOGGER.warning(
+                        "读取运行结果表链接失败: %s",
+                        run_id,
+                        exc_info=True,
+                    )
+                    result_table_url = None
+                if result_table_url:
+                    view["result_table_url"] = result_table_url
+        return view
 
     @app.post(
         "/api/runs/{run_id}/decision",
@@ -1462,6 +1797,26 @@ def create_app(
             raise_runtime_error(exc)
         return {"status": "unlinked"}
 
+    @app.post(
+        "/api/runs/{run_id}/excluded-assets",
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def exclude_asset(
+        run_id: str,
+        payload: ExcludedAssetRequest,
+        request: Request,
+    ) -> dict[str, str]:
+        """把用不到的素材排除掉 —— 覆盖门要求人做这个决定，界面得给人入口。"""
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                await active.exclude_asset(run_id, asset_id=payload.asset_id)
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"status": "excluded", "asset_id": payload.asset_id}
+
     @app.get("/api/runs/{run_id}/references/{asset_id}/content")
     async def reference_content(
         run_id: str,
@@ -1510,7 +1865,9 @@ def create_app(
                 )
         except (RunNotFound, RunConflict, RunValidationError) as exc:
             raise_runtime_error(exc)
-        return FileResponse(path, media_type=mime_type)
+        suffix = mimetypes.guess_extension(mime_type) or ""
+        filename = f"feishu-{artifact_id[:12]}{suffix}"
+        return FileResponse(path, media_type=mime_type, filename=filename)
 
     asset_library_holder: dict[str, AssetLibraryStore] = {}
 

@@ -27,6 +27,11 @@ from feishu_generation_agent.domain.document import (
 )
 from feishu_generation_agent.domain.errors import AgentError
 from feishu_generation_agent.ports import DeliveryWriter, DocumentSource, VisionAnalyzer
+from feishu_generation_agent.domain.video_models import (
+    DEFAULT_VIDEO_MODEL_KEY,
+    normalize_video_task_payload,
+    resolve_video_model_key,
+)
 from feishu_generation_agent.domain.plan import (
     ApprovalDecision,
     ArtifactReviewDecision,
@@ -34,6 +39,7 @@ from feishu_generation_agent.domain.plan import (
     GenerationTask,
     ImageReference,
     TaskPlan,
+    reconcile_asset_coverage,
     reconcile_task_asset_coverage,
 )
 from feishu_generation_agent.domain.reference_contract import (
@@ -45,7 +51,17 @@ from feishu_generation_agent.domain.reference_contract import (
 from feishu_generation_agent.integrations.planner import (
     language_validation_message,
     planner_system_prompt,
+    reconcile_negative_constraints,
+    reconcile_storyboard_sources,
     validate_plan,
+)
+from feishu_generation_agent.integrations.rework_prompt import (
+    build_rework_prompt,
+    merge_requirements,
+    rework_inputs,
+)
+from feishu_generation_agent.integrations.video_insight import (
+    describe_output_videos,
 )
 from feishu_generation_agent.storage.files import FileStore
 from feishu_generation_agent.storage.repository import Repository
@@ -99,6 +115,8 @@ class GraphRuntime:
         delivery_writer: DeliveryWriter | None = None,
         document_source: DocumentSource | None = None,
         vision_analyzer: VisionAnalyzer | None = None,
+        rework_fuser: Any | None = None,
+        video_analyzer: Any | None = None,
     ) -> None:
         self.graph = graph
         self.repository = repository
@@ -107,6 +125,12 @@ class GraphRuntime:
         self.delivery_writer = delivery_writer
         self.document_source = document_source
         self.vision_analyzer = vision_analyzer
+        # AI 融合器（`planner.fuse_rework_prompt`）。缺省 None 时重跑走安全拼接，
+        # 与图节点共用同一套语义——两条重跑路径不允许再各写一份。
+        self.rework_fuser = rework_fuser
+        # 能**直接看视频**的分析器（ds4.1 多模态）：返工时把上一版成片送进去，
+        # 让融合模型看到实际画面（不抽帧）。
+        self.video_analyzer = video_analyzer
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._run_locks: dict[str, asyncio.Lock] = {}
         self._start_lock = asyncio.Lock()
@@ -214,6 +238,8 @@ class GraphRuntime:
         *,
         run_id: str,
         thread_id: str,
+        task_ids: list[str] | None = None,
+        feedback: str | None = None,
     ) -> str:
         """Create a rerun from a prior run.
 
@@ -244,16 +270,21 @@ class GraphRuntime:
                 )
             except (TypeError, ValueError):
                 approved_plan = None
-            # Preserve a plan that was already generated before cancellation.
+            # Preserve a plan that was already generated before the source run
+            # was cancelled/failed——only in terminated states. A source run still
+            # waiting_approval keeps the original semantics: cloning it means
+            # "重新生成计划"（fresh analysis, rerun_source event）.
             if approved_plan is None or not approved_plan.tasks:
-                try:
-                    draft_plan = TaskPlan.model_validate(
-                        source_state.get("draft_plan") or source_state.get("task_plan")
-                    )
-                except (TypeError, ValueError):
-                    draft_plan = None
-                if draft_plan is not None and draft_plan.tasks:
-                    approved_plan = draft_plan
+                source_status = str(source.get("status") or "").lower()
+                if source_status in {"cancelled", "canceled", "failed", "error"}:
+                    try:
+                        draft_plan = TaskPlan.model_validate(
+                            source_state.get("draft_plan") or source_state.get("task_plan")
+                        )
+                    except (TypeError, ValueError):
+                        draft_plan = None
+                    if draft_plan is not None and draft_plan.tasks:
+                        approved_plan = draft_plan
             if approved_plan is None or not approved_plan.tasks:
                 await self.repository.create_run(
                     run_id,
@@ -276,10 +307,103 @@ class GraphRuntime:
                     name=f"approval-run-{run_id}",
                 )
                 return run_id
+            selected_task_ids = list(dict.fromkeys(task_ids or []))
+            if selected_task_ids:
+                known_task_ids = {task.task_id for task in approved_plan.tasks}
+                unknown_task_ids = set(selected_task_ids) - known_task_ids
+                if unknown_task_ids:
+                    raise RunValidationError(
+                        "\u91cd\u8dd1\u4efb\u52a1\u4e0d\u5b58\u5728\uff1a"
+                        + "\u3001".join(sorted(unknown_task_ids))
+                    )
+                selected_task_id_set = set(selected_task_ids)
+                feedback_text = (feedback or "").strip()
+                updated_tasks = []
+                for task in approved_plan.tasks:
+                    if task.task_id not in selected_task_id_set:
+                        updated_tasks.append(task)
+                        continue
+                    if not feedback_text:
+                        updated_tasks.append(task)
+                        continue
+                    # 与图节点 review_artifacts 共用同一套语义：历次返工要求
+                    # 只累积不覆盖、优先 AI 融合、永不因超长失败。
+                    base_prompt, requirements = rework_inputs(task, feedback_text)
+                    # 上一版成片直接送能看视频的模型（不抽帧）。
+                    visual_context = await describe_output_videos(
+                        self.video_analyzer,
+                        list(source_state.get("artifacts") or []),
+                    )
+                    # 把"模型看了什么"记进事件，否则用户看不出返工到底有没有看片
+                    #（用户 2026-09-18：「这样看不出问题啊」）。
+                    try:
+                        text = " ".join((visual_context or "").split())
+                        await self.repository.append_event(
+                            run_id,
+                            "clone_approved_plan",
+                            "running",
+                            (
+                                f"已让模型看过上一版成片，融合时带上画面：{text[:300]}"
+                                if text
+                                else "本次返工没带上一版画面（没有成片文件，或看片失败）"
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOGGER.warning(
+                            "记录画面上下文事件失败 run=%s", run_id, exc_info=True
+                        )
+                    prompt, _truncated, _must_avoid = await build_rework_prompt(
+                        base_prompt,
+                        requirements,
+                        fuse=self.rework_fuser,
+                        visual_context=visual_context,
+                    )
+                    updated_tasks.append(
+                        task.model_copy(
+                            update={
+                                "prompt": prompt,
+                                "rework_requirements": requirements,
+                                # 冻结锚点只写第一次；融合基准/改前是 previous。
+                                "rework_base_prompt": (
+                                    task.rework_base_prompt or base_prompt
+                                ),
+                                # 展示用的「改前」是这一版被返工前的样子。
+                                "rework_previous_prompt": task.prompt,
+                                # **不往约束里加东西**（用户口径 2026-09-17）：要求由融合
+                                # 写进正文；克隆按契约逐字保留计划，存量的合并+限量
+                                # 清理在「编辑落盘」与「提交」两处生效。
+                            }
+                        )
+                    )
+                approved_plan = approved_plan.model_copy(
+                    update={"tasks": updated_tasks}
+                )
+            # 分镜行 id 确定性补齐：复制来的计划没有经过模型，缺的行会一直缺
+            # （实测 2026-09-17 超级大床：重跑多少次都报同样 3 个 id）。
+            resolved_document = self._document_assets(
+                source_state.get("normalized_document"),
+                source_state.get("media_assets")
+                if isinstance(source_state.get("media_assets"), list)
+                else [],
+            )
+            if resolved_document is not None:
+                try:
+                    approved_plan = reconcile_storyboard_sources(
+                        approved_plan,
+                        NormalizedDocument.model_validate(resolved_document),
+                    )
+                except Exception:
+                    pass
             approved_plan_json = approved_plan.model_dump(mode="json")
             approved_tasks = [
                 task.model_dump(mode="json") for task in approved_plan.tasks
             ]
+            if selected_task_ids:
+                selected_task_id_set = set(selected_task_ids)
+                approved_tasks = [
+                    task for task in approved_tasks
+                    if task["task_id"] in selected_task_id_set
+                ]
 
             state = deepcopy(source_state)
             state.update(
@@ -297,6 +421,8 @@ class GraphRuntime:
                 artifacts=[],
                 delivery_record=None,
                 last_error=None,
+                artifact_review_decision=None,
+                artifact_review_feedback=None,
             )
             state.pop("error", None)
             await self.repository.create_run(
@@ -364,8 +490,11 @@ class GraphRuntime:
                     await self._fail_missing_planning_prompt(run_id)
                     return
                 if run["status"] == "delivering":
+                    previous_status = self._safe_status(
+                        state.get("status"), "succeeded"
+                    )
                     await self._retry_delivery_locked(
-                        run_id, run["thread_id"]
+                        run_id, run["thread_id"], previous_status
                     )
                     return
                 await self.repository.update_run_status(run_id, "running")
@@ -402,8 +531,13 @@ class GraphRuntime:
             await asyncio.sleep(0.01)
 
     async def retry_delivery(self, run_id: str) -> None:
+        """Export a finished run's artifacts to the result table on demand.
+
+        Generation success is already terminal. This is a best-effort,
+        user-triggered export and must never downgrade a successful run.
+        """
         if self.delivery_writer is None:
-            raise RunConflict("交付重试未配置")
+            raise RunConflict("导出结果表未配置")
         lock = self._run_locks.setdefault(run_id, asyncio.Lock())
         if lock.locked():
             raise RunConflict("运行正在处理中，请稍后重试")
@@ -411,36 +545,67 @@ class GraphRuntime:
             run = await self.repository.get_run(run_id)
             if run is None:
                 raise RunNotFound("运行不存在")
-            if run["status"] != "delivery_failed":
-                raise RunConflict("只有交付失败的运行可以重试交付")
+            if run["status"] not in {
+                "succeeded", "completed_with_errors", "delivery_failed",
+            }:
+                raise RunConflict("只有已生成完成的运行可以导出结果表")
             if not await self._checkpoint_has_valid_planning_prompt(
                 run["thread_id"]
             ):
                 await self._fail_missing_planning_prompt(run_id)
                 raise RunValidationError("运行缺少有效提示词快照")
+            if run["status"] != "delivery_failed":
+                artifacts = await self.repository.list_artifacts(run_id)
+                if not artifacts:
+                    raise RunConflict("没有可导出的成片")
+            previous_status = run["status"]
             await self.repository.update_run_status(run_id, "delivering")
             self._start_background(
-                self._retry_delivery_worker(run_id, run["thread_id"]),
+                self._retry_delivery_worker(
+                    run_id, run["thread_id"], previous_status
+                ),
                 name=f"delivery-retry-{run_id}",
             )
 
-    async def _retry_delivery_worker(self, run_id: str, thread_id: str) -> None:
+    async def _retry_delivery_worker(
+        self, run_id: str, thread_id: str, previous_status: str
+    ) -> None:
         lock = self._run_locks.setdefault(run_id, asyncio.Lock())
         async with lock:
-            await self._retry_delivery_locked(run_id, thread_id)
+            await self._retry_delivery_locked(
+                run_id, thread_id, previous_status
+            )
 
     async def _retry_delivery_locked(
-        self, run_id: str, thread_id: str
+        self, run_id: str, thread_id: str, previous_status: str = "succeeded"
     ) -> None:
         try:
             if not await self._checkpoint_has_valid_planning_prompt(thread_id):
                 await self._fail_missing_planning_prompt(run_id)
                 return
             if self.delivery_writer is None:
-                raise RunConflict("交付重试未配置")
-            record = await self.delivery_writer.retry_delivery(run_id)
-            artifacts = await self.repository.list_artifacts(run_id)
-            final_status = "succeeded" if artifacts else "failed"
+                raise RunConflict("导出结果表未配置")
+            if previous_status == "delivery_failed":
+                # Legacy re-export path: the delivery context already exists.
+                record = await self.delivery_writer.retry_delivery(run_id)
+                artifacts = await self.repository.list_artifacts(run_id)
+                final_status = "succeeded" if artifacts else "failed"
+            else:
+                # Fresh manual export of a successful run: reconstruct the
+                # document/plan from the checkpoint and write the result table.
+                snapshot = await self.graph.aget_state(self._config(thread_id))
+                state = dict(snapshot.values or {})
+                document = NormalizedDocument.model_validate(
+                    state.get("normalized_document")
+                )
+                plan = approved_plan_from_state(
+                    state, max_output_count=self.settings.max_output_count
+                )
+                artifacts = await self.repository.list_artifacts(run_id)
+                record = await self.delivery_writer.deliver(
+                    run_id, document, plan, artifacts
+                )
+                final_status = "succeeded"
             await self._graph_aupdate_state(
                 self._config(thread_id),
                 {
@@ -454,7 +619,7 @@ class GraphRuntime:
                 run_id,
                 "deliver_to_feishu",
                 "completed",
-                "Feishu delivery retry completed",
+                "Feishu result-table export completed",
             )
             await self.repository.update_run_status(run_id, final_status)
         except asyncio.CancelledError:
@@ -464,10 +629,11 @@ class GraphRuntime:
                 run_id,
                 "deliver_to_feishu",
                 "failed",
-                "Feishu delivery retry failed",
+                "Feishu result-table export failed",
             )
-            await self.repository.update_run_status(run_id, "delivery_failed")
-
+            # A failed export must not downgrade the already-successful
+            # generation run; legacy delivery_failed runs stay delivery_failed.
+            await self.repository.update_run_status(run_id, previous_status)
     async def delete_run(self, run_id: str) -> None:
         lock = self._run_locks.setdefault(run_id, asyncio.Lock())
         if lock.locked():
@@ -916,8 +1082,28 @@ class GraphRuntime:
             run = await self.repository.get_run(run_id)
             if run is None:
                 raise RunNotFound("运行不存在")
-            if run["status"] != "waiting_review":
-                raise RunConflict("只有等待成片确认的运行可以提交决定")
+            status = str(run["status"] or "").lower()
+            if status != "waiting_review":
+                if status not in {
+                    "succeeded",
+                    "completed_with_errors",
+                    "delivery_failed",
+                }:
+                    raise RunConflict("只有可审核的成片运行可以提交决定")
+                config = self._config(run["thread_id"])
+                snapshot = await self.graph.aget_state(config)
+                state = dict(snapshot.values or {})
+                if not state.get("artifacts"):
+                    raise RunValidationError("当前没有可审核的成片")
+                await self.graph.aupdate_state(
+                    config,
+                    {"status": "waiting_review"},
+                    as_node="verify_and_download_artifacts",
+                )
+                reopened = await self.graph.ainvoke(None, config=config)
+                if not self._has_interrupt(reopened):
+                    raise RunConflict("成片审核门禁无法重新打开")
+                await self.repository.update_run_status(run_id, "waiting_review")
             snapshot = await self.graph.aget_state(
                 self._config(run["thread_id"])
             )
@@ -970,13 +1156,17 @@ class GraphRuntime:
         state: dict[str, Any],
         decision: ArtifactReviewDecision,
     ) -> None:
+        if len(decision.task_ids) != len(set(decision.task_ids)):
+            raise RunValidationError("重跑任务不能重复选择")
         if decision.action == "adjust" and (
             not isinstance(decision.feedback, str)
             or not decision.feedback.strip()
         ):
             raise RunValidationError("退回调整时必须填写调整意见")
-        if decision.action != "adjust" and decision.feedback is not None:
-            raise RunValidationError("确认或取消时不能携带调整意见")
+        if decision.action != "adjust" and (
+            decision.feedback is not None or decision.task_ids
+        ):
+            raise RunValidationError("确认或取消时不能携带调整意见或任务")
         if decision.action == "confirm" and not state.get("artifacts"):
             raise RunValidationError("当前没有可确认的成片")
 
@@ -1152,6 +1342,44 @@ class GraphRuntime:
             updated_plan = self._replace_task(plan, task_index, updated_task)
             await self._persist_draft(run, state, updated_plan, assets)
 
+    async def exclude_asset(
+        self,
+        run_id: str,
+        *,
+        asset_id: str,
+    ) -> None:
+        """把一个**用不到**的素材放进 `excluded_assets`。
+
+        覆盖门要求「每个素材要么被任务引用、要么被排除」，而审批页过去只有引用的
+        增删、没有排除入口 —— 计划没引用的素材只能靠手改提示词绕开（2026-09-17
+        超级大床：image-4..image-8 未覆盖，批准按钮一直是灰的）。
+        """
+        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
+        if lock.locked():
+            raise RunConflict("运行正在更新，请稍后重试")
+        async with lock:
+            run, state = await self._waiting_state(run_id)
+            plan = self._state_plan(state)
+            referenced = {
+                reference.asset_id
+                for task in plan.tasks
+                for reference in task.reference_images
+            }
+            if asset_id in referenced:
+                raise RunValidationError(
+                    f"素材 {asset_id} 已被任务引用，不能同时排除"
+                )
+            assets = [
+                MediaAsset.model_validate(item)
+                for item in state.get("media_assets", [])
+            ]
+            if asset_id not in {asset.asset_id for asset in assets}:
+                raise RunValidationError(f"素材 {asset_id} 不存在")
+            updated_plan = reconcile_asset_coverage(
+                plan, removed_asset_ids={asset_id}
+            )
+            await self._persist_draft(run, state, updated_plan, assets)
+
     _PATCHABLE_TASK_FIELDS = {
         "prompt",
         "negative_constraints",
@@ -1200,6 +1428,22 @@ class GraphRuntime:
             ]
             updated = dict(task.model_dump(mode="json"))
             updated.update(patch)
+            default_model_key = resolve_video_model_key(
+                getattr(self.settings, "video_provider", None),
+                fallback=resolve_video_model_key(
+                    getattr(self.settings, "seedance_model", None),
+                    fallback=DEFAULT_VIDEO_MODEL_KEY,
+                ) or DEFAULT_VIDEO_MODEL_KEY,
+            )
+            updated, policy_warnings = normalize_video_task_payload(
+                updated,
+                default_model_key=default_model_key,
+                max_output_count=self.settings.max_output_count,
+            )
+            if policy_warnings:
+                warnings = list(updated.get("warnings") or [])
+                warnings.extend(policy_warnings)
+                updated["warnings"] = list(dict.fromkeys(warnings))
             if "prompt" in patch:
                 updated["prompt_slots"] = None
                 # 只对图片任务做 token 补齐：视频 prompt 的 @图片N 必须出现在
@@ -1553,7 +1797,6 @@ class GraphRuntime:
         plan: TaskPlan,
         assets: list[MediaAsset],
     ) -> None:
-        plan_json = plan.model_dump(mode="json")
         asset_json = [asset.model_dump(mode="json") for asset in assets]
         normalized = self._document_assets(state.get("normalized_document"), asset_json)
         source_document = self._document_assets(state.get("source_document"), asset_json)
@@ -1561,6 +1804,9 @@ class GraphRuntime:
         if normalized is not None:
             try:
                 document = NormalizedDocument.model_validate(normalized)
+                # 分镜行 id 确定性补齐：重跑走的是「复制上一份已批准计划」，
+                # 模型没有机会重抄，缺的行会一直缺（实测 2026-09-17 超级大床）。
+                plan = reconcile_storyboard_sources(plan, document)
                 validation_issues = [
                     record.display_message
                     for record in resolve_ingest_issue_records(document)
@@ -1578,6 +1824,10 @@ class GraphRuntime:
         revision = state.get("draft_revision")
         if not isinstance(revision, int):
             revision = state.get("document_revision", state.get("source_revision", 0))
+        # 补齐后再落盘（上面的 plan 可能已被 reconcile 过）。
+        # 「必须避免」里的重复写法也顺手清一遍（去重上线前的残留会被一直复制下去）。
+        plan = reconcile_negative_constraints(plan)
+        plan_json = plan.model_dump(mode="json")
         updates: dict[str, Any] = {
             "draft_plan": plan_json,
             "task_plan": plan_json,

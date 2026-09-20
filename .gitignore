@@ -99,3 +99,14 @@ infinite-canvas/web/tsconfig.tsbuildinfo
 .firecrawl/
 .codex/
 CLAUDE.local.md
+config/local_ai.env
+
+# Secrets: .env backups carry live API keys (LARK/DEEPSEEK/CLAUDE/ARK/VOLCENGINE).
+# `*.env` above does NOT match these, so they must be listed explicitly.
+.env.bak*
+*.env.bak*
+
+# Local browser debug profiles (cookies / login sessions) and provider-fix backups
+_codex_chrome_verify/
+_codex_provider_fix_backup_*/
+

@@ -164,6 +164,7 @@ previz/           → 分镜布局：浏览器 3D 素模摆放（14 关节木人
 - ListAssets `Filter` 有效字段：GroupIds、GroupType、Statuses、Name（模糊）— **不含 AssetType**
 - 图片限制：jpeg/png/webp/bmp/tiff/gif/heic；宽高比 (0.4, 2.5)；尺寸 (300, 6000)px；<30MB
 - 视频生成引用：`asset://<asset_ID>`，多图 content 数组顺序 = text 在前 + image_url 依次 role=`reference_image`；prompt 用「图片1」「图片2」指代
+- **资产库引用契约（运营确认 2026-09-09）**：资产库内容一律走 `asset://`；**视频资产必须 asset://（url 会被拒）**，图片资产 url 与 asset:// 均可。实现见 volcengine-portrait/app.py `_asset_content_item`
 - IAM 权限：`ark:*Asset*`
 - 详细 body/response 字段：见项目内 `docs/` 或 `volcengine-portrait/` 实现
 

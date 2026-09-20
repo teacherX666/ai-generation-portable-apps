@@ -138,7 +138,7 @@ def test_video_planner_prompt_hash_is_still_frozen():
     assert hashlib.sha256(
         planner_system_prompt().encode("utf-8")
     ).hexdigest() == (
-        "fc009b4bb8351502a9412b88a5554a8567a9aa9a633eba588fb673b513f16db1"
+        "db77e6e4a995de911ca75a4013a25a4382e088578f15a3c8258b0599c6ba992f"
     )
 
 

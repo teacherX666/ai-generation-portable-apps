@@ -67,7 +67,7 @@ function job(workspaceId, message) {
 }
 
 
-function exercise(config) {
+async function exercise(config) {
   const { app, window, results } = loadApp(config);
   app.tabs = [{ id: 'ws-a', name: 'A', running: false }];
   app.activeTabId = 'ws-a';
@@ -78,7 +78,7 @@ function exercise(config) {
   app.autoDownload = true;
   results.innerHTML = 'OLD RESULT FROM A';
 
-  app.newTab();
+  await app.newTab();
   assert.equal(results.innerHTML, '', config.prefix + ' new topic must start with an empty result panel');
   assert.equal(app.outputDir, '', config.prefix + ' new topic must not inherit the old output directory');
   assert.equal(app.dirHandle, null, config.prefix + ' new topic must not inherit the old directory handle');
@@ -124,11 +124,11 @@ function exercise(config) {
 }
 
 
-exercise({
+await exercise({
   script: 'seedance/static/app.js', path: '/seedance/index.html', factoryName: 'SeedanceApp',
   prefix: 'seedance', formId: 'sd-form', resultsId: 'sd-results', eventsId: 'sd-events',
 });
-exercise({
+await exercise({
   script: 'nano-banana/static/app.js', path: '/nano-banana/index.html', factoryName: 'NanoBananaApp',
   prefix: 'nano', formId: 'nb-form', resultsId: 'nb-results', eventsId: 'nb-events',
 });
