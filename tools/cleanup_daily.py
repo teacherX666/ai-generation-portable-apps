@@ -133,6 +133,29 @@ def fingerprint(path: Path, size: int, mtime: int) -> str:
 
 # ── 1. outputs ─────────────────────────────────────────────────────────────
 
+def collect_workspace_media_by_age(days: int) -> list[tuple[Path, int]]:
+    """按「文件年龄」收集所有 workspace 的 media 内容（不要求 preset.json 也超龄）。
+
+    与 collect_workspace_media（30 天未编辑的草稿）互补：草稿提示词 preset.json
+    一律保留，只清参考图/视频，重传即可恢复。days<=0 返回空（不启用）。
+    """
+    if days <= 0:
+        return []
+    cutoff = dt.datetime.now().timestamp() - days * 86400
+    hits: list[tuple[Path, int]] = []
+    for rel in WORKSPACE_DIRS:
+        root = REPO_ROOT / rel
+        if not root.exists():
+            continue
+        for p in root.rglob("media/*"):
+            try:
+                if p.is_file() and p.stat().st_mtime < cutoff:
+                    hits.append((p, p.stat().st_size))
+            except OSError:
+                continue
+    return hits
+
+
 def collect_outputs(before: dt.date) -> list[tuple[Path, int, dt.date]]:
     hits = []
     for rel in OUTPUT_DIRS:
@@ -156,8 +179,10 @@ def collect_outputs(before: dt.date) -> list[tuple[Path, int, dt.date]]:
 
 
 def run_outputs(hits: list[tuple[Path, int, dt.date]], synced: set[str],
-                apply: bool) -> tuple[int, int, int, int]:
-    """返回 (删除数, 回收站数, 今日跳过数, 回收字节数)。"""
+                apply: bool, no_trash: bool = False) -> tuple[int, int, int, int]:
+    """返回 (删除数, 回收站数, 今日跳过数, 回收字节数)。
+
+    no_trash=True 时不做回收站兜底，直接删除（磁盘告急时用，不可恢复）。"""
     deleted = trashed = skipped_today = 0
     trash_bytes = 0
     today = dt.date.today()
@@ -168,6 +193,15 @@ def run_outputs(hits: list[tuple[Path, int, dt.date]], synced: set[str],
             continue
         st = p.stat()
         if fingerprint(p, st.st_size, int(st.st_mtime)) in synced:
+            if apply:
+                try:
+                    p.unlink()
+                    deleted += 1
+                except OSError as e:
+                    print(f"  删除失败 {p}: {e}", file=sys.stderr)
+            else:
+                deleted += 1
+        elif no_trash:
             if apply:
                 try:
                     p.unlink()
@@ -354,6 +388,77 @@ def prune_history(apply: bool) -> int:
         return 0
 
 
+# ── 7. 应用缓存 / 旧安装包（可选，--caches-days N）───────────────────────
+# 只清「可重建」的东西：~/Library/Caches 下超龄条目、飞书更新包残留、
+# Downloads 里 30 天前的 .dmg/.pkg。不动 App 配置、文档、模型权重。
+CACHE_ROOTS = [HOME / "Library" / "Caches"]
+LARK_UPDATE_DIR = HOME / "Library" / "Application Support" / "LarkShell" / "update"
+INSTALLER_DIR = HOME / "Downloads"
+INSTALLER_EXTS = {".dmg", ".pkg"}
+
+
+def _path_size(p: Path) -> int:
+    try:
+        if p.is_file():
+            return p.stat().st_size
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+    except OSError:
+        return 0
+
+
+def collect_caches(days: int) -> list[tuple[Path, int]]:
+    """~/Library/Caches 下 mtime 早于 days 天的条目（目录或文件）+ 飞书更新包残留。"""
+    if days <= 0:
+        return []
+    cutoff = dt.datetime.now().timestamp() - days * 86400
+    hits: list[tuple[Path, int]] = []
+    for root in CACHE_ROOTS:
+        if not root.is_dir():
+            continue
+        for p in root.iterdir():
+            try:
+                if p.stat().st_mtime < cutoff:
+                    hits.append((p, _path_size(p)))
+            except OSError:
+                continue
+    if LARK_UPDATE_DIR.is_dir():
+        hits.append((LARK_UPDATE_DIR, _path_size(LARK_UPDATE_DIR)))
+    return hits
+
+
+def collect_old_installers(days: int = 30) -> list[tuple[Path, int]]:
+    """Downloads 里 days 天前的安装包（.dmg/.pkg，可重新下载）。"""
+    cutoff = dt.datetime.now().timestamp() - days * 86400
+    hits: list[tuple[Path, int]] = []
+    if not INSTALLER_DIR.is_dir():
+        return hits
+    for p in INSTALLER_DIR.iterdir():
+        try:
+            if p.is_file() and p.suffix.lower() in INSTALLER_EXTS and p.stat().st_mtime < cutoff:
+                hits.append((p, p.stat().st_size))
+        except OSError:
+            continue
+    return hits
+
+
+def run_delete(hits: list[tuple[Path, int]], apply: bool) -> int:
+    """直接删除（缓存/安装包可重建，无需回收站兜底），返回删除个数。"""
+    n = 0
+    for p, _size in hits:
+        if not apply:
+            n += 1
+            continue
+        try:
+            if p.is_dir():
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+            n += 1
+        except OSError as e:
+            print(f"  删除失败 {p}: {e}", file=sys.stderr)
+    return n
+
+
 # ── 6. 回收站二次清理（ai-portable-cleanup-* 目录超 N 天后彻底删除） ──
 
 TRASH_ROOT = HOME / ".Trash"
@@ -368,11 +473,19 @@ def collect_trash_dirs(retention_days: int) -> list[tuple[Path, int]]:
         return []
     cutoff = dt.date.today() - dt.timedelta(days=retention_days)
     hits: list[tuple[Path, int]] = []
-    for d in TRASH_ROOT.iterdir():
+    try:
+        entries = list(TRASH_ROOT.iterdir())
+    except OSError as e:
+        # launchd/终端没有「完全磁盘访问权限」时读不了回收站；跳过而不是崩掉整轮清理
+        print(f"  无法读取回收站（{e}），跳过本步", file=sys.stderr)
+        return []
+    for d in entries:
         if not d.is_dir() or _TRASH_DIR_RE.fullmatch(d.name) is None:
             continue
         try:
-            if dt.date.fromtimestamp(d.stat().st_mtime) >= cutoff:
+            # 注意用 > 而不是 >=：--trash-days 0 表示「本轮移入的兜底文件立即彻底删除」，
+            # 用于磁盘告急时一次性释放空间（默认 30 天仍保留完整兜底窗口）。
+            if dt.date.fromtimestamp(d.stat().st_mtime) > cutoff:
                 continue
             size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
         except OSError:
@@ -406,7 +519,13 @@ def main() -> int:
     ap.add_argument("--workspace-days", type=int, default=30,
                     help="workspace preset.json 超过该天数未编辑才清 media/（默认 30）")
     ap.add_argument("--trash-days", type=int, default=TRASH_RETENTION_DAYS,
-                    help="回收站 ai-portable-cleanup-* 目录保留天数（默认 30）")
+                    help="回收站 ai-portable-cleanup-* 目录保留天数（默认 30）；0 = 本轮立即清空")
+    ap.add_argument("--workspace-media-days", type=int, default=0,
+                    help="按文件年龄清所有 workspace 的 media 参考素材（0=关闭，默认只清 30 天未编辑的草稿）")
+    ap.add_argument("--caches-days", type=int, default=0,
+                    help="清 ~/Library/Caches 超龄条目 + 飞书更新包 + 30 天前安装包（0=关闭）")
+    ap.add_argument("--no-trash", action="store_true",
+                    help="不经过回收站，直接删除过期 outputs（磁盘告急时用，不可恢复）")
     args = ap.parse_args()
 
     mode = "执行" if args.apply else "dry-run"
@@ -420,7 +539,7 @@ def main() -> int:
     hits = collect_outputs(dt.date.today() - dt.timedelta(days=args.outputs_retention))
     if hits:
         total = sum(sz for _, sz, _ in hits)
-        deleted, trashed, skipped_today, trash_bytes = run_outputs(hits, synced, args.apply)
+        deleted, trashed, skipped_today, trash_bytes = run_outputs(hits, synced, args.apply, args.no_trash)
         print(f"      命中 {len(hits)} 个文件 {human_size(total)}："
               f"直接删 {deleted}、回收站 {trashed}（{human_size(trash_bytes)}）、"
               f"今日跳过 {skipped_today}")
@@ -438,6 +557,17 @@ def main() -> int:
     else:
         print("      无超龄 workspace")
     print()
+
+    if args.workspace_media_days > 0:
+        age_hits = collect_workspace_media_by_age(args.workspace_media_days)
+        if age_hits:
+            age_total = sum(sz for _, sz in age_hits)
+            age_deleted = run_workspace_media(age_hits, args.apply)
+            print(f"      另按年龄清 media（> {args.workspace_media_days} 天）：命中 {len(age_hits)} 个 "
+                  f"{human_size(age_total)}" + (f"，已删 {age_deleted}" if args.apply else "（dry-run）"))
+        else:
+            print(f"      另按年龄清 media（> {args.workspace_media_days} 天）：无命中")
+        print()
 
     print("[3/5] download_files.json 失效 token 剪枝")
     pruned = prune_download_maps(args.apply)
@@ -467,6 +597,24 @@ def main() -> int:
     else:
         print("      无到期回收站目录")
     print()
+
+    if args.caches_days > 0:
+        print(f"[7/7] 应用缓存 / 旧安装包（缓存 > {args.caches_days} 天）")
+        cache_hits = collect_caches(args.caches_days)
+        inst_hits = collect_old_installers(30)
+        if cache_hits:
+            n = run_delete(cache_hits, args.apply)
+            print(f"      缓存：命中 {len(cache_hits)} 项 {human_size(sum(s for _, s in cache_hits))}"
+                  + (f"，已删 {n}" if args.apply else "（dry-run）"))
+        else:
+            print("      缓存：无超龄条目")
+        if inst_hits:
+            n = run_delete(inst_hits, args.apply)
+            print(f"      旧安装包：命中 {len(inst_hits)} 个 {human_size(sum(s for _, s in inst_hits))}"
+                  + (f"，已删 {n}" if args.apply else "（dry-run）"))
+        else:
+            print("      旧安装包：无")
+        print()
 
     print(f"=== 完成（{mode}）===")
     if not args.apply:

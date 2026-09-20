@@ -27,6 +27,7 @@ import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as _xml_escape
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
@@ -992,6 +993,142 @@ def _prune_old_usage_jsonl(today: str):
                 continue
     except Exception:
         pass
+
+
+# ─── 每日清理任务（launchd）自动安装 ────────────────────────────────────────
+# 背景：仓库自带 tools/cleanup_daily.py（清 outputs / 草稿素材 / 日志 / 失效下载
+# token），设计上由 launchd 的 com.ai-portal-cleanup 每日触发。但仓库里的 plist
+# 模板路径写死在另一台机器（/Users/260413a/...），换机器或换目录后没人会记得装，
+# 结果生成结果无限堆积把磁盘写满（2026-09-17 实际事故）。
+# 这里让 Portal 每次启动幂等地生成并安装该任务：所有路径取自当前部署，配置放在
+# portal/state/cleanup_schedule.json（改完下次重启生效）。
+CLEANUP_LABEL = "com.ai-portal-cleanup"
+CLEANUP_CONFIG_PATH = STATE_DIR / "cleanup_schedule.json"
+CLEANUP_SCRIPT = ROOT.parent / "tools" / "cleanup_daily.py"
+_CLEANUP_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "output_days": 7,
+    "workspace_media_days": 7,
+    "caches_days": 14,
+    "trash_days": 1,
+    "hour": 3,
+    "minute": 47,
+}
+
+
+def load_cleanup_config() -> dict[str, Any]:
+    """读 portal/state/cleanup_schedule.json；env 可覆盖（CLEANUP_*）。"""
+    cfg = dict(_CLEANUP_DEFAULTS)
+    try:
+        data = json.loads(CLEANUP_CONFIG_PATH.read_text("utf-8"))
+        if isinstance(data, dict):
+            for key in cfg:
+                if key in data:
+                    cfg[key] = data[key]
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        print(f"  [cleanup-job] 配置读取失败，用默认值：{exc}", flush=True)
+    for env_key, key in (
+        ("CLEANUP_OUTPUT_RETENTION_DAYS", "output_days"),
+        ("CLEANUP_WORKSPACE_MEDIA_DAYS", "workspace_media_days"),
+        ("CLEANUP_CACHES_DAYS", "caches_days"),
+        ("CLEANUP_TRASH_DAYS", "trash_days"),
+        ("CLEANUP_HOUR", "hour"),
+        ("CLEANUP_MINUTE", "minute"),
+    ):
+        raw = os.environ.get(env_key, "").strip()
+        if raw.isdigit():
+            cfg[key] = int(raw)
+    if os.environ.get("CLEANUP_DISABLE", "").strip().lower() in {"1", "true", "yes"}:
+        cfg["enabled"] = False
+    return cfg
+
+
+def build_cleanup_plist(cfg: dict[str, Any], *, python: str | None = None,
+                        script: Path | None = None, home: Path | None = None) -> str:
+    """生成 launchd plist 文本。路径全部来自当前部署，换机器/换目录无需改模板。"""
+    py = python or sys.executable
+    sp = script or CLEANUP_SCRIPT
+    base = home or Path.home()
+    log_path = base / "Library" / "Logs" / "ai-portal-cleanup.log"
+    args = [py, str(sp), "--apply",
+            "--outputs-retention", str(int(cfg["output_days"])),
+            "--workspace-media-days", str(int(cfg.get("workspace_media_days", 0))),
+            "--caches-days", str(int(cfg.get("caches_days", 0))),
+            "--trash-days", str(int(cfg["trash_days"]))]
+    arg_lines = "\n".join(f"        <string>{_xml_escape(a)}</string>" for a in args)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{CLEANUP_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+{arg_lines}
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{_xml_escape(str(ROOT.parent))}</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>{int(cfg["hour"])}</integer>
+        <key>Minute</key>
+        <integer>{int(cfg["minute"])}</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{_xml_escape(str(base))}</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{_xml_escape(str(log_path))}</string>
+    <key>StandardErrorPath</key>
+    <string>{_xml_escape(str(log_path))}</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+"""
+
+
+def ensure_cleanup_job(*, plist_path: Path | None = None, runner=None,
+                       config: dict[str, Any] | None = None,
+                       home: Path | None = None) -> str:
+    """启动时确保每日清理任务已安装（幂等）。返回状态字符串，绝不抛异常给调用方。"""
+    cfg = config or load_cleanup_config()
+    if not cfg.get("enabled"):
+        return "disabled"
+    if sys.platform != "darwin":
+        return "skipped:not-darwin"
+    if not CLEANUP_SCRIPT.exists():
+        return "skipped:no-script"
+    base = home or Path.home()
+    target = plist_path or (base / "Library" / "LaunchAgents" / f"{CLEANUP_LABEL}.plist")
+    desired = build_cleanup_plist(cfg, home=base)
+    try:
+        current = target.read_text("utf-8") if target.exists() else ""
+    except OSError:
+        current = ""
+    if current == desired:
+        return "unchanged"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(desired, "utf-8")
+    except OSError as exc:
+        return f"error:write-failed({exc})"
+    run = runner or (lambda argv: subprocess.run(argv, capture_output=True, timeout=15))
+    uid = os.getuid()
+    for argv in (["launchctl", "bootout", f"gui/{uid}/{CLEANUP_LABEL}"],
+                 ["launchctl", "bootstrap", f"gui/{uid}", str(target)]):
+        try:
+            run(argv)
+        except Exception:
+            continue
+    return "installed"
 
 
 def _append_analytics_jsonl(entry: dict):
@@ -3260,6 +3397,22 @@ def main():
     time.sleep(2)
     if redirect_server:
         threading.Thread(target=redirect_server.serve_forever, daemon=True).start()
+
+    try:
+        status = ensure_cleanup_job()
+        if status.startswith("installed"):
+            cfg = load_cleanup_config()
+            print(f"  [cleanup-job] 已安装/更新每日清理任务"
+                  f"（{int(cfg['hour']):02d}:{int(cfg['minute']):02d}，"
+                  f"outputs 保留 {cfg['output_days']} 天，回收站 {cfg['trash_days']} 天）", flush=True)
+        elif status == "unchanged":
+            print("  [cleanup-job] 每日清理任务已是最新", flush=True)
+        elif status == "disabled":
+            print("  [cleanup-job] 已禁用（cleanup_schedule.json / CLEANUP_DISABLE）", flush=True)
+        else:
+            print(f"  [cleanup-job] 跳过：{status}", flush=True)
+    except Exception as exc:
+        print(f"  [cleanup-job] 安装检查失败（不影响启动）：{exc}", flush=True)
 
     # Feishu daily report scheduler (daemon, tolerates all errors internally)
     threading.Thread(
