@@ -22,6 +22,22 @@ def test_fusion_prompt_forbids_negative_lists() -> None:
     assert "沿重力弧线" in _REWORK_FUSION_SYSTEM_PROMPT
 
 
+def test_fusion_prompt_applies_official_seedance_guidance() -> None:
+    """按 Seedance 官方提示词指南补的几条：单动作/标准运镜/别越写越长/安全词。"""
+    assert "一个镜头只保留一个主要动作" in _REWORK_FUSION_SYSTEM_PROMPT
+    assert "固定机位 / 推近 / 拉远 / 横向平移" in _REWORK_FUSION_SYSTEM_PROMPT
+    assert "正文长度不要增长" in _REWORK_FUSION_SYSTEM_PROMPT
+    assert "真实人名、品牌名、暴力或政治敏感词" in _REWORK_FUSION_SYSTEM_PROMPT
+
+
+def test_fusion_prompt_has_a_worked_example() -> None:
+    """格式敏感的任务必须给例子（提示词工程指南：few-shot 对格式类任务关键）。"""
+    assert "反面例子（禁止）" in _REWORK_FUSION_SYSTEM_PROMPT
+    assert "正面例子（要求）" in _REWORK_FUSION_SYSTEM_PROMPT
+    # 例子要演示"并进原句"而不是另起一段
+    assert "并进了原来那一句里" in _REWORK_FUSION_SYSTEM_PROMPT
+
+
 def test_fusion_prompt_still_keeps_the_hard_rules() -> None:
     """原有硬性要求不能被这次改动挤掉。"""
     for rule in (
