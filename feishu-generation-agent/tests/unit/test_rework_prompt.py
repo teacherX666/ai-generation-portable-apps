@@ -589,7 +589,7 @@ async def test_build_rework_prompt_gives_up_after_attempt_limit() -> None:
         "@图片1 中的猫在跑", ["手不要僵"], fuse=fuse
     )
 
-    assert len(calls) == 3
+    assert len(calls) == 4  # _FUSION_ATTEMPTS（2026-09-18 从 3 提到 4，配合限流退避）
     # 同上：兜底不再拼接，正文原样。
     assert prompt == "@图片1 中的猫在跑"
 

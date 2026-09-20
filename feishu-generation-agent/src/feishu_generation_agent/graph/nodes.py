@@ -2964,6 +2964,21 @@ async def review_artifacts(
                 ) = await _rework_prompt_for_task(
                     services, task, feedback, visual_context
                 )
+                if requirements and prompt.strip() == (base_prompt or "").strip():
+                    # 融合没生效（被限流 / 上游报错 / 模型判定无需改动）—— 以前静默，
+                    # 用户只看到"提示词一个字没变"却不知道为什么（2026-09-18：
+                    # 「为什么我要求他给出动作指导，他还是没有动我的提示词」）。
+                    try:
+                        await services.repository.append_event(
+                            state.get("run_id", "unknown-run"),
+                            "review_artifacts",
+                            "running",
+                            "本次返工没有改动提示词正文（融合未生效：多半是模型限流或"
+                            "上游报错）—— 要求已记录，稍后重跑即可带上；也可以直接在"
+                            "审批页手动改。",
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOGGER.warning("记录返工未生效事件失败", exc_info=True)
                 task_updates: dict[str, Any] = {
                     "prompt": prompt,
                     "rework_requirements": requirements,

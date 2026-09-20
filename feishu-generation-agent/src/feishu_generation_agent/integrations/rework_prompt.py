@@ -308,14 +308,16 @@ def reference_token_counts(text: str) -> Counter[str]:
 #: 2026-09-16 生产事故：实测同一输入、同一 temperature=0，真实模型仍会偶发
 #: 违反契约（3 次里 2 次成功、1 次失败），而旧代码一次失败就回退安全拼接——
 #: 用户看到的是「返工要求又变成直接贴在提示词末尾」。偶发失败应该重试。
-_FUSION_ATTEMPTS = 3
+_FUSION_ATTEMPTS = 4
 
 #: 融合被限流（429 / TPM 超限）时的退避基数：第 N 次失败等 N×这个秒数再试。
 #:
 #: 2026-09-18 线上实测：融合模型 deepseek-v4-1-flash 报
-#: `429 ModelAccountTpmRateLimitExceeded`，三次重试**连发**全撞上限 → 直接走
-#: "把要求原样贴末尾"的兜底（用户看到的就是"正文完全不改、结尾多一坨"）。
-_RATE_LIMIT_BACKOFF_SECONDS = 20.0
+#: `429 ModelAccountTpmRateLimitExceeded`。重跑通常紧跟在"生成 + 审片"之后，
+#: 那时 TPM 额度已经用掉一大截，所以退避要够长（30/60/90 秒 ≈ 3 分钟）。
+#: 重跑是用户手动触发的，等一下可以接受；**绝不能**像以前那样连发撞墙后
+#: 直接把要求贴到正文末尾（用户看到的就是"结尾多一坨"）。
+_RATE_LIMIT_BACKOFF_SECONDS = 30.0
 
 #: 判定"这次失败是限流"的关键词（langchain/openai 的报错文案）。
 _RATE_LIMIT_MARKERS = ("429", "rate limit", "ratelimit", "tpm", "too many requests")
