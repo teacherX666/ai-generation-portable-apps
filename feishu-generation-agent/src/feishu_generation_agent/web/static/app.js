@@ -1311,6 +1311,12 @@
     const statusInfo = statusUi(status);
     const conflict = ReviewState.conflictMessage(state.review);
     const canCancelRun = CANCELLABLE_RUN_STATUSES.has(status);
+    //: 合并后的重跑按钮何时可用：**成片待审核**（要返工）或**这一版已结束**（要退回
+    //: 审核）都可以。以前这里只看 RERUNNABLE，会把「待审核」这个最常用的场景漏掉。
+    const canRerunUnified = Boolean(
+      state.runMode === "bitable"
+      && (canReviewArtifacts || RERUNNABLE_RUN_STATUSES.has(status))
+    );
     rejectButton.disabled = state.busy || !canReview;
     cancelButton.disabled = state.busy || (!canReview && !canCancelRun);
     approveButton.disabled = state.busy || !ReviewState.canApprove(state.review);
@@ -1325,16 +1331,17 @@
     retryFailedAssetsButton.disabled = state.busy || !canReview || retryableAssetIssues.length === 0;
     retryFailedAssetsButton.hidden = !canReview || retryableAssetIssues.length === 0;
     confirmArtifactsButton.disabled = state.busy || !canReviewArtifacts;
-    adjustArtifactsButton.disabled = state.busy || rerunRequesting || !canAdjustArtifacts;
+    // 合并后的重跑按钮：文案随「返工要求有没有内容」变（空=退回审核，有=重跑）。
+    const hasFeedback = Boolean(artifactReviewFeedback?.value?.trim());
+    adjustArtifactsButton.textContent = hasFeedback ? "重跑选中任务" : "退回审核";
+    adjustArtifactsButton.disabled = state.busy || rerunRequesting
+      || !canRerunUnified;
     artifactReviewFeedback.disabled = state.busy || !canReviewArtifacts;
     const terminal = TERMINAL_RUN_STATUSES.has(state.view?.status);
-    rerunButton.disabled = state.busy || rerunRequesting
-      || state.runMode !== "bitable"
-      || !RERUNNABLE_RUN_STATUSES.has(state.view?.status);
-    if (rerunArtifactsButton) {
-      rerunArtifactsButton.disabled = rerunRequesting;
-    }
-    rerunButton.hidden = state.runMode !== "bitable" || !RERUNNABLE_RUN_STATUSES.has(status);
+    // 「重新运行」/「重跑这一版」已并入预览页那一个按钮（用户 2026-09-18 要求合并），
+    // 不再单独出现 —— 这里必须**始终隐藏**，否则又被下面那行覆盖回可见。
+    rerunButton.hidden = true;
+    rerunButton.disabled = true;
     retryDeliveryButton.hidden = !canExportDelivery;
     rejectButton.hidden = !canReview;
     approveButton.hidden = !canReview;
@@ -2773,12 +2780,18 @@
     artifactReview.hidden = false;
     artifactReviewFeedbackBox.hidden = !canReviewArtifacts;
     // 失败/取消没有成片可勾选，但**重跑入口只在预览页**（任务记录里已删掉），
-    // 所以这里必须给它一个「重跑这一版」，否则失败的任务没地方重跑。
+    // 所以这里必须给它一个入口，否则失败的任务没地方重跑。
     const canRerunThisVersion = ["failed", "cancelled"].includes(view.status);
-    artifactReviewActions.hidden = !(canReviewArtifacts || canRerunThisVersion);
+    // 「重新运行」和「重跑选中任务」已合并成一个按钮（用户 2026-09-18）：
+    // 返工要求为空 → 退回审核；有内容 → AI 重跑。这一版已结束就显示。
+    const canRerunUnified = state.runMode === "bitable"
+      && (canReviewArtifacts || RERUNNABLE_RUN_STATUSES.has(view.status));
+    artifactReviewActions.hidden = !(
+      canReviewArtifacts || canRerunThisVersion || canRerunUnified
+    );
     confirmArtifactsButton.hidden = !canReviewArtifacts;
-    adjustArtifactsButton.hidden = !canReviewArtifacts;
-    rerunArtifactsButton.hidden = !canRerunThisVersion;
+    adjustArtifactsButton.hidden = !canRerunUnified;
+    rerunArtifactsButton.hidden = true;
     if (artifacts.length > 0) {
       artifactReviewMessage.textContent = canReviewArtifacts
         ? "查看生成素材，确认满意后导出到多维表格「结果」列。"
@@ -3148,6 +3161,60 @@
     }
   }
 
+  /**
+   * 统一的重跑入口（用户 2026-09-18 要求合并「重新运行」和「重跑选中任务」）：
+   * - 返工要求**为空** → 不用 AI，直接把这一版退回审批页（克隆计划，停待审批）；
+   * - 返工要求**有内容** → 按现在重跑的语义：AI 重写提示词后再停待审批。
+   */
+  async function rerunUnified() {
+    const feedback = (artifactReviewFeedback?.value || "").trim();
+    if (!feedback) {
+      await rerunBitableTask();
+      return;
+    }
+    if (!state.runId || state.busy || rerunRequesting) return;
+    setRerunRequesting(true);
+    clearError();
+    try {
+      // 没勾任务就默认全选 —— 一条任务的片子占绝大多数，避免"请至少选择一条"卡住。
+      const taskIds = state.artifactRetryTaskIds.size
+        ? [...state.artifactRetryTaskIds]
+        : (state.view?.approval?.tasks || []).map((task) => task.task_id);
+      const created = await api(
+        `/api/bitable/runs/${state.runId}/rerun-selected`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "adjust",
+            feedback,
+            task_ids: taskIds,
+          }),
+        },
+      );
+      state.runId = created.run_id;
+      state.runMode = "bitable";
+      state.review = ReviewState.createReviewState();
+      state.referenceUploads = ReferenceUploadState.createState();
+      state.referenceMutations = ReferenceMutationState.createState();
+      state.artifactPreviewSignature = null;
+      state.artifactRetryTaskIds = new Set();
+      state.artifactReviewRunId = null;
+      artifactReviewFeedback.value = "";
+      await poll(true);
+      startPolling();
+      await loadRecentRuns();
+      renderRecentRuns();
+      document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
+    } catch (error) {
+      showError(error);
+      await loadRecentRuns();
+    } finally {
+      setRerunRequesting(false);
+      renderRecentRuns();
+    }
+  }
+
   async function rerunBitableTask(runId = state.runId) {
     if (!runId || state.busy || rerunRequesting) return;
     setRerunRequesting(true);
@@ -3296,7 +3363,7 @@
   });
   byId("approve-button").addEventListener("click", () => submitDecision("approve"));
   confirmArtifactsButton.addEventListener("click", () => submitArtifactReview("confirm"));
-  adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));
+  adjustArtifactsButton.addEventListener("click", () => rerunUnified());
   rerunArtifactsButton.addEventListener("click", () => rerunBitableTask());
   artifactReviewFeedback.addEventListener("input", updateActionAvailability);
   rerunButton.addEventListener("click", () => rerunBitableTask());

@@ -544,8 +544,14 @@ test("failed history runs explain the missing artifacts instead of hiding the pr
   // 「重跑这一版」，否则失败的任务没地方重跑。
   assert.equal(app.getNode("artifact-review-actions").hidden, false);
   assert.equal(app.getNode("confirm-artifacts-button").hidden, true);
-  assert.equal(app.getNode("adjust-artifacts-button").hidden, true);
-  assert.equal(app.getNode("rerun-artifacts-button").hidden, false);
+  // 2026-09-18 合并后只有一个重跑入口；失败的一版没有返工要求 →
+  // 显示「退回审核」（不用 AI），「重跑这一版」不再单独出现。
+  assert.equal(app.getNode("adjust-artifacts-button").hidden, false);
+  assert.equal(
+    app.getNode("adjust-artifacts-button").textContent.trim(),
+    "退回审核",
+  );
+  assert.equal(app.getNode("rerun-artifacts-button").hidden, true);
   assert.equal(
     app.getNode("validation-issues").textContent,
     "飞书应用没有权限读取该文档或素材，请检查文档分享与应用权限。",
@@ -1048,15 +1054,20 @@ test("completed runs keep generated artifacts visible without review controls", 
   assert.equal(app.getNode("artifact-review").hidden, false);
   assert.equal(app.getNode("artifact-list").children.length, 1);
   assert.equal(app.getNode("artifact-review-feedback-box").hidden, true);
-  assert.equal(app.getNode("artifact-review-actions").hidden, true);
+  // 合并后的重跑入口在这一行里：完成的片子也能重跑（返工要求为空 = 退回审核）。
+  assert.equal(app.getNode("artifact-review-actions").hidden, false);
   assert.equal(app.getNode("confirm-artifacts-button").disabled, true);
-  assert.equal(app.getNode("adjust-artifacts-button").disabled, true);
+  assert.equal(app.getNode("adjust-artifacts-button").disabled, false);
+  assert.equal(
+    app.getNode("adjust-artifacts-button").textContent.trim(),
+    "退回审核",
+  );
   assert.equal(app.getNode("artifact-review-feedback").disabled, true);
   assert.equal(app.getNode("delivery-target").hidden, false);
 
-  // 即使旧页面或竞态残留了可点击控件，终态任务也不能再次导出或调整。
+  // 终态任务不能再次导出；重跑（无返工要求）走的是 /rerun，不会碰 artifact-review。
   await app.getNode("confirm-artifacts-button").dispatch("click");
-  app.getNode("artifact-review-feedback").value = "再调整一次";
+  app.getNode("artifact-review-feedback").value = "";
   await app.getNode("adjust-artifacts-button").dispatch("click");
   assert.equal(artifactReviewRequests, 0);
 });

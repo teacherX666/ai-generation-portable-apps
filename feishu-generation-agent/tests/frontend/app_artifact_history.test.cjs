@@ -319,22 +319,27 @@ test("重跑后（审批/生成中）预览与历史仍然留着", async () => {
   );
 });
 
-test("任务记录里不再有「重跑」按钮；失败的那一版到预览页去重跑", async () => {
+test("任务记录里不再有「重跑」按钮；重跑入口在预览页且已合并", async () => {
   const failed = await loadApp(stubFetch([], { currentStatus: "failed" }));
   assert.equal(
     allText(failed.getNode("recent-run-list")).includes("重跑"),
     false,
     "任务记录里不该再有重跑按钮",
   );
-  // 失败/取消没有成片可选，原来的「重跑选中任务」不会出现 —— 所以要给一个
-  // 「重跑这一版」，否则失败的任务就没地方重跑了。
-  assert.equal(failed.getNode("rerun-artifacts-button").hidden, false);
+  // 2026-09-18 用户要求把「重新运行」和「重跑选中任务」合并成一个：
+  // 返工要求为空 → 显示「退回审核」（不用 AI）；有内容 → 显示「重跑选中任务」。
+  assert.equal(failed.getNode("rerun-artifacts-button").hidden, true);
+  assert.equal(failed.getNode("adjust-artifacts-button").hidden, false);
+  assert.equal(
+    failed.getNode("adjust-artifacts-button").textContent.trim(),
+    "退回审核",
+  );
 
   const reviewing = await loadApp(stubFetch([], { currentStatus: "waiting_review" }));
+  assert.equal(reviewing.getNode("adjust-artifacts-button").hidden, false);
   assert.equal(
-    reviewing.getNode("rerun-artifacts-button").hidden,
-    true,
-    "能审片的运行走「重跑选中任务」，不需要这个按钮",
+    reviewing.getNode("adjust-artifacts-button").textContent.trim(),
+    "退回审核",
   );
 });
 
