@@ -58,10 +58,33 @@ def load_registry() -> dict[str, Any]:
 
 
 REGISTRY: dict[str, Any] = load_registry()
+_REGISTRY_MTIME: float = -1.0
+
+
+def _registry_mtime() -> float:
+    try:
+        return REGISTRY_PATH.stat().st_mtime
+    except OSError:
+        return -1.0
+
+
+def refresh_registry(force: bool = False) -> dict[str, Any]:
+    """Re-read model_registry.json when the file changed on disk.
+
+    Endpoints/models are edited by hand or by deployment while sub-apps are
+    already running; re-reading on mtime change lets those edits take effect
+    without restarting every process (which would kill in-flight jobs).
+    """
+    global REGISTRY, _REGISTRY_MTIME
+    mtime = _registry_mtime()
+    if force or mtime != _REGISTRY_MTIME:
+        REGISTRY = load_registry()
+        _REGISTRY_MTIME = mtime
+    return REGISTRY
 
 
 def providers() -> dict[str, Any]:
-    return REGISTRY.get("providers", {})
+    return refresh_registry().get("providers", {})
 
 
 def provider_config(name: str) -> dict[str, Any]:
@@ -69,7 +92,7 @@ def provider_config(name: str) -> dict[str, Any]:
 
 
 def capabilities() -> dict[str, Any]:
-    return REGISTRY.get("capabilities", {})
+    return refresh_registry().get("capabilities", {})
 
 
 def capability_config(name: str) -> dict[str, Any]:
@@ -149,7 +172,7 @@ def provider_ready(name: str, timeout: float = 1.5) -> bool:
         return False
     try:
         with urllib.request.urlopen(base + health, timeout=timeout) as resp:
-            return resp.status < 500
+            return 200 <= int(resp.status) < 400
     except Exception:
         return False
 
@@ -215,7 +238,7 @@ def call_llm(
     Returns {"ok": True, "content", "provider", "model"} on success or
     {"ok": False, "error"} when no provider works. Local Qwen is expected to
     be an OpenAI-compatible endpoint (e.g. Ollama /v1); until it is ready this
-    falls back to DeepSeek automatically.
+    falls back to DeepSeek V4.1 Flash on Volcengine Ark automatically.
     """
     cfg = capability_config("llm")
     ordered = list(cfg.get("providers", ["local_llm", "deepseek"]))
@@ -260,6 +283,10 @@ def call_llm(
         }
         if pcfg.get("kind") == "local":
             body["enable_thinking"] = enable_thinking
+        elif pcfg.get("thinking_param"):
+            # 火山方舟上的 DeepSeek v4 默认开启推理：不显式关闭会把
+            # max_tokens 全烧在 reasoning_content 上，content 返回空串。
+            body["thinking"] = {"type": "enabled" if enable_thinking else "disabled"}
         try:
             result = request_json("POST", f"{base}/chat/completions", use_key, body, timeout=timeout)
             choices = result.get("choices") if isinstance(result, dict) else None

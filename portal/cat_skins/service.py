@@ -249,7 +249,7 @@ class CatSkinGenerator:
         key = (os.environ.get("CAT_SKIN_API_KEY") or self.key_loader() or "").strip()
         if provider == "openai":
             return provider, key, os.environ.get("CAT_SKIN_MODEL", "gpt-4.1-mini"), os.environ.get("CAT_SKIN_BASE_URL", "https://api.openai.com/v1/chat/completions")
-        return "deepseek", key, os.environ.get("CAT_SKIN_MODEL", "deepseek-chat"), os.environ.get("CAT_SKIN_BASE_URL", "https://api.deepseek.com/v1/chat/completions")
+        return "deepseek", key, os.environ.get("CAT_SKIN_MODEL", "deepseek-v4-1-flash-260910"), os.environ.get("CAT_SKIN_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
 
     def provider_info(self) -> dict:
         provider, key, model, _ = self._config()
@@ -269,8 +269,12 @@ class CatSkinGenerator:
             body["max_completion_tokens"] = int(os.environ.get("CAT_SKIN_MAX_TOKENS", "2200"))
         else:
             body["max_tokens"] = int(os.environ.get("CAT_SKIN_MAX_TOKENS", "2200"))
+        if "ark.cn-beijing.volces.com" in url:
+            # 方舟上的 DeepSeek v4 默认开启推理：不显式关闭会把 max_tokens 全烧在
+            # reasoning_content 上、content 返回空串，JSON 解析必然失败。
+            body["thinking"] = {"type": "disabled"}
         payload_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        timeout = float(os.environ.get("CAT_SKIN_TIMEOUT_SECONDS", "15"))
+        timeout = float(os.environ.get("CAT_SKIN_TIMEOUT_SECONDS", "60"))
         max_attempts = max(1, int(os.environ.get("CAT_SKIN_HTTP_ATTEMPTS", "2")))
         started = time.monotonic()
         last_network_error: Exception | None = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -60,14 +61,7 @@ def load_config() -> None:
 
 def raw_configured_url() -> str:
     load_config()
-    value = (os.environ.get(ENV_NAME) or DEFAULT_URL).strip().rstrip("/")
-    try:
-        parts = urllib.parse.urlsplit(value)
-        if (parts.hostname or "").lower() in {"127.0.0.1", "localhost", "::1"} and (parts.port or 80) == 8801:
-            return DEFAULT_URL.rstrip("/")
-    except ValueError:
-        pass
-    return value
+    return (os.environ.get(ENV_NAME) or DEFAULT_URL).strip().rstrip("/")
 
 
 def configured_url() -> str:
@@ -114,14 +108,56 @@ def resolved_url() -> str:
     return force_ipv4(configured_url())
 
 
-def probe(timeout: float = 1.5) -> tuple[bool, str]:
-    url = f"{resolved_url()}{HEALTH_PATH}"
+def _open_json(path: str, timeout: float) -> tuple[bool, dict[str, Any], str]:
+    url = f"{resolved_url()}{path}"
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(url, timeout=timeout) as response:
-            return response.status < 500, ""
+            status = int(getattr(response, "status", 200) or 200)
+            if not 200 <= status < 300:
+                return False, {}, f"HTTP {status}"
+            raw = response.read() if hasattr(response, "read") else b"{}"
+            if not raw:
+                return True, {}, ""
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+            if not isinstance(data, dict):
+                return False, {}, "AI Port returned a non-object JSON response"
+            return True, data, ""
     except Exception as exc:
-        return False, str(exc)
+        return False, {}, str(exc)
+
+
+def modules(timeout: float = 1.5) -> tuple[list[dict[str, Any]], str]:
+    ok, data, error = _open_json(HEALTH_PATH, timeout)
+    if not ok:
+        return [], error
+    raw_modules = data.get("modules")
+    if not isinstance(raw_modules, list) or not raw_modules:
+        return [], "AI Port did not return a valid module list"
+    result = [item for item in raw_modules if isinstance(item, dict) and item.get("id")]
+    if not result:
+        return [], "AI Port module list is empty"
+    return result, ""
+
+
+def probe(timeout: float = 1.5) -> tuple[bool, str]:
+    available, error = modules(timeout)
+    if available:
+        return True, ""
+    return False, error
+
+
+def job_request_id(job_id: str, run_index: int, *parts: Any) -> str:
+    """Build a stable idempotency key for retries of one logical local run."""
+    payload = json.dumps(
+        [str(job_id), int(run_index), *parts],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+    return f"portal:{job_id}:{int(run_index)}:{digest}"
 
 
 def ready(timeout: float = 1.5) -> bool:
@@ -135,14 +171,26 @@ def snapshot(timeout: float = 1.5) -> dict[str, Any]:
     configured = configured_url()
     configured_error = "" if raw == configured else f"invalid AIPORT_BASE_URL: {raw!r}"
     resolved = force_ipv4(configured)
-    ok, error = probe(timeout)
+    available, error = modules(timeout)
+    queue_ok, queue_data, queue_error = _open_json("/api/queue", timeout)
+    queue_count = queue_data.get("count") if isinstance(queue_data, dict) else None
     return {
         "configured_url": configured,
         "configured_error": configured_error,
         "resolved_url": resolved,
         "health_url": f"{resolved}{HEALTH_PATH}",
-        "ready": ok,
+        "ready": bool(available),
         "error": error,
+        "modules": available,
+        "module_ids": [str(item.get("id") or "") for item in available],
+        "checks": {
+            "aiport_api": {"ok": bool(available), "error": error},
+            "queue": {
+                "ok": queue_ok,
+                "count": queue_count,
+                "error": queue_error,
+            },
+        },
         "source": _source,
         "config_file": str(CONFIG_PATH) if CONFIG_PATH.exists() else None,
     }
@@ -157,6 +205,7 @@ def diagnostic_text(timeout: float = 1.5) -> str:
         f"source         : {info['source']}",
         f"config_file    : {info['config_file']}",
         f"ready          : {info['ready']}",
+        f"modules        : {', '.join(info['module_ids']) or '-'}",
     ]
     if info.get("configured_error"):
         lines.append(("configured_error: " + str(info["configured_error"])))

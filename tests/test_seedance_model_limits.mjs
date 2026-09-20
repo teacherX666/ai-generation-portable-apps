@@ -97,18 +97,21 @@ const volcengine = providers.providers.volcengine;
 
 const app = sandbox.window.SeedanceApp();
 app.providers = { volcengine };
-app.models = volcengine.models.map(m => ({
-  id: m.id,
-  label: m.label,
-  duration_range: m.duration_range || null,
-  resolutions: m.resolutions || null,
-  ratios: m.ratios || null,
-  defaults: m.defaults || null,
-}));
-
+app.models = sandbox.buildUnifiedVideoModels({ volcengine }, true);
+modelSelect.options = app.models.map(m => ({ value: m.key, textContent: m.label }));
 function limitsFor(id) {
   return volcengine.models.find(m => m.id === id);
 }
+
+assert.equal(limitsFor('doubao-seedance-2-0-mini-260615').disabled, true,
+  'Seedance 2.0 mini must stay visible but disabled while the Ark account lacks access');
+modelSelect.value = 'doubao-seedance-2-0-mini-260615';
+assert.equal(app.ensureAvailableModel(), true, 'a disabled model must trigger fallback');
+assert.equal(modelSelect.value, app.models[0].key, 'fallback must select the first enabled model');
+assert.match(app.modelHint, /已失效/, 'fallback must explain why the model changed');
+const seedanceIndex = fs.readFileSync('seedance/static/index.html', 'utf8');
+assert.match(seedanceIndex, /:disabled="!!m.disabled"/, 'the disabled model must be greyed out in the model select');
+assert.match(seedanceIndex, /已失效/, 'the disabled model label must explain its state');
 
 // --- 2.5: 30s ceiling, no 1080p/4k ---------------------------------------
 modelSelect.value = 'doubao-seedance-2-5-260628';
@@ -207,6 +210,12 @@ modelSelect.value = 'doubao-seedance-2-0-260128';
 app.applyModelLimits();
 assert.equal(durationInput.value, '15', 'ordinary out-of-range values must still clamp');
 
+// Theme/draft restore must not turn a saved 30s back into the current model ceiling.
+durationInput.value = "30";
+modelSelect.value = 'doubao-seedance-2-0-260128';
+app.applyModelLimits({ preserveDuration: true });
+assert.equal(durationInput.value, '30', 'saved draft restore must preserve duration instead of clamping');
+
 // --- init() must wire the change listener that drives all of the above ---
 // Without it the limits would only apply on provider load, so picking a
 // different model in the dropdown would leave a stale ceiling behind.
@@ -217,5 +226,15 @@ modelSelect.value = 'doubao-seedance-2-0-260128';
 durationInput.value = '30';
 listeners.change();
 assert.equal(durationInput.value, '15', 'the change listener must clamp duration on its own');
+
+const seedanceUnifiedIndex = fs.readFileSync('seedance/static/index.html', 'utf8');
+assert.doesNotMatch(seedanceUnifiedIndex, /name="provider"/, 'video interface provider selector must be removed');
+assert.doesNotMatch(seedanceUnifiedIndex, /name="api_key"/, 'video interface API key field must be removed');
+assert.doesNotMatch(seedanceUnifiedIndex, /cleanCache\(\)/, 'video interface cache cleanup must be removed');
+assert.doesNotMatch(seedanceUnifiedIndex, /name="custom_model"/, 'video custom model bypass must be removed');
+const realSeedance = JSON.parse(fs.readFileSync('seedance/providers.json', 'utf8')).providers;
+const unifiedVideo = sandbox.buildUnifiedVideoModels(realSeedance, true);
+assert.ok(unifiedVideo.some((item) => /（本地免费）/.test(item.label)), 'local video models must be labelled local free');
+assert.match(seedanceUnifiedIndex, /modelSummary/, 'video model selector must show its provider and capability summary');
 
 console.log('test_seedance_model_limits.mjs: all assertions passed');

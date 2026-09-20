@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>图像生成模块</title>
   <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix7-datadriven">
-  <link rel="stylesheet" href="styles.css?v=20260910-fix7-datadriven">
+  <link rel="stylesheet" href="styles.css?v=20260917-multi-preview">
 </head>
 <body class="ui-page">
   <div id="nb-app" v-scope="NanoBananaApp()" @vue:mounted="init()">
@@ -38,26 +38,8 @@
 
         <form id="nb-form" @submit.prevent="submit">
 
-          <!-- 接口 -->
-          <section>
-            <h2>接口</h2>
-            <label>API Key
-              <input name="api_key" type="password" autocomplete="off" placeholder="留空使用本地配置">
-            </label>
-            <p class="hint">{{ keyHint }}</p>
-            <label>供应商
-              <select name="provider" v-model="provider" @change="onProviderChange($event.target.value)">
-                <option v-for="(cfg, key) in providers" :value="key"
-                        :disabled="key === 'comfyui_local' && !localReady">
-                  {{ cfg.label || key }}{{ key === 'comfyui_local' && !localReady ? '（本地模型未连接，不可用）' : '' }}
-                </option>
-              </select>
-            </label>
-            <label>Base URL
-              <input name="base_url" v-model="baseUrl" :readonly="baseUrlReadonly">
-            </label>
-            <p v-if="!localReady" class="hint" style="color:#b45309;margin:2px 0 4px">本地 AI Port 未连接：本地 ComfyUI 模型不可用，当前仅提供云端模型。</p>
-            <p class="hint">{{ providerHint }}</p>
+          <!-- 输出 -->
+          <section v-if="isStandalone">
             <!-- 输出目录选择仅在独立本地模式(直连 :8797)显示。Portal(远程)模式
                  下隐藏:结果统一存服务机 outputs/<用户名>/<日期>/,自定义路径对远程
                  用户无意义且会导致产出散落、无法同步飞书。 -->
@@ -69,38 +51,36 @@
               <button type="button" v-if="isStandalone" @click="outputDir=''">程序 outputs</button>
               <button type="button" v-if="isStandalone" @click="desktopOutput">桌面 outputs</button>
               <button type="button" v-if="isStandalone" @click="openOutputDir">打开目录</button>
-              <button type="button" @click="cleanCache">清理缓存</button>
             </div>
           </section>
-
           <!-- 参数 -->
           <section>
             <h2>参数</h2>
             <label>模式
-              <select name="mode">
+              <select name="mode" @change="applyModelCapabilities()">
                 <option value="img2img">img2img</option>
                 <option value="text2img">text2img</option>
               </select>
             </label>
             <label>模型
-              <select name="model" @change="applyModelCapabilities()">
-                <option v-for="m in models" :value="m.id">{{ m.label || m.id }}</option>
+              <select name="model" v-model="model" @change="applyModelCapabilities()">
+                <option v-for="m in models" :value="m.key" :disabled="!!m.disabled">
+                  {{ m.label + (m.disabled ? '（已失效）' : '') }}
+                </option>
               </select>
             </label>
+            <p v-if="modelSummary" class="hint" style="margin:4px 0 6px;color:#475569">{{ modelSummary }}</p>
             <p v-if="modelHint" class="hint" style="color:#b45309;margin:2px 0 4px">{{ modelHint }}</p>
-            <label>自定义模型名（高级）
-              <input name="custom_model" placeholder="留空使用上方模型">
-            </label>
             <div class="grid2">
               <label>比例
-                <select name="aspect_ratio">
+                <select name="aspect_ratio" @change="applyModelCapabilities()">
                   <option value="auto">auto</option><option>1:1</option><option>16:9</option>
                   <option>9:16</option><option>4:3</option><option>3:4</option>
                   <option>2:3</option><option>3:2</option><option>21:9</option><option>9:21</option>
                 </select>
               </label>
-              <label>尺寸
-                <select name="image_size" :value="imageSize">
+              <label>分辨率
+                <select name="image_size" v-model="imageSize" @change="applyModelCapabilities()">
                   <option v-for="size in imageSizeOptions" :value="size">{{ size }}</option>
                 </select>
               </label>
@@ -204,8 +184,8 @@
           <button type="submit" :disabled="submittingRequest">{{ submittingRequest ? '提交中...' : '开始生成' }}</button>
 
           <!-- 配置方案 -->
-          <section class="archiveBox" :class="{ dirty: isDirty }">
-            <h2>配置方案 <span v-if="isDirty" class="dirtyBadge">未保存</span></h2>
+          <section class="archiveBox">
+            <h2>配置方案</h2>
 
             <div class="schemeRow">
               <label>保存当前配置方案
@@ -262,21 +242,11 @@
 
         <!-- Jobs / Activity -->
         <div class="panel ui-panel ui-workbench__output">
-          <div class="workspace-nav-grid">
-            <button type="button" class="sub-tab workspace-nav-btn" :class="{ isActive: wsTab === 'jobs' }" @click="wsTab='jobs'">任务</button>
-            <button type="button" class="sub-tab workspace-nav-btn" :class="{ isActive: wsTab === 'activity' }" @click="wsTab='activity'; loadActivity()">活动</button>
-            <div v-if="wsTab === 'activity' && activityDetail" style="display:contents">
-              <button type="button" class="ui-btn ui-btn--secondary workspace-nav-btn" @click="activityDetail=null">← 返回列表</button>
-              <button type="button" class="btn-small ui-btn ui-btn--primary workspace-nav-btn" @click="restoreActivity()">恢复参数</button>
-            </div>
-          </div>
 
-          <!-- Jobs Tab：运行中 + 历史合并为同一列表，点击记录查看详情 -->
+          <!-- Jobs Tab：所有任务始终以卡片列表呈现，详情从卡片打开。 -->
           <div v-show="wsTab==='jobs'">
-            <div class="resultHeader"><h2>结果</h2><span>{{ statusText }}</span><button @click="openActiveJobDetail()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">📋 详情</button></div>
-            <!-- 静态空状态：首次渲染时被 _renderJobToDom 的 innerHTML='' 清掉即可 -->
-            <div class="results" id="nb-results"><p class="hint" id="nb-jobsEmpty">暂无生成记录，提交任务后自动显示进度和结果。</p></div>
-            <pre id="nb-events" v-if="eventsText">{{ eventsText }}</pre>
+            <div class="resultHeader"><h2>任务</h2><span>{{ statusText }}</span></div>
+            <div id="nb-jobsEmpty" v-if="jobs.length===0" class="hint" style="padding:12px 0">暂无生成记录，提交任务后自动显示。</div>
             <!-- 任务矩阵：一个任务一个格子（缩略图 / 状态 / 下载 / 详情） -->
             <div id="nb-jobsGrid" class="job-grid" style="margin-top:10px"></div>
           </div>
@@ -314,28 +284,7 @@
       </section>
     </main>
 
-    <div v-if="_closeConfirmTabId" class="modal-overlay" @click.self="_closeConfirmTabId = null">
-      <div class="modal">
-        <div class="modal-title">关闭「{{ (tabs.find(function(t){ return t.id === _closeConfirmTabId; }) || {}).name }}」？</div>
-        <div class="modal-body">该主题有任务正在跑。关闭后任务会在后台继续，可从运行历史面板查看结果。</div>
-        <div class="modal-btns">
-          <button type="button" @click="_closeConfirmTabId = null">取消</button>
-          <button type="button" class="danger" @click="_forceCloseTab(_closeConfirmTabId); _closeConfirmTabId = null">仍然关闭</button>
-        </div>
-      </div>
-    </div>
 
-    <div v-if="_dirtyDialogOpen" class="modal-overlay" @click.self="_dirtyCancel">
-      <div class="modal">
-        <div class="modal-title">⚠️ 配置已修改但未保存</div>
-        <div class="modal-body">当前配置有未保存的修改，请选择如何处理。</div>
-        <div class="modal-btns">
-          <button type="button" :disabled="currentSchemeName === '默认方案'" @click="_dirtySaveAndContinue">保存到当前方案</button>
-          <button type="button" @click="_dirtyDiscardAndContinue">放弃修改</button>
-          <button type="button" class="danger" @click="_dirtyCancel">取消</button>
-        </div>
-      </div>
-    </div>
 
     <!-- Preview Dialog (standalone only; Portal has its own) -->
     <dialog id="previewDialog" class="previewDialog" @click="onPreviewDialogClick">
@@ -347,7 +296,7 @@
 
   <script src="vendor/petite-vue.iife.js"></script>
   <script src="model-capabilities.js"></script>
-  <script src="app.js?v=20260910-fix7-datadriven"></script>
+  <script src="app.js?v=20260917-multi-preview"></script>
   <script src="effects.js?v=20260910-fx-perf"></script>
 </body>
 </html>

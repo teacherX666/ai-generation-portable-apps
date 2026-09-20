@@ -1,0 +1,2200 @@
+'use strict';
+
+// ============================================================
+// MODE DETECTION
+// ============================================================
+// When accessed through Portal proxy: path starts with /seedance/
+// When accessed standalone: path starts with /
+const IN_PORTAL = window.location.pathname.startsWith('/seedance/');
+const APP_PATH = IN_PORTAL ? '/seedance' : '';
+
+// Lowercased job.status values considered terminal (used to gate poll loops and running-indicator recomputation).
+const TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'failure', 'cancelled', 'canceled', 'interrupted']);
+
+// The backend accepts cancellation for every non-terminal job state. Keep the
+// UI aligned with that contract in both the live card and history list.
+function isCancellableJob(jobOrStatus) {
+  const status = typeof jobOrStatus === 'string' ? jobOrStatus : jobOrStatus?.status;
+  const normalized = String(status || '').toLowerCase();
+  return Boolean(normalized) && !TERMINAL_STATUSES.has(normalized);
+}
+
+
+// ============================================================
+// 任务完成系统通知（浏览器 Notification + 标题闪烁，按 jobId 去重）
+// Portal 反向代理下所有页面同源、localStorage 共享 → 子应用与 Portal
+// 双侧检测到同一任务终态时只弹一次。Notification 需要安全上下文：
+// 生产 HTTPS（自签证书点过「继续访问」后算安全上下文）可用，HTTP
+// 测试环境自动降级为标题闪烁。
+// ============================================================
+let _notifiedJobs = null;
+function _notifyLoadSeen() {
+  if (_notifiedJobs) return _notifiedJobs;
+  try { _notifiedJobs = JSON.parse(localStorage.getItem('aiPortal.notifiedJobs') || '{}') || {}; }
+  catch (e) { _notifiedJobs = {}; }
+  return _notifiedJobs;
+}
+function requestNotifyPermission() {
+  // 必须在用户手势（提交点击）内调用；浏览器对每个站点只提示一次
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
+}
+function notifyJobDone(jobId, status, label) {
+  try {
+    // Portal iframe 内：交给父窗口统一弹窗（同源可直调；去重/页面内弹窗
+    // 都在父层处理），独立模式才走本地下方逻辑
+    if (window.parent && window.parent !== window && typeof window.parent.__notifyJobDone === 'function') {
+      window.parent.__notifyJobDone(jobId, status, label, 'seedance');
+      return;
+    }
+    if (jobId === undefined || jobId === null || jobId === '') return;
+    // 状态归一化：与 Portal 侧 15s 兜底轮询用同一套 token 去重
+    const s = String(status).toLowerCase();
+    const norm = ['succeeded', 'success', 'completed'].includes(s) ? 'succeeded'
+      : ['failed', 'fail', 'failure'].includes(s) ? 'failed'
+      : ['cancelled', 'canceled'].includes(s) ? 'cancelled' : s;
+    const map = _notifyLoadSeen();
+    if (map[jobId] === norm) return; // 已通知过（含 Portal 侧先弹）
+    map[jobId] = norm;
+    const keys = Object.keys(map);
+    if (keys.length > 200) keys.slice(0, keys.length - 200).forEach(k => { delete map[k]; });
+    localStorage.setItem('aiPortal.notifiedJobs', JSON.stringify(map));
+    const ok = norm === 'succeeded';
+    const title = (label || '生成任务') + (ok ? ' 已完成' : ' 已结束');
+    const body = ok ? '结果已就绪，回到页面即可查看和下载。' : '任务以「' + norm + '」结束，请回到页面查看详情。';
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification(title, { body: body, tag: 'ai-portal-job-done' });
+        n.onclick = function () { try { window.focus(); } catch (e) {} n.close(); };
+      } catch (e) { /* 构造失败时降级标题闪烁 */ }
+    }
+    _notifyFlashTitle(title);
+  } catch (e) { /* 通知尽力而为，绝不打断主流程 */ }
+}
+let _notifyFlashTimer = null;
+function _notifyFlashTitle(message) {
+  try {
+    // iframe 模式下闪烁顶层标题（同源可访问 parent），独立模式闪自己
+    const doc = (window.parent && window.parent !== window) ? window.parent.document : document;
+    const base = doc.title;
+    let count = 0;
+    const tick = () => {
+      count += 1;
+      doc.title = (count % 2 === 1) ? ('✅ ' + message + ' — ' + base) : base;
+      if (count >= 10) { clearInterval(_notifyFlashTimer); _notifyFlashTimer = null; doc.title = base; }
+    };
+    if (_notifyFlashTimer) clearInterval(_notifyFlashTimer);
+    _notifyFlashTimer = setInterval(tick, 1500);
+    tick();
+  } catch (e) {}
+}
+
+// ============================================================
+// UTILITIES
+// ============================================================
+function workspaceId() {
+  let id = localStorage.getItem('workspace_id');
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem('workspace_id', id); }
+  return id;
+}
+
+function getActiveWorkspaceId() {
+  return window._activeWorkspaceId || workspaceId();
+}
+
+async function api(url, method, body, workspaceOverride) {
+  try {
+    const wsId = workspaceOverride || getActiveWorkspaceId();
+    const sep = url.includes('?') ? '&' : '?';
+    const urlWithWs = url + sep + 'ws=' + encodeURIComponent(wsId);
+    const headers = { 'X-Workspace-Id': wsId };
+    const keyId = localStorage.getItem('portal_key_id_seedance');
+    if (keyId) headers['X-Key-Id'] = keyId;
+    const opts = { method: method || 'GET', headers };
+    if (body) opts.body = body;
+    const res = await fetch(urlWithWs, opts);
+    return await res.json();
+  } catch (e) { return null; }
+}
+
+// Status-aware single poll for pollJob's retry logic. Unlike api() — which
+// collapses HTTP 404 / 5xx / network-error / bad-JSON all into a single null
+// (or, worse, returns a truthy {error:...} body that pollJob mistook for a
+// real job and looped on forever showing "unknown") — this distinguishes:
+//   {kind:'ok', job}  HTTP 200 + a job object carrying a status field
+//   {kind:'gone'}     HTTP 404 — job no longer exists (sub-app restarted and
+//                     cleared its in-memory JOBS). Poll stops cleanly.
+//   {kind:'error'}    network error / timeout / 5xx / non-JSON — transient,
+//                     caller retries with backoff.
+async function pollJobOnce(url, workspaceOverride) {
+  try {
+    const wsId = workspaceOverride || getActiveWorkspaceId();
+    const sep = url.includes('?') ? '&' : '?';
+    const urlWithWs = url + sep + 'ws=' + encodeURIComponent(wsId);
+    const headers = { 'X-Workspace-Id': wsId };
+    const keyId = localStorage.getItem('portal_key_id_seedance');
+    if (keyId) headers['X-Key-Id'] = keyId;
+    const res = await fetch(urlWithWs, { method: 'GET', headers });
+    if (res.status === 404) return { kind: 'gone' };
+    if (!res.ok) return { kind: 'error' };
+    const job = await res.json();
+    if (!job || typeof job.status === 'undefined') return { kind: 'error' };
+    return { kind: 'ok', job };
+  } catch (e) {
+    return { kind: 'error' };
+  }
+}
+
+function escHtml(s) {
+  return s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+}
+
+function jobStatusLabel(status) {
+  const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '???' };
+  return map[String(status || '').toLowerCase()] || String(status || '未知');
+}
+
+function jobStatusClass(status) {
+  const s = String(status || '').toLowerCase();
+  if (['succeeded', 'success', 'completed'].includes(s)) return 'is-success';
+  if (['failed', 'failure', 'interrupted'].includes(s)) return 'is-failed';
+  if (['pending', 'queued'].includes(s)) return 'is-pending';
+  if (s === 'querying') return 'is-querying';
+  return 'is-running';
+}
+
+function jobStatusBadgeTone(status) {
+  const state = jobStatusClass(status);
+  return state === 'is-success' ? 'success' : state === 'is-failed' ? 'danger' : state === 'is-pending' ? 'warning' : 'info';
+}
+
+// 友好错误提示：把高频失败类型翻译成中文+下一步。返回原文兜底时
+// 与 job.errors[0] 严格相等，调用方据此决定是否 escHtml。
+function friendlyJobErrorHint(job) {
+  const errors = (job && job.errors) || [];
+  if (!errors.length) return '';
+  const firstError = errors[0];
+  if (firstError.includes('[auth_failed]') || firstError.includes('401')) return '❌ API Key 无效或已过期，请检查配置';
+  if (firstError.includes('[rate_limited]') || firstError.includes('429')) return '⏱️ 请求过于频繁，已自动重试多次仍失败，请稍后再试';
+  if (firstError.includes('[permission_denied]') || firstError.includes('403')) return '🚫 权限不足或配额已用完，请联系管理员';
+  if (firstError.includes('[server_error]') || /HTTP 5\d\d/.test(firstError)) return '⚠️ API 服务暂时不可用，已自动重试失败，请稍后重试';
+  if (firstError.includes('[network_error]')) return '🌐 网络连接失败，请检查网络或 API 地址';
+  return firstError;
+}
+
+// ============================================================
+// FILE DROP / PREVIEW HELPERS
+// ============================================================
+function clearDropMedia(drop, input, name) {
+  input.value = '';
+  drop.classList.remove('hasPreview');
+  drop.querySelector('.preview')?.remove();
+  const span = drop.querySelector('span');
+  if (span) span.textContent = '未上传';
+  const app = window._app_sd;
+  if (app && app.savedMedia) delete app.savedMedia[name];
+  if (window._currentSavedMedia) delete window._currentSavedMedia[name];
+  if (app && typeof app.saveWorkspaceDraft === 'function') app.saveWorkspaceDraft();
+}
+
+function ensureRemoveBtn(drop, input, name) {
+  // Static drops (first_frame/last_frame in index.html) lack the remove button
+  // that makeDrop() injects for dynamically-built ref slots. Add one here so
+  // every wired drop gets a working 移除 button on the single wiring path.
+  if (drop.querySelector('.removeMediaBtn')) return;
+  const rmBtn = document.createElement('button');
+  rmBtn.className = 'removeMediaBtn';
+  rmBtn.type = 'button';
+  rmBtn.textContent = '移除';
+  rmBtn.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    clearDropMedia(drop, input, name);
+  });
+  drop.appendChild(rmBtn);
+}
+
+function wireFileDrop(drop, input, name) {
+  if (input.dataset.wired) return;
+  input.dataset.wired = '1';
+  ensureRemoveBtn(drop, input, name);
+  input.addEventListener('change', async () => {
+    const f = input.files?.[0];
+    if (!f) {
+      drop.classList.remove('hasPreview');
+      drop.querySelector('.preview')?.remove();
+      drop.querySelector('span').textContent = '未上传';
+      return;
+    }
+    // Immediate local preview
+    const localUrl = URL.createObjectURL(f);
+    showPreview(drop, name, localUrl, f.name);
+    // Upload to server so the file survives tab switch / refresh / archive save.
+    // The upload is owned by the topic that was active when the file was picked;
+    // a response arriving after a topic switch must not touch the new topic.
+    const ownerWsId = getActiveWorkspaceId();
+    try {
+      const fd = new FormData();
+      fd.set(input.name, f);
+      const res = await api(APP_PATH + '/api/media/upload', 'POST', fd, ownerWsId);
+      if (getActiveWorkspaceId() !== ownerWsId) return;
+      if (res && res.stored) {
+        const app = window._app_sd;
+        const media = (app && app.savedMedia) || window._currentSavedMedia || {};
+        media[input.name] = {
+          filename: res.filename,
+          mime: res.mime,
+          stored: res.stored,
+          url: res.url,
+        };
+        if (app) app.savedMedia = media;
+        window._currentSavedMedia = media;
+        const serverUrl = res.url.startsWith('/api/') ? APP_PATH + res.url : res.url;
+        showPreview(drop, name, serverUrl, res.filename);
+        try { URL.revokeObjectURL(localUrl); } catch (e) {}
+        if (app && typeof app.saveWorkspaceDraft === 'function') app.saveWorkspaceDraft();
+      } else {
+        // Server rejected the upload (wrong content type / too large / network
+        // drop). Roll back the local preview — otherwise the user believes the
+        // reference material is saved and submits a job without it.
+        clearDropMedia(drop, input, name);
+        alert('上传失败：' + ((res && res.error) ? res.error : '服务器未接受文件（请检查类型或大小）'));
+      }
+    } catch (e) {
+      clearDropMedia(drop, input, name);
+      alert('上传失败：网络错误，请重试');
+    }
+  });
+  drop.addEventListener('dragover', e => {
+    e.preventDefault();
+    drop.classList.add('isDragging');
+  });
+  drop.addEventListener('dragleave', () => drop.classList.remove('isDragging'));
+  drop.addEventListener('drop', e => {
+    e.preventDefault();
+    drop.classList.remove('isDragging');
+    const f = e.dataTransfer?.files?.[0];
+    if (!f) return;
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+function showPreview(drop, name, url, filename) {
+  drop.classList.add('hasPreview');
+  drop.querySelector('.preview')?.remove();
+  const kind = name.includes('video') ? 'video' : name.includes('audio') ? 'audio' : 'image';
+  const media = document.createElement(kind === 'image' ? 'img' : kind);
+  media.className = 'preview';
+  media.src = url;
+  if (kind !== 'image') media.controls = true;
+  if (kind !== 'audio') {
+    media.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      openPreview(kind, url);
+    });
+  }
+  drop.insertBefore(media, drop.querySelector('span'));
+  drop.querySelector('span').textContent = filename || '已上传';
+}
+
+function openPreview(kind, url) {
+  const dlg = document.getElementById('previewDialog');
+  const body = document.getElementById('previewDialogBody');
+  if (!dlg || !body) return;
+  body.innerHTML = '';
+  const m = document.createElement(kind === 'image' ? 'img' : 'video');
+  m.src = url;
+  if (kind === 'video') m.controls = true;
+  body.append(m);
+  dlg.showModal();
+}
+
+function makeDrop(container, name, label, accept, formId) {
+  const el = document.createElement('label');
+  el.className = 'drop';
+  el.textContent = label;
+  const input = document.createElement('input');
+  input.name = name;
+  input.type = 'file';
+  input.accept = accept;
+  if (formId) input.setAttribute('form', formId);
+  const span = document.createElement('span');
+  span.textContent = '未上传';
+  el.append(input, span);
+  wireFileDrop(el, input, name);
+  container.appendChild(el);
+}
+
+// ============================================================
+// 参考视频时长校验（上游 7c37c93）
+// Ark 要求参考视频 4–30 秒；提交前实测时长，超范围本地拦截而不是等排队后被拒。
+// ============================================================
+const REFERENCE_VIDEO_MIN_SECONDS = 4;
+const REFERENCE_VIDEO_MAX_SECONDS = 30;
+const videoDurationCache = new Map();
+
+function measureVideoDuration(url) {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    const timer = window.setTimeout(() => {
+      video.src = '';
+      resolve(null);
+    }, 8000);
+    video.preload = 'metadata';
+    video.onloadedmetadata = () => {
+      window.clearTimeout(timer);
+      const duration = Number.isFinite(video.duration) ? video.duration : null;
+      video.src = '';
+      resolve(duration);
+    };
+    video.onerror = () => {
+      window.clearTimeout(timer);
+      video.src = '';
+      resolve(null);
+    };
+    video.src = url;
+  });
+}
+
+async function validateReferenceVideoDurations() {
+  const inputs = document.querySelectorAll('#sd-videoRefs input[type="file"]');
+  for (const input of inputs) {
+    const file = input.files && input.files[0];
+    if (!file) continue;
+    const cacheKey = file.name + ':' + file.size + ':' + (file.lastModified || 0);
+    let seconds = videoDurationCache.get(cacheKey);
+    if (seconds === undefined) {
+      const url = URL.createObjectURL(file);
+      try {
+        seconds = await measureVideoDuration(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      videoDurationCache.set(cacheKey, seconds);
+    }
+    if (seconds === null) continue;
+    if (seconds < REFERENCE_VIDEO_MIN_SECONDS || seconds > REFERENCE_VIDEO_MAX_SECONDS) {
+      throw new Error(`参考视频时长需在 4–30 秒之间（当前 ${seconds.toFixed(1)} 秒），请更换或剪辑后重试。`);
+    }
+  }
+}
+
+// ============================================================
+// PROVIDER CONFIG HELPER
+// ============================================================
+function providersFromConfig(providers) {
+  if (!providers || !Object.keys(providers).length) return null;
+  const result = {};
+  for (const [id, p] of Object.entries(providers)) {
+    if (p && p.hidden) continue;  // operator-disabled provider, skip from UI
+    result[id] = {
+      base_url: p.base_url || '',
+      models: (p.models || []).map(m => {
+        if (typeof m === 'string') return { id: m, label: m };
+        return {
+          id: m.id || m,
+          label: m.label || m.id || m,
+          // Per-model capability limits from providers.json. Ark rejects an
+          // out-of-range value only after the job is queued, so the form has to
+          // narrow itself when the model changes.
+          duration_range: m.duration_range || null,
+          resolutions: m.resolutions || null,
+          ratios: m.ratios || null,
+          defaults: m.defaults || null,
+        };
+      }),
+      hint: p.hint || '',
+      label: p.label || id,
+      defaults: p.defaults || {},
+    };
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+// ============================================================
+// FALLBACK PROVIDERS (used if config fails to load)
+// ============================================================
+const FALLBACK_PROVIDERS = {
+  comfyui_local: {
+    base_url: 'http://127.0.0.1:8801',
+    models: [
+      { id: 'minimax_h3_all_reference', label: 'MiniMax H3 (free)', duration_range: [4, 12], resolutions: ['480p', '720p'], ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'] },
+    ],
+    hint: 'Free local MiniMax H3.',
+    label: 'Local ComfyUI (free)',
+    defaults: { model: 'minimax_h3_all_reference', duration: 8, resolution: '720p', ratio: '16:9' },
+  },
+  volcengine: {
+    base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+    // Capability limits must be repeated here, not just in providers.json:
+    // this list is what applyModelLimits() reads when /api/config fails, and
+    // without them the form would silently stop narrowing itself.
+    models: [
+      {
+        id: 'doubao-seedance-2-0-260128', label: 'Seedance 2.0（最高 4k）',
+        duration_range: [4, 15], resolutions: ['480p', '720p', '1080p', '4k'],
+        ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
+      },
+      {
+        id: 'doubao-seedance-2-0-fast-260128', label: 'Seedance 2.0 fast',
+        duration_range: [4, 15], resolutions: ['480p', '720p'],
+        ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
+      },
+      {
+        id: 'doubao-seedance-2-0-mini-260615', label: 'Seedance 2.0 mini（最快）',
+        duration_range: [4, 15], resolutions: ['480p', '720p'],
+        ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
+      },
+      {
+        id: 'doubao-seedance-2-5-260628', label: 'Seedance 2.5（最长 30s / 50 素材）',
+        duration_range: [4, 30], resolutions: ['480p', '720p'],
+        ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
+        defaults: { duration: 10 },
+      },
+    ],
+    hint: '豆包官方火山方舟 API。本地图/视频/音频参考素材会先上传到公司 TOS bucket，再以预签名 URL 传给方舟。',
+    label: '豆包官方 / 火山方舟',
+    defaults: {},
+  },
+};
+
+// ============================================================
+// SEEDANCE APP FACTORY (PetiteVue data object)
+// ============================================================
+function SeedanceApp() {
+  const wid = workspaceId();
+  const wsKey = 'seedance.workspace.' + wid;
+  const urlParams = new URLSearchParams(window.location.search);
+
+  // Resolve workspace id from URL param, falling back to localStorage
+  let effectiveWorkspaceId = urlParams.get('ws');
+  if (!effectiveWorkspaceId) {
+    effectiveWorkspaceId = wid;
+  }
+
+  // --- DOM helpers ---
+  function field(name) {
+    return document.querySelector('#sd-form [name="' + name + '"]')
+        || document.querySelector('[form="sd-form"][name="' + name + '"]')
+        || document.querySelector('[name="' + name + '"]');
+  }
+
+  function mediaKind(name) {
+    if (name.includes('video')) return 'video';
+    if (name.includes('audio')) return 'audio';
+    return 'image';
+  }
+
+  function mediaSnapshot(src) {
+    return JSON.parse(JSON.stringify(src || {}));
+  }
+
+  function clearMediaPreview(drop) {
+    if (!drop) return;
+    drop.classList.remove('hasPreview');
+    drop.querySelector('.preview')?.remove();
+    drop.querySelector('span').textContent = '未上传';
+  }
+
+  function clearAllMediaPreviews() {
+    document.querySelectorAll('.drop').forEach(clearMediaPreview);
+  }
+
+  function collectFormValues() {
+    const values = {};
+    const form = document.getElementById('sd-form');
+    if (!form) return values;
+    for (const item of form.elements) {
+      if (!item.name || item.type === 'file') continue;
+      values[item.name] = item.type === 'checkbox' ? (item.checked ? 'on' : '') : item.value;
+    }
+    return values;
+  }
+
+  return {
+    isCancellableJob,
+    // --- Reactive State ---
+    inPortal: IN_PORTAL,
+    appPath: APP_PATH,
+    appStatus: 'unknown',
+    providers: {},
+    provider: 'volcengine',
+    localReady: true,
+    _activeProvider: 'volcengine',
+    models: [],
+    baseUrl: '',
+    providerHint: '',
+    keyHint: '',
+    outputDir: '',
+    dirHandle: null,
+    autoDownload: false,
+    submitting: false,
+    statusText: '空闲',
+    eventsText: '',
+    runtimeTick: 0,
+    archives: [],
+    selectedArchive: '',
+    archiveHint: '',
+    optimizing: false,
+    optimizedPrompt: '',
+    optimizeError: '',
+    savedMedia: {},
+    wsTab: 'jobs',
+    activityRecords: [],
+    jobs: [],
+    jobsLimit: 20,
+    activityCounts: null,
+    activityDetail: null,
+
+    // Task-type switch. Ark 2.5 auto-classifies a request as reference /
+    // extend / edit from the prompt wording, and edit/extend impose extra
+    // constraints (ratio=adaptive, duration=-1). If the user types a phrase
+    // that flips the classifier without knowing it, Ark rejects the job as
+    // "you asked for edit but sent a positive duration". This picker moves
+    // that decision from post-hoc keyword sniffing to an explicit control.
+    // Session-only — no persistence, matches the user's request.
+    taskMode: 'reference',
+    _prevTaskMode: 'reference',
+    // Per-mode memory of ratio + duration, so switching away and back
+    // preserves what the user typed in each mode.
+    _taskModeMemory: {
+      reference: { ratio: '16:9', duration: 12 },
+      extend:    { ratio: 'adaptive', duration: 5 },
+      edit:      { ratio: 'adaptive', duration: -1 },
+    },
+
+    // Standalone-specific fields
+    customModel: '',
+    webSearch: false,
+    pollInterval: 10,
+    timeout: 3600,
+    workspaceName: '默认主题',
+    workspaceHint: '',
+
+    // --- Tab bar state (Task 2) ---
+    tabs: [],                   // [{id, name, running}]
+    activeTabId: 'default',
+    editingTabId: null,         // tab id being renamed inline, or null
+    _closeConfirmTabId: null,   // tab id that opened the close-confirm modal
+    _tabStateCache: {},         // { wsId: {statusText, eventsText, submitting, baseUrl, provider, models, workspaceName} }
+    _topicSubmissionSeq: {},    // { wsId: latest submit sequence }
+
+    // Internal (non-reactive but accessible)
+    _workspaceId: effectiveWorkspaceId,
+    _workspaceKey: wsKey,
+    _workspaceSaveTimer: 0,
+
+    // ============================================================
+    // INIT
+    // ============================================================
+    async init() {
+      window._app_sd = this;
+      window._currentSavedMedia = this.savedMedia;
+      this.buildUploadSlots();
+      this.wireDrops();
+      try { await this.loadConfig(); } catch (e) { console.warn('loadConfig failed:', e); }
+      try { await this.loadArchives(); } catch (e) { console.warn('loadArchives failed:', e); }
+
+      // --- Tab bar restoration (Task 2) ---
+      const raw = localStorage.getItem('seedance.tabs');
+      if (raw) {
+        try {
+          const data = JSON.parse(raw);
+          if (data.tabs && data.tabs.length) {
+            this.tabs = data.tabs.map(t => ({ id: t.id, name: t.name || '未命名主题', running: false }));
+            this.activeTabId = data.activeTabId || data.tabs[0].id;
+          }
+        } catch (e) {}
+      }
+      if (!this.tabs.length) {
+        const oldWsId = localStorage.getItem('workspace_id') || 'default';
+        this.tabs = [{ id: oldWsId, name: this.workspaceName || '未命名主题', running: false }];
+        this.activeTabId = oldWsId;
+      }
+      window._activeWorkspaceId = this.activeTabId;
+
+      this.loadPreset();
+      try { await this.loadJobs(); } catch (e) { console.warn('loadJobs failed:', e); }
+      setInterval(() => { this.runtimeTick = (this.runtimeTick + 1) % 1e9; }, 1000);
+
+      // Auto-save workspace on any form change
+      const form = document.getElementById('sd-form');
+      if (form) {
+        form.addEventListener('input', () => this.scheduleWorkspaceSave());
+        form.addEventListener('change', () => this.scheduleWorkspaceSave());
+      }
+
+      const modelEl = field('model');
+      if (modelEl) {
+        modelEl.addEventListener('change', () => this.applyModelLimits());
+      }
+
+      // Download links: use blob download to avoid iframe navigation timeout.
+      // Native <a download> triggers browser navigation which can time out
+      // waiting for the proxy to buffer the entire video file.
+      // 委托挂在 #sd-app（页面常驻）而不是 #sd-results：#sd-results 位于
+      // v-if="statusText !== '空闲'" 内，init 时还不存在，旧代码拿到的
+      // 容器是 null、静默跳过 → 运行卡的视频点击和下载按钮一直是死的。
+      const dlContainer = document.getElementById('sd-app') || document;
+      if (dlContainer) {
+        dlContainer.addEventListener('click', (e) => {
+          const btn = e.target.closest('.dl-btn');
+          if (btn) {
+            e.preventDefault();
+            const u = btn.dataset.url;
+            const fn = btn.dataset.filename || 'video';
+            if (u) this._blobDownload(u, fn);
+            return;
+          }
+          // Click-to-play: replace the lazy placeholder with a real <video>.
+          // Only fires ONE SSL fetch to the portal proxy at a time (per click)
+          // — avoids the 21-way concurrent-fetch ERR_TOO_MANY_RETRIES storm.
+          const lazy = e.target.closest('.video-lazy');
+          if (lazy && lazy.dataset.src) {
+            const url = lazy.dataset.src;
+            const vid = document.createElement('video');
+            vid.controls = true; vid.muted = true; vid.autoplay = true;
+            vid.playsInline = true;
+            vid.style.maxHeight = '360px';
+            vid.style.width = '100%';
+            vid.style.borderRadius = '6px';
+            vid.src = url;
+            lazy.replaceWith(vid);
+          }
+        });
+      }
+
+      // Global 5s tick: refresh jobs list so every tab's green-dot indicator
+      // stays fresh, not just the tab that submitted. Skip while the page is
+      // hidden to avoid burning cycles when the tab is in the background.
+      this._loadJobsTimer = setInterval(() => {
+        if (document.visibilityState !== 'hidden') this.loadJobs();
+      }, 5000);
+    },
+
+    // ============================================================
+    // PROVIDER SYSTEM
+    // ============================================================
+    async loadConfig() {
+      const res = await api(APP_PATH + '/api/config');
+      if (!res) {
+        // Use fallback providers
+        this.providers = FALLBACK_PROVIDERS;
+        this.applyProvider('volcengine');
+        return;
+      }
+
+      if (res.config_error) {
+        this.providerHint = '供应商配置读取失败：' + (res.config_error.detail || res.config_error.message || '未知错误');
+        return;
+      }
+
+      const normalized = providersFromConfig(res.providers);
+      if (normalized) {
+        this.providers = normalized;
+        // Provider locked to volcengine — ignore default_provider from config
+        // and any localStorage residue. Frontend has no provider switch anyway.
+        this.localReady = res.local_ready !== false;
+        let defaultP = res.default_provider || 'volcengine';
+        if (!this.localReady && defaultP === 'comfyui_local') {
+          defaultP = 'volcengine';
+        }
+        this.applyProvider(defaultP);
+      } else {
+        this.providers = FALLBACK_PROVIDERS;
+        this.applyProvider('volcengine');
+      }
+    },
+
+    onProviderChange(value) {
+      if (value === 'comfyui_local' && this.localReady === false) {
+        let prev = this._activeProvider || this.provider;
+        if (prev === 'comfyui_local') {
+          const keys = Object.keys(this.providers);
+          for (let i = 0; i < keys.length; i++) {
+            if (keys[i] !== 'comfyui_local' && this.providers[keys[i]]) {
+              prev = keys[i];
+              break;
+            }
+          }
+        }
+        this.applyProvider(prev, true);
+        this.providerHint = '本地模型不可用，已恢复为 ' + (this.providers[prev] ? (this.providers[prev].label || prev) : prev) + '。请先启动本地模型或检查服务器 AIPORT_BASE_URL 配置。';
+        const s = field('provider');
+        if (s) s.value = prev;
+        return;
+      }
+      this.applyProvider(value);
+    },
+
+    applyProvider(providerKey, skipDefaults) {
+      if (providerKey === 'comfyui_local' && this.localReady === false) {
+        const keys = Object.keys(this.providers);
+        for (let ai = 0; ai < keys.length; ai++) {
+          if (keys[ai] !== 'comfyui_local' && this.providers[keys[ai]]) {
+            providerKey = keys[ai];
+            break;
+          }
+        }
+      }
+      const cfg = this.providers[providerKey];
+      if (!cfg) return;
+      this.provider = providerKey;
+      this._activeProvider = providerKey;
+      this.baseUrl = cfg.base_url || '';
+      this.providerHint = cfg.hint || '';
+      this.models = cfg.models || [];
+      // 显式同步供应商下拉框 DOM：v-model 的 SELECT effect 在选项异步渲染时
+      // 不会重新执行，曾出现「显示火山引擎、实际按 comfyui 提交」的分裂
+      // （submit 用 this.provider 覆盖 FormData，显示与调用必须一致）。
+      const providerSel = field('provider');
+      if (providerSel) {
+        setTimeout(() => {
+          if ([...providerSel.options].some((o) => o.value === providerKey)) providerSel.value = providerKey;
+        }, 0);
+      }
+
+      // When restoring a saved draft/preset the form already carries this tab's
+      // own resolution / ratio / duration. Re-applying provider defaults here
+      // (async, after applyPreset filled the fields) would clobber them back to
+      // defaults on every tab switch. skipDefaults keeps provider metadata
+      // without overwriting the restored form values.
+      if (skipDefaults) return;
+
+      // Apply provider defaults after a tick to let DOM render
+      setTimeout(() => {
+        const defaults = cfg.defaults || {};
+        for (const [k, v] of Object.entries(defaults)) {
+          const el = field(k);
+          if (!el || el.type === 'file') continue;
+          if (el.type === 'checkbox') {
+            el.checked = !!v;
+          } else if (el.tagName === 'SELECT') {
+            if ([...el.options].some(o => o.value === String(v))) el.value = v;
+          } else {
+            el.value = v;
+          }
+        }
+        // API Key UI removed — provider is locked to volcengine and the key
+        // lives in seedance/state/secrets.json on the server.
+        this.applyModelLimits();
+      });
+    },
+
+    // Narrow duration / resolution / ratio to what the selected model accepts.
+    // Ark validates these only after the job is queued, so an out-of-range value
+    // costs the user a wait and an async error instead of failing fast.
+    applyModelLimits() {
+      const modelEl = field('model');
+      if (!modelEl) return;
+      const cfg = (this.models || []).find(m => m.id === modelEl.value);
+      if (!cfg) return;
+
+      const durationEl = field('duration');
+      if (durationEl && Array.isArray(cfg.duration_range)) {
+        const [lo, hi] = cfg.duration_range;
+        // Keep min at -1 regardless of the model's positive range: -1 is a
+        // sentinel meaning "let Ark pick" and is legal (in fact required) for
+        // video edit / extend tasks on every model.
+        durationEl.min = '-1';
+        durationEl.max = String(hi);
+        const current = parseInt(durationEl.value, 10);
+        // -1 is the sentinel and must survive a model switch untouched; only a
+        // real out-of-range number gets clamped.
+        if (!Number.isNaN(current) && current !== -1) {
+          durationEl.value = String(Math.min(hi, Math.max(lo, current)));
+        }
+      }
+
+      for (const [name, allowed] of [['resolution', cfg.resolutions], ['ratio', cfg.ratios]]) {
+        const el = field(name);
+        if (!el || !Array.isArray(allowed) || !allowed.length) continue;
+        const previous = el.value;
+        el.innerHTML = '';
+        for (const value of allowed) {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = value;
+          el.appendChild(option);
+        }
+        el.value = allowed.includes(previous) ? previous : allowed[0];
+      }
+    },
+
+    // Called when the user picks a different task type. Ark 2.5 imposes:
+    //   reference: ratio + duration are free
+    //   extend:    ratio must be 'adaptive', duration is free
+    //   edit:      ratio must be 'adaptive' AND duration must be -1
+    // Values are remembered per-mode so switching away and back restores what
+    // the user typed. Session-only, no localStorage.
+    changeTaskMode() {
+      const from = this._prevTaskMode || 'reference';
+      const to = this.taskMode || 'reference';
+      const ratioEl = field('ratio');
+      const durationEl = field('duration');
+      const mem = this._taskModeMemory;
+      // 1) Save the leaving mode's current values.
+      if (mem[from]) {
+        if (ratioEl) mem[from].ratio = ratioEl.value;
+        if (durationEl) mem[from].duration = parseInt(durationEl.value, 10);
+      }
+      // 2) Restore or seed the incoming mode's values.
+      const target = mem[to] || mem.reference;
+      if (ratioEl) {
+        const forced = (to === 'extend' || to === 'edit') ? 'adaptive' : null;
+        const wanted = forced || target.ratio || '16:9';
+        if (![...ratioEl.options].some(o => o.value === wanted)) {
+          // If the model doesn't currently list this ratio (applyModelLimits
+          // narrowed it away), fall back to the first available option so the
+          // select is never left in an invalid state.
+          ratioEl.value = ratioEl.options[0]?.value || wanted;
+        } else {
+          ratioEl.value = wanted;
+        }
+      }
+      if (durationEl) {
+        const forced = (to === 'edit') ? -1 : null;
+        const wanted = (forced !== null) ? forced
+          : (Number.isFinite(target.duration) ? target.duration : 5);
+        durationEl.value = String(wanted);
+      }
+      this._prevTaskMode = to;
+      // Save the entering mode's values too, so a later switch reads current
+      // state (in case the user typed something before switching again).
+      if (mem[to]) {
+        if (ratioEl) mem[to].ratio = ratioEl.value;
+        if (durationEl) mem[to].duration = parseInt(durationEl.value, 10);
+      }
+    },
+
+    // ============================================================
+    // ARCHIVES
+    // ============================================================
+    async loadArchives() {
+      const ownerWsId = this.activeTabId;
+      const res = await api(APP_PATH + '/api/archives', 'GET', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (res) this.archives = res.archives || [];
+      if (this.selectedArchive && !this.archives.some(a => a.name === this.selectedArchive)) {
+        this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
+      }
+    },
+
+    async saveArchive() {
+      const ownerWsId = this.activeTabId;
+      this.archiveHint = '保存中...';
+      const data = new FormData(document.getElementById('sd-form'));
+      if (Object.keys(this.savedMedia).length) {
+        data.set('saved_media', JSON.stringify(this.savedMedia));
+      }
+      const res = await api(APP_PATH + '/api/preset', 'POST', data, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (res) {
+        this.archiveHint = res.archive ? '已保存：' + res.archive : (res.error || '保存失败');
+        if (res.media) this.savedMedia = res.media;
+        await this.loadArchives();
+        if (this.activeTabId !== ownerWsId) return;
+        this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
+      } else {
+        this.archiveHint = '保存失败';
+      }
+    },
+
+    async loadArchive() {
+      if (!this.selectedArchive) {
+        this.archiveHint = '请选择一个存档';
+        return;
+      }
+      const name = this.selectedArchive;
+      if (!this.archives.some(a => a.name === name)) {
+        this.archiveHint = '读取失败：存档「' + name + '」已被删除，请重新选择';
+        this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
+        return;
+      }
+      const ownerWsId = this.activeTabId;
+      const data = new FormData();
+      data.set('archive_name', name);
+      const res = await api(APP_PATH + '/api/archive/load', 'POST', data, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (!res) {
+        this.archiveHint = '读取失败';
+        return;
+      }
+      this.applyPreset(res);
+      const archiveInput = field('archive_name');
+      if (archiveInput) archiveInput.value = name;
+      this.archiveHint = '已读取存档：' + name;
+    },
+
+    async deleteArchive() {
+      if (!this.selectedArchive) {
+        this.archiveHint = '请选择一个存档';
+        return;
+      }
+      const name = this.selectedArchive;
+      if (!confirm('确定删除存档「' + name + '」？此操作不可恢复。')) return;
+      const ownerWsId = this.activeTabId;
+      const data = new FormData();
+      data.set('archive_name', name);
+      const res = await api(APP_PATH + '/api/archive/delete', 'POST', data, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (!res || res.ok === false) {
+        this.archiveHint = '删除失败：' + (res && res.error ? res.error : '存档可能已被删除或不存在');
+        return;
+      }
+      this.selectedArchive = '';
+      await this.loadArchives();
+      if (this.activeTabId !== ownerWsId) return;
+      this.selectedArchive = this.archives.length > 0 ? this.archives[0].name : '';
+      this.archiveHint = '已删除：' + name;
+    },
+
+    // Prompt Optimizer
+    async optimizePrompt() {
+      const promptEl = document.querySelector('textarea[name="prompt"][form="sd-form"]');
+      const prompt = promptEl ? promptEl.value.trim() : '';
+      if (!prompt) {
+        this.optimizeError = '请先输入提示词';
+        return;
+      }
+      const ownerWsId = this.activeTabId;
+      this.optimizing = true;
+      this.optimizedPrompt = '';
+      this.optimizeError = '';
+      try {
+        const rag = await fetch('/rag-assistant/api/rag/preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: prompt, optimize: true }),
+        }).then((r) => r.json()).catch(() => null);
+        if (this.activeTabId !== ownerWsId) return;
+        if (rag && rag.ok && rag.detected && rag.updated_prompt) {
+          this.optimizedPrompt = rag.updated_prompt;
+          return;
+        }
+        const res = await api(APP_PATH + '/api/optimize-prompt', 'POST', JSON.stringify({ prompt: prompt }), ownerWsId);
+        if (this.activeTabId !== ownerWsId) return;
+        if (!res) {
+          this.optimizeError = '优化失败：网络异常，请检查服务是否运行';
+        } else if (!res.ok) {
+          this.optimizeError = '优化失败：' + (res.error || '未知错误');
+        } else {
+          this.optimizedPrompt = res.optimized;
+        }
+      } catch (e) {
+        if (this.activeTabId === ownerWsId) {
+          this.optimizeError = '优化失败：' + (e.message || '未知异常');
+        }
+      } finally {
+        // Must run even when the owner check bails out, or the spinner stays
+        // stuck for every topic.
+        this.optimizing = false;
+      }
+    },
+    replacePrompt() {
+      const promptEl = document.querySelector('textarea[name="prompt"][form="sd-form"]');
+      if (promptEl && this.optimizedPrompt) {
+        var text = this.optimizedPrompt;
+        // Strategy 1: <PROMPT> XML tag (preferred)
+        var m = text.match(/<PROMPT>\s*([\s\S]*?)\s*<\/PROMPT>/);
+        // Strategy 2: <OPTIMIZED_PROMPT> XML tag (legacy)
+        if (!m) m = text.match(/<OPTIMIZED_PROMPT>\s*([\s\S]*?)\s*<\/OPTIMIZED_PROMPT>/);
+        // Strategy 3: Markdown ## 优化后提示词 (fallback)
+        if (!m) m = text.match(/##\s*优化后提示词[^\n]*\n+([\s\S]*?)(?=\n+##\s|\n+---\s|\n*$)/);
+        promptEl.value = (m ? m[1].trim() : text);
+      }
+      this.optimizedPrompt = '';
+      this.optimizeError = '';
+    },
+    cancelOptimize() {
+      this.optimizedPrompt = '';
+      this.optimizeError = '';
+    },
+
+    async clearPreset() {
+      const ownerWsId = this.activeTabId;
+      const res = await api(APP_PATH + '/api/preset/clear', 'POST', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (!res) return;
+      this.savedMedia = {};
+      clearAllMediaPreviews();
+      this.archiveHint = '已清空保存配置';
+    },
+
+    // ============================================================
+    // ACTIVITY
+    // ============================================================
+    async loadActivity() {
+      const ownerWsId = this.activeTabId;
+      const res = await api(APP_PATH + '/api/activity', 'GET', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (res) {
+        this.activityRecords = res.records || [];
+        this.activityCounts = res.counts || null;
+      }
+      this.activityDetail = null;
+    },
+
+    // Only render the most recent `jobsLimit` jobs. The full history can grow
+    // to hundreds of jobs; rendering them all (each with a <video>) pins DOM
+    // memory and eventually crashes the tab. "加载更多" bumps the limit.
+    visibleJobs() {
+      return (this.jobs || []).slice(0, this.jobsLimit);
+    },
+
+    async loadJobs() {
+      const res = await api(APP_PATH + '/api/jobs');
+      if (res?.jobs) {
+        this.jobs = res.jobs;
+        // Refresh normally initializes the form as idle, which used to switch
+        // the UI to history despite a live job. Rehydrate the original running
+        // task panel from /api/jobs and resume its existing poll/cancel flow.
+        const restored = this._restoredPollIds || (this._restoredPollIds = new Set());
+        (this.jobs || []).filter(job =>
+          !TERMINAL_STATUSES.has((job.status || '').toLowerCase())
+        ).forEach(job => {
+          const wsId = job.workspace_id || this.activeTabId;
+          const cache = this._tabStateCache[wsId] || (this._tabStateCache[wsId] = {});
+          cache._activeJobId = job.job_id;
+          cache._latestJob = job;
+          cache.statusText = (job.status || 'queued') + ' ' + (job.done || 0) + '/' + (job.total || 0);
+          cache.eventsText = (job.events || []).map(e =>
+            '[' + (e.time || '') + '] ' + (e.message || '')
+          ).join('\n');
+          cache.submitting = true;
+          if (wsId === this.activeTabId) {
+            this.statusText = cache.statusText;
+            this.eventsText = cache.eventsText;
+            this.submitting = true;
+          }
+          if (!restored.has(job.job_id)) {
+            restored.add(job.job_id);
+            this.pollJob(job.job_id, wsId);
+          }
+        });
+      } else {
+        console.warn('[Seedance] loadJobs failed:', res);
+      }
+      // Recompute per-tab running flag off the freshly loaded jobs. Drives the
+      // green-dot indicator on every tab, not just the one that submitted.
+      if (this.tabs && this.tabs.length) {
+        this.tabs.forEach(tab => {
+          tab.running = (this.jobs || []).some(job =>
+            !TERMINAL_STATUSES.has((job.status || '').toLowerCase()) && job.workspace_id === tab.id
+          );
+        });
+      }
+    },
+
+    formatRuntime(job) {
+      const _ = this.runtimeTick;
+      const start = job.started_at || job.submitted_at;
+      if (!start) return '';
+      const status = (job.status || '').toLowerCase();
+      const running = ['queued', 'pending', 'running', 'querying'].includes(status);
+      if (running) {
+        const sec = Math.max(0, Math.floor(Date.now() / 1000 - start));
+        return '已运行 ' + (sec >= 60 ? Math.floor(sec / 60) + '分' + (sec % 60) + '秒' : sec + '秒');
+      }
+      if (job.finished_at && job.started_at) {
+        const sec = Math.max(0, Math.floor(job.finished_at - job.started_at));
+        return '耗时 ' + (sec >= 60 ? Math.floor(sec / 60) + '分' + (sec % 60) + '秒' : sec + '秒');
+      }
+      return '';
+    },
+
+    formatAttemptTime(ts) {
+      if (!ts) return '';
+      const n = Number(ts);
+      if (!Number.isFinite(n) || n <= 0) return '';
+      const ms = n < 1e12 ? n * 1000 : n;
+      const d = new Date(ms);
+      const p = (x) => String(x).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    },
+
+    async showDetail(id) {
+      const ownerWsId = this.activeTabId;
+      const res = await api(APP_PATH + '/api/activity/' + id, 'GET', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (res) this.activityDetail = res;
+    },
+
+    restoreActivity() {
+      const r = this.activityDetail?.restore;
+      if (!r) { alert('该记录无法恢复'); return; }
+      this.applyPreset(r);
+      if (r.warning) this.archiveHint = r.warning;
+      else this.archiveHint = '已从后台记录恢复参数和素材';
+      this.wsTab = 'jobs';
+    },
+
+    switchJobsTab() {
+      this.wsTab = 'jobs';
+      this.loadJobs();
+    },
+
+    switchActivityTab() {
+      this.wsTab = 'activity';
+      this.loadActivity();
+    },
+
+    // ============================================================
+    // OUTPUT DIRECTORY
+    // ============================================================
+    async chooseOutputDir() {
+      // Delivery settings live in the per-topic cache, so a picker that resolves
+      // after the user switched topics must not rewrite the new topic's target.
+      const ownerWsId = this.activeTabId;
+      // Backend native directory picker
+      const res = await api(APP_PATH + '/api/choose-output-dir', 'POST', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (res?.path) {
+        this.outputDir = res.path;
+        this.dirHandle = null;
+        return;
+      }
+      // Browser File System Access API
+      if (window.showDirectoryPicker) {
+        try {
+          const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+          if (this.activeTabId !== ownerWsId) return;
+          this.dirHandle = handle;
+          this.outputDir = this.dirHandle.name;
+          this.statusText = '已选择: ' + this.outputDir;
+          return;
+        } catch (e) { /* user cancelled */ }
+        if (this.activeTabId !== ownerWsId) return;
+      }
+      // Fallback to browser download
+      this.autoDownload = true;
+      this.outputDir = '浏览器下载';
+      if (res?.remote && !window.isSecureContext) {
+        this.statusText = '提示：HTTPS 访问可启用目录选择功能';
+      }
+    },
+
+    async desktopOutput() {
+      const ownerWsId = this.activeTabId;
+      const res = await api(APP_PATH + '/api/default-output-dir', 'GET', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (res?.path) this.outputDir = res.path;
+    },
+
+    async openOutputDir() {
+      if (this.dirHandle && !this.outputDir.includes('/')) {
+        this.statusText = '文件将保存到 "' + this.outputDir + '"（浏览器限制无法代为打开）';
+        return;
+      }
+      const ownerWsId = this.activeTabId;
+      const data = new FormData();
+      data.set('output_dir', this.outputDir);
+      const res = await api(APP_PATH + '/api/open-output-dir', 'POST', data, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (res?.remote) this.statusText = '远程客户端不支持打开服务端目录';
+    },
+
+    async cleanCache() {
+      const res = await api(APP_PATH + '/api/cleanup-cache', 'POST');
+      if (res) {
+        alert('清理完成：素材 ' + (res.media_deleted || 0) + ' 个，日志 ' + (res.logs_deleted || 0) + ' 个');
+      }
+    },
+
+    // ============================================================
+    // FORM SUBMISSION
+    // ============================================================
+    async submit() {
+      const ownerWorkspaceId = this.activeTabId;
+      const ownerExists = () => this.tabs.some(t => t.id === ownerWorkspaceId);
+      const ownerCache = () => {
+        if (!ownerExists()) return null;
+        return (this._tabStateCache[ownerWorkspaceId] = this._tabStateCache[ownerWorkspaceId] || {});
+      };
+      const setOwnerState = (name, value) => {
+        const cache = ownerCache();
+        if (!cache) return;
+        cache[name] = value;
+        if (this.activeTabId === ownerWorkspaceId) this[name] = value;
+      };
+      if (this.submitting) return;
+      // reference 模式同时覆盖纯文生视频和参考生视频，素材全部可选；仅延长/编辑必须提供视频。
+      const modelEl = field('model');
+      const chosenModel = (modelEl && modelEl.value) || this.customModel || '';
+      const usesLocalH3 = this.provider === 'comfyui_local' || chosenModel === 'minimax_h3_all_reference';
+      const firstFrameEl = document.querySelector('input[name="first_frame"]');
+      const lastFrameEl = document.querySelector('input[name="last_frame"]');
+      const hasFrame = (firstFrameEl && firstFrameEl.files && firstFrameEl.files.length) || (lastFrameEl && lastFrameEl.files && lastFrameEl.files.length);
+      const mediaKeys = Object.keys(this.savedMedia || {});
+      const hasRefImage = mediaKeys.some((k) => k.startsWith('ref_image_'));
+      const hasRefVideo = mediaKeys.some((k) => k.startsWith('ref_video_'));
+      if ((this.taskMode === 'extend' || this.taskMode === 'edit') && !hasRefVideo && !hasFrame) {
+        const msg = '请先上传参考视频（或首帧）后再开始生成。';
+        setOwnerState('submitting', false);
+        setOwnerState('statusText', msg);
+        alert(msg);
+        return;
+      }
+      // 首次提交时请求系统通知权限（用户手势内调用才有效）
+      requestNotifyPermission();
+      const submissionToken = (this._topicSubmissionSeq[ownerWorkspaceId] || 0) + 1;
+      this._topicSubmissionSeq[ownerWorkspaceId] = submissionToken;
+      const delivery = {
+        dirHandle: this.dirHandle,
+        autoDownload: this.autoDownload,
+        outputDir: this.outputDir,
+      };
+      const cache = ownerCache();
+      cache._submissionToken = submissionToken;
+      cache._activeJobId = null;
+      delete cache._latestJob;
+      setOwnerState('submitting', true);
+      setOwnerState('statusText', '提交中');
+      const resultsEl = document.getElementById('sd-results');
+      const eventsEl = document.getElementById('sd-events');
+      if (this.activeTabId === ownerWorkspaceId) {
+        if (resultsEl) resultsEl.innerHTML = '';
+        if (eventsEl) eventsEl.textContent = '';
+      }
+      setOwnerState('eventsText', '');
+
+
+      // 方舟要求参考视频 4–30 秒；本地 H3 的 ref2v 仅校验素材是否存在，不限时长。
+      if (!usesLocalH3) {
+        try {
+          await validateReferenceVideoDurations();
+        } catch (err) {
+          setOwnerState('submitting', false);
+          setOwnerState('statusText', err.message || '参考视频时长不合规');
+          return;
+        }
+      }
+
+      // 前后端对齐：选了本地模型（minimax_h3_all_reference）但供应商仍是云端
+      // 时，先把供应商切回 comfyui_local（仅本地在线时；离线走下方兜底拦截）。
+      if (this.localReady) {
+        const modelEl = field('model');
+        const chosenModel = (modelEl && modelEl.value) || this.customModel || '';
+        if (chosenModel === 'minimax_h3_all_reference' && this.provider !== 'comfyui_local') {
+          this.applyProvider('comfyui_local', true);
+          if (this.providers.comfyui_local) this.baseUrl = this.providers.comfyui_local.base_url || this.baseUrl;
+        }
+      }
+
+      // 本地模型未连接兜底：无论草稿/旧缓存把表单弄成什么分裂状态（例如
+      // provider=volcengine 但模型/base_url 还是本地的），一律切回云端并
+      // 拦截提交，绝不把本地 base_url 或本地模型随云端 provider 发出去。
+      if (!this.localReady) {
+        const modelEl = field('model');
+        const chosenModel = (modelEl && modelEl.value) || this.customModel || '';
+        const localIntent = this.provider === 'comfyui_local'
+          || chosenModel === 'minimax_h3_all_reference'
+          || /(^|:\/\/)127\.0\.0\.1(:|$)|\.local:8801/.test(this.baseUrl || '');
+        if (localIntent) {
+          const cloudKey = Object.keys(this.providers).find(k => k !== 'comfyui_local' && this.providers[k]) || 'volcengine';
+          this.applyProvider(cloudKey, true);
+          if (this.providers[cloudKey]) this.baseUrl = this.providers[cloudKey].base_url || this.baseUrl;
+          // v-for 选项重渲染是异步的：等一拍再把模型下拉归位到云端第一个模型。
+          setTimeout(() => {
+            const mf = field('model');
+            const fm = (this.models && this.models[0] && (this.models[0].id || this.models[0])) || '';
+            if (mf && fm) mf.value = fm;
+          }, 0);
+          this.providerHint = '本地模型未连接，已为你切回云端模型，请确认后重新提交。';
+          setOwnerState('submitting', false);
+          setOwnerState('statusText', '本地模型未连接，已切回云端模型，请确认后重新提交');
+          return;
+        }
+      }
+
+      const data = new FormData(document.getElementById('sd-form'));
+      data.set('provider', this.provider);
+      if (Object.keys(this.savedMedia).length) {
+        data.set('saved_media', JSON.stringify(this.savedMedia));
+      }
+
+      let res;
+      try {
+        res = await api(APP_PATH + '/api/jobs', 'POST', data, ownerWorkspaceId);
+      } catch (e) {
+        setOwnerState('submitting', false);
+        setOwnerState('statusText', '提交失败：网络异常，请重试');
+        return;
+      }
+      if (!res || res.error) {
+        setOwnerState('submitting', false);
+        setOwnerState('statusText', res?.error || '提交失败');
+        return;
+      }
+      if (!ownerExists() || ownerCache()._submissionToken !== submissionToken) return;
+      ownerCache()._activeJobId = res.job_id;
+      // submitting 保持 true 直到任务终态：防止第二次提交 bump token 后
+      // 上一个任务的轮询静默失效（用户误以为第一个任务死了）。想同时
+      // 跑多个任务请开新主题标签页。
+      setOwnerState('statusText', '已提交，任务 ' + res.job_id + ' 在后台运行');
+      this.loadJobs();
+      this.pollJob(res.job_id, ownerWorkspaceId, submissionToken, delivery);
+    },
+
+    async pollJob(jobId, ownerWorkspaceId, submissionToken, delivery) {
+      const ownerWsId = ownerWorkspaceId || this.activeTabId;
+      const ownerExists = () => this.tabs.some(t => t.id === ownerWsId);
+      const cache = () => {
+        if (!ownerExists()) return null;
+        return (this._tabStateCache[ownerWsId] = this._tabStateCache[ownerWsId] || {});
+      };
+      const isCurrent = () => {
+        const state = cache();
+        if (!state) return false;
+        if (submissionToken !== undefined && state._submissionToken !== submissionToken) return false;
+        return !state._activeJobId || state._activeJobId === jobId;
+      };
+      const isActive = () => isCurrent() && this.activeTabId === ownerWsId;
+      const setState = (name, value) => {
+        if (!isCurrent()) return;
+        const state = cache();
+        state[name] = value;
+        if (isActive()) this[name] = value;
+      };
+      const setStatus = (t) => setState('statusText', t);
+      const setEvents = (t) => setState('eventsText', t);
+      const setSubmitting = (v) => setState('submitting', v);
+      const setLatestJob = (job) => { if (isCurrent()) cache()._latestJob = job; };
+
+      // Transient-failure tolerance. A single failed poll (proxy timeout, wifi
+      // blip, sub-app 5xx) used to `break` and permanently abandon the watcher,
+      // leaving a finished result invisible until manual resubmit. Now we retry
+      // with backoff and only give up after MAX_FAILS consecutive failures
+      // (~2min at the 10s backoff cap). A 404 ('gone' — sub-app restarted and
+      // cleared JOBS) exits cleanly instead of looping forever on "unknown".
+      const MAX_FAILS = 15;
+      let consecutiveFails = 0;
+      // 退出时保留的终态文案：非空则不再回「空闲」，避免失败提示
+      // 转瞬即逝（此前 break 后紧跟 setStatus('空闲') 会把错误抹掉）。
+      let finalStatus = null;
+
+      while (true) {
+        if (!isCurrent()) break;
+        const r = await pollJobOnce(APP_PATH + '/api/jobs/' + jobId, ownerWsId);
+        if (!isCurrent()) break;
+        if (r.kind === 'gone') {
+          // Job no longer exists server-side (restart). Refresh the jobs list so
+          // any completed result recorded in activity can still surface there.
+          finalStatus = '任务已失效(服务可能重启过)，请查看活动记录或重新提交';
+          break;
+        }
+        if (r.kind === 'error') {
+          consecutiveFails++;
+          if (consecutiveFails >= MAX_FAILS) {
+            finalStatus = '网络不稳定，已停止刷新 · 稍后可重新提交';
+            break;
+          }
+          // Exponential backoff capped at 10s, starting from the 2.5s cadence.
+          const wait = Math.min(10000, 2500 * Math.pow(1.5, consecutiveFails - 1));
+          await new Promise(res => setTimeout(res, wait));
+          continue;
+        }
+        consecutiveFails = 0;
+        const job = r.job;
+        // Jobs created before the backend started persisting workspace_id have
+        // no owner to compare against. Treating that as a mismatch would hide
+        // every result until the sub-app restarts, since the frontend picks up
+        // new JS on refresh while the backend keeps running old code.
+        if (job.workspace_id && job.workspace_id !== ownerWsId) {
+          setStatus('主题隔离校验失败，已阻止错误结果显示');
+          setSubmitting(false);
+          return;
+        }
+        setStatus((job.status || 'unknown') + ' ' + (job.done || 0) + '/' + (job.total || 0));
+        setEvents((job.events || []).map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n'));
+        setLatestJob(job);
+
+        if (isActive()) {
+          this._renderJobToDom(job, jobId);
+        }
+
+        if (TERMINAL_STATUSES.has((job.status || '').toLowerCase())) {
+          // 系统通知：确认终态后立即弹（去重后与 Portal 侧 15s 兜底轮询不重复）
+          notifyJobDone(jobId, job.status, '视频生成');
+          // Preserved terminal-status behavior from original pollJob:
+          //   - job.status === 'succeeded' + dirHandle → saveToClient
+          //   - job.status === 'succeeded' + autoDownload → triggerDownloads
+          // Delivery settings are captured at submit time. Reading this.* here
+          // would use whichever topic happens to be active when the task ends.
+          let deliveryNote = '';
+          if (job.status === 'succeeded' && delivery?.dirHandle) {
+            const saved = await this.saveToClient(job, delivery.dirHandle);
+            if (saved) deliveryNote = ' · 已保存 ' + saved + ' 个文件到 ' + delivery.outputDir;
+          } else if (job.status === 'succeeded' && delivery?.autoDownload) {
+            const downloaded = this.triggerDownloads(job);
+            if (downloaded) deliveryNote = ' · 已下载 ' + downloaded + ' 个文件';
+          }
+          // 终态摘要常驻状态栏（不再秒变「空闲」把错误提示抹掉），
+          // 结果卡保留可下载，下一轮提交时 submit 会清空重建。
+          const s = String(job.status || '').toLowerCase();
+          if (['succeeded', 'success', 'completed'].includes(s)) {
+            finalStatus = '上次任务：已完成' + ((job.results || []).length ? '（' + job.results.length + ' 个结果）' : '') + deliveryNote;
+          } else if (s === 'failed' || s === 'failure') {
+            finalStatus = '上次任务：失败 · ' + String(friendlyJobErrorHint(job) || '未记录原因').slice(0, 80);
+          } else {
+            finalStatus = '上次任务：已取消';
+          }
+          break;
+        }
+        await new Promise(r => setTimeout(r, 2500));
+      }
+      // Clear status + submitting on ALL exit paths (terminal AND null-break).
+      // finalStatus 非空时保留终态文案（gone / 网络中断 / 成功 / 失败），
+      // 仅「非终态提前退出」（如切 tab 后 token 失配）回到空闲。
+      setStatus(finalStatus || '空闲');
+      setSubmitting(false);
+      // Original pollJob always refreshed the jobs list on exit — keep that.
+      this.loadJobs();
+    },
+
+    // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）：
+    // 排队中直接取消；运行中弹确认（已计费提示）。后端无取消 API 时
+    // 走「取消标志 + 轮询点退出 + 结果丢弃」兜底；409 = 任务已结束。
+    async cancelJob(jobId, status) {
+      const ownerWsId = this.activeTabId;
+      this._cancellingJobIds = this._cancellingJobIds || new Set();
+      if (this._cancellingJobIds.has(jobId)) return;
+      this._cancellingJobIds.add(jobId);
+      try {
+        const normalized = String(status || '').toLowerCase();
+        if (isCancellableJob(status) && !['queued', 'pending'].includes(normalized)) {
+          if (!confirm('\u53d6\u6d88\u6b63\u5728\u751f\u6210\u7684\u4efb\u52a1\uff1f\n\n\u4efb\u52a1\u5df2\u5f00\u59cb\u8ba1\u8d39\u3002\u53d6\u6d88\u540e\u672c\u6b21\u751f\u6210\u7ed3\u679c\u5c06\u4e22\u5931\uff0c\u5df2\u4ea7\u751f\u7684\u8d39\u7528\u53ef\u80fd\u4ecd\u7136\u9700\u8981\u652f\u4ed8\u3002\n\u53d6\u6d88\u540e\u5373\u53ef\u91cd\u65b0\u53d1\u8d77\u65b0\u7684\u751f\u6210\u4efb\u52a1\u3002')) return;
+        }
+        const res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/cancel', 'POST', null, ownerWsId);
+        if (this.activeTabId !== ownerWsId) return;
+        if (!res) {
+          this.statusText = '\u53d6\u6d88\u5931\u8d25\uff1a\u7f51\u7edc\u5f02\u5e38\uff0c\u8bf7\u91cd\u8bd5';
+          return;
+        }
+        if (!res.ok) {
+          this.statusText = res.error || '\u53d6\u6d88\u5931\u8d25';
+          await this.loadJobs();
+          return;
+        }
+        this.statusText = '\u4efb\u52a1\u5df2\u53d6\u6d88\uff0c\u8f93\u5165\u548c\u53c2\u6570\u5df2\u4fdd\u7559\u3002';
+        await this.loadJobs();
+      } finally {
+        this._cancellingJobIds.delete(jobId);
+      }
+    },
+
+    // Extracted from pollJob so that both live polling (from pollJob) and
+    // tab-switch rehydration (from loadTargetTabState) can rebuild the DOM
+    // from a job snapshot. Structure must match the original pollJob output
+    // verbatim so downstream click handlers (._blobDownload via .dl-btn) still
+    // work.
+    _renderJobToDom(job, jobId) {
+      const resultsEl = document.getElementById('sd-results');
+      if (!resultsEl) return;
+
+      // #sd-events is owned by PetiteVue's {{ eventsText }} binding. Writing
+      // it here as well makes live polling and tab-state restoration compete
+      // for the same node, which causes the dark log panel to flicker when
+      // multiple topic tabs have running jobs.
+
+      // 渲染去重（性能修复）：运行期每 2.5s 轮询一次，旧实现每次轮询都
+      // 整卡重建 + 自动重新加载第一个视频——任务跑多久，第一个视频就被
+      // 反复销毁重建多久，弱机上就是「点提交之后页面一直很卡」的主因。
+      // 现在拆成两个容器：状态卡按签名去重重建，结果卡只增量追加新增
+      // 结果，用户正在播放的 <video> 不再被打断。
+      const state = (this._renderState = this._renderState || {});
+      let statusBox = resultsEl.querySelector('.ui-job-status-card-wrap');
+      let resultBox = resultsEl.querySelector('.ui-result-cards');
+      if (!statusBox || !resultBox || this._renderedJobId !== jobId) {
+        // 容器缺失（submit 清空/切主题）或渲染的是另一个任务 → 全量重建
+        resultsEl.innerHTML = '';
+        statusBox = document.createElement('div');
+        statusBox.className = 'ui-job-status-card-wrap';
+        resultBox = document.createElement('div');
+        resultBox.className = 'ui-result-cards';
+        resultsEl.appendChild(statusBox);
+        resultsEl.appendChild(resultBox);
+        this._renderedJobId = jobId;
+        delete state[jobId];
+      }
+
+      const events = job.events || [];
+      const lastEvent = events.length ? events[events.length - 1].time + events[events.length - 1].message : '';
+      const statusSig = [job.status, job.done, job.total, events.length + ':' + lastEvent, (job.errors || []).join('|')].join('\u0001');
+      const resultsSig = (job.results || []).map(r => (r.task_id || '') + '|' + (r.download_url || '') + '|' + (r.filename || '')).join('\u0001');
+      const prev = state[jobId] || { statusSig: '', resultsSig: '', count: 0, errorsCount: 0 };
+      state[jobId] = { statusSig, resultsSig, count: (job.results || []).length, errorsCount: (job.errors || []).length };
+
+      // 状态卡（进度/事件/错误提示/取消按钮）：内容变化才重建
+      if (statusSig !== prev.statusSig) {
+        const recentEvents = events.slice(-8);
+        const eventsHtml = recentEvents.length
+          ? '<div class="ui-job-status-card__events">' + recentEvents.map(e =>
+              '<div><span class="ui-job-status-card__event-time">' + escHtml(e.time) + '</span>'
+              + escHtml(e.message)
+              + '</div>'
+            ).join('') + '</div>'
+          : '<div class="ui-job-status-card__events">等待服务器响应...</div>';
+
+        // 友好错误提示：识别错误类型，显示用户友好的消息
+        // （friendlyJobErrorHint 返回原文兜底时与 job.errors[0] 相等，需转义）
+        let errorHint = friendlyJobErrorHint(job);
+        if (errorHint && errorHint === (job.errors || [])[0]) errorHint = escHtml(errorHint);
+
+        statusBox.innerHTML =
+          '<article class="ui-job-status-card ' + jobStatusClass(job.status) + '">'
+          + '<div class="ui-job-status-card__title"><span class="ui-badge ui-badge--' + jobStatusBadgeTone(job.status) + '">'
+          + jobStatusLabel(job.status) + '</span> · ' + (job.done || 0) + '/' + (job.total || 0)
+          + (jobId && isCancellableJob(job)
+             ? '<button type="button" class="cancel-job-btn" onclick="window._app_sd.cancelJob(\'' + escHtml(jobId) + '\',\'' + escHtml(job.status || 'queued') + '\')">取消任务</button>'
+             : '')
+          + (jobId && (job.results || []).length && TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())
+             ? '<button type="button" class="cancel-job-btn" onclick="window._app_sd.downloadAll(\'' + escHtml(jobId) + '\')">下载全部 (' + job.results.length + ')</button>'
+             : '')
+          + (jobId && job.retryable
+             ? '<button type="button" class="cancel-job-btn" onclick="window._app_sd.retryJob(\'' + escHtml(jobId) + '\')">重试</button>'
+             : '')
+          + '</div>'
+          + (errorHint ? '<div class="ui-job-status-card__error">' + errorHint + '</div>' : '')
+          + eventsHtml
+          + '</article>';
+      }
+
+      // Some embedded/test DOM shims expose appendChild but do not implement
+      // insertAdjacentHTML or retain the newly-created containers. Fall back
+      // to a single HTML write there so tab-state rehydration still renders
+      // the snapshot; real browsers use the incremental path below.
+      if (typeof resultBox.insertAdjacentHTML !== 'function') {
+        let html = statusBox.innerHTML || '';
+        const results = job.results || [];
+        for (const r of results) {
+          const url = APP_PATH + (r.download_url || '');
+          html += '<article class="result ui-result-card">'
+            + '<div class="video-lazy ui-media-placeholder" data-src="' + url + '" tabindex="0" role="button" aria-label="播放视频">'
+            + '<div><div class="ui-media-placeholder__icon">▶</div><div class="ui-caption">点击加载视频</div></div></div>'
+            + '<a href="' + url + '" class="dl-btn ui-result-card__download" data-url="' + url + '" data-filename="' + escHtml(r.filename || 'video') + '">下载</a>'
+            + '<div class="ui-result-card__meta">Run ' + (r.index || '') + ' · ' + (r.task_id || '') + '</div>'
+            + '</article>';
+        }
+        for (const err of job.errors || []) {
+          html += '<article class="ui-alert ui-alert--danger" role="alert">' + escHtml(err) + '</article>';
+        }
+        resultsEl.innerHTML = html;
+        return;
+      }
+
+      // 结果卡：任务结果只会越来越多，增量追加新增结果即可；旧结果
+      // （含正在播放的 <video>）原样保留，轮询不再反复重建。
+      if (resultsSig !== prev.resultsSig) {
+        const results = job.results || [];
+        for (let i = prev.count; i < results.length; i++) {
+          const r = results[i];
+          const url = APP_PATH + (r.download_url || '');
+          // Lazy: render a click-to-play placeholder instead of <video preload="metadata">.
+          // 20+ videos in one job otherwise fire 20+ concurrent SSL fetches
+          // through the portal proxy → Chrome's per-host cap and portal's
+          // buffer-then-forward path combine into ERR_TOO_MANY_RETRIES.
+          // insertAdjacentHTML（而非 innerHTML +=）：+= 会把容器内全部
+          // 子元素重新解析，正在播放的 <video> 会再次被销毁重拉。
+          resultBox.insertAdjacentHTML('beforeend',
+            '<article class="result ui-result-card" data-result-index="' + i + '">'
+            + '<div class="video-lazy ui-media-placeholder" data-src="' + url + '" tabindex="0" role="button" aria-label="播放视频">'
+            + '<div><div class="ui-media-placeholder__icon">▶</div><div class="ui-caption">点击加载视频</div></div></div>'
+            + '<a href="' + url + '" class="dl-btn ui-result-card__download" data-url="' + url + '" data-filename="' + escHtml(r.filename || 'video') + '">下载</a>'
+            + '<div class="ui-result-card__meta">Run ' + (r.index || '') + ' · ' + (r.task_id || '') + '</div>'
+            + '</article>');
+        }
+        for (let ei = prev.errorsCount; ei < (job.errors || []).length; ei++) {
+          // 原始报错默认折叠，友好提示已在上方状态卡展示
+          resultBox.insertAdjacentHTML('beforeend',
+            '<details class="ui-raw-error" style="margin:8px 0;font-size:12px;color:#697386">'
+            + '<summary style="cursor:pointer">查看原始报错 ' + (ei + 1) + '/' + (job.errors || []).length + '</summary>'
+            + '<pre style="white-space:pre-wrap;margin:6px 0 0;padding:8px;background:#fff1f0;border-radius:6px;color:#b42318">'
+            + escHtml(job.errors[ei]) + '</pre></details>');
+        }
+
+        // Auto-preview only the FIRST finished video, and only once per job
+        // (prev.count === 0 = this is the first render for this job).
+        // 每个新结果都自动预览会让 repeat 任务挂 N 条并发视频流：客户端
+        // 解码压力 + Portal 整文件缓冲双重负担（实测 5 条流吃 27% CPU，
+        // 2026-09-02 页面卡死根因）。后续结果保持点击播放占位。
+        if (prev.count === 0) {
+          const firstCard = resultBox.querySelector('[data-result-index="0"]');
+          const firstLazy = firstCard && firstCard.querySelector('.video-lazy[data-src]');
+          if (firstLazy) firstLazy.click();
+        }
+      }
+    },
+
+    _clearTopicResultDom() {
+      const resultsEl = document.getElementById('sd-results');
+      const eventsEl = document.getElementById('sd-events');
+      if (resultsEl) resultsEl.innerHTML = '';
+      if (eventsEl) eventsEl.textContent = '';
+    },
+
+    async saveToClient(job, dirHandle) {
+      try {
+        const files = [];
+        for (const r of job.results || []) {
+          if (r.download_url) files.push({ url: APP_PATH + r.download_url, filename: r.filename || 'video' });
+        }
+        for (const { url, filename } of files) {
+          const resp = await fetch(url);
+          const blob = await resp.blob();
+          const fh = await dirHandle.getFileHandle(filename, { create: true });
+          const w = await fh.createWritable();
+          await w.write(blob);
+          await w.close();
+        }
+        return files.length;
+      } catch (e) {
+        console.warn('saveToClient failed:', e);
+        return 0;
+      }
+    },
+
+    triggerDownloads(job) {
+      const urls = [];
+      for (const r of job.results || []) {
+        if (r.download_url) urls.push({ url: APP_PATH + r.download_url, filename: r.filename || 'video' });
+      }
+      for (const { url, filename } of urls) {
+        this._blobDownload(url, filename);
+      }
+      return urls.length;
+    },
+
+    // 终态摘要 → 历史列表视图：同步写回 tab 缓存，避免切走再切回时
+    // loadTargetTabState 用缓存里的旧摘要覆盖
+    backToHistory() {
+      this.statusText = '空闲';
+      this.eventsText = '';
+      this._renderedJobId = null;
+      const cache = this._tabStateCache[this.activeTabId];
+      if (cache) { cache.statusText = '空闲'; cache.eventsText = ''; delete cache._latestJob; }
+      this.loadJobs();
+    },
+
+    // 中断任务一键重试：后端按落盘参数重提新任务，前端切到新任务轮询
+    async retryJob(jobId) {
+      const ownerWsId = this.activeTabId;
+      const res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/retry', 'POST', null, ownerWsId);
+      if (this.activeTabId !== ownerWsId) return;
+      if (!res || !res.ok) {
+        this.statusText = (res && res.error) || '重试失败：网络异常，请稍后重试';
+        return;
+      }
+      const submissionToken = (this._topicSubmissionSeq[ownerWsId] || 0) + 1;
+      this._topicSubmissionSeq[ownerWsId] = submissionToken;
+      const cache = this._tabStateCache[ownerWsId];
+      cache._submissionToken = submissionToken;
+      cache._activeJobId = res.job_id;
+      this.submitting = true;
+      this.statusText = '已重试，任务 ' + res.job_id + ' 在后台运行';
+      const resultsEl = document.getElementById('sd-results');
+      const eventsEl = document.getElementById('sd-events');
+      if (resultsEl) resultsEl.innerHTML = '';
+      if (eventsEl) eventsEl.textContent = '';
+      this.eventsText = '';
+      this.loadJobs();
+      this.pollJob(res.job_id, ownerWsId, submissionToken, {
+        dirHandle: this.dirHandle, autoDownload: this.autoDownload, outputDir: this.outputDir,
+      });
+    },
+
+    // 一键下载全部：错开 400ms 逐个下载，避免并发打满 Portal 代理缓冲
+    downloadAll(jobId) {
+      const cache = this._tabStateCache[this.activeTabId];
+      const job = (this.jobs || []).find(j => (j.id || j.job_id) === jobId)
+        || (cache && cache._latestJob && (cache._latestJob.id === jobId || cache._latestJob.job_id === jobId) && cache._latestJob);
+      if (!job || !(job.results || []).length) {
+        this.statusText = '没有可下载的结果';
+        return;
+      }
+      job.results.forEach((r, i) => {
+        if (r.download_url) {
+          setTimeout(() => this._blobDownload(APP_PATH + r.download_url, r.filename || ('result-' + (r.index ?? i))), i * 400);
+        }
+      });
+      this.statusText = '开始下载 ' + job.results.length + ' 个结果…';
+    },
+
+    async _blobDownload(url, filename) {
+      // fetch → blob → <a download> dodges the self-signed-cert trap (Chrome's
+      // download manager re-validates out of page context and rejects our LAN
+      // cert). Cost: whole file into memory, no native progress — so we stream
+      // the response and render our own progress bar (window._dlProgress).
+      const bar = window._dlProgress ? window._dlProgress.start(filename) : null;
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = bar ? await bar.readBlob(resp) : await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        if (bar) bar.done();
+      } catch (e) {
+        if (bar) bar.fail();
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+    },
+
+    // ============================================================
+    // UPLOAD SLOTS
+    // ============================================================
+    buildUploadSlots() {
+      const ir = document.getElementById('sd-imageRefs');
+      const vr = document.getElementById('sd-videoRefs');
+      const ar = document.getElementById('sd-audioRefs');
+      if (ir) {
+        for (let i = 1; i <= 9; i++) makeDrop(ir, 'ref_image_' + i, '@ref_image' + i, 'image/*', 'sd-form');
+      }
+      if (vr) {
+        for (let i = 1; i <= 3; i++) makeDrop(vr, 'ref_video_' + i, '参考视频 ' + i, 'video/*', 'sd-form');
+      }
+      if (ar) {
+        for (let i = 1; i <= 3; i++) makeDrop(ar, 'ref_audio_' + i, '参考音频 ' + i, 'audio/*', 'sd-form');
+      }
+    },
+
+    wireDrops() {
+      setTimeout(() => {
+        document.querySelectorAll('#sd-app .drop').forEach(drop => {
+          const input = drop.querySelector('input[type="file"]');
+          if (input && !input.dataset.wired) {
+            wireFileDrop(drop, input, input.name);
+          }
+        });
+      }, 0);
+    },
+
+    // ============================================================
+    // APPLY PRESET (archive load / activity restore / config load)
+    // ============================================================
+    applyPreset(preset) {
+      if (!preset) return;
+      clearAllMediaPreviews();
+      const values = preset.values || {};
+
+      for (const [name, value] of Object.entries(values)) {
+        // API key is server-managed; never restore from saved draft.
+        if (name === 'api_key') continue;
+        // Restore the saved provider when still known; otherwise keep current.
+        if (name === 'provider') {
+          this.applyProvider(this.providers[value] ? value : this.provider, true);
+          continue;
+        }
+        if (name === 'base_url') { this.baseUrl = value; continue; }
+        if (name === 'output_dir') { this.outputDir = value; continue; }
+        if (name === 'custom_model') { this.customModel = value; continue; }
+        if (name === 'web_search') { this.webSearch = ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase()); continue; }
+        if (name === 'poll_interval') { this.pollInterval = Number(value) || 10; continue; }
+        if (name === 'timeout') { this.timeout = Number(value) || 3600; continue; }
+        if (name === 'workspace_name') { this.workspaceName = value || '默认主题'; continue; }
+
+        // For other fields, set DOM directly
+        const el = field(name);
+        if (!el) continue;
+        if (el.type === 'checkbox') {
+          el.checked = ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+        } else if (el.type !== 'file') {
+          el.value = value;
+        }
+      }
+
+      // Handle saved media
+      if (preset.media) {
+        this.savedMedia = mediaSnapshot(preset.media);
+        for (const [name, item] of Object.entries(preset.media)) {
+          const el = field(name);
+          const drop = el?.closest('.drop');
+          if (drop && item.url) {
+            const mediaUrl = item.url.startsWith('/api/') ? APP_PATH + item.url : item.url;
+            showPreview(drop, name, mediaUrl, item.filename || '已上传');
+          }
+        }
+      } else {
+        this.savedMedia = {};
+      }
+
+      // Re-narrow duration/resolution/ratio to the restored model's limits.
+      // The loop above writes the model <select> with `el.value = ...`, which
+      // does NOT fire a 'change' event, so the listener wired in init() never
+      // runs on restore. Without this call the duration input keeps the static
+      // max="15" from index.html, and the number-stepper refuses to reach 30
+      // even when Seedance 2.5 (duration_range [4,30]) is selected.
+      this.applyModelLimits();
+
+      const mediaCount = Object.keys(this.savedMedia).length;
+      if (mediaCount) this.archiveHint = '已读取保存配置：' + mediaCount + ' 个素材';
+    },
+
+    // ============================================================
+    // WORKSPACE SYSTEM
+    // ============================================================
+    scheduleWorkspaceSave() {
+      clearTimeout(this._workspaceSaveTimer);
+      this._workspaceSaveTimer = setTimeout(() => this.saveWorkspaceDraft(), 500);
+    },
+
+    async saveWorkspaceDraft() {
+      const payload = {
+        name: this.workspaceName.trim() || '默认主题',
+        values: collectFormValues(),
+        media: mediaSnapshot(this.savedMedia),
+        saved_at: Date.now(),
+      };
+      // Key must track activeTabId so each tab's draft stays isolated.
+      // Using a fixed key computed at init caused all tabs to overwrite one another.
+      const key = 'seedance.workspace.' + this.activeTabId;
+      localStorage.setItem(key, JSON.stringify(payload));
+      this.workspaceHint = '已保存草稿：' + payload.name;
+      return payload;
+    },
+
+    loadWorkspaceDraft() {
+      if (this._workspaceId !== 'default' && this._workspaceId) {
+        this.workspaceName = '主题 ' + this._workspaceId.slice(0, 6);
+        this.workspaceHint = '当前是独立主题页，可与其它主题并发提交';
+      } else {
+        this.workspaceName = '默认主题';
+        this.workspaceHint = '默认主题会读取当前保存配置';
+      }
+
+      // Key must track activeTabId — see saveWorkspaceDraft.
+      const key = 'seedance.workspace.' + this.activeTabId;
+      const raw = localStorage.getItem(key);
+      if (!raw) return false;
+      try {
+        const draft = JSON.parse(raw);
+        if (draft.name) this.workspaceName = draft.name;
+        this.applyPreset({ values: draft.values || {}, media: draft.media || {} });
+        this.workspaceHint = '已读取主题草稿：' + this.workspaceName;
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+    loadPreset() {
+      const ownerWorkspaceId = this.activeTabId;
+      // Try workspace draft first
+      if (this.loadWorkspaceDraft()) return;
+
+      // Fall back to API preset
+      if (this._workspaceId === 'default' || !this._workspaceId) {
+        // Will load after init via the async pattern
+        this._loadApiPreset(ownerWorkspaceId);
+      }
+    },
+
+    async _loadApiPreset(ownerWorkspaceId) {
+      const ownerWsId = ownerWorkspaceId || this.activeTabId;
+      const res = await api(APP_PATH + '/api/preset', 'GET', null, ownerWsId);
+      if (res && this.activeTabId === ownerWsId) {
+        this.applyPreset(res);
+      }
+    },
+
+    isWorkspaceMode() {
+      return this._workspaceId !== 'default' && !!this._workspaceId;
+    },
+
+    // ============================================================
+    // TAB BAR METHODS (Task 2)
+    // ============================================================
+    saveTabsToLocalStorage() {
+      localStorage.setItem('seedance.tabs', JSON.stringify({
+        tabs: this.tabs.map(t => ({ id: t.id, name: t.name })),
+        activeTabId: this.activeTabId,
+      }));
+    },
+
+    newTab() {
+      this.saveCurrentTabState();
+      const id = 'ws-' + Date.now() + '-' + Math.random().toString(16).slice(2, 7);
+      this.tabs.push({ id, name: '未命名主题', running: false });
+      this.activeTabId = id;
+      window._activeWorkspaceId = id;
+      this.workspaceName = '';
+      this.savedMedia = {};
+      this.outputDir = '';
+      this.dirHandle = null;
+      this.autoDownload = false;
+      const form = document.querySelector('#sd-form');
+      if (form) form.reset();
+      // form.reset() clears file inputs' .files but not the preview <img>/<video>
+      // that showPreview() manually injected into each .drop — mirror the cleanup
+      // applyPreset() already does so the new tab starts truly blank.
+      clearAllMediaPreviews();
+      this.statusText = '空闲';
+      this.eventsText = '';
+      this.submitting = false;
+      this.taskMode = 'reference';
+      this._prevTaskMode = 'reference';
+      this._taskModeMemory = {
+        reference: { ratio: '16:9', duration: 12 },
+        extend:    { ratio: 'adaptive', duration: 5 },
+        edit:      { ratio: 'adaptive', duration: -1 },
+      };
+      this._clearTopicResultDom();
+      this.saveTabsToLocalStorage();
+      setTimeout(() => this._scrollActiveTabIntoView(), 0);
+    },
+
+    switchTab(id) {
+      if (id === this.activeTabId || this.editingTabId) return;
+      this.saveCurrentTabState();
+      this.activeTabId = id;
+      window._activeWorkspaceId = id;
+      this.loadTargetTabState();
+      this.saveTabsToLocalStorage();
+      setTimeout(() => this._scrollActiveTabIntoView(), 0);
+    },
+
+    startEditTab(id) { this.editingTabId = id; },
+
+    finishEditTab(id, name) {
+      const trimmed = (name || '').trim() || '未命名主题';
+      const tab = this.tabs.find(t => t.id === id);
+      if (tab) {
+        tab.name = trimmed;
+        if (id === this.activeTabId) this.workspaceName = trimmed;
+        if (typeof this.saveWorkspaceDraft === 'function') this.saveWorkspaceDraft();
+        this.saveTabsToLocalStorage();
+      }
+      this.editingTabId = null;
+    },
+
+    closeTab(id) {
+      const tab = this.tabs.find(t => t.id === id);
+      if (!tab || this.tabs.length <= 1) return;
+      if (tab.running) { this._closeConfirmTabId = id; return; }
+      this._forceCloseTab(id);
+    },
+
+    _forceCloseTab(id) {
+      const idx = this.tabs.findIndex(t => t.id === id);
+      if (idx < 0 || this.tabs.length <= 1) return;
+      this.tabs.splice(idx, 1);
+      localStorage.removeItem('seedance.workspace.' + id);
+      delete this._tabStateCache[id];
+      if (this.activeTabId === id) {
+        this.activeTabId = this.tabs[Math.max(0, idx - 1)].id;
+        window._activeWorkspaceId = this.activeTabId;
+        this.loadTargetTabState();
+      }
+      this.saveTabsToLocalStorage();
+    },
+
+    saveCurrentTabState() {
+      const wsId = this.activeTabId;
+      if (typeof this.saveWorkspaceDraft === 'function') this.saveWorkspaceDraft();
+      // Preserve any fields already set by pollJob (notably _latestJob) so tab
+      // switch → return still has a snapshot to re-render.
+      this._tabStateCache[wsId] = {
+        ...(this._tabStateCache[wsId] || {}),
+        statusText: this.statusText,
+        eventsText: this.eventsText,
+        submitting: this.submitting,
+        baseUrl: this.baseUrl,
+        provider: this.provider,
+        models: this.models ? JSON.parse(JSON.stringify(this.models)) : [],
+        workspaceName: this.workspaceName,
+        outputDir: this.outputDir,
+        dirHandle: this.dirHandle,
+        autoDownload: this.autoDownload,
+        taskMode: this.taskMode,
+        _prevTaskMode: this._prevTaskMode,
+        _taskModeMemory: JSON.parse(JSON.stringify(this._taskModeMemory)),
+      };
+    },
+
+    loadTargetTabState() {
+      const wsId = this.activeTabId;
+      const cache = this._tabStateCache[wsId] || {};
+      this.statusText = cache.statusText || '空闲';
+      this.eventsText = cache.eventsText || '';
+      this.submitting = cache.submitting || false;
+      if (cache.baseUrl !== undefined) this.baseUrl = cache.baseUrl;
+      if (cache.provider !== undefined) {
+        let savedProvider = cache.provider;
+        if (savedProvider === 'comfyui_local' && this.localReady === false) {
+          const keys = Object.keys(this.providers);
+          for (let ti = 0; ti < keys.length; ti++) {
+            if (keys[ti] !== 'comfyui_local' && this.providers[keys[ti]]) {
+              savedProvider = keys[ti];
+              break;
+            }
+          }
+        }
+        this.provider = savedProvider;
+        this._activeProvider = savedProvider;
+      }
+      if (cache.models !== undefined) this.models = cache.models;
+      if (cache.workspaceName !== undefined) this.workspaceName = cache.workspaceName;
+      this.outputDir = cache.outputDir !== undefined ? cache.outputDir : '';
+      this.dirHandle = cache.dirHandle || null;
+      this.autoDownload = cache.autoDownload || false;
+      // Task-type mode is per-tab: the提示 <p class="hint" v-if="taskMode..."> and
+      // the ratio/duration memory would otherwise leak across topics.
+      this.taskMode = cache.taskMode || 'reference';
+      this._prevTaskMode = cache._prevTaskMode || this.taskMode;
+      this._taskModeMemory = cache._taskModeMemory
+        ? JSON.parse(JSON.stringify(cache._taskModeMemory))
+        : {
+            reference: { ratio: '16:9', duration: 12 },
+            extend:    { ratio: 'adaptive', duration: 5 },
+            edit:      { ratio: 'adaptive', duration: -1 },
+          };
+      const form = document.querySelector('#sd-form');
+      if (form) form.reset();
+      this.savedMedia = {};
+      if (typeof this.loadPreset === 'function') this.loadPreset();
+      // form.reset() restores the duration input's default *value* but not the
+      // min/max *attributes* we set from the previous tab's model, and a tab
+      // with no saved draft never reaches applyPreset(). Re-narrow here so the
+      // limits always match whichever model the select is actually showing.
+      this.applyModelLimits();
+
+      // If a background pollJob stashed a job snapshot for this tab, replay it
+      // into the DOM. Otherwise clear any stale DOM left by the previous tab.
+      // The cache key already proves ownership, so a snapshot predating backend
+      // workspace_id persistence is still this tab's own result.
+      if (cache._latestJob && (!cache._latestJob.workspace_id || cache._latestJob.workspace_id === wsId)) {
+        this._renderJobToDom(cache._latestJob, cache._activeJobId);
+      } else {
+        delete cache._latestJob;
+        this._clearTopicResultDom();
+      }
+    },
+
+    _scrollActiveTabIntoView() {
+      const el = document.querySelector('.app-tab.active');
+      if (el && el.scrollIntoView) el.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    },
+  };
+}
+
+// ============================================================
+// PREVIEW DIALOG — vanilla JS (outside PetiteVue scope)
+// ============================================================
+document.addEventListener('DOMContentLoaded', function () {
+  var dlg = document.getElementById('previewDialog');
+  var closeBtn = document.getElementById('closePreviewBtn');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', function () { if (dlg) dlg.close(); });
+  }
+  if (dlg) {
+    dlg.addEventListener('click', function (e) {
+      if (e.target === dlg) dlg.close();
+    });
+  }
+});
+
+// SeedanceApp must be globally accessible for PetiteVue v-scope
+window.SeedanceApp = SeedanceApp;
+
+// Mount PetiteVue — initializes v-scope and @vue:mounted directives
+PetiteVue.createApp({ SeedanceApp }).mount();
+
+// === Download progress bar (shared, self-contained) ===================
+// blob-download reads the whole file into browser memory with no native
+// progress UI. This overlay reads the response as a stream and shows a
+// bottom-of-screen bar ("已下载 42.0 / 180.0 MB") so users don't think it hung.
+// Injects its own DOM+CSS on first use; concurrent downloads each get a row.
+(function () {
+  if (window._dlProgress) return;
+  var MB = 1024 * 1024;
+  var container = null;
+  function ensureContainer() {
+    if (container) return container;
+    var style = document.createElement('style');
+    style.textContent =
+      '#_dlProgWrap{position:fixed;left:16px;bottom:16px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none}' +
+      '#_dlProgWrap .dlp{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:240px;max-width:340px;box-shadow:var(--shadow-md);font-size:12px;pointer-events:auto}' +
+      '#_dlProgWrap .dlp .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px}' +
+      '#_dlProgWrap .dlp .track{height:6px;background:var(--surface-sunken);border-radius:3px;overflow:hidden}' +
+      '#_dlProgWrap .dlp .fill{height:100%;width:0;background:var(--accent);transition:width .15s ease}' +
+      '#_dlProgWrap .dlp .txt{margin-top:5px;color:var(--muted);font-size:11px}' +
+      '#_dlProgWrap .dlp.done .fill{background:var(--success)}' +
+      '#_dlProgWrap .dlp.fail .fill{background:var(--danger)}';
+    document.head.appendChild(style);
+    container = document.createElement('div');
+    container.id = '_dlProgWrap';
+    document.body.appendChild(container);
+    return container;
+  }
+  function fmt(bytes) { return (bytes / MB).toFixed(1); }
+  window._dlProgress = {
+    start: function (filename) {
+      var wrap = ensureContainer();
+      var row = document.createElement('div');
+      row.className = 'dlp';
+      row.innerHTML =
+        '<div class="name">⬇ ' + (filename || '下载中') + '</div>' +
+        '<div class="track"><div class="fill"></div></div>' +
+        '<div class="txt">准备中…</div>';
+      wrap.appendChild(row);
+      var fill = row.querySelector('.fill');
+      var txt = row.querySelector('.txt');
+      var removed = false;
+      function remove(delay) {
+        if (removed) return; removed = true;
+        setTimeout(function () { if (row.parentNode) row.parentNode.removeChild(row); }, delay);
+      }
+      return {
+        readBlob: async function (resp) {
+          var total = Number(resp.headers.get('Content-Length')) || 0;
+          if (!resp.body || !resp.body.getReader) { txt.textContent = '下载中…'; return await resp.blob(); }
+          var reader = resp.body.getReader();
+          var chunks = [];
+          var received = 0;
+          for (;;) {
+            var r = await reader.read();
+            if (r.done) break;
+            chunks.push(r.value);
+            received += r.value.length;
+            if (total) {
+              var pct = Math.min(100, received / total * 100);
+              fill.style.width = pct.toFixed(1) + '%';
+              txt.textContent = '已下载 ' + fmt(received) + ' / ' + fmt(total) + ' MB (' + pct.toFixed(0) + '%)';
+            } else {
+              txt.textContent = '已下载 ' + fmt(received) + ' MB';
+            }
+          }
+          return new Blob(chunks);
+        },
+        done: function () {
+          row.classList.add('done');
+          fill.style.width = '100%';
+          txt.textContent = '完成';
+          remove(1200);
+        },
+        fail: function () {
+          row.classList.add('fail');
+          txt.textContent = '下载出错，已尝试直接下载';
+          remove(2500);
+        },
+      };
+    },
+  };
+})();

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Seedance</title>
   <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix7-datadriven">
-  <link rel="stylesheet" href="styles.css?v=20260910-fix7-datadriven">
+  <link rel="stylesheet" href="styles.css?v=20260917-multi-preview">
   <script src="vendor/petite-vue.iife.js"></script>
 </head>
 <body class="ui-page">
@@ -34,20 +34,8 @@
           <span class="app-status-dot" :class="appStatus"></span>
         </h1>
         <form id="sd-form" @submit.prevent="submit()">
-          <!-- API -->
-          <section>
-            <h2>接口</h2>
-            <label>供应商
-              <select name="provider" v-model="provider" @change="onProviderChange($event.target.value)">
-                <option v-for="(cfg, key) in providers" :value="key"
-                        :disabled="key === 'comfyui_local' && !localReady">
-                  {{ cfg.label || key }}{{ key === 'comfyui_local' && !localReady ? '（本地模型未连接，不可用）' : '' }}
-                </option>
-              </select>
-            </label>
-            <p v-if="!localReady" class="hint" style="color:#b45309;margin:2px 0 4px">本地 AI Port 未连接：本地 ComfyUI / MiniMax H3 模型不可用，当前仅提供云端模型。</p>
-            <p class="hint">{{ providerHint }}</p>
-            <label>Base URL<input name="base_url" v-model="baseUrl" :readonly="provider !== 'comfyui_local'" :title="provider !== 'comfyui_local' ? '云端模型地址由服务器锁定，无需修改' : ''"></label>
+          <!-- Output -->
+          <section v-if="!inPortal">
             <!-- 输出目录选择仅在独立本地模式(直连 :8787)显示。Portal(远程)模式
                  下隐藏:结果统一存服务机 outputs/<用户名>/<日期>/,自定义路径对远程
                  用户无意义(浏览器写不到访问者电脑)且会导致产出散落、无法同步飞书。 -->
@@ -57,22 +45,20 @@
               <button type="button" v-if="!inPortal" @click="outputDir=''">程序 outputs</button>
               <button type="button" v-if="!inPortal" @click="desktopOutput()">桌面 outputs</button>
               <button type="button" v-if="!inPortal" @click="openOutputDir()">打开目录</button>
-              <button type="button" @click="cleanCache()">清理缓存</button>
             </div>
           </section>
-
           <!-- Parameters -->
           <section>
             <h2>参数</h2>
             <label>模型
-              <select name="model">
-                <option v-for="m in models" :value="m.id || m">{{ m.label || m.id || m }}</option>
+              <select name="model" v-model="model" @change="applyModelLimits()">
+                <option v-for="m in models" :value="m.key" :disabled="!!m.disabled">
+                  {{ m.label + (m.disabled ? '（已失效）' : '') }}
+                </option>
               </select>
             </label>
+            <p v-if="modelSummary" class="hint" style="margin:4px 0 6px;color:#475569">{{ modelSummary }}</p>
             <p v-if="modelHint" class="hint" style="color:#b45309;margin:2px 0 4px">{{ modelHint }}</p>
-            <label>自定义模型名（高级）
-              <input name="custom_model" v-model="customModel" placeholder="留空使用上方模型">
-            </label>
             <label>任务类型
               <select v-model="taskMode" @change="changeTaskMode()">
                 <option value="reference">参考生视频（默认）</option>
@@ -83,7 +69,7 @@
             <div class="grid2">
               <label>时长（秒）<input name="duration" type="number" min="-1" max="15" value="12"></label>
               <label>分辨率
-                <select name="resolution">
+                <select name="resolution" @change="applyModelLimits()">
                   <option>720p</option><option>480p</option><option>1080p</option><option>4k</option>
                 </select>
               </label>
@@ -142,8 +128,8 @@
           <button type="submit" :disabled="submittingRequest">{{ submittingRequest ? '提交中...' : '开始生成' }}</button>
 
           <!-- 配置方案 -->
-          <section class="archiveBox" :class="{ dirty: isDirty }">
-            <h2>配置方案 <span v-if="isDirty" class="dirtyBadge">未保存</span></h2>
+          <section class="archiveBox">
+            <h2>配置方案</h2>
 
             <div class="schemeRow">
               <label>保存当前配置方案
@@ -203,43 +189,15 @@
         </div>
 
         <div class="resultPanel ui-panel ui-workbench__output">
-          <div class="workspace-nav-grid">
-            <button type="button" class="tabBtn workspace-nav-btn" :class="{ isActive: wsTab === 'jobs' }" @click="switchJobsTab()">任务</button>
-            <button type="button" class="tabBtn workspace-nav-btn" :class="{ isActive: wsTab === 'activity' }" @click="switchActivityTab()">活动</button>
-            <div v-if="wsTab === 'activity' && activityDetail" style="display:contents">
-              <button type="button" class="ui-btn ui-btn--secondary workspace-nav-btn" @click="activityDetail=null">← 返回列表</button>
-              <button type="button" class="btn-small ui-btn ui-btn--primary workspace-nav-btn" @click="restoreActivity()">恢复参数</button>
-            </div>
-          </div>
           <div v-show="wsTab==='jobs'">
-            <!-- Active polling display (during job execution).
-                 任务终态后 statusText 变为「上次任务：…」摘要，此面板保留
-                 结果与下载按钮；「← 返回历史」切回历史列表视图。 -->
-            <div v-if="statusText !== '空闲'">
-              <div class="resultHeader"><h2>{{ statusText.indexOf('上次任务') === 0 ? '上次任务' : '运行中' }}</h2><span>{{ statusText }}</span>
-                <button @click="openActiveJobDetail()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">📋 详情</button>
-                <button v-if="statusText.indexOf('上次任务') === 0" @click="backToHistory()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px">← 返回历史</button>
-              </div>
-              <div class="results" id="sd-results"></div>
-              <pre id="sd-events" v-if="eventsText">{{ eventsText }}</pre>
-            </div>
-            <!-- Job history (shown when idle, after polling completes) -->
-            <div v-if="statusText === '空闲'">
-              <div class="resultHeader"><h2>生成历史 <button @click="loadJobs()" style="font-size:11px;padding:3px 10px;margin-left:8px;cursor:pointer">刷新</button></h2></div>
-              <div id="sd-jobsEmpty" v-if="jobs.length===0" style="color:#697386;font-size:12px;padding:12px 0">暂无生成记录，提交任务后自动显示</div>
-              <!-- 任务矩阵：一个任务一个格子（缩略图 / 状态 / 下载 / 详情） -->
-              <div id="sd-jobsGrid" class="job-grid"></div>
-              <button v-if="jobs.length > jobsLimit" @click="jobsLimit += 20; renderJobsGrid()"
-                      style="width:100%;padding:8px;margin-top:4px;font-size:12px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px">
-                加载更多（还有 {{ jobs.length - jobsLimit }} 条）
-              </button>
-            </div>
-            <div v-show="!!selectedJobId">
-              <button class="ui-btn ui-btn--secondary ui-btn--block" style="margin-bottom:8px" @click="closeJobDetail()">← 返回列表</button>
-              <div class="resultHeader"><h2>{{ selectedJobLabel || '任务详情' }}</h2></div>
-              <div class="results" id="sd-results"></div>
-              <pre id="sd-events">{{ eventsText }}</pre>
-            </div>
+            <div class="resultHeader"><h2>任务</h2><span>{{ statusText }}</span></div>
+            <div id="sd-jobsEmpty" v-if="jobs.length===0" style="color:#697386;font-size:12px;padding:12px 0">暂无生成记录，提交任务后自动显示</div>
+            <!-- 任务矩阵：一个任务一个格子（缩略图 / 状态 / 取消 / 下载 / 详情） -->
+            <div id="sd-jobsGrid" class="job-grid"></div>
+            <button v-if="jobs.length > jobsLimit" @click="jobsLimit += 20; renderJobsGrid()"
+                    style="width:100%;padding:8px;margin-top:4px;font-size:12px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px">
+              加载更多（还有 {{ jobs.length - jobsLimit }} 条）
+            </button>
           </div>
           <div v-show="wsTab==='activity'" class="activity-panel-inner">
             <div v-show="!activityDetail">
@@ -247,6 +205,7 @@
                 <span>共 {{ activityCounts.total }} 条</span>
                 <span class="act-ok">成功 {{ activityCounts.succeeded }}</span>
                 <span class="act-fail">失败 {{ activityCounts.failed }}</span>
+                <span>取消 {{ activityCounts.cancelled || 0 }}</span>
               </div>
               <div class="activity-records">
                 <div v-for="r in activityRecords" :key="r.id" class="act-item" @click="showDetail(r.id)">
@@ -282,27 +241,6 @@
       </section>
     </main>
 
-    <div v-if="_closeConfirmTabId" class="modal-overlay" @click.self="_closeConfirmTabId = null">
-      <div class="modal">
-        <div class="modal-title">关闭「{{ (tabs.find(function(t){ return t.id === _closeConfirmTabId; }) || {}).name }}」？</div>
-        <div class="modal-body">该主题有任务正在跑。关闭后任务会在后台继续，可从运行历史面板查看结果。</div>
-        <div class="modal-btns">
-          <button type="button" @click="_closeConfirmTabId = null">取消</button>
-          <button type="button" class="danger" @click="_forceCloseTab(_closeConfirmTabId); _closeConfirmTabId = null">仍然关闭</button>
-        </div>
-      </div>
-    </div>
-    <div v-if="_dirtyDialogOpen" class="modal-overlay" @click.self="_dirtyCancel">
-      <div class="modal">
-        <div class="modal-title">⚠️ 配置已修改但未保存</div>
-        <div class="modal-body">当前配置有未保存的修改，请选择如何处理。</div>
-        <div class="modal-btns">
-          <button type="button" :disabled="currentSchemeName === '默认方案'" @click="_dirtySaveAndContinue">保存到当前方案</button>
-          <button type="button" @click="_dirtyDiscardAndContinue">放弃修改</button>
-          <button type="button" class="danger" @click="_dirtyCancel">取消</button>
-        </div>
-      </div>
-    </div>
   </div>
 
   <dialog id="previewDialog" class="previewDialog">
@@ -311,7 +249,7 @@
   </dialog>
 
   <script src="model-capabilities.js"></script>
-  <script src="app.js?v=20260910-fix7-datadriven"></script>
+  <script src="app.js?v=20260917-multi-preview"></script>
   <script src="effects.js?v=20260910-fx-perf"></script>
 </body>
 </html>

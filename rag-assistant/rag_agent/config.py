@@ -39,8 +39,8 @@ class Settings:
 
     openai_embedding_model: str = "text-embedding-3-small"
     vision_model: str = "gpt-4o"
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    deepseek_model: str = "deepseek-v4-1-flash-260910"
 
     # 扫码前语义闸门（复用 embedding，避免无关输入触发扫码）
     # 允许扫码的报错类分差保持严格。

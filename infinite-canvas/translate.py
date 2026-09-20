@@ -166,6 +166,7 @@ async def _fetch_catalog(app: str) -> list:
                         "model_id": composite,
                         "service_id": app,
                         "display_name": f"{display}（{label}）",
+                        "disabled": bool(entry.get("disabled")),
                         "operations": ["image.generate", "image.edit"],
                         "input_media": ["text", "image"],
                         "parameter_schema": _image_schema(provider, cfg),
@@ -187,6 +188,7 @@ async def _fetch_catalog(app: str) -> list:
                         "model_id": composite,
                         "service_id": app,
                         "display_name": display,
+                        "disabled": bool(entry.get("disabled")),
                         "operations": ["video.generate", "video.image_to_video"],
                         "input_media": ["text", "image", "video"],
                         "parameter_schema": _video_schema(cfg.get("defaults") or {}, entry),
@@ -273,6 +275,8 @@ async def _submission_guard(app: str, composite: str, params: dict, inputs: dict
             break
     if spec is None:
         return None
+    if spec.get("disabled"):
+        return f"模型「{spec.get('display_name') or composite}」已失效，暂时不可用，请选择其他模型。"
     schema = spec.get("parameter_schema") or {}
     properties = schema.get("properties") if isinstance(schema, dict) else {}
     if isinstance(properties, dict):

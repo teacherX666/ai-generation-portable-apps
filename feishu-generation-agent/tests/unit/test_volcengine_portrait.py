@@ -9,9 +9,12 @@ from PIL import Image
 
 from feishu_generation_agent.domain.document import MediaAsset
 from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
+from feishu_generation_agent.domain.plan import GenerationTask
+from feishu_generation_agent.domain.video_models import VIDEO_MODEL_BY_KEY
 from feishu_generation_agent.integrations.public_media import PublicMediaUploadError
 from feishu_generation_agent.integrations.volcengine_portrait import (
     VolcengineAssetClient,
+    VolcenginePortraitVideoGenerator,
 )
 from feishu_generation_agent.storage.portrait_assets import PortraitAssetStore
 
@@ -102,6 +105,83 @@ def _active_asset_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"Result": {"Status": "Active"}})
     raise AssertionError(f"unexpected action: {action}")
 
+
+async def test_portrait_generator_skips_raw_aggregate_input_limit(
+    tmp_path: Path,
+) -> None:
+    store = await PortraitAssetStore.open(tmp_path / "portrait.sqlite3")
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(_active_asset_handler)
+        ) as http:
+            asset_client = VolcengineAssetClient(
+                http,
+                access_key="ak-test",
+                secret_key="sk-test",
+                project_name="Seedance2.0",
+                public_media_host=_CapturingPublicMediaHost(),
+                store=store,
+            )
+            generator = VolcenginePortraitVideoGenerator(
+                http,
+                asset_client=asset_client,
+                base_url="https://ark.fictional.test/api/v3",
+                api_key="fictional-key",
+                model="fictional-model",
+                public_media_host=_CapturingPublicMediaHost(),
+            )
+            seedance = generator.for_run("run-test")
+    finally:
+        await store.close()
+
+    assert seedance._enforce_total_input_bytes is False
+
+
+async def test_portrait_generator_uses_selected_model_capability(
+    tmp_path: Path,
+) -> None:
+    store = await PortraitAssetStore.open(tmp_path / "portrait.sqlite3")
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(_active_asset_handler)
+        ) as http:
+            asset_client = VolcengineAssetClient(
+                http,
+                access_key="ak-test",
+                secret_key="sk-test",
+                project_name="Seedance2.0",
+                public_media_host=_CapturingPublicMediaHost(),
+                store=store,
+            )
+            generator = VolcenginePortraitVideoGenerator(
+                http,
+                asset_client=asset_client,
+                base_url="https://ark.fictional.test/api/v3",
+                api_key="fictional-key",
+                model=VIDEO_MODEL_BY_KEY["seedance2.0"].model,
+                public_media_host=_CapturingPublicMediaHost(),
+            )
+            seedance = generator.for_run("run-test", model_key="seedance2.5")
+            capability = VIDEO_MODEL_BY_KEY["seedance2.5"]
+            seedance._validate_video_parameters(
+                GenerationTask(
+                    task_id="task-18s",
+                    task_type="image_to_video",
+                    title="18 second portrait task",
+                    source_block_ids=["block-1"],
+                    user_intent="Generate an 18 second portrait video",
+                    prompt="Person walks toward camera",
+                    aspect_ratio="9:16",
+                    duration=18,
+                    resolution="720p",
+                    output_count=1,
+                )
+            )
+    finally:
+        await store.close()
+
+    assert seedance._model == capability.model
+    assert seedance._capability is capability
 
 async def test_portrait_client_uses_short_name_in_host_and_asset_request(
     tmp_path: Path,

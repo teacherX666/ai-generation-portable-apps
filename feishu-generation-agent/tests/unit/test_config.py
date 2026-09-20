@@ -30,6 +30,13 @@ def test_settings_can_explicitly_enable_benchmark_fake_ips():
     assert settings.allow_benchmark_fake_ips is True
 
 
+def test_default_video_model_is_seedance_2_5_only() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.seedance_model == "doubao-seedance-2-5-260628"
+    assert settings.video_provider == "seedance2.5"
+    assert settings.aiport_image_enabled is False
+
 def test_production_portrait_view_is_separately_configurable() -> None:
     settings = Settings(
         _env_file=None,
@@ -63,7 +70,7 @@ def test_provider_polling_defaults_to_thirty_minutes(monkeypatch):
     settings = Settings(_env_file=None)
 
     assert settings.provider_poll_interval_seconds == 1.0
-    assert settings.provider_poll_max_attempts == 1800
+    assert settings.provider_poll_max_attempts == 3600
 
 
 def test_portrait_generation_requires_ak_sk_and_ark_key() -> None:

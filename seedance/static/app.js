@@ -19,6 +19,118 @@ function isCancellableJob(jobOrStatus) {
   return Boolean(normalized) && !TERMINAL_STATUSES.has(normalized);
 }
 
+function jobDisplayStatus(j) {
+  const raw = String((j && j.status) || '').toLowerCase();
+  const hasResult = !!(j && ((j.results && j.results.length) || (j.result && j.result.results && j.result.results.length) || j.first_url));
+  if (hasResult && raw && !TERMINAL_STATUSES.has(raw)) return 'succeeded';
+  return raw;
+}
+
+function jobRequestValues(job, record) {
+  const request = (record && record.request) || (job && job.request) || {};
+  const parsed = request.parsed || {};
+  return (job && (job.params || job.form)) || parsed.values || request.values || {};
+}
+
+function mergeJobWithActivity(job, record) {
+  const merged = Object.assign({}, job || {});
+  if (!record) {
+    if (merged.id && !merged._activityId) merged._activityId = merged.id;
+    return merged;
+  }
+  const values = jobRequestValues(job, record);
+  const result = record.result || {};
+  const fallbacks = {
+    status: record.status || (record.result && record.result.status) || '',
+    first_url: record.first_url || '',
+    first_filename: record.first_filename || '',
+    created_at: record.created_at || record.started_at || record.submitted_at,
+    started_at: record.started_at,
+    finished_at: record.finished_at,
+    title: record.title || values.prompt || '',
+    prompt: record.prompt || values.prompt || record.title || '',
+    model: record.model || values.custom_model || values.model || '',
+    provider: record.provider || values.provider || '',
+    username: record.username || ''
+  };
+  Object.keys(fallbacks).forEach(function (key) {
+    const current = merged[key];
+    const fallback = fallbacks[key];
+    if ((current === undefined || current === null || current === '') && fallback !== undefined && fallback !== null && fallback !== '') {
+      merged[key] = fallback;
+    }
+  });
+  if (!merged.params || !Object.keys(merged.params).length) merged.params = values;
+  if (!merged.request) merged.request = record.request;
+  if (!merged.result) merged.result = record.result;
+  if (!Array.isArray(merged.results) || !merged.results.length) merged.results = result.results || merged.results || [];
+  if (!Array.isArray(merged.events) || !merged.events.length) merged.events = result.events || merged.events || [];
+  if (!Array.isArray(merged.errors) || !merged.errors.length) merged.errors = result.errors || merged.errors || [];
+  merged.job_id = merged.job_id || merged.id || record.job_id;
+  const activityId = record.id || record.activity_id || merged.activity_id || merged._activityId;
+  if (activityId) {
+    merged._activityId = activityId;
+    merged.activity_id = activityId;
+  }
+  return merged;
+}
+
+function jobActivityId(job) {
+  if (!job) return '';
+  return job._activityId || job.activity_id || (job.id && job.id !== job.job_id ? job.id : '');
+}
+
+function formatJobTimestamp(value) {
+  if (value === undefined || value === null || value === '') return '';
+  const raw = String(value);
+  if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(raw)) {
+    let numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      if (numeric < 100000000000) numeric *= 1000;
+      const date = new Date(numeric);
+      if (!Number.isNaN(date.getTime())) {
+        const pad = n => String(n).padStart(2, '0');
+        return pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+      }
+    }
+  }
+  return raw.replace('T', ' ').slice(5, 16);
+}
+// 格子媒体区最多画几个缩略图（含「+N」格子）。一个格子挂十几条
+// <video preload="metadata"> 会同时向 Portal 代理取流，20 条并发取流曾把
+// 浏览器解码和代理缓冲一起打满（2026-09-02 页面卡死根因）。
+const JOB_TILE_MAX_THUMBS = 4;
+
+// 把一个任务的产出归一化成可预览列表。活动记录（内存 JOBS 被剪枝后并入）
+// 没有 results 顶层字段，只剩摘要里的 first_url 兜底。
+function jobPreviewItems(job) {
+  const items = [];
+  const raw = (job && (job.results || (job.result && job.result.results))) || [];
+  for (const r of raw) {
+    if (!r) continue;
+    if (r.download_url) {
+      items.push({
+        url: r.download_url,
+        filename: r.filename || 'video',
+        label: (r.index === undefined || r.index === null) ? '' : 'Run ' + r.index,
+      });
+      continue;
+    }
+    for (const im of (r.images || [])) {
+      if (im && im.download_url) items.push({ url: im.download_url, filename: im.filename || 'video', label: '' });
+    }
+  }
+  if (!items.length && job && job.first_url) {
+    items.push({ url: job.first_url, filename: job.first_filename || 'video', label: '' });
+  }
+  return items;
+}
+
+// 格子媒体区的渲染签名：条数或任意一条产出变化都要重画缩略图
+function jobPreviewSignature(job) {
+  return jobPreviewItems(job).map(it => it.url).join('|');
+}
+
 function confirmSafe(message, options) {
   try {
     const p = (window.parent && window.parent !== window) ? window.parent : window;
@@ -101,15 +213,38 @@ function _notifyFlashTitle(message) {
 // ============================================================
 function workspaceId() {
   let id = localStorage.getItem('workspace_id');
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem('workspace_id', id); }
+  if (!id) { id = (window.crypto && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : ('ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)); localStorage.setItem('workspace_id', id); }
   return id;
+}
+
+function syncWorkspaceUrl() {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('ws')) return;
+    url.searchParams.delete('ws');
+    window.history.replaceState(null, '', url.toString());
+  } catch (e) {}
 }
 
 function getActiveWorkspaceId() {
   return window._activeWorkspaceId || workspaceId();
 }
 
-async function api(url, method, body, workspaceOverride) {
+// api() returning null is ambiguous by construction: a fetch rejection (the
+// request never reached the server), a 302 to /login (expired Portal
+// session), a non-JSON body and a JSON error all look identical to the
+// caller. The upload path used to print
+// "服务器未接受文件（请检查类型或大小）" for every one of them — including
+// the case where nothing was ever uploaded, which made a network abort look
+// like a file problem.
+//
+// apiRaw() reports the real reason. api() stays a thin wrapper so the ~20
+// existing call sites keep their exact previous behaviour (parsed JSON, or
+// null on any failure).
+//
+// @returns {Promise<{ok: boolean, data?: any, error?: string, status?: number}>}
+async function apiRaw(url, method, body, workspaceOverride) {
+  let res;
   try {
     const wsId = workspaceOverride || getActiveWorkspaceId();
     const sep = url.includes('?') ? '&' : '?';
@@ -119,9 +254,37 @@ async function api(url, method, body, workspaceOverride) {
     if (keyId) headers['X-Key-Id'] = keyId;
     const opts = { method: method || 'GET', headers };
     if (body) opts.body = body;
-    const res = await fetch(urlWithWs, opts);
-    return await res.json();
-  } catch (e) { return null; }
+    res = await fetch(urlWithWs, opts);
+  } catch (e) {
+    return { ok: false, error: '网络中断，请求未送达服务器（' + ((e && e.message) || e) + '）' };
+  }
+  // An expired Portal session on a sub-app path answers 302 -> /login: the
+  // Portal only returns a JSON 401 for paths that start with /api/, and this
+  // app's paths start with /seedance/. fetch follows the redirect and lands
+  // on the login HTML, which is not JSON.
+  if (res.redirected && /\/login(\?|$)/.test(res.url)) {
+    return { ok: false, error: '登录已过期，请刷新页面重新登录', status: res.status };
+  }
+  let data;
+  let parsed = false;
+  try { data = await res.json(); parsed = true; } catch (e) { parsed = false; }
+  if (parsed) return { ok: true, data: data, status: res.status };
+  if (res.status === 401 || res.status === 403) {
+    return { ok: false, error: '登录已过期或无权限（HTTP ' + res.status + '）', status: res.status };
+  }
+  if (res.status === 413) {
+    return { ok: false, error: '文件过大，服务器拒绝接收（HTTP 413）', status: 413 };
+  }
+  if (res.status === 415) {
+    return { ok: false, error: '文件类型不符（HTTP 415）', status: 415 };
+  }
+  const ct = res.headers.get('content-type') || '无 content-type';
+  return { ok: false, error: '服务器返回异常（HTTP ' + res.status + '，' + ct + '）', status: res.status };
+}
+
+async function api(url, method, body, workspaceOverride) {
+  const r = await apiRaw(url, method, body, workspaceOverride);
+  return r.ok ? r.data : null;
 }
 
 // Status-aware single poll for pollJob's retry logic. Unlike api() — which
@@ -154,6 +317,25 @@ async function pollJobOnce(url, workspaceOverride) {
 
 function escHtml(s) {
   return s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+}
+
+function secureMediaUrl(url) {
+  if (!url) return url;
+  let resolved = url.startsWith('/api/') ? APP_PATH + url : url;
+  if (resolved.startsWith('http://')) {
+    try {
+      const host = new URL(resolved).hostname;
+      const local = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.local');
+      if (!local) resolved = 'https://' + resolved.slice('http://'.length);
+    } catch (e) {
+      resolved = 'https://' + resolved.slice('http://'.length);
+    }
+  } else if (resolved.startsWith('/') && window.location.protocol === 'http:') {
+    const pageHost = window.location.hostname || '';
+    const localPage = pageHost === 'localhost' || pageHost === '127.0.0.1' || pageHost === '::1' || pageHost.endsWith('.local');
+    if (!localPage) resolved = 'https://' + window.location.host + resolved;
+  }
+  return resolved;
 }
 
 function jobStatusLabel(status) {
@@ -243,8 +425,9 @@ function wireFileDrop(drop, input, name) {
     try {
       const fd = new FormData();
       fd.set(input.name, f);
-      const res = await api(APP_PATH + '/api/media/upload', 'POST', fd, ownerWsId);
+      const r = await apiRaw(APP_PATH + '/api/media/upload', 'POST', fd, ownerWsId);
       if (getActiveWorkspaceId() !== ownerWsId) return;
+      const res = r.ok ? r.data : null;
       if (res && res.stored) {
         const app = window._app_sd;
         const media = (app && app.savedMedia) || window._currentSavedMedia || {};
@@ -256,16 +439,18 @@ function wireFileDrop(drop, input, name) {
         };
         if (app) app.savedMedia = media;
         window._currentSavedMedia = media;
-        const serverUrl = res.url.startsWith('/api/') ? APP_PATH + res.url : res.url;
+        const serverUrl = secureMediaUrl(res.url);
         showPreview(drop, name, serverUrl, res.filename);
         try { URL.revokeObjectURL(localUrl); } catch (e) {}
         if (app && typeof app.saveWorkspaceDraft === 'function') app.saveWorkspaceDraft();
       } else {
-        // Server rejected the upload (wrong content type / too large / network
-        // drop). Roll back the local preview — otherwise the user believes the
-        // reference material is saved and submits a job without it.
+        // The upload did not land. Roll back the local preview — otherwise the
+        // user believes the reference material is saved and submits a job
+        // without it. Report r.error (the real reason) when we have one: a
+        // network abort or an expired session is NOT a type/size problem.
         clearDropMedia(drop, input, name);
-        alert('上传失败：' + ((res && res.error) ? res.error : '服务器未接受文件（请检查类型或大小）'));
+        const reason = r.error || (res && res.error) || '服务器未接受文件（请检查类型或大小）';
+        alert('上传失败：' + reason);
       }
     } catch (e) {
       clearDropMedia(drop, input, name);
@@ -308,7 +493,9 @@ function showPreview(drop, name, url, filename) {
   drop.querySelector('span').textContent = filename || '已上传';
 }
 
-function openPreview(kind, url) {
+// items/index 可选：并发生成一个任务有多条产出时，底部给一条编号条
+// 在结果之间切换，不用退出去点下一张。
+function openPreview(kind, url, items, index) {
   const dlg = document.getElementById('previewDialog');
   const body = document.getElementById('previewDialogBody');
   if (!dlg || !body) return;
@@ -317,7 +504,26 @@ function openPreview(kind, url) {
   m.src = url;
   if (kind === 'video') m.controls = true;
   body.append(m);
-  dlg.showModal();
+  const list = Array.isArray(items) ? items : null;
+  if (list && list.length > 1) {
+    const at = Math.max(0, Math.min(list.length - 1, Number(index) || 0));
+    const strip = document.createElement('div');
+    strip.className = 'preview-strip';
+    list.forEach((it, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'preview-strip-item' + (i === at ? ' is-active' : '');
+      b.textContent = String(i + 1);
+      b.title = it.filename || ('结果 ' + (i + 1));
+      b.addEventListener('click', () => openPreview(kind, it.url, list, i));
+      strip.appendChild(b);
+    });
+    body.append(strip);
+  }
+  // 已在打开状态下再点编号条会走回这里：showModal 对已打开的 dialog 会抛错
+  if (typeof dlg.showModal === 'function') {
+    if (!dlg.open) dlg.showModal();
+  }
 }
 
 function makeDrop(container, name, label, accept, formId) {
@@ -405,6 +611,7 @@ function providersFromConfig(providers) {
         return {
           id: m.id || m,
           label: m.label || m.id || m,
+          disabled: !!m.disabled,
           // Per-model capability limits from providers.json. Ark rejects an
           // out-of-range value only after the job is queued, so the form has to
           // narrow itself when the model changes.
@@ -429,7 +636,7 @@ const FALLBACK_PROVIDERS = {
   comfyui_local: {
     base_url: 'http://127.0.0.1:8801',
     models: [
-      { id: 'minimax_h3_all_reference', label: 'MiniMax H3 (free)', duration_range: [4, 12], resolutions: ['480p', '720p'], ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'] },
+      { id: 'minimax_h3_all_reference', label: 'MiniMax H3 / 海螺 H3 (free)', duration_range: [4, 12], resolutions: ['480p', '720p'], ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'] },
     ],
     hint: 'Free local MiniMax H3.',
     label: 'Local ComfyUI (free)',
@@ -452,7 +659,8 @@ const FALLBACK_PROVIDERS = {
         ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
-        id: 'doubao-seedance-2-0-mini-260615', label: 'Seedance 2.0 mini（最快）',
+        id: 'ep-20260912121738-vtd78', label: 'Seedance 2.0 mini（最快）',
+        disabled: false,
         duration_range: [4, 15], resolutions: ['480p', '720p'],
         ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
@@ -472,16 +680,94 @@ const FALLBACK_PROVIDERS = {
 // ============================================================
 // SEEDANCE APP FACTORY (PetiteVue data object)
 // ============================================================
+function canonicalVideoModelName(label, id) {
+  return String(label || id || '')
+    .replace(/[\s_-]+(?:480p|720p|1080p|4k)\s*$/i, '')
+    .replace(/（免费）$/i, '')
+    .replace(/\(free\)$/i, '')
+    .trim();
+}
+
+function buildUnifiedVideoModels(providers, localReady) {
+  var groups = new Map();
+  Object.keys(providers || {}).forEach(function (provider) {
+    var cfg = providers[provider] || {};
+    (cfg.models || []).forEach(function (model) {
+      if (!model) return;
+      var modelId = String(model.id || model);
+      var label = String(model.label || modelId);
+      var canonical = canonicalVideoModelName(label, modelId) || modelId;
+      var groupKey = canonical.toLowerCase();
+      var caps = window.ModelCapabilities && window.ModelCapabilities.capabilitiesFor
+        ? window.ModelCapabilities.capabilitiesFor(providers, provider, modelId)
+        : null;
+      var local = provider === 'comfyui_local';
+      var route = {
+        provider: provider,
+        providerLabel: cfg.label || provider,
+        modelId: modelId,
+        label: label,
+        local: local,
+        disabled: !!model.disabled || (local && localReady === false),
+        capabilities: caps || {},
+      };
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, { key: groupKey, baseLabel: canonical, routes: [] });
+      }
+      groups.get(groupKey).routes.push(route);
+    });
+  });
+  var result = [];
+  groups.forEach(function (entry) {
+    entry.routes.sort(function (a, b) {
+      if (a.disabled !== b.disabled) return a.disabled ? 1 : -1;
+      if (a.local !== b.local) return a.local ? -1 : 1;
+      return 0;
+    });
+    var available = entry.routes.filter(function (route) { return !route.disabled; });
+    var localAvailable = available.some(function (route) { return route.local; });
+    var resolutions = [];
+    var ratios = [];
+    var durationMin = null;
+    var durationMax = null;
+    entry.routes.forEach(function (route) {
+      var caps = route.capabilities || {};
+      (caps.resolution || []).forEach(function (value) { if (resolutions.indexOf(value) < 0) resolutions.push(value); });
+      (caps.ratio || []).forEach(function (value) { if (ratios.indexOf(value) < 0) ratios.push(value); });
+      if (caps.duration) {
+        var lo = Number(caps.duration.min);
+        var hi = Number(caps.duration.max);
+        if (Number.isFinite(lo)) durationMin = durationMin == null ? lo : Math.min(durationMin, lo);
+        if (Number.isFinite(hi)) durationMax = durationMax == null ? hi : Math.max(durationMax, hi);
+      }
+    });
+    entry.resolutions = resolutions.length ? resolutions : ['480p', '720p'];
+    entry.ratios = ratios;
+    entry.duration = durationMin != null && durationMax != null ? { min: durationMin, max: durationMax } : null;
+    entry.local = localAvailable;
+    entry.disabled = !available.length;
+    entry.providers = available.map(function (route) { return route.providerLabel || route.provider; }).filter(function (value, index, list) { return list.indexOf(value) === index; });
+    entry.label = entry.baseLabel + (localAvailable ? '（本地免费）' : '');
+    result.push(entry);
+  });
+  return result;
+}
+
+function routeForUnifiedVideoModel(entry, resolution) {
+  if (!entry) return null;
+  var available = (entry.routes || []).filter(function (route) { return !route.disabled; });
+  if (!available.length) return null;
+  var wanted = String(resolution || '');
+  var exact = available.find(function (route) {
+    return Array.isArray(route.capabilities && route.capabilities.resolution)
+      && route.capabilities.resolution.indexOf(wanted) >= 0;
+  });
+  return exact || available[0];
+}
 function SeedanceApp() {
   const wid = workspaceId();
   const wsKey = 'seedance.workspace.' + wid;
-  const urlParams = new URLSearchParams(window.location.search);
-
-  // Resolve workspace id from URL param, falling back to localStorage
-  let effectiveWorkspaceId = urlParams.get('ws');
-  if (!effectiveWorkspaceId) {
-    effectiveWorkspaceId = wid;
-  }
+  let effectiveWorkspaceId = wid;
 
   // --- DOM helpers ---
   function field(name) {
@@ -539,6 +825,8 @@ function SeedanceApp() {
     providerHint: '',
     modelCaps: null,
     modelHint: '',
+    modelSummary: '',
+    activeRoute: null,
     keyHint: '',
     outputDir: '',
     dirHandle: null,
@@ -614,6 +902,8 @@ function SeedanceApp() {
     async init() {
       window._app_sd = this;
       window._currentSavedMedia = this.savedMedia;
+      // URL 是刷新/分享时唯一可靠的主题入口；先让初始化请求落在 URL 主题上。
+      window._activeWorkspaceId = effectiveWorkspaceId;
       this.buildUploadSlots();
       this.wireDrops();
       try { await this.loadConfig(); } catch (e) { console.warn('loadConfig failed:', e); }
@@ -635,6 +925,7 @@ function SeedanceApp() {
         this.activeTabId = oldWsId;
       }
       window._activeWorkspaceId = this.activeTabId;
+      syncWorkspaceUrl();
 
       try { await this.loadArchives(); } catch (e) { console.warn('loadArchives failed:', e); }
 
@@ -701,7 +992,8 @@ function SeedanceApp() {
       // hidden to avoid burning cycles when the tab is in the background.
       this._loadJobsTimer = setInterval(() => {
         if (document.visibilityState !== 'hidden') this.loadJobs();
-      }, 5000);
+      }, 60000);
+      this._setupRealtimeEvents();
     },
 
     // ============================================================
@@ -776,16 +1068,46 @@ function SeedanceApp() {
       this._activeProvider = providerKey;
       this.baseUrl = cfg.base_url || '';
       this.providerHint = cfg.hint || '';
-      this.models = cfg.models || [];
+      this.models = buildUnifiedVideoModels(this.providers, this.localReady);
+      const wantedModel = String((cfg.defaults || {}).model || '');
+      let selectedEntry = null;
+      let selectedRoute = null;
+      this.models.some((entry) => {
+        const route = entry.routes.find((item) => item.provider === providerKey && (!wantedModel || item.modelId === wantedModel));
+        if (!route) return false;
+        selectedEntry = entry;
+        selectedRoute = route;
+        return true;
+      });
+      if (!selectedEntry) {
+        selectedEntry = this.models.find((entry) => !entry.disabled) || this.models[0] || null;
+        selectedRoute = selectedEntry ? routeForUnifiedVideoModel(selectedEntry, (cfg.defaults || {}).resolution) : null;
+      }
+      if (selectedEntry) {
+        this.model = selectedEntry.key;
+        this.activeRoute = selectedRoute;
+      }
+      if (selectedRoute) {
+        this.provider = selectedRoute.provider;
+        this._activeProvider = selectedRoute.provider;
+        const selectedProviderCfg = this.providers[selectedRoute.provider] || {};
+        this.baseUrl = selectedProviderCfg.base_url || this.baseUrl;
+      }
+      const syncAvailableModel = () => {
+        if (this.ensureAvailableModel()) this.applyModelLimits();
+      };
+      syncAvailableModel();
+      setTimeout(syncAvailableModel, 0);
       // 显式同步供应商下拉框 DOM：v-model 的 SELECT effect 在选项异步渲染时
       // 不会重新执行，曾出现「显示火山引擎、实际按 comfyui 提交」的分裂
       // （submit 用 this.provider 覆盖 FormData，显示与调用必须一致）。
       const providerSel = field('provider');
       if (providerSel) {
-        setTimeout(() => {
-          if (this._draftLoaded) return;
+        const syncProviderSelect = () => {
           if ([...providerSel.options].some((o) => o.value === providerKey)) providerSel.value = providerKey;
-        }, 0);
+        };
+        syncProviderSelect();
+        setTimeout(syncProviderSelect, 0);
       }
 
       // When restoring a saved draft/preset the form already carries this tab's
@@ -816,44 +1138,76 @@ function SeedanceApp() {
       });
     },
 
+    ensureAvailableModel() {
+      const modelEl = field('model');
+      if (!modelEl) return false;
+      const currentId = String(modelEl.value || '');
+      const current = (this.models || []).find((item) => String(item.key || item.id || item) === currentId)
+        || (this.models || []).find((item) => (item.routes || []).some((route) => route.modelId === currentId));
+      if (!current || !current.disabled) return false;
+      const fallback = (this.models || []).find((item) => !item.disabled);
+      if (!fallback) {
+        this.modelHint = '当前没有可用模型，请联系管理员处理。';
+        return false;
+      }
+      const fallbackId = String(fallback.key || fallback.id || fallback);
+      modelEl.value = fallbackId;
+      this.model = fallbackId;
+      this.modelHint = '所选模型已失效，已自动切换到 ' + (fallback.label || fallbackId) + '。';
+      return true;
+    },
+
     // Narrow duration / resolution / ratio to what the selected model accepts.
     // Ark validates these only after the job is queued, so an out-of-range value
     // costs the user a wait and an async error instead of failing fast.
-    applyModelLimits() {
+    applyModelLimits(options = {}) {
       const modelEl = field('model');
       if (!modelEl) return;
-      const provider = this.provider || 'volcengine';
-      const caps = (window.ModelCapabilities && window.ModelCapabilities.capabilitiesFor)
-        ? window.ModelCapabilities.capabilitiesFor(this.providers, provider, modelEl.value)
-        : null;
+      const modelSwitchHint = this.ensureAvailableModel() ? this.modelHint : '';
+      const entry = (this.models || []).find((item) => item.key === modelEl.value)
+        || (this.models || []).find((item) => (item.routes || []).some((route) => route.modelId === modelEl.value))
+        || (this.models || []).find((item) => !item.disabled)
+        || null;
+      if (!entry) {
+        this.modelHint = '当前没有可用模型，请联系管理员处理。';
+        this.modelSummary = '暂无可用模型';
+        return;
+      }
+      if (modelEl.value !== entry.key) modelEl.value = entry.key;
+      this.model = entry.key;
+      const resolutionEl = field('resolution');
+      const desiredResolution = resolutionEl && resolutionEl.value ? resolutionEl.value : '';
+      const route = routeForUnifiedVideoModel(entry, desiredResolution) || this.activeRoute;
+      if (!route) {
+        this.modelHint = '当前模型没有可用线路，请选择其他模型。';
+        this.modelSummary = '暂无可用线路';
+        return;
+      }
+      this.activeRoute = route;
+      this.provider = route.provider;
+      this._activeProvider = route.provider;
+      const providerCfg = this.providers[route.provider] || {};
+      this.baseUrl = providerCfg.base_url || '';
+      const caps = route.capabilities || {};
       this.modelCaps = caps;
-      if (!caps) { this.modelHint = ''; return; }
-      // Only sync the reactive model when the DOM value maps to a real model;
-      // otherwise a stale/empty select (during applyPreset's pre-flush phase)
-      // would clobber the just-restored value.
-      this.model = modelEl.value;
-      const hints = [];
+      if (!caps) { this.modelHint = modelSwitchHint; return; }
+      const hints = modelSwitchHint ? [modelSwitchHint] : [];
 
       const durationEl = field('duration');
       if (durationEl && caps.duration) {
         const lo = Number(caps.duration.min);
         const hi = Number(caps.duration.max);
-        // Keep min at -1 regardless of the model's positive range: -1 is a
-        // sentinel meaning "let Ark pick" and is legal (in fact required) for
-        // video edit / extend tasks on every model.
         durationEl.min = '-1';
         durationEl.max = String(hi);
-        const current = parseInt(durationEl.value, 10);
-        // -1 is the sentinel and must survive a model switch untouched; only a
-        // real out-of-range number gets clamped.
-        if (!Number.isNaN(current) && current !== -1 && (current < lo || current > hi)) {
-          const clamped = String(Math.min(hi, Math.max(lo, current)));
-          hints.push('时长 ' + current + ' 不支持，已切换为 ' + clamped);
-          durationEl.value = clamped;
+        if (!options.preserveDuration && durationEl.value !== "" && durationEl.value !== "-1") {
+          const current = Number(durationEl.value);
+          if (Number.isFinite(current) && (current < lo || current > hi)) {
+            durationEl.value = String(Math.min(hi, Math.max(lo, current)));
+          }
         }
       }
 
-      for (const [name, allowed] of [['resolution', caps.resolution], ['ratio', caps.ratio]]) {
+      for (const [name, allowed] of [['resolution', entry.resolutions], ['ratio', caps.ratio]]) {
         const el = field(name);
         if (!el || !Array.isArray(allowed) || !allowed.length) continue;
         const previous = el.value;
@@ -869,9 +1223,16 @@ function SeedanceApp() {
         el.value = keep;
       }
 
+      const summary = [route.providerLabel || route.provider];
+      const support = [];
+      if (caps.duration) support.push('时长 ' + caps.duration.min + '-' + caps.duration.max + ' 秒');
+      if (entry.resolutions.length) support.push('分辨率 ' + entry.resolutions.join(' / '));
+      if (Array.isArray(caps.ratio) && caps.ratio.length) support.push('比例 ' + caps.ratio.join(' / '));
+      if (route.local) support.push('本地免费');
+      var providerNames = entry.providers && entry.providers.length ? entry.providers.join(' / ') : (route.providerLabel || route.provider);
+      this.modelSummary = '可用供应商 ' + providerNames + '；当前线路 ' + (route.providerLabel || route.provider) + ' · ' + support.join('；') + '。';
       this.modelHint = hints.join('；');
     },
-
     // Called when the user picks a different task type. Ark 2.5 imposes:
     //   reference: ratio + duration are free
     //   extend:    ratio must be 'adaptive', duration is free
@@ -967,12 +1328,18 @@ function SeedanceApp() {
           }
         }
         if (problems.length) {
-          setOwnerState('submitting', false);
-          setOwnerState('statusText', problems.join('?'));
-          return;
+          this.submitting = false;
+          this.statusText = problems.join('；');
+          this.archiveHint = this.statusText;
+          return false;
         }
       }
       const data = new FormData(document.getElementById('sd-form'));
+      data.set('provider', this.provider || '');
+      data.set('base_url', this.baseUrl || '');
+      if (this.model) data.set('model', this.model);
+      if (this.customModel !== undefined) data.set('custom_model', this.customModel);
+      data.set('task_mode', this.taskMode || 'reference');
       if (Object.keys(this.savedMedia).length) {
         data.set('saved_media', JSON.stringify(this.savedMedia));
       }
@@ -1024,7 +1391,7 @@ function SeedanceApp() {
       const res = await api(APP_PATH + '/api/archive/load', 'POST', data, ownerWsId);
       if (this.activeTabId !== ownerWsId) return;
       if (!res || !res.values) { this.archiveHint = '读取失败'; return; }
-      await this.applyPreset(res);
+      await this.applyPreset(res, { preserveContent: true });
       this.currentSchemeName = name;
       this.isDirty = false;
       this.selectedArchive = name;
@@ -1081,7 +1448,6 @@ function SeedanceApp() {
     },
 
     resetToFactoryDefaults() {
-      try { localStorage.removeItem('seedance.workspace.' + this.activeTabId); } catch (e) {}
 
       const promptEl = document.querySelector('textarea[name="prompt"][form="sd-form"]');
       const keepPrompt = promptEl ? promptEl.value : '';
@@ -1089,9 +1455,6 @@ function SeedanceApp() {
       if (form) form.reset();
       if (promptEl) promptEl.value = keepPrompt;
 
-      clearAllMediaPreviews();
-      this.savedMedia = {};
-      window._currentSavedMedia = this.savedMedia;
 
       this.outputDir = '';
       this.dirHandle = null;
@@ -1119,12 +1482,7 @@ function SeedanceApp() {
     },
 
     _ensureNotDirty(actionLabel) {
-      const self = this;
-      if (!this.isDirty) return Promise.resolve(true);
-      return new Promise(function (resolve) {
-        self._dirtyPending = { actionLabel: actionLabel || '切换', resolve: resolve };
-        self._dirtyDialogOpen = true;
-      });
+      return Promise.resolve(true);
     },
 
     async _dirtySaveAndContinue() {
@@ -1236,17 +1594,32 @@ function SeedanceApp() {
       return (this.jobs || []).slice(0, this.jobsLimit);
     },
 
+    // 一个任务可以产出多条结果（并发数 / 重复次数 > 1）。格子里最多画 4 个
+    // 缩略图，多出来的收进「+N」格子，点开进详情看全部。设上限是因为一个
+    // 格子挂十几条 <video preload="metadata"> 会同时向 Portal 代理取流，
+    // 20 条并发取流曾把浏览器解码和代理缓冲一起打满（2026-09-02 卡死根因）。
     // === 任务矩阵：历史列表矩阵化（一个任务一个格子） ===
     renderJobsGrid() {
       const grid = document.getElementById('sd-jobsGrid');
       if (!grid) return;
       // 内存任务 + 持久化活动记录（去重：活动里有而内存里没有的才并入）
-      const liveIds = new Set((this.jobs || []).map(j => j.job_id));
-      const merged = (this.jobs || []).slice();
+      const activityByJob = new Map();
       for (const rec of (this._activityRecords || [])) {
-        if (!rec || !rec.job_id || liveIds.has(rec.job_id)) continue;
-        if (merged.length >= this.jobsLimit) break;
-        merged.push(rec);
+        if (rec && rec.job_id && !activityByJob.has(rec.job_id)) activityByJob.set(rec.job_id, rec);
+      }
+      const liveIds = new Set();
+      const merged = [];
+      for (const live of (this.jobs || [])) {
+        const item = mergeJobWithActivity(live, activityByJob.get(live.job_id || live.id));
+        if (!item.job_id) continue;
+        liveIds.add(item.job_id);
+        merged.push(item);
+      }
+      for (const rec of (this._activityRecords || [])) {
+        const item = mergeJobWithActivity(null, rec);
+        if (!item.job_id || liveIds.has(item.job_id)) continue;
+        liveIds.add(item.job_id);
+        merged.push(item);
       }
       const items = merged.slice(0, this.jobsLimit);
       // 有内容时隐藏「暂无生成记录」空状态（idle 分支里的静态提示）
@@ -1257,18 +1630,50 @@ function SeedanceApp() {
       for (const j of items) {
         seen.add(j.job_id);
         let tile = grid.querySelector('[data-jid="' + CSS.escape(j.job_id) + '"]');
+        const previewUrl = jobPreviewSignature(j);
+        const actionSig = [j.status || '', previewUrl, j.retryable ? '1' : '0', jobActivityId(j) || ''].join('|');
         if (!tile) {
           tile = this._buildJobTile(j);
+          tile.dataset.preview = previewUrl;
+          tile.dataset.actionSig = actionSig;
           frag.appendChild(tile);
-        } else {
-          // 已有格子只轻量更新状态徽章，媒体元素保持不动（避免缩略图反复重载）
-          const badge = tile.querySelector('.job-tile-badge');
-          if (badge && badge.textContent !== (j.status || '?')) {
-            badge.textContent = j.status || '?';
-            badge.className = 'job-tile-badge ' + (j.status || '');
-          }
-          tile.dataset.status = j.status || '';
+          continue;
         }
+
+        tile._jobSnapshot = j;
+        tile.dataset.status = jobDisplayStatus(j) || '';
+        const badge = tile.querySelector('.job-tile-badge');
+        if (badge && badge.textContent !== (jobDisplayStatus(j) || '?')) {
+          badge.textContent = jobDisplayStatus(j) || '?';
+          badge.className = 'job-tile-badge ' + jobDisplayStatus(j);
+        }
+        const time = tile.querySelector('.job-tile-time');
+        const timeText = formatJobTimestamp(j.created_at || j.started_at || j.submitted_at);
+        if (time && time.textContent !== timeText) time.textContent = timeText;
+        const prompt = tile.querySelector('.job-tile-prompt');
+        const promptText = j.prompt || j.title || ((j.request && j.request.values && j.request.values.prompt) || '') || '未命名任务';
+        if (prompt && prompt.textContent !== promptText) {
+          prompt.textContent = promptText;
+          prompt.title = promptText;
+        }
+
+        const previewChanged = tile.dataset.preview !== previewUrl;
+        const actionChanged = tile.dataset.actionSig !== actionSig;
+        if (previewChanged || actionChanged) {
+          const fresh = this._buildJobTile(j);
+          if (previewChanged) {
+            const currentMedia = tile.querySelector('.job-tile-media');
+            const freshMedia = fresh.querySelector('.job-tile-media');
+            if (currentMedia && freshMedia) currentMedia.replaceWith(freshMedia);
+          }
+          if (actionChanged) {
+            const currentFoot = tile.querySelector('.job-tile-foot');
+            const freshFoot = fresh.querySelector('.job-tile-foot');
+            if (currentFoot && freshFoot) currentFoot.replaceWith(freshFoot);
+          }
+        }
+        tile.dataset.preview = previewUrl;
+        tile.dataset.actionSig = actionSig;
       }
       if (frag.childNodes.length) grid.prepend(frag);
       for (const el of Array.from(grid.children)) {
@@ -1279,26 +1684,51 @@ function SeedanceApp() {
     _buildJobTile(j) {
       // 活动记录（内存 JOBS 剪枝后并入）没有 results 顶层字段：
       // 产出快照在 result.results 里，提示词在 title / request.values
-      const raw = j.results || (j.result && j.result.results) || [];
-      let first = (raw || []).find(r => r.download_url);
-      if (!first && j.first_url) first = { download_url: j.first_url, filename: j.first_filename || 'video' };
+      const items = jobPreviewItems(j);
+      // 超过上限时留一个格子给「+N」，正好凑满 2×2
+      const thumbs = items.length > JOB_TILE_MAX_THUMBS ? items.slice(0, JOB_TILE_MAX_THUMBS - 1) : items;
+      const overflow = items.length - thumbs.length;
+      const first = thumbs[0] || null;
       const tile = document.createElement('div');
       tile.className = 'job-tile';
       tile.dataset.jid = j.job_id;
-      tile.dataset.status = j.status || '';
+      tile.dataset.status = jobDisplayStatus(j) || '';
+      tile.dataset.preview = jobPreviewSignature(j);
+      tile._jobSnapshot = j;
 
       // 缩略图：video preload=metadata 取首帧（不常驻解码）；点开放大预览
       const media = document.createElement('div');
-      media.className = 'job-tile-media';
-      if (first) {
-        const url = APP_PATH + first.download_url;
+      media.className = 'job-tile-media' + (thumbs.length > 1 ? ' job-tile-media--multi' : '');
+      if (thumbs.length > 1) {
+        // 并发生成：每条结果一个缩略图，点哪张预览哪张
+        thumbs.forEach((item, i) => media.appendChild(this._buildJobThumb(item, j, i)));
+        if (overflow > 0) {
+          const more = document.createElement('button');
+          more.type = 'button';
+          more.className = 'job-tile-thumb job-tile-thumb--more';
+          more.textContent = '+' + overflow;
+          more.title = '还有 ' + overflow + ' 条产出，点开详情查看';
+          more.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const current = tile._jobSnapshot || j;
+            this.openJobDetail(current.job_id || current.id, jobActivityId(current), current);
+          });
+          media.appendChild(more);
+        }
+        const count = document.createElement('span');
+        count.className = 'job-tile-count';
+        count.textContent = '×' + items.length;
+        count.title = '本次共 ' + items.length + ' 条产出';
+        media.appendChild(count);
+      } else if (first) {
+        const url = APP_PATH + first.url;
         const v = document.createElement('video');
         v.src = url;
         v.preload = 'metadata';
         v.muted = true;
         v.playsInline = true;
         v.title = '点开预览';
-        v.addEventListener('click', (e) => { e.stopPropagation(); openPreview('video', url); });
+        v.addEventListener('click', (e) => { e.stopPropagation(); openPreview('video', url, jobPreviewItems(j), 0); });
         // 产出文件可能已被 14 天清理策略删除：加载失败换过期占位
         v.addEventListener('error', () => {
           v.remove();
@@ -1311,8 +1741,18 @@ function SeedanceApp() {
         media.appendChild(v);
       } else {
         const ph = document.createElement('span');
-        ph.className = 'job-tile-ph';
-        ph.textContent = (j.status === 'failed' || j.status === 'failure') ? '❌' : '⏳';
+        const statusLower = jobDisplayStatus(j).toLowerCase();
+        if (statusLower === 'failed' || statusLower === 'failure') {
+          ph.className = 'job-tile-ph';
+          ph.textContent = '❌';
+        } else if (['cancelled', 'canceled', 'interrupted'].includes(statusLower)) {
+          ph.className = 'job-tile-cancelled';
+          ph.innerHTML = '<span class="job-cancel-stop"></span><span>' + (statusLower === 'interrupted' ? '已中断' : '已取消') + '</span>';
+        } else {
+          ph.className = 'job-tile-hourglass';
+          ph.textContent = '';
+          ph.setAttribute('aria-label', '任务运行中');
+        }
         media.appendChild(ph);
       }
       tile.appendChild(media);
@@ -1320,25 +1760,25 @@ function SeedanceApp() {
       const meta = document.createElement('div');
       meta.className = 'job-tile-meta';
       const badge = document.createElement('span');
-      badge.className = 'job-tile-badge ' + (j.status || '');
-      badge.textContent = j.status || '?';
+      badge.className = 'job-tile-badge ' + jobDisplayStatus(j);
+      badge.textContent = jobDisplayStatus(j) || '?';
       meta.appendChild(badge);
       const time = document.createElement('span');
       time.className = 'job-tile-time';
-      time.textContent = (j.created_at || '').slice(5, 16);
+      time.textContent = formatJobTimestamp(j.created_at || j.started_at || j.submitted_at);
       meta.appendChild(time);
       tile.appendChild(meta);
 
       const prompt = document.createElement('div');
       prompt.className = 'job-tile-prompt';
       const promptText = j.prompt || j.title || ((j.request && j.request.values && j.request.values.prompt) || '');
-      prompt.textContent = promptText || '';
-      prompt.title = promptText || '';
+      prompt.textContent = promptText || '未命名任务';
+      prompt.title = promptText || '未命名任务';
       tile.appendChild(prompt);
 
       const foot = document.createElement('div');
       foot.className = 'job-tile-foot';
-      if (isCancellableJob(j)) {
+      if (isCancellableJob(jobDisplayStatus(j)) && !first) {
         const cancel = document.createElement('button');
         cancel.type = 'button';
         cancel.className = 'job-tile-btn job-tile-btn--cancel';
@@ -1350,8 +1790,16 @@ function SeedanceApp() {
         const dl = document.createElement('button');
         dl.type = 'button';
         dl.className = 'job-tile-btn job-tile-btn--dl';
-        dl.textContent = '⬇ 下载';
-        dl.addEventListener('click', (e) => { e.stopPropagation(); this._blobDownload(APP_PATH + first.download_url, first.filename || 'video'); });
+        dl.textContent = items.length > 1 ? '⬇ 全部(' + items.length + ')' : '⬇ 下载';
+        dl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (items.length > 1) {
+            // 错开 400ms 逐个下载，避免并发打满 Portal 代理缓冲
+            items.forEach((it, i) => setTimeout(() => this._blobDownload(APP_PATH + it.url, it.filename), i * 400));
+          } else {
+            this._blobDownload(APP_PATH + first.url, first.filename);
+          }
+        });
         foot.appendChild(dl);
       }
       if (j.retryable) {
@@ -1366,63 +1814,75 @@ function SeedanceApp() {
       dt.type = 'button';
       dt.className = 'job-tile-btn job-tile-btn--detail';
       dt.textContent = '详情';
-      dt.addEventListener('click', (e) => { e.stopPropagation(); this.openJobDetail(j.job_id); });
+      const openCurrent = () => {
+        const current = tile._jobSnapshot || j;
+        this.openJobDetail(current.job_id || current.id, jobActivityId(current), current);
+      };
+      dt.addEventListener('click', (e) => { e.stopPropagation(); openCurrent(); });
       foot.appendChild(dt);
       tile.appendChild(foot);
 
-      tile.addEventListener('click', () => this.openJobDetail(j.job_id, j.id));
+      tile.addEventListener('click', openCurrent);
       return tile;
     },
 
-    // === 任务详情弹窗：请求（参数）与返回（事件/结果/错误） ===
-    // 运行中面板的「详情」入口：从当前 tab 的运行态缓存解析活跃任务 id
-    openActiveJobDetail() {
-      const cache = (this._tabStateCache || {})[this.activeTabId];
-      const jid = cache && cache._activeJobId;
-      if (!jid) {
-        if (typeof window.portalToast === 'function') window.portalToast('当前没有运行中的任务', 'info');
-        return;
-      }
-      const rec = (this._activityRecords || []).find(r => r.job_id === jid);
-      this.openJobDetail(jid, rec && rec.id);
+    // 并发任务的单条产出缩略图：点开的是这一条（不是永远第一条）
+    _buildJobThumb(item, j, index) {
+      const url = APP_PATH + item.url;
+      const v = document.createElement('video');
+      v.src = url;
+      v.preload = 'metadata';
+      v.muted = true;
+      v.playsInline = true;
+      v.className = 'job-tile-thumb';
+      v.title = (item.label ? item.label + ' · ' : '') + '点开预览';
+      v.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPreview('video', url, jobPreviewItems(j).map(it => ({ url: APP_PATH + it.url, filename: it.filename })), index);
+      });
+      // 产出文件可能已被 14 天清理策略删除：加载失败换过期占位
+      v.addEventListener('error', () => {
+        const ph = document.createElement('span');
+        ph.className = 'job-tile-thumb job-tile-thumb--gone';
+        ph.textContent = '🗑';
+        ph.title = '产出文件已过期（保留 14 天后自动清理）';
+        v.replaceWith(ph);
+      });
+      return v;
     },
 
-    async openJobDetail(jobId, activityId) {
-      let job = null;
-      try { job = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId)); } catch (e) { job = null; }
-      // 单任务接口返回的是原始 JOBS 条目（id 为键），列表接口才是 job_id——统一归一化
+    // === 任务详情弹窗：请求（参数）与返回（事件/结果/错误） ===
+    async openJobDetail(jobId, activityId, fallbackJob) {
+      if (!jobId) return;
+      let job = fallbackJob ? Object.assign({}, fallbackJob) : null;
+      let activity = null;
+      try {
+        const remoteJob = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId));
+        if (remoteJob && (remoteJob.job_id || remoteJob.id)) job = Object.assign({}, fallbackJob || {}, remoteJob);
+      } catch (e) { /* fall back to the history card below */ }
       if (job && !job.job_id && job.id) job.job_id = job.id;
-      // 参数不在内存任务字典里（存于活动记录 request）——用 job_id 反查活动记录 id
       if (!activityId && jobId) {
-        const rec = (this._activityRecords || []).find(r => r.job_id === jobId);
-        if (rec) activityId = rec.id;
+        const known = (this._activityRecords || []).find(r => r.job_id === jobId);
+        if (known) activityId = known.id || known.activity_id;
       }
-      // 内存任务已被剪枝（重启/超出上限）或参数缺失 → 回退/合并持久化活动记录
-      const liveHasParams = !!(job && ((job.params && Object.keys(job.params).length) || (job.form && Object.keys(job.form).length)));
-      if ((!job || !job.job_id || !liveHasParams) && activityId) {
+      if (!activityId && jobId) {
         try {
-          const rec = await api(APP_PATH + '/api/activity/' + encodeURIComponent(activityId));
-          if (rec && !rec.error) {
-            if (!job || !job.job_id) {
-              job = rec;
-              job.job_id = job.job_id || job.id || jobId;
-              const result = job.result || {};
-              job.results = job.results || result.results || [];
-              job.events = job.events || result.events || [];
-              job.errors = job.errors || result.errors || [];
-            } else {
-              // live 任务存在但参数缺失：只补参数/提示词/模型，其余用 live 的实时数据
-              const result = rec.result || {};
-              if (!liveHasParams) job.params = (rec.request && rec.request.values) || {};
-              if (!(job.events && job.events.length)) job.events = result.events || [];
-              if (!(job.errors && job.errors.length)) job.errors = result.errors || [];
-            }
-            job.params = job.params || (job.request && job.request.values) || {};
-            job.prompt = job.prompt || job.title || ((job.request && job.request.values && job.request.values.prompt) || '');
-            job.model = job.model || ((job.request && job.request.values && job.request.values.model) || '');
+          const byJob = await api(APP_PATH + '/api/activity/by-job/' + encodeURIComponent(jobId));
+          if (byJob && (byJob.id || byJob.activity_id)) {
+            activity = byJob;
+            activityId = byJob.id || byJob.activity_id;
           }
-        } catch (e) { /* 活动记录拿不到时保留 live 数据 */ }
+        } catch (e) { /* persisted lookup is best-effort */ }
       }
+      if (!activity && activityId) {
+        try {
+          const record = await api(APP_PATH + '/api/activity/' + encodeURIComponent(activityId));
+          if (record && (record.id || record.activity_id)) activity = record;
+        } catch (e) { /* keep live data when the activity record is unavailable */ }
+      }
+      if (activity) job = mergeJobWithActivity(job, activity);
+      if (job && job.id && !job.job_id) job.job_id = job.id;
+      if (job && job.job_id && activityId && !job._activityId) job._activityId = activityId;
       if (!job || !job.job_id) {
         if (typeof window.portalToast === 'function') window.portalToast('任务详情获取失败（任务可能已被清理）', 'danger');
         else alert('任务详情获取失败（任务可能已被清理）');
@@ -1457,6 +1917,38 @@ function SeedanceApp() {
         '<span class="job-detail-status status-badge ' + escHtml(job.status || '') + '">' + escHtml(job.status || '?') + '</span>' +
         '<span class="job-detail-mono">' + escHtml(job.job_id || '') + '</span>' +
         '<span class="job-detail-mono">' + escHtml(job.created_at || '') + '</span>');
+
+      const seed = this._jobSeed(job);
+      const runtime = this.formatRuntime(job);
+      const model = this._jobModel(job);
+      const user = String(job?.username || '').trim();
+      const metaItems = [
+        { label: 'Seed', value: seed || '随机' },
+        { label: '运行耗时', value: runtime || '未记录', key: 'runtime' },
+        { label: '使用模型', value: model || '未记录' },
+      ];
+      if (user) metaItems.push({ label: '用户', value: user });
+      add('job-detail-meta-grid', metaItems.map(item =>
+        '<div class="job-detail-meta-item">' +
+        '<span class="job-detail-meta-label">' + escHtml(item.label) + '</span>' +
+        '<span class="job-detail-meta-value"' + (item.key === 'runtime' ? ' data-meta="runtime"' : '') + ' title="' + escHtml(item.value) + '">' + escHtml(item.value) + '</span>' +
+        '</div>'
+      ).join(''));
+
+      const runtimeEl = body.querySelector('[data-meta="runtime"]');
+      this._clearRuntimeTimer();
+      if (runtimeEl && ['queued', 'pending', 'running', 'querying'].includes((job.status || '').toLowerCase())) {
+        this._runtimeTimer = setInterval(() => {
+          const live = (this.jobs || []).find(j => (j.job_id || j.id) === (job.job_id || job.id));
+          const current = live || job;
+          const text = this.formatRuntime(current) || '未记录';
+          runtimeEl.textContent = text;
+          runtimeEl.title = text;
+          if (!['queued', 'pending', 'running', 'querying'].includes((current.status || '').toLowerCase())) {
+            this._clearRuntimeTimer();
+          }
+        }, 1000);
+      }
       const errText = (Array.isArray(job.errors) && job.errors.length)
   ? job.errors.join('\n')
   : (job.error ? String(job.error) : '');
@@ -1464,48 +1956,72 @@ function SeedanceApp() {
         add('job-detail-errors', escHtml(errText));
       }
 
-      // 请求（表单参数；key 类敏感字段剥离）
-      const params = Object.assign({}, job.params || job.form || {});
+      // 请求参数（敏感字段不下发到详情弹窗）
+      const request = job.request || {};
+      const requestRaw = request.raw || request;
+      const requestValues = requestRaw.values || request.values || job.params || job.form || {};
+      const params = Object.assign({}, job.params || job.form || {}, requestValues);
       for (const k of Object.keys(params)) {
         if (/key|secret|token|password/i.test(k)) delete params[k];
       }
       if (!params.prompt) params.prompt = job.prompt || '';
-      if (!params.model) params.model = job.model || '';
-      add('job-detail-section', '<h4>请求（提交参数）</h4><pre class="job-detail-pre">' + escHtml(JSON.stringify(params, null, 2)) + '</pre>');
+      if (!params.model) params.model = model || '';
+      const filesRaw = requestRaw.files || request.files || {};
+      const filesMeta = {};
+      for (const [k, v] of Object.entries(filesRaw)) {
+        filesMeta[k] = v && typeof v === 'object'
+          ? { filename: v.filename || '', mime_type: v.mime_type || '', size: v.size || 0 }
+          : v;
+      }
+      const requestSection = Object.keys(filesMeta).length ? { values: params, files: filesMeta } : params;
+      add('job-detail-section', '<h4>请求参数</h4><pre class="job-detail-pre">' + escHtml(JSON.stringify(requestSection, null, 2)) + '</pre>');
 
-      // 返回（事件 + 结果）
       const events = Array.isArray(job.events) ? job.events : [];
       const eventsText = events.length
         ? events.map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n')
         : '（无事件记录）';
-      add('job-detail-section', '<h4>返回（执行过程）</h4><pre class="job-detail-pre">' + escHtml(eventsText) + '</pre>');
+      add('job-detail-section', '<h4>执行过程</h4><pre class="job-detail-pre">' + escHtml(eventsText) + '</pre>');
 
-      const results = Array.isArray(job.results) ? job.results : [];
-      if (results.length) {
-        const sec = add('job-detail-section', '<h4>返回（产出）</h4>');
-        const rows = document.createElement('div');
-        rows.className = 'job-detail-results';
-        for (const r of results) {
-          if (!r.download_url) continue;
-          const row = document.createElement('div');
-          row.className = 'job-detail-result';
-          const name = document.createElement('span');
-          name.textContent = r.filename || 'video';
-          name.title = r.task_id || '';
-          row.appendChild(name);
-          const dl = document.createElement('button');
-          dl.type = 'button';
-          dl.className = 'job-tile-btn job-tile-btn--dl';
-          dl.textContent = '⬇ 下载';
-          dl.addEventListener('click', () => this._blobDownload(APP_PATH + r.download_url, r.filename || 'video'));
-          row.appendChild(dl);
-          rows.appendChild(row);
-        }
-        sec.appendChild(rows);
-      }
+      // 结果（产出）：并发生成会有多条，逐条给缩略图 + 预览入口
+      const previewItems = jobPreviewItems(job).map(it => ({ url: APP_PATH + it.url, filename: it.filename, label: it.label }));
+      const sec = add('job-detail-section', '<h4>结果（产出）'
+        + (previewItems.length > 1 ? ' · ' + previewItems.length + ' 条' : '') + '</h4>');
+      const rows = document.createElement('div');
+      rows.className = 'job-detail-results';
+      previewItems.forEach((it, i) => {
+        const row = document.createElement('div');
+        row.className = 'job-detail-result';
+        const thumb = document.createElement('video');
+        thumb.className = 'job-detail-thumb';
+        thumb.src = it.url;
+        thumb.preload = 'metadata';
+        thumb.muted = true;
+        thumb.playsInline = true;
+        thumb.title = (it.label ? it.label + ' · ' : '') + '点开预览';
+        thumb.addEventListener('click', () => openPreview('video', it.url, previewItems, i));
+        row.appendChild(thumb);
+        const name = document.createElement('span');
+        name.textContent = it.filename || 'video';
+        name.title = it.label || '';
+        row.appendChild(name);
+        const dl = document.createElement('button');
+        dl.type = 'button';
+        dl.className = 'job-tile-btn job-tile-btn--dl';
+        dl.textContent = '⬇ 下载';
+        dl.addEventListener('click', () => this._blobDownload(it.url, it.filename || 'video'));
+        row.appendChild(dl);
+        rows.appendChild(row);
+      });
+      if (previewItems.length) sec.appendChild(rows);
+      else sec.innerHTML += '<div class="job-detail-empty">暂无产出</div>';
       overlay.hidden = false;
     },
+    _clearRuntimeTimer() {
+      if (this._runtimeTimer) { clearInterval(this._runtimeTimer); this._runtimeTimer = null; }
+    },
+
     closeJobDetail() {
+      this._clearRuntimeTimer();
       const overlay = document.getElementById('sd-job-detail');
       if (overlay) overlay.hidden = true;
       this.selectedJobId = null;
@@ -1515,16 +2031,34 @@ function SeedanceApp() {
       this._clearTopicResultDom();
     },
 
+    _setupRealtimeEvents() {
+      if (typeof EventSource === 'undefined' || this._sse) return;
+      try {
+        const es = new EventSource(APP_PATH + '/api/events');
+        this._sse = es;
+        es.onmessage = () => { this.loadJobs(); };
+        es.onerror = () => {};
+      } catch (e) {}
+    },
+
     async loadJobs() {
       const res = await api(APP_PATH + '/api/jobs');
       if (res?.jobs) {
-        this.jobs = res.jobs;
+        let nextActivity = this._activityRecords || [];
         // 持久化活动记录并入矩阵：内存 JOBS 会随重启/剪枝清空，历史在 activity_log
         try {
           const act = await api(APP_PATH + '/api/activity');
-          this._activityRecords = (act && (act.records || act.items)) || [];
-        } catch (e) { this._activityRecords = this._activityRecords || []; }
-        this.renderJobsGrid();
+          nextActivity = (act && (act.records || act.items)) || [];
+          if (act && act.counts) this.activityCounts = act.counts;
+          if (act && (act.records || act.items)) this.activityRecords = act.records || act.items || [];
+        } catch (e) { nextActivity = this._activityRecords || []; }
+        const jobsSignature = JSON.stringify({ jobs: res.jobs, activity: nextActivity });
+        if (this._jobsRenderSignature !== jobsSignature) {
+          this._jobsRenderSignature = jobsSignature;
+          this.jobs = res.jobs;
+          this._activityRecords = nextActivity;
+          this.renderJobsGrid();
+        }
         // Refresh normally initializes the form as idle, which used to switch
         // the UI to history despite a live job. Rehydrate the original running
         // task panel from /api/jobs and resume its existing poll/cancel flow.
@@ -1595,9 +2129,62 @@ function SeedanceApp() {
       }
     },
 
+    _jobTimestamp(value) {
+      if (value === undefined || value === null || value === '') return 0;
+      if (value instanceof Date) {
+        const ms = value.getTime();
+        return Number.isFinite(ms) ? ms / 1000 : 0;
+      }
+      if (typeof value === 'number') {
+        return Number.isFinite(value) && value > 0 ? (value < 1e12 ? value : value / 1000) : 0;
+      }
+      const raw = String(value).trim();
+      if (!raw) return 0;
+      if (/^\d+(?:\.\d+)?$/.test(raw)) {
+        const n = Number(raw);
+        return Number.isFinite(n) && n > 0 ? (n < 1e12 ? n : n / 1000) : 0;
+      }
+      const parsed = Date.parse(raw);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed / 1000 : 0;
+    },
+
+    _jobModel(job) {
+      const params = (job && (job.params || job.form)) || ((job && job.request && job.request.values) || {});
+      const result = (job && job.result) || {};
+      const raw = String(job?.model || params.custom_model || params.model || result.model || '').trim();
+      if (!raw) return raw;
+      const models = this.models || [];
+      for (const entry of models) {
+        const hit = (entry.routes || []).find((route) => String(route.modelId || '') === raw);
+        if (hit) return hit.label || entry.label || entry.key || raw;
+        if (String(entry.modelId || '') === raw || String(entry.key || '') === raw) {
+          return entry.label || entry.key || raw;
+        }
+      }
+      return raw;
+    },
+
+    _jobSeed(job) {
+      const params = (job && (job.params || job.form)) || ((job && job.request && job.request.values) || {});
+      return String(params.seed || '').trim();
+    },
+    _jobProvider(job) {
+      const params = (job && (job.params || job.form)) || ((job && job.request && job.request.values) || {});
+      const result = (job && job.result) || {};
+      return String(job?.provider || params.provider || result.provider || '').trim();
+    },
+
+    formatJobTime(value) {
+      const ts = this._jobTimestamp(value);
+      if (!ts) return '';
+      const d = new Date(ts * 1000);
+      const p = (x) => String(x).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    },
+
     formatRuntime(job) {
       const _ = this.runtimeTick;
-      const start = job.started_at || job.submitted_at;
+      const start = this._jobTimestamp(job.started_at || job.submitted_at || job.created_at);
       if (!start) return '';
       const status = (job.status || '').toLowerCase();
       const running = ['queued', 'pending', 'running', 'querying'].includes(status);
@@ -1605,21 +2192,16 @@ function SeedanceApp() {
         const sec = Math.max(0, Math.floor(Date.now() / 1000 - start));
         return '已运行 ' + (sec >= 60 ? Math.floor(sec / 60) + '分' + (sec % 60) + '秒' : sec + '秒');
       }
-      if (job.finished_at && job.started_at) {
-        const sec = Math.max(0, Math.floor(job.finished_at - job.started_at));
+      const end = this._jobTimestamp(job.finished_at || job.updated_at);
+      if (end && end >= start) {
+        const sec = Math.max(0, Math.floor(end - start));
         return '耗时 ' + (sec >= 60 ? Math.floor(sec / 60) + '分' + (sec % 60) + '秒' : sec + '秒');
       }
       return '';
     },
 
     formatAttemptTime(ts) {
-      if (!ts) return '';
-      const n = Number(ts);
-      if (!Number.isFinite(n) || n <= 0) return '';
-      const ms = n < 1e12 ? n * 1000 : n;
-      const d = new Date(ms);
-      const p = (x) => String(x).padStart(2, '0');
-      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+      return this.formatJobTime(ts);
     },
 
     async showDetail(id) {
@@ -1728,6 +2310,14 @@ function SeedanceApp() {
       };
       if (this.submittingRequest) return;
       // reference 模式同时覆盖纯文生视频和参考生视频，素材全部可选；仅延长/编辑必须提供视频。
+      if (this.ensureAvailableModel()) {
+        const msg = this.modelHint || '所选模型已失效，请选择其他模型后重新提交。';
+        setOwnerState('submitting', false);
+        setOwnerState('submittingRequest', false);
+        setOwnerState('statusText', msg);
+        alert(msg);
+        return;
+      }
       const modelEl = field('model');
       const chosenModel = (modelEl && modelEl.value) || this.customModel || '';
       const usesLocalH3 = this.provider === 'comfyui_local' || chosenModel === 'minimax_h3_all_reference';
@@ -1823,8 +2413,23 @@ function SeedanceApp() {
       }
 
       const data = new FormData(document.getElementById('sd-form'));
-      data.set('provider', this.provider);
-      if (Object.keys(this.savedMedia).length) {
+      const selectedEntry = (this.models || []).find((item) => item.key === this.model);
+      const resolutionEl = field('resolution');
+      const route = routeForUnifiedVideoModel(selectedEntry, resolutionEl ? resolutionEl.value : '') || this.activeRoute;
+      if (route) {
+        data.set('provider', route.provider);
+        data.set('model', route.modelId);
+        data.delete('api_key');
+        this.provider = route.provider;
+        this._activeProvider = route.provider;
+        const routeCfg = this.providers[route.provider] || {};
+        this.baseUrl = routeCfg.base_url || this.baseUrl;
+      } else {
+        data.set('provider', this.provider);
+        if (this.model) data.set('model', this.model);
+      }
+      data.set('custom_model', '');
+      data.set('base_url', this.baseUrl || '');      if (Object.keys(this.savedMedia).length) {
         data.set('saved_media', JSON.stringify(this.savedMedia));
       }
 
@@ -1890,6 +2495,7 @@ function SeedanceApp() {
 
         if (isCurrent()) cache()._latestJob = job;
         if (isActiveTab() && isCurrent()) this._upsertJob(job);
+        if (isActiveTab() && isCurrent()) this.renderJobsGrid();
 
         if (isActiveTab() && isCurrent() && this.selectedJobId === jobId) {
           this.eventsText = (job.events || []).map(e => '[' + (e.time || '') + '] ' + (e.message || '')).join('\n');
@@ -1931,12 +2537,15 @@ function SeedanceApp() {
       this._cancellingJobIds = this._cancellingJobIds || {};
       if (this._cancellingJobIds[jobId]) return;
       this._cancellingJobIds[jobId] = true;
+      const cancelButton = document.querySelector('[data-jid="' + CSS.escape(jobId) + '"] .job-tile-btn--cancel');
+      if (cancelButton) cancelButton.disabled = true;
       this.statusText = '正在取消任务...';
       let res;
       try {
         res = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId) + '/cancel', 'POST', null, this.activeTabId);
       } catch (e) {
         delete this._cancellingJobIds[jobId];
+        if (cancelButton) cancelButton.disabled = false;
         this.statusText = '取消失败：' + (e && e.message ? e.message : e);
         return;
       }
@@ -1945,7 +2554,9 @@ function SeedanceApp() {
         this.statusText = '任务已取消，输入和参数已保留。';
         const j = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
         if (j) this._upsertJob(Object.assign({}, j, { status: 'cancelled' }));
+        this.renderJobsGrid();
       } else {
+        if (cancelButton) cancelButton.disabled = false;
         this.statusText = (res && res.error) || '取消失败：网络异常，请重试';
       }
     },
@@ -2245,7 +2856,7 @@ function SeedanceApp() {
     // ============================================================
     // APPLY PRESET (archive load / activity restore / config load)
     // ============================================================
-    applyPreset(preset) {
+    applyPreset(preset, options = {}) {
       if (!preset) return Promise.resolve();
       clearAllMediaPreviews();
       const values = preset.values || {};
@@ -2262,6 +2873,11 @@ function SeedanceApp() {
         if (name === 'base_url') { this.baseUrl = value; continue; }
         if (name === 'output_dir') { this.outputDir = value; continue; }
         if (name === 'custom_model') { this.customModel = value; continue; }
+        if (name === 'task_mode') {
+          this.taskMode = value || 'reference';
+          this._prevTaskMode = this.taskMode;
+          continue;
+        }
         if (name === 'web_search') { this.webSearch = ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase()); }
         if (name === 'poll_interval') { this.pollInterval = Number(value) || 10; }
         if (name === 'timeout') { this.timeout = Number(value) || 3600; }
@@ -2278,6 +2894,18 @@ function SeedanceApp() {
         if (name === 'model') { this.model = value; deferred.model = value; continue; }
         if (name === 'resolution') { deferred.resolution = value; continue; }
         if (name === 'ratio') { deferred.ratio = value; continue; }
+        if (name === 'duration') {
+          const durationField = field(name);
+          if (durationField && durationField.type === 'number') {
+            const numeric = Number(value);
+            if (Number.isFinite(numeric) && numeric > 0 && Number(durationField.max) < numeric) {
+              durationField.max = String(Math.ceil(numeric));
+            }
+            durationField.value = value;
+          }
+          continue;
+        }
+
 
         // For other fields, set DOM directly
         const el = field(name);
@@ -2296,7 +2924,7 @@ function SeedanceApp() {
           const el = field(name);
           const drop = el?.closest('.drop');
           if (drop && item.url) {
-            const mediaUrl = item.url.startsWith('/api/') ? APP_PATH + item.url : item.url;
+            const mediaUrl = secureMediaUrl(item.url);
             showPreview(drop, name, mediaUrl, item.filename || '已上传');
           }
         }
@@ -2307,6 +2935,14 @@ function SeedanceApp() {
       const mediaCount = Object.keys(this.savedMedia).length;
       if (mediaCount) this.archiveHint = '已读取保存配置：' + mediaCount + ' 个素材';
 
+      const desiredEntry = (this.models || []).find((entry) => {
+        if (entry.key === values.model) return true;
+        return entry.routes.some((route) => route.provider === values.provider && route.modelId === values.model);
+      });
+      if (desiredEntry) {
+        deferred.model = desiredEntry.key;
+        this.model = desiredEntry.key;
+      }
       // Restore model-dependent <select>s once PetiteVue has flushed the v-for
       // options (and after any provider/model switch above). resolution/ratio
       // options may have been narrowed by a previous applyModelLimits() run for a
@@ -2321,6 +2957,7 @@ function SeedanceApp() {
           if (mEl && deferred.model != null && [...mEl.options].some(o => o.value === deferred.model)) {
             mEl.value = deferred.model;
           }
+          self.ensureAvailableModel();
           const setSelect = (name, val) => {
             if (val == null || val === '') return;
             const el = field(name);
@@ -2339,7 +2976,7 @@ function SeedanceApp() {
           // Now narrow to the restored model; previous values are the saved ones,
           // so applyModelLimits keeps them when valid and only clamps when the
           // selected model genuinely doesn't support them.
-          self.applyModelLimits();
+          self.applyModelLimits({ preserveDuration: true });
           resolve();
         }, 0);
       });
@@ -2363,6 +3000,7 @@ function SeedanceApp() {
       values.provider = this.provider;
       values.base_url = this.baseUrl;
       if (this.model) values.model = this.model;
+      values.task_mode = this.taskMode || 'reference';
       const payload = {
         name: this.workspaceName.trim() || '默认主题',
         values: values,
@@ -2417,16 +3055,10 @@ function SeedanceApp() {
         this.currentSchemeName = '默认方案';
         this.isDirty = false;
         this.selectedArchive = '默认方案';
-        return;
+        return false;
       }
-      // Try workspace draft first
-      if (this.loadWorkspaceDraft()) return;
-
-      // Fall back to API preset
-      if (this._workspaceId === 'default' || !this._workspaceId) {
-        // Will load after init via the async pattern
-        this._loadApiPreset(ownerWorkspaceId);
-      }
+      // Only restore the per-tab local draft. Do not auto-apply server preset/scheme.
+      return this.loadWorkspaceDraft();
     },
 
     async _loadApiPreset(ownerWorkspaceId) {
@@ -2468,6 +3100,10 @@ function SeedanceApp() {
       this.autoDownload = false;
       const form = document.querySelector('#sd-form');
       if (form) form.reset();
+      const inheritedProvider = (this.provider && this.providers[this.provider])
+        ? this.provider
+        : this._defaultProvider;
+      this.applyProvider(inheritedProvider, true);
       // form.reset() clears file inputs' .files but not the preview <img>/<video>
       // that showPreview() manually injected into each .drop — mirror the cleanup
       // applyPreset() already does so the new tab starts truly blank.
@@ -2516,9 +3152,7 @@ function SeedanceApp() {
     },
 
     closeTab(id) {
-      const tab = this.tabs.find(t => t.id === id);
-      if (!tab || this.tabs.length <= 1) return;
-      if (tab.running) { this._closeConfirmTabId = id; return; }
+      if (!this.tabs.some(t => t.id === id) || this.tabs.length <= 1) return;
       this._forceCloseTab(id);
     },
 
@@ -2607,13 +3241,17 @@ function SeedanceApp() {
           };
       const form = document.querySelector('#sd-form');
       if (form) form.reset();
-      this.savedMedia = {};
-      if (typeof this.loadPreset === 'function') this.loadPreset();
-      // form.reset() restores the duration input's default *value* but not the
-      // min/max *attributes* we set from the previous tab's model, and a tab
-      // with no saved draft never reaches applyPreset(). Re-narrow here so the
-      // limits always match whichever model the select is actually showing.
-      this.applyModelLimits();
+      const cachedProvider = (cache.provider && this.providers[cache.provider])
+        ? cache.provider
+        : this.provider;
+      this.applyProvider(cachedProvider, true);
+      if (cache.baseUrl !== undefined) this.baseUrl = cache.baseUrl;
+      if (cache.models !== undefined) this.models = cache.models;
+      const restored = typeof this.loadPreset === 'function' ? this.loadPreset() : false;
+      if (!restored) {
+        this.savedMedia = {};
+        clearAllMediaPreviews();
+      }
 
       // If a background pollJob stashed a job snapshot for this tab, replay it
       // into the DOM. Otherwise clear any stale DOM left by the previous tab.

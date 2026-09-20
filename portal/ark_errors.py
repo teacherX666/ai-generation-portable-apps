@@ -35,6 +35,7 @@ Sources for the initial table:
 
 from __future__ import annotations
 
+import re
 from typing import Optional, Tuple
 
 
@@ -72,8 +73,23 @@ ARK_ERROR_MATCHERS: Tuple[ArkErrorMatcher, ...] = (
      "当前上传的视频时长不足 4 秒，请换一个更长的参考视频；"
      "或如果不是想做编辑任务，请把提示词里「删除/编辑/替换/增加」等关键词去掉。"),
 
+    # 2026-09 生产高频（seedance 活动日志 9 处、portrait 8 处）：方舟在提交
+    # 阶段就 400 —— 输入素材被判「含真人」。真人素材只有经「真人认证」
+    # （素材本人活体认证 + 授权）入库的才被允许，未认证的真人照片/视频一律拒，
+    # 且素材上传成功（Active）不代表能用于生成。注意：文案写 "input video"、
+    # param 指 content[i]，图片/音频素材命中时同样报这个 code。
+    # 必须排在下面的 InputVideoSensitiveContentDetected 之前（前缀匹配，先命中先返回）。
+    ("InputVideoSensitiveContentDetected.PrivacyInformation", None,
+     "输入素材被方舟判定「含真人」。未认证的真人素材方舟一律拒绝（能上传成功 ≠ 能用于生成）。"
+     "建议改用本地模型：视频生成选「本地 ComfyUI（免费）」+ MiniMax H3、人像生成选本地模型，"
+     "本地链路不做真人判定；必须用方舟则需素材本人先到「火山方舟体验中心 → 我的 → 真人人像」"
+     "完成真人认证后再引用。"),
+
     # 1 hit (input) + known case (output). Content policy — the code names
     # which side triggered it, but the user-facing advice is the same.
+    ("InputVideoSensitiveContentDetected", None,
+     "输入素材内容审核未通过（可能含敏感信息或真人）。请更换素材后重试；"
+     "若素材含真人，方舟只接受经过真人认证的素材，建议改用本地模型。"),
     ("InputImageSensitiveContentDetected", None,
      "输入图片内容审核未通过（可能涉及版权/敏感形象）。请更换素材，或改写提示词避开相关描述。"),
     ("OutputVideoSensitiveContentDetected", None,
@@ -102,3 +118,37 @@ def translate_ark_error(code: str, message: str) -> Optional[str]:
             continue
         return zh
     return None
+
+
+_ARK_BODY_CODE_RE = re.compile(r'"code"\s*:\s*"([^"]*)"')
+_ARK_BODY_MESSAGE_RE = re.compile(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def translate_ark_error_body(body) -> Optional[str]:
+    """Translate a raw Ark error body instead of an already-split (code, message).
+
+    Callers that fail at *submit* time never get the pair: seedance wraps the raw
+    body in ``APIError.message`` (seedance/app.py ``request_json``) and
+    volcengine-portrait keeps it in the call result's ``detail``. Those are the
+    paths that actually raise today's real-person rejections, so without this
+    helper the user still sees a wall of English JSON.
+
+    Accepts a dict (``{"error": {...}}`` or the inner error dict) or the raw JSON
+    string. Returns None when nothing matches, so callers keep their raw text.
+    """
+    code = ""
+    message = ""
+    if isinstance(body, dict):
+        err = body.get("error") if isinstance(body.get("error"), dict) else body
+        code = str(err.get("code") or "")
+        message = str(err.get("message") or "")
+    elif isinstance(body, str) and body:
+        found = _ARK_BODY_CODE_RE.search(body)
+        if found:
+            code = found.group(1)
+        found = _ARK_BODY_MESSAGE_RE.search(body)
+        if found:
+            message = found.group(1)
+    if not code and not message:
+        return None
+    return translate_ark_error(code, message)

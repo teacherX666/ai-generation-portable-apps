@@ -156,6 +156,8 @@ def sniff_is_image(head: bytes) -> bool:
         return True  # TIFF
     if head[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1"):
         return True  # HEIC
+    if head[4:12] in (b"ftypavif", b"avif"):
+        return True  # AVIF
     return False
 
 
@@ -252,13 +254,33 @@ def _decode_username(handler) -> str:
         return raw
 
 
+def _config_scope_for(ws_id: str, username: str) -> str:
+    if username:
+        user_part = _sanitize_username(username)
+        legacy_scope = "u_" + user_part
+        combined_prefix = legacy_scope + "_"
+        if ws_id == legacy_scope:
+            return legacy_scope
+        if ws_id.startswith(combined_prefix):
+            return ws_id
+        return combined_prefix + ws_id
+    return ws_id
+
+
 def _config_scope(handler) -> str:
-    """Config/archive/media scope: follow the logged-in account (X-Username),
-    falling back to the per-browser workspace id for standalone/local use."""
-    user = _decode_username(handler)
-    if user:
-        return "u_" + _sanitize_username(user)
-    return _workspace_id(handler)
+    """Config/archive/media scope: logged-in user + browser workspace theme."""
+    return _config_scope_for(_workspace_id(handler), _decode_username(handler))
+
+def _legacy_config_scope(ws_id: str) -> str | None:
+    """Return the pre-isolation per-user scope for read-only media fallback.
+
+    Old data was stored under u_<user>; new data uses u_<user>_<workspace>.
+    Keep old media readable when a theme has not yet written a new copy.
+    """
+    if not ws_id.startswith("u_"):
+        return None
+    legacy = ws_id.rsplit("_", 1)[0]
+    return legacy if legacy.startswith("u_") and legacy != ws_id else None
 
 
 APP_NAME = "nano-banana"
@@ -290,13 +312,13 @@ def _workspace_id(handler) -> str:
     """Extract workspace_id: 1) X-Workspace-Id header  2) ?ws= query  3) localhost."""
     ws = (handler.headers.get("X-Workspace-Id") or "").strip()
     if ws:
-        return re.sub(r"[^a-zA-Z0-9_\-]", "_", ws)[:64]
+        return re.sub(r"[^\w\-]+", "_", ws, flags=re.UNICODE)[:64]
     # Fallback to query parameter (read from raw path since self.path is stripped of query in do_GET/do_POST)
     raw = getattr(handler, "_raw_path", None) or handler.path
     qs = urllib.parse.urlparse(raw).query
     params = urllib.parse.parse_qs(qs)
     if "ws" in params:
-        return re.sub(r"[^a-zA-Z0-9_\-]", "_", str(params["ws"][0]))[:64]
+        return re.sub(r"[^\w\-]+", "_", str(params["ws"][0]), flags=re.UNICODE)[:64]
     return "localhost"
 
 
@@ -440,8 +462,8 @@ FALLBACK_PROVIDERS = {
             "image_size_options": ["1K", "1.5K", "2K"],
             "max_reference_images": 10,
             "supports_seed": False,
-            "defaults": {"mode": "img2img", "model": "doubao-seedream-5-0-pro-260628", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 300, "vary_seed": False, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
-            "models": [{"id": "doubao-seedream-5-0-pro-260628", "label": "Seedream 5.0 Pro"}],
+            "defaults": {"mode": "img2img", "model": "ep-20260912121809-6wt62", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 300, "vary_seed": False, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
+            "models": [{"id": "ep-20260912121809-6wt62", "label": "Seedream 5.0 Pro"}],
         },
     },
 }
@@ -541,6 +563,14 @@ def validate_model_capabilities(values: dict[str, Any], files: dict[str, tuple[s
     config, _ = load_provider_config()
     provider = str(values.get("provider") or "t8star")
     model = str(values.get("custom_model") or values.get("model") or "").strip()
+    provider_cfg = (config.get("providers") or {}).get(provider) or {}
+    selected = next((
+        item for item in (provider_cfg.get("models") or [])
+        if isinstance(item, dict) and str(item.get("id") or "") == model
+    ), {})
+    if selected.get("disabled"):
+        label = str(selected.get("label") or model)
+        raise ValueError(f"模型「{label}」已失效，暂时不可用，请选择其他模型。")
     caps = model_capabilities(config, provider, model)
     if not caps:
         return
@@ -766,6 +796,18 @@ def media_item_to_file(field: str, item: Any) -> tuple[str, bytes] | None:
         return filename_from_media(field, item, mime), blob
     raise ValueError(f"media.{field} must include data_url or url")
 
+
+def public_job_snapshot(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not job:
+        return None
+    data = json.loads(json.dumps(job))
+    data.pop("api_key", None)
+    if isinstance(data.get("provider_tasks"), list):
+        data["provider_tasks"] = [
+            {"task_id": str(item.get("task_id") or "")}
+            for item in data["provider_tasks"] if isinstance(item, dict)
+        ]
+    return data
 
 def job_id_response(job_id: str) -> dict[str, Any]:
     return {"ok": True, "job_id": job_id, "status_url": f"/api/jobs/{job_id}"}
@@ -996,7 +1038,7 @@ def preset_for_client(ws_id: str = "localhost") -> dict[str, Any]:
     return preset_to_client(read_preset(ws_id), ws_id)
 
 
-def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, bytes]], prefix: str, ws_id: str = "localhost") -> dict[str, Any]:
+def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, bytes]], prefix: str, ws_id: str = "localhost", source_media_scope: str = "") -> dict[str, Any]:
     safe_values = {
         key: value for key, value in values.items()
         if key not in {"saved_media", "_auto_seed_base", "api_key", "api_key_override"}
@@ -1004,6 +1046,7 @@ def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, by
     media: dict[str, Any] = {}
     media_dir = _ws_media_dir(ws_id)
     media_dir.mkdir(parents=True, exist_ok=True)
+    source_media_dir = _ws_media_dir(source_media_scope) if source_media_scope else media_dir
     try:
         saved_media = json.loads(str(values.get("saved_media") or "{}"))
     except Exception:
@@ -1013,12 +1056,19 @@ def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, by
             if key not in FILE_FIELDS or not isinstance(item, dict):
                 continue
             stored = Path(str(item.get("stored", ""))).name
-            if stored and (media_dir / stored).exists():
-                media[key] = {
-                    "filename": item.get("filename", stored),
-                    "stored": stored,
-                    "mime": item.get("mime") or mimetypes.guess_type(stored)[0] or "image/png",
-                }
+            if not stored:
+                continue
+            source_path = source_media_dir / stored
+            destination_path = media_dir / stored
+            if source_path.exists() and source_path.resolve() != destination_path.resolve():
+                shutil.copyfile(source_path, destination_path)
+            if not destination_path.exists():
+                continue
+            media[key] = {
+                "filename": item.get("filename", stored),
+                "stored": stored,
+                "mime": item.get("mime") or mimetypes.guess_type(stored)[0] or "image/png",
+            }
     for key, file_data in files.items():
         if key not in FILE_FIELDS:
             continue
@@ -1117,7 +1167,7 @@ def retry_job(job_id: str) -> str:
     files = _files_from_restore(restore, ws_id)
     username = str((act or {}).get("username") or "")
     return create_job(values, files, source="retry", request_kind="retry",
-                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username)
+                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username, media_scope=_config_scope_for(ws_id, username))
 
 
 def recover_backlog() -> tuple[int, int]:
@@ -1150,6 +1200,7 @@ def recover_backlog() -> tuple[int, int]:
             # restore 有意剥离 api_key：重放时回填服务端统一配置
             values.setdefault("api_key", resolve_provider_api_key(str(values.get("provider") or "")))
             ws_id = str(meta.get("ws_id") or "localhost")
+            media_scope = _config_scope_for(ws_id, str(meta.get("username") or ""))
             files = _files_from_restore(restore, ws_id)
             # 排队中/运行中统一语义（2026-09-09 用户确认）：
             # 重启后原 job_id 重新入队、自动继续跑，活动记录保持 running——
@@ -1162,11 +1213,20 @@ def recover_backlog() -> tuple[int, int]:
                     "results": [], "errors": [], "done": 0, "total": 0,
                     "username": str(meta.get("username") or ""),
                     "workspace_id": ws_id,
+                    "activity_id": activity_id,
+                    "created_at": str(act.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S")),
+                    "title": str(act.get("title") or values.get("prompt") or "Nano Banana task")[:80],
+                    "prompt": str(values.get("prompt") or act.get("title") or ""),
+                    "params": {
+                        key: value for key, value in values.items()
+                        if key not in {"api_key", "saved_media"} and key not in FILE_FIELDS
+                    },
+                    "model": str(values.get("custom_model") or values.get("model") or "").strip(),
+                    "provider": str(values.get("provider") or "").strip(),
                     "submitted_at": time.time(), "started_at": None, "finished_at": None,
                 }
                 _backlog_set_locked(job_id, stage="queued", activity_id=activity_id, ws_id=ws_id)
-            threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True).start()
-            recovered += 1
+            threading.Thread(target=run_job, args=(job_id, values, files, activity_id, media_scope), daemon=True).start()
         except Exception as exc:
             # 数据残缺无法重放：活动记录还在 → 标记中断；记录已被 100 条上限
             # 滚出日志 → 直接丢弃，绝不造无主失败条目污染任务列表
@@ -1183,6 +1243,12 @@ def recover_backlog() -> tuple[int, int]:
                     "done": 0, "total": 0,
                     "username": str(meta.get("username") or ""),
                     "workspace_id": str(meta.get("ws_id") or "localhost"),
+                    "activity_id": activity_id,
+                    "created_at": str(act.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S")),
+                    "title": str(act.get("title") or "Nano Banana task")[:80],
+                    "prompt": str(act.get("prompt") or act.get("title") or ""),
+                    "model": str(act.get("model") or ""),
+                    "provider": str(act.get("provider") or ""),
                     "submitted_at": time.time(), "started_at": None, "finished_at": time.time(),
                 }
             update_activity(
@@ -1363,7 +1429,7 @@ def save_archive_file(name: str, preset: dict[str, Any], ws_id: str = "localhost
     path.parent.mkdir(parents=True, exist_ok=True)
     safe_preset = dict(preset)
     safe_preset["values"] = {k: v for k, v in safe_preset.get("values", {}).items()
-                             if k not in ("api_key", "api_key_override", "prompt")}
+                             if k not in ("api_key", "api_key_override")}
     ws_media = _ws_media_dir(ws_id)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("preset.json", json.dumps(safe_preset, ensure_ascii=False, indent=2))
@@ -1663,16 +1729,35 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     return values, files
 
 
-def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], source: str, request_kind: str, request_data: dict[str, Any], ws_id: str = "localhost", username: str = "") -> str:
+def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], source: str, request_kind: str, request_data: dict[str, Any], ws_id: str = "localhost", username: str = "", media_scope: str | None = None) -> str:
     validate_model_capabilities(values, files)
+    media_scope = media_scope or _config_scope_for(ws_id, username)
     job_id = uuid.uuid4().hex
     activity_id = uuid.uuid4().hex
+    prompt = str(values.get("prompt") or "")
+    created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    source_media_scope = media_scope
+    safe_params = {
+        key: value for key, value in values.items()
+        if key not in {"api_key", "saved_media"} and key not in FILE_FIELDS
+    }
+    response = job_id_response(job_id)
+    # 与 seedance 同步（2026-09-15）：会抛异常的准备工作（copy_files_to_restore
+    # 会往 workspace 素材目录写盘）必须在作业入库之前做完。否则「已入库、线程
+    # 未起」会留下永远 queued/total=0 的僵尸任务，前端只看到一次 400，
+    # 队列里却挂着不动、取消也没用。
+    restore_payload = copy_files_to_restore(values, files, activity_id, ws_id, source_media_scope)
     with LOCK:
         JOBS[job_id] = {
             "id": job_id, "status": "queued", "events": [], "results": [], "errors": [],
             "done": 0, "total": 0,
             "username": username,
             "workspace_id": ws_id,
+            "activity_id": activity_id,
+            "created_at": created_at,
+            "title": prompt[:80] or "Nano Banana task",
+            "prompt": prompt,
+            "params": safe_params,
             "model": str(values.get("custom_model") or values.get("model") or "").strip(),
             "provider": str(values.get("provider") or "").strip(),
             "submitted_at": time.time(),
@@ -1683,24 +1768,39 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
         _backlog_set_locked(job_id, stage="queued", activity_id=activity_id,
                             ws_id=ws_id, username=username)
         _prune_jobs_locked()
-    response = job_id_response(job_id)
-    record_activity({
-        "id": activity_id,
-        "job_id": job_id,
-        "source": source,
-        "request_kind": request_kind,
-        "status": "running",
-        "title": str(values.get("prompt") or "")[:80] or "Nano Banana task",
-        "model": str(values.get("custom_model") or values.get("model") or "").strip(),
-        "provider": str(values.get("provider") or "").strip(),
-        "request": request_data,
-        "response": response,
-        "workspace_id": ws_id,
-        "username": username,
-        "started_at": time.time(),
-        "restore": copy_files_to_restore(values, files, activity_id, ws_id),
-    })
-    threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True).start()
+    try:
+        record_activity({
+            "id": activity_id,
+            "job_id": job_id,
+            "source": source,
+            "request_kind": request_kind,
+            "status": "running",
+            "title": str(values.get("prompt") or "")[:80] or "Nano Banana task",
+            "model": str(values.get("custom_model") or values.get("model") or "").strip(),
+            "provider": str(values.get("provider") or "").strip(),
+            "request": request_data,
+            "response": response,
+            "workspace_id": ws_id,
+            "username": username,
+            "started_at": time.time(),
+            "restore": restore_payload,
+        })
+        threading.Thread(target=run_job, args=(job_id, values, files, activity_id, source_media_scope), daemon=True).start()
+    except Exception:
+        # 入库后、worker 起来前失败：把作业整个摘掉，绝不留下僵尸
+        with LOCK:
+            JOBS.pop(job_id, None)
+            _backlog_remove_locked(job_id)
+        try:
+            update_activity(
+                activity_id,
+                status="failed",
+                error="任务创建失败（队列未启动）：" + str(sys.exc_info()[1])[:160],
+                finished_at=time.time(),
+            )
+        except Exception:
+            pass
+        raise
     return job_id
 
 
@@ -2052,6 +2152,50 @@ def add_event(job_id: str, message: str) -> None:
         JOBS[job_id].setdefault("events", []).append({"time": time.strftime("%H:%M:%S"), "message": message})
 
 
+# 僵尸作业阈值：正常提交在同一次请求里就会把状态推到 running，因此「排队超过
+# 这么久 + 完全没进度」只可能是 worker 从未起来的僵尸（与 seedance 同步的
+# 2026-09-15 修复：create_job 先入库后起线程，中间抛异常就留下永久 queued）。
+ZOMBIE_QUEUE_GRACE_SECONDS = 180.0
+
+
+def _sweep_zombie_jobs(grace: float = ZOMBIE_QUEUE_GRACE_SECONDS) -> int:
+    """把「从未启动过 worker」的 queued 作业自愈成 failed，避免永久卡在排队中。"""
+    now = time.time()
+    zombies: list[tuple[str, str]] = []
+    with LOCK:
+        for jid, job in list(JOBS.items()):
+            status = str(job.get("status") or "").lower()
+            if status not in {"queued", "pending"}:
+                continue
+            if job.get("started_at") or job.get("local_job_ids") or job.get("provider_tasks"):
+                continue
+            if int(job.get("done") or 0) > 0 or int(job.get("total") or 0) > 0:
+                continue
+            submitted = float(job.get("submitted_at") or 0)
+            if not submitted or (now - submitted) < grace:
+                continue
+            job["status"] = "failed"
+            job["errors"] = list(job.get("errors") or []) + ["任务未能启动（队列线程缺失），已自动标记失败，请重试。"]
+            job["finished_at"] = now
+            _backlog_remove_locked(jid)
+            zombies.append((jid, str(job.get("activity_id") or "")))
+    for jid, activity_id in zombies:
+        try:
+            update_activity(
+                activity_id,
+                status="failed",
+                error="任务未能启动（队列线程缺失），已自动标记失败，请重试。",
+                finished_at=now,
+            )
+        except Exception:
+            pass
+        try:
+            report_final_to_portal(jid, "failed")
+        except Exception:
+            pass
+    return len(zombies)
+
+
 def truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"on", "true", "1", "yes"}
 
@@ -2122,11 +2266,18 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             values_payload["seed"] = seed
         values_payload["timeout"] = int(values.get("timeout") or 2400)
         values_payload["poll_interval"] = max(2, int(values.get("poll_interval") or 3))
+        file_signature = [
+            (str(key), str(item.get("filename") or ""), len(str(item.get("data_url") or "")))
+            for key, item in sorted(files_payload.items())
+        ]
+        request_id = local_gateway.job_request_id(
+            job_id, index, model_kind, file_signature
+        )
         submit = request_json(
             "POST",
             f"{base_url}/api/image_local/jobs/json",
             "",
-            {"values": values_payload, "files": files_payload},
+            {"values": values_payload, "files": files_payload, "request_id": request_id},
             timeout=int(values.get("timeout") or 2400),
         )
         local_job_id = submit.get("job_id")
@@ -2140,6 +2291,17 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         results: list[dict[str, Any]] = []
         while True:
             if time.time() - start > timeout:
+                try:
+                    request_json(
+                        "POST",
+                        f"{base_url}/api/image_local/jobs/{local_job_id}/cancel",
+                        "",
+                        None,
+                        timeout=5,
+                        max_retries=1,
+                    )
+                except Exception:
+                    pass
                 raise RuntimeError(f"Local ComfyUI job {local_job_id} timed out after {timeout}s")
             time.sleep(poll_interval)
             if _job_cancel_requested(job_id):
@@ -2298,6 +2460,8 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                     timeout=300,
                 )
             else:
+                if not reference_files:
+                    raise ValueError("图生图模式至少需要一张参考图，请重新上传图片或切换到文生图")
                 files_payload = [
                     ("image[]", filename, blob, mime)
                     for filename, blob, mime in reference_files
@@ -2415,6 +2579,8 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             payload["seed"] = seed
         result = request_json("POST", f"{base_url}/v1/images/generations?async=true", api_key, payload)
     else:
+        if image_count == 0:
+            raise ValueError("图生图模式至少需要一张参考图，请重新上传图片或切换到文生图")
         result = multipart_post(f"{base_url}/v1/images/edits?async=true", api_key, common, files_payload)
 
     task_id = result.get("task_id") or result.get("id") or f"sync_{uuid.uuid4().hex[:12]}"
@@ -2423,6 +2589,14 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         final = result
     else:
         status_url = f"{base_url}/v1/images/tasks/{task_id}"
+        with LOCK:
+            job = JOBS.get(job_id)
+            if job is not None:
+                job.setdefault("provider_tasks", []).append({
+                    "task_id": task_id,
+                    "status_url": status_url,
+                    "api_key": api_key,
+                })
         timeout = int(values.get("timeout") or 900)
         interval = int(values.get("poll_interval") or 10)
         start = time.time()
@@ -2498,14 +2672,22 @@ def _local_auto_candidates(model: str, file_count: int) -> list[str]:
     return [_LOCAL_AUTO_MODEL_CHAIN.get(file_count, "qwen2511")]
 
 
-def _prepare_model_attempt(values: dict[str, Any], model: str) -> dict[str, Any]:
+def _prepare_model_attempt(
+    values: dict[str, Any],
+    model: str,
+    files: dict[str, tuple[str, bytes]],
+) -> dict[str, Any]:
     attempt = dict(values)
     attempt["model"] = model
     attempt["custom_model"] = ""
     if model == "flux2_klein_allinone":
         attempt["flux2_mode"] = "auto"
     elif model == "zimage_multifunction":
-        attempt["zimage_mode"] = "auto"
+        requested_mode = str(attempt.get("mode") or "").strip().lower()
+        if requested_mode == "text2img" or not files:
+            attempt["zimage_mode"] = "t2i"
+        else:
+            attempt["zimage_mode"] = "img2img"
     return attempt
 
 
@@ -2564,7 +2746,7 @@ def run_one_with_fallback(job_id: str, index: int, values: dict[str, Any], files
         return _merge_local_batch_results(batch_results, index)
 
     candidate = _local_auto_candidates(requested_model, len(files))[0]
-    attempt_values = _prepare_model_attempt(values, candidate)
+    attempt_values = _prepare_model_attempt(values, candidate, files)
     try:
         result = run_one(job_id, index, attempt_values, files, ws_id)
         result.setdefault("model", candidate)
@@ -2647,7 +2829,7 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
         with LOCK:
             cancelled = bool(JOBS[job_id].get("cancel_requested"))
             errors = JOBS[job_id]["errors"]
-            final_job = json.loads(json.dumps(JOBS[job_id]))
+            final_job = public_job_snapshot(JOBS[job_id]) or {}
         if cancelled:
             # 已完成的条目保留（已真实生成且计费）；未完成条目不计
             final_status = "cancelled"
@@ -2673,7 +2855,7 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
         except KeyError:
             print(f"[run_job] JOBS 条目缺失（异常前已被移出？）: {job_id}: {exc}", flush=True)
         with LOCK:
-            final_job = json.loads(json.dumps(JOBS.get(job_id, {})))
+            final_job = public_job_snapshot(JOBS.get(job_id, {})) or {}
             _backlog_remove_locked(job_id)
         update_activity(activity_id, status="failed", error=str(exc), result=final_job, finished_at=time.time(), model=final_job.get("model", ""), provider=final_job.get("provider", ""))
         add_event(job_id, f"Fatal: {exc}")
@@ -2759,6 +2941,11 @@ class Handler(SimpleHTTPRequestHandler):
             sees_all, username = _view_scope(self)
             json_response(self, 200, activity_list(sees_all=sees_all, username=username))
             return
+        if self.path.startswith("/api/activity/by-job/"):
+            job_id = urllib.parse.unquote(self.path.rsplit("/", 1)[-1])
+            record = find_activity_by_job_id(job_id)
+            json_response(self, 200 if record else 404, activity_record_for_client(record) or {"error": "activity not found"})
+            return
         if self.path.startswith("/api/activity/"):
             activity_id = self.path.rsplit("/", 1)[-1]
             record = next((item for item in read_activity_log() if item.get("id") == activity_id), None)
@@ -2773,6 +2960,12 @@ class Handler(SimpleHTTPRequestHandler):
             item = read_preset(ws).get("media", {}).get(field)
             stored_name = Path(item.get("stored", "")).name if item else ""
             path = _ws_media_dir(ws) / stored_name if stored_name else None
+            if (path) and not path.exists():
+                legacy = _legacy_config_scope(ws)
+                if legacy:
+                    legacy_path = _ws_media_dir(legacy) / stored_name
+                    if legacy_path.exists():
+                        path = legacy_path
             if not item or not path or not path.exists():
                 json_response(self, 404, {"error": "media not found"})
                 return
@@ -2792,6 +2985,12 @@ class Handler(SimpleHTTPRequestHandler):
             stored = Path(urllib.parse.unquote(raw_name)).name
             ws = _config_scope(self)
             path = _ws_media_dir(ws) / stored
+            if (path) and not path.exists():
+                legacy = _legacy_config_scope(ws)
+                if legacy:
+                    legacy_path = _ws_media_dir(legacy) / stored
+                    if legacy_path.exists():
+                        path = legacy_path
             if not path.exists():
                 json_response(self, 404, {"error": "media not found"})
                 return
@@ -2808,6 +3007,9 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/jobs":
             sees_all, username = _view_scope(self)
             items = []
+            # 僵尸自愈（2026-09-15，与 seedance 同步）：worker 线程从未启动的
+            # 作业会永久停在 queued/total=0，前端只能一直显示「排队中」。
+            _sweep_zombie_jobs()
             with LOCK:
                 for jid, j in JOBS.items():
                     if not sees_all and j.get("username", "") != username:
@@ -2851,7 +3053,7 @@ class Handler(SimpleHTTPRequestHandler):
             job_id = self.path.rsplit("/", 1)[-1]
             with LOCK:
                 job = JOBS.get(job_id)
-                data = json.loads(json.dumps(job)) if job else None
+                data = public_job_snapshot(job)
             json_response(self, 200 if data else 404, data or {"error": "job not found"})
             return
         if self.path.startswith("/api/download/"):
@@ -2929,10 +3131,19 @@ class Handler(SimpleHTTPRequestHandler):
                 job["errors"] = ["任务已取消。"]
                 job["finished_at"] = time.time()
                 local_job_ids = list(job.get("local_job_ids") or [])
+                provider_tasks = list(job.get("provider_tasks") or [])
                 _backlog_remove_locked(job_id)
             for lid in local_job_ids:
                 try:
                     request_json("POST", f"{_force_ipv4(LOCAL_GATEWAY_BASE_URL)}/api/image_local/jobs/{lid}/cancel", "", None, timeout=5, max_retries=1)
+                except Exception:
+                    pass
+            for task in provider_tasks:
+                status_url = str(task.get("status_url") or "")
+                if not status_url:
+                    continue
+                try:
+                    request_json("DELETE", status_url, str(task.get("api_key") or ""), None, timeout=5, max_retries=1)
                 except Exception:
                     pass
             add_event(job_id, "任务已取消。")
@@ -3176,7 +3387,7 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 request_data = {"raw": summarize_payload(payload), "parsed": summarize_values_files(values, files)}
                 ws = _workspace_id(self)
-                job_id = create_job(values, files, "api", "json", request_data, ws, username=_decode_username(self))
+                job_id = create_job(values, files, "api", "json", request_data, ws, username=_decode_username(self), media_scope=_config_scope(self))
                 json_response(self, 200, job_id_response(job_id))
             except Exception as exc:
                 json_response(self, 400, api_error("invalid_request", str(exc)))
@@ -3209,7 +3420,7 @@ class Handler(SimpleHTTPRequestHandler):
         request_data = summarize_values_files(values, files)
         ws = _workspace_id(self)
         try:
-            job_id = create_job(values, files, "page", "multipart", request_data, ws, username=_decode_username(self))
+            job_id = create_job(values, files, "page", "multipart", request_data, ws, username=_decode_username(self), media_scope=_config_scope(self))
         except Exception as exc:
             json_response(self, 400, api_error("invalid_request", str(exc)))
             return

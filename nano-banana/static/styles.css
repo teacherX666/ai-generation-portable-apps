@@ -864,6 +864,24 @@ html, body { height: 100%; overflow: hidden; }
 .job-tile-media { position: relative; height: 96px; background: #edf2f8; display: grid; place-items: center; overflow: hidden; }
 .job-tile-media video, .job-tile-media img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
 .job-tile-ph { font-size: 26px; color: #94a3b8; }
+/* 并发生成：一个格子画多条产出的缩略图（最多 4 格，多出来的收进 +N 格子）。
+   上限是为了不让一个格子挂十几张图同时向 Portal 代理取流。 */
+.job-tile-media--multi { grid-template-columns: repeat(2, 1fr); grid-auto-rows: minmax(0, 1fr); gap: 2px; place-items: stretch; }
+.job-tile-media--multi .job-tile-thumb { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; border: 0; padding: 0; background: #dbe3ee; }
+.job-tile-thumb--more { font-size: 13px; font-weight: 700; color: #334155; cursor: pointer; }
+.job-tile-thumb--gone { display: grid; place-items: center; font-size: 18px; color: #94a3b8; background: #edf2f8; }
+.job-tile-count {
+  position: absolute; right: 4px; top: 4px; z-index: 2; font-size: 10px; font-weight: 700; line-height: 1;
+  color: #fff; background: rgba(15, 23, 42, .62); border-radius: 999px; padding: 2px 6px; pointer-events: none;
+}
+.job-detail-thumb { width: 68px; height: 42px; object-fit: cover; border-radius: 5px; cursor: zoom-in; background: #dbe3ee; flex: 0 0 auto; }
+/* 放大预览里的结果编号条：一个任务多条产出时逐条切换 */
+.preview-strip { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
+.preview-strip-item {
+  min-width: 28px; height: 24px; padding: 0 8px; border: 1px solid #cbd5e1; border-radius: 6px;
+  background: #f8fafc; color: #334155; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.preview-strip-item.is-active { border-color: var(--accent, #2563eb); background: var(--accent, #2563eb); color: #fff; }
 .job-tile-meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px 0; flex-wrap: wrap; }
 .job-tile-badge {
   font-size: 10px; font-weight: 700; border-radius: 999px; padding: 1px 8px; color: #fff; background: #64748b;
@@ -886,6 +904,84 @@ html, body { height: 100%; overflow: hidden; }
 .job-tile-btn:hover { color: var(--accent, #2563eb); background: var(--accent-soft, #eef5ff); border-color: var(--accent, #2563eb); }
 .job-tile-btn--dl { color: #1d4ed8; border-color: #bfd4f8; background: #eaf1fe; }
 .job-tile-btn--retry { color: #15803d; border-color: #bbf7d0; background: #e8f7ee; }
+.job-tile-btn--cancel { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
+.job-tile-hourglass {
+  --c1: #1f2937;
+  --c2: #f59e0b;
+  width: 32px;
+  height: 64px;
+  border-top: 3px solid var(--c1);
+  border-bottom: 3px solid var(--c1);
+  background: linear-gradient(90deg, var(--c1) 2px, var(--c2) 0 5px, var(--c1) 0) 50% / 7px 8px no-repeat;
+  display: grid;
+  overflow: hidden;
+  animation: job-loader-spin 4s infinite linear;
+}
+.job-tile-hourglass::before,
+.job-tile-hourglass::after {
+  content: "";
+  grid-area: 1 / 1;
+  width: 75%;
+  height: calc(50% - 3px);
+  margin: 0 auto;
+  border: 2px solid var(--c1);
+  border-top: 0;
+  box-sizing: content-box;
+  border-radius: 0 0 40% 40%;
+  -webkit-mask: linear-gradient(#000 0 0) bottom / 4px 2px no-repeat,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: destination-out;
+  mask-composite: exclude;
+  background: linear-gradient(var(--d, 0deg), var(--c2) 50%, #0000 0) bottom / 100% 205%,
+    linear-gradient(var(--c2) 0 0) center / 0 100%;
+  background-repeat: no-repeat;
+  animation: inherit;
+  animation-name: job-loader-fill;
+}
+.job-tile-hourglass::after {
+  transform-origin: 50% calc(100% + 2px);
+  transform: scaleY(-1);
+  --s: 3px;
+  --d: 180deg;
+}
+@keyframes job-loader-spin {
+  80% { transform: rotate(0); }
+  100% { transform: rotate(.5turn); }
+}
+@keyframes job-loader-fill {
+  10%, 70% { background-size: 100% 205%, var(--s, 0) 100%; }
+  70%, 100% { background-position: top, center; }
+}
+.job-tile-cancelled {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.job-cancel-stop {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border: 2px solid #94a3b8;
+  border-radius: 50%;
+  background: #f8fafc;
+}
+.job-cancel-stop::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 2px;
+  background: #94a3b8;
+  border-radius: 2px;
+  transform: translateY(-50%);
+}
 
 /* ── 任务详情弹窗（请求 / 返回） ── */
 .job-detail-backdrop {
@@ -905,6 +1001,11 @@ html, body { height: 100%; overflow: hidden; }
 .job-detail-body { padding: 12px 14px; overflow-y: auto; }
 .job-detail-ids { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .job-detail-mono { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #64748b; }
+.job-detail-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
+.job-detail-meta-item { min-width: 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 7px 9px; }
+.job-detail-meta-label { display: block; font-size: 10px; color: #64748b; margin-bottom: 2px; }
+.job-detail-meta-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 600; color: #1e293b; }
+.job-detail-empty { color: #94a3b8; font-size: 12px; padding: 2px 0; }
 .job-detail-errors {
   background: #fdeaea; border: 1px solid #fecaca; color: #b91c1c;
   border-radius: 8px; padding: 8px 10px; font-size: 12px; white-space: pre-wrap;
@@ -921,3 +1022,5 @@ html, body { height: 100%; overflow: hidden; }
 .job-detail-result { display: flex; align-items: center; gap: 10px; font-size: 12px; }
 .job-detail-result span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #475569; }
 .job-detail-result .job-tile-btn { flex: none; }
+
+

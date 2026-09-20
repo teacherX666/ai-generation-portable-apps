@@ -9,7 +9,7 @@ function workspaceId() {
   const qs = new URLSearchParams(window.location.search);
   if (qs.get("ws")) return qs.get("ws");
   let id = localStorage.getItem("workspace_id");
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem("workspace_id", id); }
+  if (!id) { id = (window.crypto && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : ('ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)); localStorage.setItem("workspace_id", id); }
   return id;
 }
 function apiFetch(url, opts) {
@@ -638,16 +638,108 @@ async function loadJobs() {
 
 function renderJobsList(jobs) {
   const list = $('#jobsList');
-  _lastJobsForRender = jobs || [];
-  const active = jobs.filter(j => j.status === 'pending' || j.status === 'running' || j.status === 'querying');
-  const recent = jobs.filter(j => j.status === 'completed' || j.status === 'failed').slice(0, 50);
-  const all = [...active, ...recent];
+  const source = Array.isArray(jobs) ? jobs : [];
+  const active = source.filter(j => ['queued', 'pending', 'running', 'querying'].includes(String(j.status || '').toLowerCase()));
+  const activeIds = new Set(active.map(j => String(j.job_id || '')).filter(Boolean));
+  const recent = source.filter(j => !['queued', 'pending', 'running', 'querying'].includes(String(j.status || '').toLowerCase())).slice(0, 50);
+  const all = [...active, ...recent.filter(j => !activeIds.has(String(j.job_id || '')))];
+  _lastJobsForRender = all;
   $('#runningCount').textContent = active.length ? `${active.length} 进行中` : '';
-  if (!all.length) { list.innerHTML = '<p class="ui-empty ui-empty--compact">暂无任务</p>'; return; }
-  list.innerHTML = all.map(renderJobCard).join('');
-  bindRetryButtons();
-  bindThumbClicks();
-  bindDownloadAllButtons();
+  if (!all.length) {
+    if (list.childElementCount) list.innerHTML = '<p class="ui-empty ui-empty--compact">暂无任务</p>';
+    return;
+  }
+
+  const seen = new Set();
+  const existing = new Map();
+  for (const child of list.children) {
+    if (child.dataset.jobId) existing.set(child.dataset.jobId, child);
+  }
+  for (const job of all) {
+    const jobId = String(job.job_id || '');
+    if (!jobId) continue;
+    seen.add(jobId);
+    let card = existing.get(jobId) || null;
+    const signature = renderJobCardSignature(job);
+    if (card && card.dataset.renderSig !== signature) {
+      const replacement = buildJobCardElement(job);
+      if (replacement) {
+        card.replaceWith(replacement);
+        card = replacement;
+      }
+    } else if (!card) {
+      card = buildJobCardElement(job);
+    }
+    if (!card) continue;
+    updateJobRuntimeElement(card, job);
+    list.appendChild(card);
+  }
+  for (const child of Array.from(list.children)) {
+    if (!seen.has(child.dataset.jobId)) child.remove();
+  }
+}
+
+function renderJobCardSignature(job) {
+  const resultFiles = ((job && job.result && job.result.files) || []).join('\u0001');
+  const events = (job && job.events ? job.events.slice(-3) : []).map(e => `${e.time || ''}:${e.message || ''}`).join('\u0001');
+  const cliLogs = (job && job.cli_logs ? job.cli_logs : []).map(l => `${l.returncode || ''}:${(l.stdout || '').slice(0, 200)}:${(l.stderr || '').slice(0, 200)}`).join('\u0001');
+  return JSON.stringify({
+    id: job && job.job_id || '',
+    status: job && job.status || '',
+    done: job && job.done || 0,
+    total: job && job.total || 0,
+    error: job && job.error || '',
+    retryable: !!(job && job.retryable),
+    task_type: job && job.task_type || '',
+    created_at: job && job.created_at || '',
+    username: job && job.username || '',
+    prompt: (job && job.params && job.params.prompt) || '',
+    files: resultFiles,
+    events: events,
+    cli_logs: cliLogs,
+  });
+}
+
+function buildJobCardElement(job) {
+  const holder = document.createElement('div');
+  holder.innerHTML = renderJobCard(job);
+  const card = holder.firstElementChild;
+  if (!card || !card.classList.contains('job-card')) return null;
+  card.dataset.jobId = String(job.job_id || '');
+  card.dataset.renderSig = renderJobCardSignature(job);
+  bindRetryButtons(card);
+  bindCancelButtons(card);
+  bindThumbClicks(card);
+  bindDownloadAllButtons(card);
+  return card;
+}
+
+function updateJobRuntimeElement(card, job) {
+  if (!card || !job) return;
+  const runtime = formatRuntime(job);
+  let tag = card.querySelector('.job-runtime');
+  if (!runtime) {
+    if (tag) tag.remove();
+    return;
+  }
+  if (!tag) {
+    const header = card.querySelector('.job-card-header');
+    if (!header) return;
+    tag = document.createElement('span');
+    tag.className = 'job-runtime';
+    header.appendChild(tag);
+  }
+  if (tag.textContent !== runtime) tag.textContent = runtime;
+}
+
+function updateJobRuntimeLabels() {
+  const list = document.getElementById('jobsList');
+  if (!list || !_lastJobsForRender.length) return;
+  for (const job of _lastJobsForRender) {
+    const jobId = String(job.job_id || '');
+    const card = Array.from(list.children).find(el => el.dataset.jobId === jobId);
+    if (card) updateJobRuntimeElement(card, job);
+  }
 }
 
 // 一键下载全部：错开 400ms 逐个下载，避免并发打满代理缓冲
@@ -669,8 +761,8 @@ async function blobDownload(url, filename) {
     window.open(url, '_blank'); // 兜底：交给浏览器下载管理器
   }
 }
-function bindDownloadAllButtons() {
-  $$('.btn-download-all').forEach(btn => {
+function bindDownloadAllButtons(root = document) {
+  root.querySelectorAll('.btn-download-all').forEach(btn => {
     btn.addEventListener('click', () => {
       const job = _lastJobsForRender.find(j => j.job_id === btn.dataset.job);
       const files = (job && job.result && job.result.files) || [];
@@ -705,8 +797,8 @@ let _lastJobsForRender = [];
 setInterval(() => {
   const list = document.getElementById('jobsList');
   if (!list || !_lastJobsForRender.length) return;
-  const hasRunning = _lastJobsForRender.some(j => ['pending', 'running', 'querying'].includes((j.status || '').toLowerCase()));
-  if (hasRunning) renderJobsList(_lastJobsForRender);
+  const hasRunning = _lastJobsForRender.some(j => ['queued', 'pending', 'running', 'querying'].includes((j.status || '').toLowerCase()));
+  if (hasRunning) updateJobRuntimeLabels();
 }, 1000);
 
 function renderJobCard(job) {
@@ -742,7 +834,9 @@ function renderJobCard(job) {
     errorHtml += `<details style="margin:8px 0;font-size:12px;color:#697386"><summary style="cursor:pointer">查看原始报错</summary><pre style="white-space:pre-wrap;margin:6px 0 0;padding:8px;background:#fff1f0;border-radius:6px;color:#b42318">${escHtml(job.error.slice(0, 200))}</pre></details>`;
   }
   let actionsHtml = '';
-  if (job.status === 'failed' && job.retryable) {
+  if (isDreaminaCancellable(job)) {
+    actionsHtml = `<div class="job-actions"><button class="btn-cancel" data-job="${job.job_id}">取消任务</button></div>`;
+  } else if (job.status === 'failed' && job.retryable) {
     actionsHtml = `<div class="job-actions"><button class="btn-retry" data-job="${job.job_id}">重试</button></div>`;
   }
   let templateBtn = '';
@@ -764,26 +858,56 @@ function renderJobCard(job) {
   const runtime = formatRuntime(job);
   const userTag = job.username ? `<span class="job-user">@${escHtml(job.username)}</span>` : '';
   const runtimeTag = runtime ? `<span class="job-runtime">${runtime}</span>` : '';
-  return `<div class="job-card ui-result-card">
+  return `<div class="job-card ui-result-card" data-job-id="${escHtml(String(job.job_id || ""))}">
     <div class="job-card-header">
       <span class="job-type">${typeLabel(job.task_type)}</span>
       <span class="job-status ${job.status} ui-badge ui-badge--${statusTone(job.status)}">${statusLabel(job.status)}</span>
       ${userTag}${runtimeTag}
     </div>
-    <div class="job-prompt">${escHtml(job.params?.prompt || '')}</div>
+    <div class="job-prompt">${escHtml(job.params?.prompt || '未命名任务')}</div>
     <div class="job-time">${job.created_at || ''}</div>
     ${progressHtml}${eventsHtml}${resultHtml}${errorHtml}${actionsHtml}${templateBtn}${cliLogHtml}
   </div>`;
 }
 
-function bindRetryButtons() {
-  $$('.btn-retry').forEach(btn => {
+function isDreaminaCancellable(job) {
+  const status = String(job && job.status || '').toLowerCase();
+  return !!job && !!job.job_id && ['queued', 'pending', 'running', 'querying'].includes(status);
+}
+
+function bindCancelButtons(root = document) {
+  root.querySelectorAll('.btn-cancel').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      const jobId = btn.dataset.job;
+      const res = await api(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, 'POST');
+      if (!res || res.ok === false || res.error) {
+        btn.disabled = false;
+        dmToast((res && res.error) || '取消失败，请稍后重试');
+        return;
+      }
+      const job = _lastJobsForRender.find((item) => item.job_id === jobId);
+      if (job) {
+        job.status = 'cancelled';
+        job.error = '任务已取消。';
+        if (!Array.isArray(job.errors) || !job.errors.length) job.errors = ['任务已取消。'];
+        job.finished_epoch = Date.now() / 1000;
+      }
+      dmToast('任务已取消');
+      if (_lastJobsForRender.length) renderJobsList(_lastJobsForRender);
+      loadHistory();
+    });
+  });
+}
+function bindRetryButtons(root = document) {
+  root.querySelectorAll('.btn-retry').forEach(btn => {
     btn.addEventListener('click', async () => {
       const res = await api(`/api/jobs/${btn.dataset.job}/retry`, 'POST');
       if (res && res.ok) { startPollingJob(res.job_id); loadJobs(); }
     });
   });
-  $$('.btn-template').forEach(btn => {
+  root.querySelectorAll('.btn-template').forEach(btn => {
     btn.addEventListener('click', async () => {
       const name = prompt('输入存档名称:');
       if (!name) return;
@@ -794,8 +918,8 @@ function bindRetryButtons() {
   });
 }
 
-function bindThumbClicks() {
-  $$('.result-thumb').forEach(el => {
+function bindThumbClicks(root = document) {
+  root.querySelectorAll('.result-thumb').forEach(el => {
     el.addEventListener('click', () => openPreview(el.dataset.src));
   });
 }
@@ -816,8 +940,9 @@ function renderHistory(items) {
   filtered = filtered.slice(0, 50);
   if (!filtered.length) { list.innerHTML = '<p class="ui-empty ui-empty--compact">暂无历史记录</p>'; return; }
   list.innerHTML = filtered.map(renderJobCard).join('');
-  bindThumbClicks();
-  bindRetryButtons();
+  bindThumbClicks(list);
+  bindRetryButtons(list);
+  bindCancelButtons(list);
 }
 
 function bindFilter() {

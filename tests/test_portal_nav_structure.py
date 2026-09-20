@@ -44,7 +44,7 @@ class PortalNavStructureTests(unittest.TestCase):
     def test_nav_matches_apps_registry(self):
         apps = json.loads((ROOT / "portal" / "apps.json").read_text(encoding="utf-8"))
         non_nav = {"director"}
-        native = {"history", "keys", "stats", "home"}
+        native = {"history", "keys", "stats", "home", "free-creation"}
         alias = {"nano-banana": "nb"}
         expected = {alias.get(a["name"], a["name"]) for a in apps if a.get("name") not in non_nav} | native
         html = self._read()

@@ -1,9 +1,9 @@
 import { CancelJobDialog } from "@/components/cancel-job-dialog";
 import { Play, Sparkles } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { ModelSpec } from "@/api/contracts";
-import { parameterControls } from "@/components/model-picker";
+import { firstSelectableModel, modelOptionDisplayName, parameterControls } from "@/components/model-picker";
 import type { GraphModelMetadata, GraphParameterValue } from "@/features/graph/contracts";
 import { declaredModelPorts, graphPortsForModel } from "@/features/graph/model-capabilities";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -28,7 +28,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
     const graph = node.metadata?.graph;
     if (graph?.role !== "model") return null;
     const [customOpen, setCustomOpen] = useState<Record<string, boolean>>({});
-    const selected = models.find((model) => model.model_id === graph.modelId) ?? models[0];
+    const selected = models.find((model) => model.model_id === graph.modelId && !model.disabled) ?? firstSelectableModel(models);
     const controls = useMemo(() => parameterControls(selected?.parameter_schema ?? {}), [selected]);
     const visibleControls = controls.filter((control) => !control.visibleWhen || Object.is(graph.parameters[control.visibleWhen.name], control.visibleWhen.equals));
     const busy = node.metadata?.status === "loading" || node.metadata?.jobStatus === "queued" || node.metadata?.jobStatus === "running";
@@ -37,7 +37,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
     const updateParameter = (name: string, value: GraphParameterValue) => onChange({ ...graph, parameters: { ...graph.parameters, [name]: value } });
     const choose = (modelId: string) => {
         const next = models.find((model) => model.model_id === modelId);
-        if (!next) return;
+        if (!next || next.disabled) return;
         onChange({ ...graph, modelId, operation: next.operations[0], inputPorts: graphPortsForModel(next), parameters: defaults(next) });
     };
     return (
@@ -54,8 +54,8 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                     模型
                     <select aria-label="模型" disabled={editDisabled} value={selected.model_id} onChange={(event) => choose(event.target.value)} className="mt-1 block w-full rounded-md border border-[#d9e0ea] bg-[#f3f6fa] p-2 text-[#172033]">
                         {models.map((model) => (
-                            <option key={model.model_id} value={model.model_id}>
-                                {model.display_name}
+                            <option key={model.model_id} value={model.model_id} disabled={model.disabled}>
+                                {modelOptionDisplayName(model)}
                             </option>
                         ))}
                     </select>
@@ -164,7 +164,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
             <footer className="shrink-0 space-y-2 border-t border-[#e2e8f0] p-3">
                 <button
                     type="button"
-                    disabled={editDisabled}
+                    disabled={editDisabled || selected.disabled}
                     onClick={node.metadata?.status === "error" && node.metadata.idempotencyKey && onRetry ? () => onRetry(node.metadata!.idempotencyKey!) : onRun}
                     className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#3b76e0] px-3 py-2 font-semibold text-[#f3f6fa] disabled:opacity-40"
                 >

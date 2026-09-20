@@ -44,6 +44,6 @@ def test_optimize_calls_deepseek_and_returns_prompt(tmp_path, monkeypatch):
     result = director.optimize_prompt("一只猫", "refine")
     assert result["ok"] is True
     assert result["prompt"] == "优化后的提示词"
-    assert captured["url"].startswith("https://api.deepseek.com")
+    assert captured["url"].startswith("https://ark.cn-beijing.volces.com/api/v3")
     assert "提示词专家" in captured["body"]["messages"][0]["content"]
     assert "优化" in captured["body"]["messages"][1]["content"]

@@ -186,8 +186,9 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 
 ### Seedance 提示词优化
 
-- `POST /api/optimize-prompt` 走 DeepSeek `deepseek-chat` + `seedance/SKILL.md`（229 行）作 system prompt
-- **DeepSeek API Key 硬编码在 `app.py` 顶层常量 `DEEPSEEK_API_KEY`**，不进 `providers.json`（后者通过 `/api/config` 暴露给前端）
+- `POST /api/optimize-prompt` 走 DeepSeek-V4.1-Flash（火山方舟 `deepseek-v4-1-flash-260910`）+ `seedance/SKILL.md`（229 行）作 system prompt
+- **密钥已从官方 DeepSeek 迁到火山方舟**：`seedance/state/deepseek.key` / `director/state/deepseek.key` 里现在放的是 `ark-` 开头的方舟 Key，端点由 `shared/model_registry.json` 的 `deepseek` provider 决定（`https://ark.cn-beijing.volces.com/api/v3`）
+- **方舟上的 DeepSeek v4 必须显式下发 `thinking: {"type": "disabled"}`**（否则 max_tokens 全烧在 `reasoning_content` 上、`content` 返回空串）；`shared/model_gateway.py` 对声明了 `thinking_param: true` 的 provider 自动处理
 - `SEEDANCE_SKILL` 模块加载时读入内存，启动后不再读文件
 - SKILL.md 末尾追加了「非交互模式」指令禁止 DeepSeek 反问
 - 前端用正则只提取「优化后提示词」段，丢弃附录

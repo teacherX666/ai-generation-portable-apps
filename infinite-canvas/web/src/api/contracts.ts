@@ -7,6 +7,7 @@ export type ModelSpec = {
     model_id: string;
     service_id: string;
     display_name: string;
+    disabled?: boolean;
     operations: ModelOperation[];
     input_media: ("text" | "image" | "video" | "audio")[];
     parameter_schema: Record<string, unknown>;

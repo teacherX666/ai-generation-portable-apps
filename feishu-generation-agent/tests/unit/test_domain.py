@@ -226,12 +226,13 @@ def test_video_resolution_normalizes_common_pixel_dimensions(
     assert task.resolution == expected
 
 
-def test_video_resolution_rejects_unsupported_values():
+def test_video_resolution_allows_model_specific_values():
     payload = task_payload("image_to_video")
     payload.update(duration=10, resolution="4k")
 
-    with pytest.raises(ValidationError, match="resolution"):
-        GenerationTask.model_validate(payload)
+    task = GenerationTask.model_validate(payload)
+
+    assert task.resolution == "4k"
 
 
 def test_blocking_task_cannot_be_approved():
@@ -357,8 +358,8 @@ def test_domain_models_dump_json_serializable_values():
         status="ready",
     )
 
-    assert media.model_dump(mode="json")["local_path"] == "/tmp/reference.png"
-    assert artifact.model_dump(mode="json")["local_path"] == "/tmp/result.png"
+    assert media.model_dump(mode="json")["local_path"] == str(media.local_path)
+    assert artifact.model_dump(mode="json")["local_path"] == str(artifact.local_path)
     assert SourceType.DOCX.value == "docx"
 
 

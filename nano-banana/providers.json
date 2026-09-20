@@ -35,7 +35,8 @@
         },
         {
           "id": "qwen2511",
-          "label": "图片编辑 Qwen 2511（免费）"
+          "label": "图片编辑 Qwen 2511（免费）",
+          "capabilities": { "modes": ["img2img"] }
         },
         {
           "id": "flux2_klein_allinone",
@@ -43,7 +44,8 @@
         },
         {
           "id": "krea2_three_stage",
-          "label": "Krea 文生图（免费）"
+          "label": "Krea 文生图（免费）",
+          "capabilities": { "modes": ["text2img"] }
         },
         {
           "id": "anime2real_auto",
@@ -259,7 +261,7 @@
       "supports_seed": false,
       "defaults": {
         "mode": "img2img",
-        "model": "doubao-seedream-5-0-pro-260628",
+        "model": "ep-20260912121809-6wt62",
         "aspect_ratio": "auto",
         "image_size": "2K",
         "response_format": "url",
@@ -279,7 +281,7 @@
       },
       "models": [
         {
-          "id": "doubao-seedream-5-0-pro-260628",
+          "id": "ep-20260912121809-6wt62",
           "label": "Seedream 5.0 Pro"
         }
       ]

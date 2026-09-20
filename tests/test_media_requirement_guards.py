@@ -112,6 +112,36 @@ class MediaRequirementGuardTests(unittest.TestCase):
             source,
         )
 
+    def test_nano_cloud_img2img_without_reference_fails_before_upstream(self):
+        nano = load_module("nano_media_guard_test", ROOT / "nano-banana" / "app.py")
+        cases = [
+            ("gemini", "https://chiyun.work", "gpt-image-2"),
+            ("t8star", "https://ai.t8star.org", "nano-banana-2"),
+        ]
+        for provider, base_url, model in cases:
+            with self.subTest(provider=provider, model=model), \
+                    mock.patch.object(nano, "_job_cancel_requested", return_value=False), \
+                    mock.patch.object(nano, "add_event"):
+                with self.assertRaisesRegex(ValueError, "至少需要一张参考图"):
+                    nano.run_one(
+                        "job-no-ref",
+                        1,
+                        {
+                            "provider": provider,
+                            "base_url": base_url,
+                            "api_key": "test-key",
+                            "model": model,
+                            "prompt": "test",
+                            "mode": "img2img",
+                            "aspect_ratio": "auto",
+                            "image_size": "2K",
+                            "response_format": "url",
+                            "timeout": 10,
+                        },
+                        {},
+                        "localhost",
+                    )
+
     def test_infinite_canvas_video_reference_ports_are_optional(self):
         source = (ROOT / "infinite-canvas" / "translate.py").read_text(encoding="utf-8")
 
@@ -162,5 +192,27 @@ class MediaRequirementGuardTests(unittest.TestCase):
         self.assertNotIn("--first", args)
 
 
+
+    def test_disabled_image_model_is_rejected_before_submission(self):
+        nano = load_module("nano_disabled_model_test", ROOT / "nano-banana" / "app.py")
+        config = {
+            "providers": {
+                "t8star": {
+                    "models": [
+                        {"id": "enabled-model"},
+                        {"id": "disabled-model", "label": "Disabled model", "disabled": True},
+                    ]
+                }
+            }
+        }
+        with mock.patch.object(nano, "load_provider_config", return_value=(config, None)):
+            with self.assertRaisesRegex(ValueError, "已失效"):
+                nano.validate_model_capabilities(
+                    {"provider": "t8star", "model": "disabled-model"}, {}
+                )
+
+    def test_infinite_canvas_catalog_carries_disabled_state(self):
+        source = (ROOT / "infinite-canvas" / "translate.py").read_text(encoding="utf-8")
+        self.assertIn('"disabled": bool(entry.get("disabled"))', source)
 if __name__ == "__main__":
     unittest.main()

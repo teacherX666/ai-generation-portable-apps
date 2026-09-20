@@ -1,7 +1,41 @@
 "use strict";
 
 const STORAGE_KEY = "redcraft.free-creation.v1";
-const SCHEMA_URLS = { video: "/seedance/api/schema", image: "/nano-banana/api/schema", portrait: "/volcengine-portrait/api/config" };
+const SCHEMA_URLS = {
+  video: "/seedance/api/schema",
+  image: "/nano-banana/api/schema",
+  portrait: "/volcengine-portrait/api/config",
+  segment: "/local-ai/api/image_segment/schema",
+  upscale: "/local-ai/api/video_upscale/schema",
+};
+// Portal 反代 /local-ai/* → 模型机上的本地 AI Port 网关（8801）。子应用自身没有这个
+// 前缀，所以凡是直连网关的调用都要带上 LOCAL_AI_MOUNT。
+const LOCAL_AI_MOUNT = "/local-ai";
+const localModuleBase = (module) => `${LOCAL_AI_MOUNT}/api/${module}`;
+// 网关里「换的是任务、不是模型」的两项能力：抠图输入 1 张图、输出多张 PNG；超分输入
+// 视频、输出视频。它们的参数契约与默认值一律从网关自己的 /schema 读，前端不写死。
+//
+// 网关还暴露 image_local / video_local 两个模块，这里**故意不列**：它们跟「本地
+// ComfyUI（免费）」下的图片模型 / MiniMax H3 视频模型是同一个模块（nano-banana 与
+// seedance 已经把它包装成 comfyui_local provider），再列一遍就是同一个入口出现两次。
+const LOCAL_CAPABILITIES = {
+  image_segment: { mode: "image", label: "智能抠图 (SAM3)" },
+  video_upscale: { mode: "video", label: "本地视频超分" },
+};
+// 只暴露「用户真的需要选」的参数，其余走网关默认值 —— 目标用户不是调参的人。
+const UPSCALE_TARGETS = [
+  { label: "1080p", value: "1080p", width: 1920, height: 1080 },
+  { label: "2K", value: "2K", width: 2560, height: 1440 },
+  { label: "4K", value: "4K", width: 3840, height: 2160 },
+];
+const SEGMENT_THRESHOLDS = [
+  { label: "宽松 0.2", value: 0.2 },
+  { label: "标准 0.3", value: 0.3 },
+  { label: "严格 0.4", value: 0.4 },
+  { label: "很严格 0.5", value: 0.5 },
+];
+// 网关 read_json_body 上限 200MB，base64 放大 4/3 → 输入视频卡在 120MB。
+const UPSCALE_MAX_INPUT_BYTES = 120 * 1024 * 1024;
 const HISTORY_SOURCES = {
   seedance: { mode: "video", mount: "/seedance" },
   "nano-banana": { mode: "image", mount: "/nano-banana" },
@@ -37,8 +71,8 @@ const els = {
 const state = {
   mode: "video", models: { video: [], image: [] }, selected: { video: null, image: null },
   params: {
-    video: { ratio: "16:9", resolution: "720p", duration: 8, repeat_count: 1 },
-    image: { aspect_ratio: "1:1", image_size: "2K", repeat_count: 1 },
+    video: { ratio: "16:9", resolution: "720p", duration: 8, repeat_count: 1, upscale_target: "1080p", crf: 18 },
+    image: { aspect_ratio: "1:1", image_size: "2K", repeat_count: 1, max_objects: 8, threshold: 0.3 },
   },
   attachments: [], conversations: [], activeConversationId: null, activeTaskId: null, busy: false, editSourceTaskId: null, editBasePrompt: "",
 };
@@ -351,21 +385,29 @@ async function syncUnifiedHistory({ selectIfEmpty = false } = {}) {
   return historySyncPromise;
 }
 
+// 因为一次网络抖动被标成 failed 的任务，重开页面时要能认领回来。只认「读取失败」
+// 这种传输层原因，且限定在最近 30 分钟内，避免对真失败的任务无限重试。
+function isTransportFailure(task) {
+  if (String(task.status || "").toLowerCase() !== "failed") return false;
+  if (!/^任务状态读取失败/.test(String(task.error || ""))) return false;
+  return Date.now() - Number(task.updatedAt || task.createdAt || 0) < 30 * 60 * 1000;
+}
 async function reconcileRunningTasks() {
   const tasks = state.conversations
     .flatMap((conversation) => conversation.tasks)
-    .filter((task) => task.jobId && RUNNING.has(String(task.status || "").toLowerCase()))
+    .filter((task) => task.jobId && (RUNNING.has(String(task.status || "").toLowerCase()) || isTransportFailure(task)))
     .slice(0, 24);
   if (!tasks.length) return false;
 
   let changed = false;
   await Promise.allSettled(tasks.map(async (task) => {
     if (task.app === "dreamina") return;
-    const base = task.app === "volcengine-portrait"
+    const base = task.base || (task.app === "volcengine-portrait"
       ? "/volcengine-portrait"
-      : task.mode === "video" ? "/seedance" : "/nano-banana";
+      : task.mode === "video" ? "/seedance" : "/nano-banana");
+    const jobPath = task.jobPath || "/api/jobs";
     try {
-      const response = await fetch(`${base}/api/jobs/${encodeURIComponent(task.jobId)}`, {
+      const response = await fetch(`${base}${jobPath}/${encodeURIComponent(task.jobId)}`, {
         cache: "no-store",
         headers: { "X-Workspace-Id": task.conversationId || activeConversation()?.id || "" },
       });
@@ -378,7 +420,7 @@ async function reconcileRunningTasks() {
         ...(Array.isArray(data.result?.results) ? data.result.results : []),
       ];
       const result = resultItems.find((item) => item?.download_url || item?.url);
-      const progress = data.done && data.total ? `${data.done}/${data.total}` : status;
+      const progress = data.done && data.total ? `${data.done}/${data.total}` : progressText(task, data, status);
       const nextStatus = TERMINAL_FAILURE.has(status)
         ? "failed"
         : TERMINAL_SUCCESS.has(status) || (status === "partial" && (result?.download_url || result?.url)) || result
@@ -395,7 +437,9 @@ async function reconcileRunningTasks() {
       task.error = nextError;
       if (result) {
         const rawUrl = result.download_url || result.url;
-        task.resultUrl = String(rawUrl).startsWith("http") ? rawUrl : `${base}${rawUrl}`;
+        task.resultUrl = absoluteMediaUrl(base, rawUrl);
+        const urls = (Array.isArray(result.download_urls) ? result.download_urls : []).map((url) => absoluteMediaUrl(base, url)).filter(Boolean);
+        task.resultUrls = urls.length ? urls : [task.resultUrl];
         task.resultName = result.filename || task.resultName;
       }
       task.updatedAt = Date.now();
@@ -494,13 +538,13 @@ function setMode(mode) {
   renderParams();
   renderParamSummary();
   renderPreview();
-}function normalizeModels(seedance, nano, portrait) {
+}function normalizeModels({ seedance, nano, portrait, segment, upscale }) {
   const video = [], image = [];
   Object.entries(seedance.providers || {}).forEach(([key, provider]) => {
     const local = key === "comfyui_local";
     (provider.models || []).forEach((model) => video.push({
       id: model.id, label: model.label || model.id, provider: key, providerLabel: provider.label || key,
-      local, available: !local, badge: local ? "本地待接入" : "CLOUD",
+      local, available: true, badge: local ? "FREE" : "CLOUD",
       duration: model.duration_range || provider.duration_range || [4, 15],
       resolutions: model.resolutions || provider.resolutions || ["480p", "720p"],
       ratios: model.ratios || provider.ratios || ["16:9", "9:16", "1:1"],
@@ -517,11 +561,25 @@ function setMode(mode) {
       defaults: { ...(provider.defaults || {}), ...(model.defaults || {}) },
     }));
   });
-  (portrait?.local_gateway?.modules || []).forEach((module) => {
-    const id = String(module.id || ""), mode = id.includes("image") ? "image" : "video", target = mode === "image" ? image : video;
-    if (target.some((item) => item.id === id)) return;
-    target.push({ id, label: module.label || id, provider: "local_gateway", providerLabel: "本地 AI Port", local: true, available: false, badge: "待接入", duration: [1, 30], resolutions: ["480p", "720p", "1080p"], ratios: ["auto", "16:9", "9:16", "1:1"], sizes: ["1K", "2K"], defaults: {} });
-  });
+  // 本地网关的抠图 / 超分：网关报了这两个模块（且 schema 拉得到）才可点，否则灰显
+  // 「待接入」。portrait 配置本身拉失败时不据此判死，退回「schema 能拉到就算在线」。
+  const gatewayKnown = Boolean(portrait?.local_gateway);
+  const readyModules = new Set((portrait?.local_gateway?.modules || []).map((item) => String(item.id || "")));
+  const addLocalCapability = (id, schema) => {
+    const spec = LOCAL_CAPABILITIES[id];
+    if (!spec) return;
+    const provider = (schema?.providers || {}).comfyui_local || {};
+    const ready = Boolean(schema) && (gatewayKnown ? readyModules.has(id) : true);
+    (spec.mode === "image" ? image : video).push({
+      id, label: spec.label, provider: "local_gateway", providerLabel: "本地 AI Port",
+      local: true, available: ready, badge: ready ? "FREE" : "待接入", module: id,
+      duration: [1, 30], resolutions: ["1080p", "2K", "4K"], ratios: ["auto"], sizes: ["1K", "2K"],
+      variants: (provider.models || []).map((item) => ({ id: item.id, label: item.label || item.id })),
+      defaults: { ...(provider.defaults || {}) },
+    });
+  };
+  addLocalCapability("image_segment", segment);
+  addLocalCapability("video_upscale", upscale);
   state.models = { video, image };
   state.selected.video = video.find((model) => model.available && model.id === "doubao-seedance-2-5-260628") || video.find((model) => model.available) || video[0] || null;
   state.selected.image = image.find((model) => model.available && model.local) || image.find((model) => model.available) || image[0] || null;
@@ -535,6 +593,8 @@ function setMode(mode) {
       resolution: clampOption(current.resolution, state.selected.video.resolutions, d.resolution || "720p"),
       duration: clampNumber(current.duration, start, end, d.duration || 8),
       repeat_count: clampNumber(current.repeat_count, 1, 4, d.repeat_count || 1),
+      upscale_target: ["1080p", "2K", "4K"].includes(current.upscale_target) ? current.upscale_target : "1080p",
+      crf: clampNumber(current.crf, 12, 28, 18),
     };
   }
   if (state.selected.image) {
@@ -544,6 +604,8 @@ function setMode(mode) {
       aspect_ratio: clampOption(current.aspect_ratio, state.selected.image.ratios, d.aspect_ratio || "auto"),
       image_size: clampOption(current.image_size, state.selected.image.sizes, d.image_size || "2K"),
       repeat_count: clampNumber(current.repeat_count, 1, 8, d.repeat_count || 1),
+      max_objects: clampNumber(current.max_objects, 1, 20, d.max_objects || 8),
+      threshold: [0.2, 0.3, 0.4, 0.5].includes(Number(current.threshold)) ? Number(current.threshold) : Number(d.threshold) || 0.3,
     };
   }
   els.serviceState.textContent = `${video.filter((m) => m.available).length + image.filter((m) => m.available).length} 个模型可用`;
@@ -552,8 +614,10 @@ function setMode(mode) {
 
 async function loadModels() {
   try {
-    const data = await Promise.all(Object.values(SCHEMA_URLS).map((url) => fetch(url).then((res) => res.ok ? res.json() : null).catch(() => null)));
-    normalizeModels(data[0] || {}, data[1] || {}, data[2] || {});
+    const [video, image, portrait, segment, upscale] = await Promise.all(
+      Object.values(SCHEMA_URLS).map((url) => fetch(url).then((res) => res.ok ? res.json() : null).catch(() => null)),
+    );
+    normalizeModels({ seedance: video || {}, nano: image || {}, portrait: portrait || {}, segment, upscale });
     renderModelList(); renderParams(); renderParamSummary();
   } catch (error) { els.serviceState.textContent = "模型服务加载失败"; toast(`模型加载失败：${error.message}`, "error"); }
 }
@@ -572,6 +636,9 @@ function renderModelList() {
       button.innerHTML = `<span class="fc-model-symbol"><svg viewBox="0 0 24 24"><path d="m12 3-1.9 5.1L5 10l5.1 1.9L12 17l1.9-5.1L19 10l-5.1-1.9Z"/></svg></span><span class="fc-model-copy"><strong>${escapeHtml(model.label)}</strong><small>${escapeHtml(model.providerLabel || model.provider)}</small></span><span class="fc-model-badge">${escapeHtml(model.badge || "")}</span>`;
       button.addEventListener("click", () => {
         if (!model.available) { toast(`${model.label} 尚未接入自由创作执行层`, "error"); return; }
+        // 换到不支持「继续修改」的模型（抠图 / 超分 / 本地视频）时，先把编辑态收干净，
+        // 否则残存的编辑标记会让下一次提交被拒或退化。
+        if (!canRefine(model) && state.editSourceTaskId) clearEditContext({ render: false });
         state.selected[state.mode] = model; applyModelDefaults(model); renderModelList(); renderParams(); renderParamSummary(); closePopover("model-popover");
       });
       els.modelList.append(button);
@@ -579,22 +646,29 @@ function renderModelList() {
   });
 }
 function applyModelDefaults(model) {
+  const d = model.defaults || {};
+  const params = state.params[state.mode];
   if (state.mode === "video") {
-    const d = model.defaults || {};
-    state.params.video = {
-      ratio: clampOption(state.params.video.ratio, model.ratios, d.ratio || "16:9"),
-      resolution: clampOption(state.params.video.resolution, model.resolutions, d.resolution || "720p"),
-      duration: clampNumber(state.params.video.duration, model.duration?.[0] || 4, model.duration?.[1] || 15, d.duration || 8),
-      repeat_count: clampNumber(state.params.video.repeat_count, 1, 4, d.repeat_count || 1),
-    };
-  } else {
-    const d = model.defaults || {};
-    state.params.image = {
-      aspect_ratio: clampOption(state.params.image.aspect_ratio, model.ratios, d.aspect_ratio || "auto"),
-      image_size: clampOption(state.params.image.image_size, model.sizes, d.image_size || "2K"),
-      repeat_count: clampNumber(state.params.image.repeat_count, 1, 8, d.repeat_count || 1),
-    };
+    // 超分是「换任务」不是「换模型」：比例/分辨率/时长都不适用，只有目标尺寸和画质。
+    if (model.module === "video_upscale") {
+      params.upscale_target = clampOption(params.upscale_target, UPSCALE_TARGETS.map((item) => item.value), "1080p");
+      params.crf = clampNumber(params.crf, 12, 28, Number(d.crf) || 18);
+      return;
+    }
+    params.ratio = clampOption(params.ratio, model.ratios, d.ratio || "16:9");
+    params.resolution = clampOption(params.resolution, model.resolutions, d.resolution || "720p");
+    params.duration = clampNumber(params.duration, model.duration?.[0] || 4, model.duration?.[1] || 15, d.duration || 8);
+    params.repeat_count = clampNumber(params.repeat_count, 1, 4, d.repeat_count || 1);
+    return;
   }
+  if (model.module === "image_segment") {
+    params.max_objects = clampNumber(params.max_objects, 1, 20, Number(d.max_objects) || 8);
+    params.threshold = clampOption(Number(params.threshold), SEGMENT_THRESHOLDS.map((item) => item.value), Number(d.threshold) || 0.3);
+    return;
+  }
+  params.aspect_ratio = clampOption(params.aspect_ratio, model.ratios, d.aspect_ratio || "auto");
+  params.image_size = clampOption(params.image_size, model.sizes, d.image_size || "2K");
+  params.repeat_count = clampNumber(params.repeat_count, 1, 8, d.repeat_count || 1);
 }
 function paramField(label, options, key, value) {
   const wrap = document.createElement("div");
@@ -610,6 +684,31 @@ function paramField(label, options, key, value) {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       state.params[state.mode][key] = option;
+      row.querySelectorAll(".fc-param-option").forEach((item) => item.classList.toggle("is-active", item === button));
+      renderParamSummary();
+      saveStore();
+    });
+    row.append(button);
+  });
+  return wrap;
+}
+
+// 选项带「显示名 + 真实值」的下拉式参数（值可以是数字或对象），抠图阈值、超分目标
+// 分辨率用得到。paramField 只支持「显示值 = 提交值」的字符串选项，不动它。
+function paramChoiceField(label, choices, key, value) {
+  const wrap = document.createElement("div");
+  wrap.className = "fc-param-field";
+  wrap.innerHTML = `<label>${escapeHtml(label)}</label><div class="fc-param-options"></div>`;
+  wrap.addEventListener("click", (event) => event.stopPropagation());
+  const row = wrap.querySelector(".fc-param-options");
+  choices.forEach((choice) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `fc-param-option${String(choice.value) === String(value) ? " is-active" : ""}`;
+    button.textContent = choice.label;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      state.params[state.mode][key] = choice.value;
       row.querySelectorAll(".fc-param-option").forEach((item) => item.classList.toggle("is-active", item === button));
       renderParamSummary();
       saveStore();
@@ -659,6 +758,19 @@ function renderParams() {
   }
   const params = state.params[state.mode];
   if (state.mode === "video") {
+    if (model.module === "video_upscale") {
+      els.paramForm.append(
+        paramChoiceField("目标分辨率", UPSCALE_TARGETS, "upscale_target", params.upscale_target),
+        paramNumberField("画质 CRF", "crf", params.crf, 12, 28, "", "数值越小越清晰、文件越大（默认 18）"),
+      );
+      // 实测：15 秒 / 720p 竖屏素材要切 18 块、约 27 分钟。先说清楚，别让用户
+      // 盯着一个不动的 "running" 以为卡死了。
+      const hint = document.createElement("p");
+      hint.className = "fc-param-hint";
+      hint.textContent = "本地超分很慢：按片段逐块重算，约 15 秒的 720p 素材要 25~30 分钟。提交后请保持页面打开，界面上会显示已用时长。";
+      els.paramForm.append(hint);
+      return;
+    }
     const start = model.duration?.[0] || 4;
     const end = model.duration?.[1] || 15;
     els.paramForm.append(
@@ -668,6 +780,13 @@ function renderParams() {
       paramNumberField("\u91cd\u590d\u6b21\u6570", "repeat_count", params.repeat_count, 1, 4, "\u6b21", "\u8303\u56f4 1-4 \u6b21"),
     );
   } else {
+    if (model.module === "image_segment") {
+      els.paramForm.append(
+        paramNumberField("最多抠出几个物体", "max_objects", params.max_objects, 1, 20, "个", "范围 1-20 个"),
+        paramChoiceField("检测灵敏度", SEGMENT_THRESHOLDS, "threshold", params.threshold),
+      );
+      return;
+    }
     els.paramForm.append(
       paramField("\u753b\u9762\u6bd4\u4f8b", model.ratios || ["auto"], "aspect_ratio", params.aspect_ratio),
       paramField("\u5c3a\u5bf8", model.sizes || ["2K"], "image_size", params.image_size),
@@ -678,19 +797,30 @@ function renderParams() {
 function renderParamSummary() {
   const model = currentModel();
   const values = state.params[state.mode];
-  const isEdit = Boolean(state.editSourceTaskId);
+  const isEdit = Boolean(state.editSourceTaskId) && canRefine(model);
+  const capability = model?.module;
   if (els.modelSummary) els.modelSummary.textContent = model?.label || "\u9009\u62e9\u6a21\u578b";
-  if (els.generateLabel) els.generateLabel.textContent = isEdit ? "\u63d0\u4ea4\u4fee\u6539" : state.mode === "video" ? "\u751f\u6210\u89c6\u9891" : "\u751f\u6210\u56fe\u7247";
-  els.generate.setAttribute("aria-label", isEdit ? "\u63d0\u4ea4\u4fee\u6539" : "\u5f00\u59cb\u751f\u6210");
-  els.generate.setAttribute("title", isEdit ? "\u63d0\u4ea4\u4fee\u6539" : "\u5f00\u59cb\u751f\u6210");
+  const verb = capability === "image_segment" ? "开始抠图" : capability === "video_upscale" ? "开始超分" : state.mode === "video" ? "\u751f\u6210\u89c6\u9891" : "\u751f\u6210\u56fe\u7247";
+  if (els.generateLabel) els.generateLabel.textContent = isEdit ? "\u63d0\u4ea4\u4fee\u6539" : verb;
+  els.generate.setAttribute("aria-label", isEdit ? "\u63d0\u4ea4\u4fee\u6539" : verb);
+  els.generate.setAttribute("title", isEdit ? "\u63d0\u4ea4\u4fee\u6539" : verb);
+  // 抠图 / 超分没有「在原结果上继续改」的语义，禁用而不是隐藏（避免按钮位置跳动）。
+  const refineAllowed = canRefine(model);
+  els.refine.disabled = !refineAllowed;
   els.refine.setAttribute("aria-pressed", String(isEdit));
   els.refine.classList.toggle("is-active", isEdit);
+  els.refine.title = refineAllowed ? "\u5728\u5f53\u524d\u7ed3\u679c\u4e0a\u7ee7\u7eed\u4fee\u6539" : "抠图 / 超分不支持继续修改";
   const chips = [];
-  if (state.mode === "video" && isEdit) chips.push("\u667a\u80fd\u89c6\u9891\u7f16\u8f91");
+  if (capability === "image_segment") chips.push(`${values.max_objects} 个物体`, `阈值 ${values.threshold}`);
+  else if (capability === "video_upscale") chips.push(values.upscale_target, `CRF ${values.crf}`);
+  else if (state.mode === "video" && isEdit) chips.push("\u667a\u80fd\u89c6\u9891\u7f16\u8f91");
   else if (state.mode === "video") chips.push(values.ratio, values.resolution, `${values.duration}s`, values.repeat_count > 1 ? `\u00d7${values.repeat_count}` : "\u4e0d\u91cd\u590d");
   else chips.push(values.aspect_ratio, values.image_size, values.repeat_count > 1 ? `\u00d7${values.repeat_count}` : "1 \u5f20");
   els.paramSummary.innerHTML = chips.map((chip) => `<span class="fc-param-chip"><strong>${escapeHtml(chip)}</strong></span>`).join("");
-}function autoResize() { els.prompt.style.height = "auto"; els.prompt.style.height = `${Math.min(220, els.prompt.scrollHeight)}px`; }
+}
+// 「继续修改」只在云端 Seedance 的视频编辑与图片修改里有实现；本地视频模型、抠图、
+// 超分都没有这个能力（本地视频会把编辑请求当成一次全新生成，白烧算力）。
+function canRefine(model) { return !model?.module && !(model?.local && state.mode === "video"); }function autoResize() { els.prompt.style.height = "auto"; els.prompt.style.height = `${Math.min(220, els.prompt.scrollHeight)}px`; }
 
 function mediaKind(file) {
   const mime = (file.type || "").toLowerCase(), ext = (file.name || "").split(".").pop()?.toLowerCase();
@@ -838,9 +968,60 @@ function restoreConversation(id) {
 function startNewConversation() { saveStore(); const conversation = newConversation(); state.conversations.unshift(conversation); state.activeConversationId = conversation.id; state.activeTaskId = null; restoreConversationDraft(conversation); resetComposer(); renderConversations(); renderPreview(); saveStore(); els.prompt.focus(); }function fileToDataUrl(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); }); }
 async function buildPayload() {
   const model = currentModel(), params = state.params[state.mode], media = {};
+  const capability = model.module;
+  const images = state.attachments.filter((item) => item.kind === "image");
+  const videos = state.attachments.filter((item) => item.kind === "video");
+  const audios = state.attachments.filter((item) => item.kind === "audio");
+  const mediaItem = async (attachment) => ({ data_url: await fileToDataUrl(attachment.file), filename: attachment.file.name });
+
+  // 智能抠图：1 张图进、多张 PNG 出（最多 max_objects 个物体）。参数契约见模型机
+  // 网关的 /api/image_segment/schema，本地免费，不需要任何密钥。
+  // 注意提交体是 {values, files}（网关实现只认这个；schema 里 example 写的扁平 media
+  // 是文档与实现不一致，以 static/image_segment/app.js 的实际提交为准）。
+  if (capability === "image_segment") {
+    if (images.length !== 1 || videos.length || audios.length) throw new Error("智能抠图需要且只需要 1 张图片");
+    return {
+      endpoint: `${localModuleBase("image_segment")}/jobs/json`, app: "local-ai", base: LOCAL_AI_MOUNT, jobPath: "/api/image_segment/jobs",
+      payload: {
+        values: {
+          provider: "comfyui_local",
+          max_objects: Number(params.max_objects),
+          threshold: Number(params.threshold),
+          filter_abstract: true,
+          repeat_count: 1,
+          concurrency: 1,
+        },
+        files: { image_1: await mediaItem(images[0]) },
+      },
+    };
+  }
+  // 视频超分：1 个视频进、1 个视频出。同样本地免费、无密钥。
+  if (capability === "video_upscale") {
+    if (videos.length !== 1) throw new Error("视频超分需要且只需要 1 个视频");
+    // 网关 read_json_body 上限 200MB，而 base64 会把体积放大 4/3 —— 输入超过 120MB
+    // 就会被网关判成 invalid content-length，这里提前拦下并给可操作的提示。
+    if (videos[0].file.size > UPSCALE_MAX_INPUT_BYTES) throw new Error(`视频超分输入过大（${(videos[0].file.size / 1024 / 1024).toFixed(0)}MB，上限 120MB），请先剪短或压缩`);
+    const target = UPSCALE_TARGETS.find((item) => item.value === params.upscale_target) || UPSCALE_TARGETS[0];
+    return {
+      endpoint: `${localModuleBase("video_upscale")}/jobs/json`, app: "local-ai", base: LOCAL_AI_MOUNT, jobPath: "/api/video_upscale/jobs",
+      payload: {
+        values: {
+          provider: "comfyui_local",
+          upscale_model: model.defaults?.upscale_model || model.variants?.[0]?.id || "flashvsr_v1.1_full_3b",
+          target_width: target.width,
+          target_height: target.height,
+          crf: Number(params.crf),
+          repeat_count: 1,
+          concurrency: 1,
+        },
+        files: { video_1: await mediaItem(videos[0]) },
+      },
+    };
+  }
+
   let imageIndex = 1, videoIndex = 1, audioIndex = 1;
   for (const attachment of state.attachments) {
-    const dataUrl = await fileToDataUrl(attachment.file), item = { data_url: dataUrl, filename: attachment.file.name };
+    const item = await mediaItem(attachment);
     if (state.mode === "image") {
       if (attachment.kind !== "image") throw new Error("图片模式只接受图片素材");
       media[`image_${imageIndex++}`] = item;
@@ -853,15 +1034,21 @@ async function buildPayload() {
   const requestedChange = isEdit ? editInstruction() : "";
   if (isEdit && !requestedChange) throw new Error("请补充具体修改要求");
   if (state.mode === "video") {
+    const local = model.provider === "comfyui_local";
     const hasEditVideo = isEdit && state.attachments.some((item) => item.kind === "video" && item.sourceTaskId === editSourceTaskId);
+    // 本地 H3 没有「在原视频上改」这条路径：它会把 duration=-1 兜成 12 秒、当成一次
+    // 全新生成，白烧算力。这里硬拦，而不是悄悄退化成普通生成。
+    if (isEdit && local) throw new Error("本地视频模型不支持继续修改原视频，请改用云端 Seedance，或直接重新生成");
     if (isEdit && !hasEditVideo) throw new Error("视频编辑需要保留原视频素材");
     const prompt = hasEditVideo
       ? `\u7f16\u8f91\u53c2\u8003\u89c6\u9891\u3002\u4fdd\u6301\u539f\u89c6\u9891\u4e3b\u4f53\u3001\u6784\u56fe\u4e0e\u8fd0\u52a8\u8fde\u7eed\u6027\uff0c\u53ea\u6267\u884c\u4ee5\u4e0b\u4fee\u6539\uff1a${requestedChange}`
       : els.prompt.value.trim();
     return {
-      endpoint: "/seedance/api/jobs/json",
+      endpoint: "/seedance/api/jobs/json", app: "seedance", base: "/seedance", jobPath: "/api/jobs",
       payload: {
-        provider: "volcengine",
+        // provider 由所选模型决定：本地走 comfyui_local（后端会把 base_url 锁到本地
+        // 网关并清空密钥），云端走 volcengine（后端注入公司 key，浏览器永远拿不到）。
+        provider: model.provider,
         model: model.id,
         prompt,
         task_mode: hasEditVideo ? "edit" : "reference",
@@ -878,47 +1065,111 @@ async function buildPayload() {
   const prompt = isEdit
     ? `\u57fa\u4e8e\u53c2\u8003\u56fe\u7247\u6267\u884c\u4fee\u6539\u3002\u4fdd\u6301\u672a\u8981\u6c42\u6539\u53d8\u7684\u5185\u5bb9\uff0c\u53ea\u6267\u884c\u4ee5\u4e0b\u4fee\u6539\uff1a${requestedChange}`
     : els.prompt.value.trim();
-  return { endpoint: "/nano-banana/api/jobs/json", payload: { provider: model.provider, model: model.id, mode: state.attachments.length ? "img2img" : "text2img", prompt, aspect_ratio: params.aspect_ratio, image_size: params.image_size, repeat_count: Number(params.repeat_count), concurrency: 1, vary_seed: true, api_key: model.local ? "local" : undefined, media } };
+  return { endpoint: "/nano-banana/api/jobs/json", app: "nano-banana", base: "/nano-banana", jobPath: "/api/jobs", payload: { provider: model.provider, model: model.id, mode: state.attachments.length ? "img2img" : "text2img", prompt, aspect_ratio: params.aspect_ratio, image_size: params.image_size, repeat_count: Number(params.repeat_count), concurrency: 1, vary_seed: true, media } };
 }async function generate() {
   if (state.busy) return;
   const prompt = els.prompt.value.trim(), model = currentModel();
-  if (!prompt) { toast("请先描述你想创作的内容", "error"); els.prompt.focus(); return; }
+  const capability = model?.module;
+  // 抠图 / 超分不需要提示词：抠图由模型自己反推画面描述，超分是对既有画面做重建。
+  if (!prompt && !capability) { toast("请先描述你想创作的内容", "error"); els.prompt.focus(); return; }
+  if (state.editSourceTaskId && !canRefine(model)) { toast("抠图 / 超分 / 本地视频不支持继续修改", "error"); return; }
   if (state.editSourceTaskId && !editInstruction()) { toast("请补充具体修改要求", "error"); els.prompt.focus(); return; }
   if (!state.editSourceTaskId && EDIT_MARKER_RE.test(els.prompt.value)) { toast("已退出编辑态，请重新点「继续修改」再提交", "error"); els.prompt.focus(); return; }
   if (!model?.available) { toast("当前模型尚未接入执行能力", "error"); return; }
+  const route = taskRoute(model, state.mode);
+  const taskPrompt = prompt || (capability === "image_segment" ? "智能抠图" : capability === "video_upscale" ? "视频超分" : "");
   const conversation = activeConversation();
-  const task = { id: uid(), app: state.mode === "video" ? "seedance" : "nano-banana", mode: state.mode, prompt, model: model.label, modelId: model.id, provider: model.provider, params: structuredClone(state.params[state.mode]), attachments: state.attachments.map((item) => item.file.name), status: "running", progress: "正在提交任务", conversationId: conversation.id, editSourceTaskId: state.editSourceTaskId || null, createdAt: Date.now(), updatedAt: Date.now() };
+  const task = { id: uid(), app: route.app, base: route.base, jobPath: route.jobPath, module: capability || null, mode: state.mode, prompt: taskPrompt, model: model.label, modelId: model.id, provider: model.provider, params: structuredClone(state.params[state.mode]), attachments: state.attachments.map((item) => item.file.name), status: "running", progress: "正在提交任务", conversationId: conversation.id, editSourceTaskId: state.editSourceTaskId || null, createdAt: Date.now(), updatedAt: Date.now() };
   conversation.tasks.push(task); conversation.updatedAt = task.createdAt;
   state.activeTaskId = task.id; renderConversations(); renderPreview(); setBusy(true); saveStore();
   try {
-    const { endpoint, payload } = await buildPayload();
+    const { endpoint, payload, app, base, jobPath } = await buildPayload();
+    task.app = app; task.base = base; task.jobPath = jobPath;
     const preflight = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "X-Workspace-Id": conversation.id }, body: JSON.stringify({ ...payload, dry_run: true }) });
     const preflightBody = await preflight.json().catch(() => ({}));
     if (!preflight.ok || preflightBody.ok === false) throw new Error(preflightBody.error || preflightBody.detail || `生成参数预检失败 (${preflight.status})`);
     const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "X-Workspace-Id": conversation.id }, body: JSON.stringify(payload) });
     const body = await response.json().catch(() => ({}));
     if (!response.ok || body.ok === false) throw new Error(body.error || body.detail || `提交失败 (${response.status})`);
-    task.jobId = body.job_id; task.progress = "任务已进入云端队列"; saveStore();
+    task.jobId = body.job_id; task.progress = app === "local-ai" ? "任务已进入本地队列" : "任务已进入云端队列"; saveStore();
     pollTask(task).catch((error) => { task.status = "failed"; task.error = error.message; task.updatedAt = Date.now(); saveStore(); renderPreview(); renderConversations(); });
   } catch (error) {
     task.status = "failed"; task.error = error.message; task.updatedAt = Date.now(); saveStore(); renderConversations(); renderPreview(); toast(error.message, "error");
   } finally { setBusy(false); }
-}async function pollTask(task) {
-  const base = task.mode === "video" ? "/seedance" : "/nano-banana";
+}
+// 任务落到哪个后端：抠图 / 超分在模型机的本地网关（/local-ai），其余按模式走 seedance
+// / nano-banana。base 是「拼结果下载 URL」的前缀，jobPath 是「拼任务状态 URL」的路径。
+function taskRoute(model, mode) {
+  if (model?.module) return { app: "local-ai", base: LOCAL_AI_MOUNT, jobPath: `/api/${model.module}/jobs` };
+  return mode === "video"
+    ? { app: "seedance", base: "/seedance", jobPath: "/api/jobs" }
+    : { app: "nano-banana", base: "/nano-banana", jobPath: "/api/jobs" };
+}
+function absoluteMediaUrl(base, url) {
+  const value = String(url || "");
+  return value.startsWith("http") || value.startsWith("data:") || value.startsWith("blob:") ? value : `${base}${value}`;
+}
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60), seconds = total % 60;
+  if (minutes < 60) return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+// 本地网关只回一个 status、不报 done/total，于是一个 27 分钟的超分任务在界面上
+// 跟「卡死」长得一模一样（实测用户就是这么反馈的）。至少把已用时长显示出来，
+// 让用户看得出它在动；云端任务本来就有 done/total，行为不变。
+function progressText(task, data, status) {
+  if (data?.done && data?.total) return `${data.done}/${data.total}`;
+  const started = Number(task.createdAt || Date.now());
+  const elapsed = formatElapsed(Date.now() - started);
+  return task.app === "local-ai" ? `本地计算中 · 已用 ${elapsed}` : `${status} · 已用 ${elapsed}`;
+}
+async function pollTask(task) {
+  const base = task.base || (task.mode === "video" ? "/seedance" : "/nano-banana");
+  const jobPath = task.jobPath || "/api/jobs";
   while (RUNNING.has(task.status)) {
     await new Promise((resolve) => setTimeout(resolve, 2500));
-    const response = await fetch(`${base}/api/jobs/${encodeURIComponent(task.jobId)}`, { headers: { "X-Workspace-Id": task.conversationId || activeConversation().id } });
-    if (!response.ok) throw new Error(`任务状态读取失败 (${response.status})`);
+    // 一次网络抖动 / 502 不该把一个跑了半小时的任务判死。实测：本地超分收尾时整台
+    // 机器被压满，浏览器这一发轮询超时，任务就被标成 failed —— 后端其实成功了，
+    // 结果永远认领不回来。所以这里连续重试几次再放弃。
+    let response = null, lastError = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        const candidate = await fetch(`${base}${jobPath}/${encodeURIComponent(task.jobId)}`, { headers: { "X-Workspace-Id": task.conversationId || activeConversation().id } });
+        if (candidate.ok) { response = candidate; break; }
+        lastError = new Error(`任务状态读取失败 (${candidate.status})`);
+      } catch (error) {
+        lastError = new Error(`任务状态读取失败（${error?.message || "网络错误"}）`);
+      }
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
+    }
+    if (!response) throw lastError || new Error("任务状态读取失败");
     const data = await response.json(), status = String(data.status || "running").toLowerCase();
-    task.progress = data.done && data.total ? `${data.done}/${data.total}` : status; task.updatedAt = Date.now();
+    task.progress = progressText(task, data, status); task.updatedAt = Date.now();
     const result = (data.results || []).find((item) => item.download_url || item.url);
-    if (result) { const rawUrl = result.download_url || result.url; task.resultUrl = rawUrl.startsWith("http") ? rawUrl : `${base}${rawUrl}`; task.resultName = result.filename || `${task.mode === "video" ? "video" : "image"}-${task.id.slice(0, 8)}`; }
+    if (result) {
+      task.resultUrl = absoluteMediaUrl(base, result.download_url || result.url);
+      // 抠图一次出多张 PNG：download_urls 是全部结果，第一张仍放在 resultUrl 供预览/历史用。
+      const urls = (Array.isArray(result.download_urls) ? result.download_urls : []).map((url) => absoluteMediaUrl(base, url)).filter(Boolean);
+      task.resultUrls = urls.length ? urls : [task.resultUrl];
+      task.resultName = result.filename || `${task.mode === "video" ? "video" : "image"}-${task.id.slice(0, 8)}`;
+    }
     if (TERMINAL_SUCCESS.has(status) || (status === "partial" && task.resultUrl)) {
       task.status = "success"; task.updatedAt = Date.now();
       if (task.editSourceTaskId && task.editSourceTaskId === state.editSourceTaskId) clearEditContext({ render: false });
       saveStore(); renderPreview(); renderConversations(); renderParamSummary(); renderHistory(); return;
     }
-    if (TERMINAL_FAILURE.has(status)) throw new Error((data.errors || [])[0] || task.progress || "生成失败");
+    // 本地网关把失败原因放在 results[0].error（顶层只有 status:"failed"），
+    // 只读 data.error 的话用户只会看到一句没用的 "failed"。
+    if (TERMINAL_FAILURE.has(status)) {
+      const firstError = (data.errors || [])[0];
+      const resultError = (data.results || []).find((item) => item?.error)?.error;
+      const message = (typeof firstError === "string" ? firstError : firstError?.message)
+        || (typeof resultError === "string" ? resultError : resultError?.message)
+        || (typeof data.error === "string" ? data.error : "")
+        || task.progress || "生成失败";
+      throw new Error(message);
+    }
     saveStore(); renderPreview();
   }
 }
@@ -934,9 +1185,25 @@ function renderPreview({ animateSwitch = false } = {}) {
   }
   if (task.resultUrl) {
     els.mediaLoading.hidden = true; els.previewMedia.innerHTML = "";
-    const media = document.createElement(task.mode === "video" ? "video" : "img"); bindMediaFallback(media, task); media.src = task.resultUrl;
-    if (task.mode === "video") { media.controls = true; media.playsInline = true; media.preload = "metadata"; } else { media.alt = task.prompt; media.loading = "eager"; media.decoding = "async"; }
-    els.previewMedia.append(media); els.download.disabled = false;
+    const urls = Array.isArray(task.resultUrls) && task.resultUrls.length > 1 ? task.resultUrls : [task.resultUrl];
+    if (urls.length > 1) {
+      // 智能抠图一次出多张（最多 max_objects 个物体）。网格里每张都能单独下载，
+      // 底部「下载结果」会把这批一起下载。
+      const grid = document.createElement("div"); grid.className = "fc-result-grid";
+      urls.forEach((url, index) => {
+        const cell = document.createElement("a"); cell.className = "fc-result-cell";
+        cell.href = url; cell.target = "_blank"; cell.rel = "noopener";
+        cell.download = `${task.resultName || "result"}-${index + 1}`;
+        cell.title = `下载第 ${index + 1} 张`;
+        const image = document.createElement("img"); image.src = url; image.alt = `${task.prompt} ${index + 1}`; image.loading = "lazy"; image.decoding = "async";
+        cell.append(image); grid.append(cell);
+      });
+      els.previewMedia.append(grid); els.download.disabled = false;
+    } else {
+      const media = document.createElement(task.mode === "video" ? "video" : "img"); bindMediaFallback(media, task); media.src = task.resultUrl;
+      if (task.mode === "video") { media.controls = true; media.playsInline = true; media.preload = "metadata"; } else { media.alt = task.prompt; media.loading = "eager"; media.decoding = "async"; }
+      els.previewMedia.append(media); els.download.disabled = false;
+    }
   } else {
     els.mediaLoading.hidden = false;
     const title = task.status === "failed" ? "生成失败" : task.status === "success" ? "正在读取结果" : "正在生成";
@@ -1080,7 +1347,16 @@ function bindEvents() {
   els.menu.addEventListener("click", toggleSidebar); els.scrim.addEventListener("click", closeSidebar);
   els.archiveToggle.addEventListener("click", () => { els.archivedList.hidden = !els.archivedList.hidden; els.archiveToggle.setAttribute("aria-expanded", String(!els.archivedList.hidden)); });
   els.newChat.addEventListener("click", startNewConversation);
-  els.download.addEventListener("click", () => { const task = activeTask(); if (!task?.resultUrl) return; const link = document.createElement("a"); link.href = task.resultUrl; link.download = task.resultName || "creation"; link.target = "_blank"; link.click(); });
+  els.download.addEventListener("click", () => {
+    const task = activeTask(); if (!task?.resultUrl) return;
+    const urls = Array.isArray(task.resultUrls) && task.resultUrls.length ? task.resultUrls : [task.resultUrl];
+    urls.forEach((url, index) => {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = urls.length > 1 ? `${task.resultName || "result"}-${index + 1}` : (task.resultName || "creation");
+      link.target = "_blank"; link.click();
+    });
+  });
   els.historyToggle.addEventListener("click", () => setHistoryStripOpen(!els.historyStrip.classList.contains("is-open")));
   els.refine.addEventListener("click", async () => {
     const task = latestSuccess();

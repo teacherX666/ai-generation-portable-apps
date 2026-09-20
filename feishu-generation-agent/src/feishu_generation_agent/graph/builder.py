@@ -91,6 +91,6 @@ def build_graph(services: GraphServices, checkpointer: Any):
     # Generated artifacts define success. Exporting to the Feishu result table
     # is a separate, user-triggered action and is intentionally not part of the
     # graph's automatic success path.
-    builder.add_edge("verify_and_download_artifacts", END)
+    builder.add_edge("verify_and_download_artifacts", "review_artifacts")
     builder.add_edge("deliver_to_feishu", END)
     return builder.compile(checkpointer=checkpointer)

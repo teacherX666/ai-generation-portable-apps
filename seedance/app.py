@@ -45,7 +45,7 @@ STATIC_DIR = ROOT / "static"
 _PORTAL_DIR = str(ROOT.parent / "portal")
 if _PORTAL_DIR not in sys.path:
     sys.path.insert(0, _PORTAL_DIR)
-from ark_errors import translate_ark_error  # noqa: E402
+from ark_errors import translate_ark_error, translate_ark_error_body  # noqa: E402
 from error_explainer import explain_error  # noqa: E402
 OUTPUT_DIR = _DATA_BASE / "outputs"
 STATE_DIR = _DATA_BASE / "state"
@@ -58,6 +58,17 @@ FILES_MAP_PATH = STATE_DIR / "download_files.json"
 SKILL_PATH = ROOT / "SKILL.md"
 DEEPSEEK_KEY_PATH = STATE_DIR / "deepseek.key"
 SECRETS_PATH = STATE_DIR / "secrets.json"
+
+# Real-time Server-Sent Events for status changes.
+_SSE_COND = threading.Condition()
+_SSE_VERSION = 0
+
+def notify_state_change() -> None:
+    global _SSE_VERSION
+    with _SSE_COND:
+        _SSE_VERSION += 1
+        _SSE_COND.notify_all()
+
 
 
 # ============================================================
@@ -163,6 +174,8 @@ def sniff_kind(head: bytes) -> str | None:
                 return "image"
         # heic/tiff family: bytes 4-11 marker
     if head[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1"):
+        return "image"
+    if head[4:12] in (b"ftypavif", b"avif"):
         return "image"
     if head[4:8] in (b"ftyp",) and head[8:12] in (b"heic", b"heix", b"mif1"):
         return "image"
@@ -459,13 +472,33 @@ def _decode_username(handler) -> str:
         return raw
 
 
+def _config_scope_for(ws_id: str, username: str) -> str:
+    if username:
+        user_part = _sanitize_username(username)
+        legacy_scope = "u_" + user_part
+        combined_prefix = legacy_scope + "_"
+        if ws_id == legacy_scope:
+            return legacy_scope
+        if ws_id.startswith(combined_prefix):
+            return ws_id
+        return combined_prefix + ws_id
+    return ws_id
+
+
 def _config_scope(handler) -> str:
-    """Config/archive/media scope: follow the logged-in account (X-Username),
-    falling back to the per-browser workspace id for standalone/local use."""
-    user = _decode_username(handler)
-    if user:
-        return "u_" + _sanitize_username(user)
-    return _workspace_id(handler)
+    """Config/archive/media scope: logged-in user + browser workspace theme."""
+    return _config_scope_for(_workspace_id(handler), _decode_username(handler))
+
+def _legacy_config_scope(ws_id: str) -> str | None:
+    """Return the pre-isolation per-user scope for read-only media fallback.
+
+    Old data was stored under u_<user>; new data uses u_<user>_<workspace>.
+    Keep old media readable when a theme has not yet written a new copy.
+    """
+    if not ws_id.startswith("u_"):
+        return None
+    legacy = ws_id.rsplit("_", 1)[0]
+    return legacy if legacy.startswith("u_") and legacy != ws_id else None
 
 
 APP_NAME = "seedance"
@@ -502,13 +535,13 @@ def _workspace_id(handler) -> str:
     """Extract workspace_id: 1) X-Workspace-Id header  2) ?ws= query  3) localhost."""
     ws = (handler.headers.get("X-Workspace-Id") or "").strip()
     if ws:
-        return re.sub(r"[^a-zA-Z0-9_\-]", "_", ws)[:64]
+        return re.sub(r"[^\w\-]+", "_", ws, flags=re.UNICODE)[:64]
     # Fallback to query parameter (read from raw path since self.path is stripped of query in do_GET/do_POST)
     raw = getattr(handler, "_raw_path", None) or handler.path
     qs = urllib.parse.urlparse(raw).query
     params = urllib.parse.parse_qs(qs)
     if "ws" in params:
-        return re.sub(r"[^a-zA-Z0-9_\-]", "_", str(params["ws"][0]))[:64]
+        return re.sub(r"[^\w\-]+", "_", str(params["ws"][0]), flags=re.UNICODE)[:64]
     return "localhost"
 
 
@@ -654,6 +687,7 @@ VALUE_FIELDS = {
     "timeout",
     "vary_seed",
     "output_name",
+    "task_mode",
     "prompt",
 }
 
@@ -668,7 +702,7 @@ FALLBACK_PROVIDERS = {
             "api_style": "comfyui_workflow",
             "hint": "Local MiniMax H3 via AI Port (free).",
             "defaults": {"model": "minimax_h3_all_reference", "duration": 8, "resolution": "720p", "ratio": "16:9", "repeat_count": 1, "concurrency": 1, "poll_interval": 5, "timeout": 3600, "vary_seed": True},
-            "models": [{"id": "minimax_h3_all_reference", "label": "MiniMax H3 (free)", "duration_range": [4, 12], "resolutions": ["480p", "720p"], "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"]}],
+            "models": [{"id": "minimax_h3_all_reference", "label": "MiniMax H3 / 海螺 H3 (free)", "duration_range": [4, 12], "resolutions": ["480p", "720p"], "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"]}],
         },
         "volcengine": {
             "label": "豆包官方 / 火山方舟",
@@ -814,6 +848,14 @@ def validate_model_capabilities(values: dict[str, Any], files: dict[str, tuple[s
     config, _ = load_provider_config()
     provider = str(values.get("provider") or "volcengine")
     model = str(values.get("custom_model") or values.get("model") or "").strip()
+    provider_cfg = (config.get("providers") or {}).get(provider) or {}
+    selected = next((
+        item for item in (provider_cfg.get("models") or [])
+        if isinstance(item, dict) and str(item.get("id") or "") == model
+    ), {})
+    if selected.get("disabled"):
+        label = str(selected.get("label") or model)
+        raise ValueError(f"模型「{label}」已失效，暂时不可用，请选择其他模型。")
     caps = model_capabilities(config, provider, model)
     if not caps:
         return
@@ -920,6 +962,7 @@ def update_activity(activity_id: str | None, **updates: Any) -> None:
             item.update(updates)
             item["updated_at"] = now_text()
             write_activity_log(items)
+            notify_state_change()
             return
 
 
@@ -930,7 +973,20 @@ def activity_list(ws_id: str = "localhost", show_all: bool = False, username: st
         if username:
             items = [it for it in items if it.get("username", "") == username]
     summary = []
-    counts = {"total": len(items), "page": 0, "api": 0, "succeeded": 0, "failed": 0, "running": 0}
+    counts = {"total": len(items), "page": 0, "api": 0, "succeeded": 0, "failed": 0, "running": 0, "cancelled": 0}
+    for item in items:
+        source = str(item.get("source") or "").strip().lower()
+        status = str(item.get("status") or "").strip().lower()
+        if source in counts:
+            counts[source] += 1
+        if status in {"succeeded", "success", "completed"}:
+            counts["succeeded"] += 1
+        elif status in {"failed", "failure"}:
+            counts["failed"] += 1
+        elif status in {"cancelled", "canceled", "interrupted"}:
+            counts["cancelled"] += 1
+        elif status in {"running", "queued", "pending", "querying", "partial"}:
+            counts["running"] += 1
     for item in items:
         source = str(item.get("source") or "")
         status = str(item.get("status") or "")
@@ -957,6 +1013,8 @@ def activity_list(ws_id: str = "localhost", show_all: bool = False, username: st
             "updated_at": item.get("updated_at"),
             "title": item.get("title"),
             "request_kind": item.get("request_kind"),
+            "model": item.get("model", ""),
+            "provider": item.get("provider", ""),
             "username": item.get("username", ""),
             "started_at": item.get("started_at"),
             "finished_at": item.get("finished_at"),
@@ -1053,6 +1111,18 @@ def media_item_to_file(field: str, item: Any) -> tuple[str, bytes] | None:
         return filename_from_media(field, item, mime), blob
     raise ValueError(f"media.{field} must include data_url or url")
 
+
+def public_job_snapshot(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not job:
+        return None
+    data = json.loads(json.dumps(job))
+    data.pop("api_key", None)
+    if isinstance(data.get("provider_tasks"), list):
+        data["provider_tasks"] = [
+            {"task_id": str(item.get("task_id") or ""), "base_url": str(item.get("base_url") or "")}
+            for item in data["provider_tasks"] if isinstance(item, dict)
+        ]
+    return data
 
 def job_id_response(job_id: str) -> dict[str, Any]:
     return {"ok": True, "job_id": job_id, "status_url": f"/api/jobs/{job_id}"}
@@ -1271,28 +1341,33 @@ def retry_job(job_id: str) -> str:
     ws_id = str((act or {}).get("workspace_id") or "localhost")
     files = _files_from_restore(restore, ws_id)
     username = str((act or {}).get("username") or "")
-    new_job_id = create_job(
+    media_scope = _config_scope_for(ws_id, username)
+    # 先落盘 restore（可能失败），再改活动记录，最后才建作业——顺序很重要：
+    # 旧实现的顺序是「create_job 先入库 → 再 copy_files_to_restore → 再改活动记录」，
+    # 中间任一步失败都会返回 400 却把作业留在队列里（没有 worker 线程）→ 永久
+    # 僵尸「排队中」。2026-09-15 实锤：两位用户各点了 1~2 次重试，全中这个坑。
+    new_job_id = uuid.uuid4().hex
+    fresh_restore = copy_files_to_restore(values, files, new_job_id, media_scope)
+    attempts = list((root or {}).get("attempts") or [])
+    attempts.append(previous_attempt)
+    create_job(
         values, files, source="retry", request_kind="retry",
         request_data={"retried_from": job_id}, ws_id=ws_id, username=username,
-        activity_id=root_id, record=False,
+        activity_id=root_id, record=False, media_scope=media_scope,
+        job_id=new_job_id, prepared_restore=fresh_restore,
+        activity_patch={
+            "job_id": new_job_id,
+            "source": "retry",
+            "request_kind": "retry",
+            "status": "running",
+            "model": str(values.get("custom_model") or values.get("model") or "").strip(),
+            "provider": str(values.get("provider") or "").strip(),
+            "started_at": time.time(),
+            "retry_of": job_id,
+            "attempts": attempts,
+            "restore": fresh_restore,
+        },
     )
-    if root_id:
-        attempts = list((root or {}).get("attempts") or [])
-        attempts.append(previous_attempt)
-        # Persist the new attempt's restore against the root record so the
-        # next retry replays the latest inputs (not the original submission).
-        fresh_restore = copy_files_to_restore(values, files, new_job_id, ws_id)
-        update_activity(
-            root_id,
-            job_id=new_job_id,
-            source="retry",
-            request_kind="retry",
-            status="running",
-            started_at=time.time(),
-            retry_of=job_id,
-            attempts=attempts,
-            restore=fresh_restore,
-        )
     return new_job_id
 
 
@@ -1326,6 +1401,7 @@ def recover_backlog() -> tuple[int, int]:
             # restore 有意剥离 api_key：重放时回填服务端统一配置
             values.setdefault("api_key", str((SECRETS or {}).get("volcengine_api_key") or ""))
             ws_id = str(meta.get("ws_id") or "localhost")
+            media_scope = _config_scope_for(ws_id, str(meta.get("username") or ""))
             files = _files_from_restore(restore, ws_id)
             # 排队中/运行中统一语义（2026-09-09 用户确认）：
             # 重启后原 job_id 重新入队、自动继续跑，活动记录保持 running——
@@ -1340,10 +1416,19 @@ def recover_backlog() -> tuple[int, int]:
                     "duration": max(0, int(str(values.get("duration") or "0") or "0")),
                     "username": str(meta.get("username") or ""),
                     "workspace_id": ws_id,
+                    "activity_id": activity_id,
+                    "created_at": str(act.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S")),
+                    "title": str(act.get("title") or values.get("prompt") or "Seedance task")[:80],
+                    "prompt": str(values.get("prompt") or act.get("title") or ""),
+                    "params": {
+                        key: value for key, value in values.items()
+                        if key not in {"api_key", "saved_media"} and key not in FILE_FIELDS
+                    },
+                    "model": str(values.get("custom_model") or values.get("model") or "").strip(),
+                    "provider": str(values.get("provider") or "").strip(),
                     "submitted_at": time.time(), "started_at": None, "finished_at": None,
                 }
-                _backlog_set_locked(job_id, stage="queued", activity_id=activity_id, ws_id=ws_id)
-            thread = threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True)
+            thread = threading.Thread(target=run_job, args=(job_id, values, files, activity_id, media_scope), daemon=True)
             thread.start()
             recovered += 1
         except Exception as exc:
@@ -1363,6 +1448,12 @@ def recover_backlog() -> tuple[int, int]:
                     "done": 0, "total": 0, "duration": 0,
                     "username": str(meta.get("username") or ""),
                     "workspace_id": str(meta.get("ws_id") or "localhost"),
+                    "activity_id": activity_id,
+                    "created_at": str(act.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S")),
+                    "title": str(act.get("title") or "Seedance task")[:80],
+                    "prompt": str(act.get("prompt") or act.get("title") or ""),
+                    "model": str(act.get("model") or ""),
+                    "provider": str(act.get("provider") or ""),
                     "submitted_at": time.time(), "started_at": None, "finished_at": time.time(),
                 }
             update_activity(
@@ -1400,6 +1491,16 @@ def recover_backlog() -> tuple[int, int]:
                 "duration": duration,
                 "username": str(activity.get("username") or ""),
                 "workspace_id": str(activity.get("workspace_id") or "localhost"),
+                "activity_id": str(activity.get("id") or ""),
+                "created_at": str(activity.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S")),
+                "title": str(activity.get("title") or restore_values.get("prompt") or "Seedance task")[:80],
+                "prompt": str(restore_values.get("prompt") or activity.get("title") or ""),
+                "params": {
+                    key: value for key, value in restore_values.items()
+                    if key not in {"api_key", "saved_media"} and key not in FILE_FIELDS
+                },
+                "model": str(activity.get("model") or restore_values.get("custom_model") or restore_values.get("model") or "").strip(),
+                "provider": str(activity.get("provider") or restore_values.get("provider") or "").strip(),
                 "submitted_at": float(activity.get("started_at") or time.time()),
                 "started_at": None,
                 "finished_at": time.time(),
@@ -1571,7 +1672,7 @@ def save_archive_file(name: str, preset: dict[str, Any], ws_id: str = "localhost
     # Strip secrets before persisting
     safe_preset = dict(preset)
     safe_preset["values"] = {k: v for k, v in safe_preset.get("values", {}).items()
-                             if k not in ("api_key", "api_key_override", "prompt")}
+                             if k not in ("api_key", "api_key_override")}
     ws_media = _ws_media_dir(ws_id)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("preset.json", json.dumps(safe_preset, ensure_ascii=False, indent=2))
@@ -1977,6 +2078,7 @@ def download_video(url: str, out_path: Path) -> None:
 def set_job(job_id: str, **updates: Any) -> None:
     with JOBS_LOCK:
         JOBS[job_id].update(updates)
+    notify_state_change()
 
 
 def _prune_jobs_locked() -> None:
@@ -2004,6 +2106,60 @@ def _prune_jobs_locked() -> None:
 def add_event(job_id: str, message: str) -> None:
     with JOBS_LOCK:
         JOBS[job_id].setdefault("events", []).append({"time": time.strftime("%H:%M:%S"), "message": message})
+
+
+# 僵尸作业阈值：正常提交在同一次请求里就会把状态推到 running（run_job 第一件事
+# 就是 set_job(status="running")），因此「排队超过这么久 + total 仍为 0」只可能
+# 是 worker 从未起来的僵尸（2026-09-15 实锤：create_job 先入库后起线程，中间抛
+# 异常就留下永久 queued 的任务）。
+ZOMBIE_QUEUE_GRACE_SECONDS = 180.0
+
+
+def _sweep_zombie_jobs(grace: float = ZOMBIE_QUEUE_GRACE_SECONDS) -> int:
+    """把「从未启动过 worker」的 queued 作业自愈成 failed，避免永久卡在排队中。
+
+    只处理 status 仍是 queued/pending、started_at 为空、done/total 都为 0
+    且 submitted_at 超过 grace 的作业；running 的任务一律不碰。
+    """
+    now = time.time()
+    zombies: list[tuple[str, str]] = []
+    with JOBS_LOCK:
+        for jid, job in list(JOBS.items()):
+            status = str(job.get("status") or "").lower()
+            if status not in {"queued", "pending"}:
+                continue
+            if job.get("started_at") or job.get("local_job_ids") or job.get("provider_tasks"):
+                continue
+            if int(job.get("done") or 0) > 0 or int(job.get("total") or 0) > 0:
+                continue
+            submitted = float(job.get("submitted_at") or 0)
+            if not submitted or (now - submitted) < grace:
+                continue
+            job["status"] = "failed"
+            job["errors"] = list(job.get("errors") or []) + ["任务未能启动（队列线程缺失），已自动标记失败，请重试。"]
+            job["finished_at"] = now
+            _backlog_remove_locked(jid)
+            zombies.append((jid, str(job.get("activity_id") or "")))
+    for jid, activity_id in zombies:
+        try:
+            update_activity(
+                activity_id,
+                status="failed",
+                error="任务未能启动（队列线程缺失），已自动标记失败，请重试。",
+                finished_at=now,
+            )
+        except Exception:
+            pass
+        try:
+            report_final_to_portal(jid, "failed")
+        except Exception:
+            pass
+    if zombies:
+        try:
+            notify_state_change()
+        except Exception:
+            pass
+    return len(zombies)
 
 
 def parse_bool(value: str | None) -> bool:
@@ -2395,9 +2551,11 @@ def values_files_from_json(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     return values, files
 
 
-def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], source: str, request_kind: str, request_data: dict[str, Any], ws_id: str = "localhost", username: str = "", activity_id: str | None = None, record: bool = True) -> str:
+def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], source: str, request_kind: str, request_data: dict[str, Any], ws_id: str = "localhost", username: str = "", activity_id: str | None = None, record: bool = True, media_scope: str | None = None, job_id: str | None = None, prepared_restore: dict[str, Any] | None = None, activity_patch: dict[str, Any] | None = None) -> str:
     validate_model_capabilities(values, files)
-    job_id = uuid.uuid4().hex
+    media_scope = media_scope or _config_scope_for(ws_id, username)
+    if not job_id:
+        job_id = uuid.uuid4().hex
     if activity_id is None:
         activity_id = uuid.uuid4().hex
     try:
@@ -2410,12 +2568,36 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
     # reports it.
     if per_item_duration < 0:
         per_item_duration = 0
+    model = str(values.get("custom_model") or values.get("model") or "").strip()
+    provider = str(values.get("provider") or "").strip()
+    prompt = str(values.get("prompt") or "")
+    created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    safe_params = {
+        key: value for key, value in values.items()
+        if key not in {"api_key", "saved_media"} and key not in FILE_FIELDS
+    }
+    response = job_id_response(job_id)
+    # 把「会抛异常的准备工作」全部放到入库之前（copy_files_to_restore 会写
+    # workspace 素材目录，Windows 上受 ACL/占用影响可能失败）。2026-09-15 实锤：
+    # 早前这里是「先入库、后落盘/起线程」，中间任何一步抛异常 → 作业已进 JOBS
+    # 但 worker 线程从未启动，前端只看到一次 400、队列里却永久挂着一个
+    # queued/total=0 的僵尸任务（用户点取消也没用，线程根本不存在）。
+    restore_payload = prepared_restore
+    if record and restore_payload is None:
+        restore_payload = copy_files_to_restore(values, files, activity_id, media_scope)
     with JOBS_LOCK:
         JOBS[job_id] = {
             "id": job_id, "status": "queued", "events": [], "results": [], "errors": [],
             "done": 0, "total": 0, "duration": per_item_duration,
             "username": username,
             "workspace_id": ws_id,
+            "activity_id": activity_id,
+            "created_at": created_at,
+            "title": prompt[:80] or "Seedance task",
+            "prompt": prompt,
+            "params": safe_params,
+            "model": model,
+            "provider": provider,
             "submitted_at": time.time(),
             "started_at": None,
             "finished_at": None,
@@ -2424,24 +2606,44 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
         _backlog_set_locked(job_id, stage="queued", activity_id=activity_id,
                             ws_id=ws_id, username=username)
         _prune_jobs_locked()
-    response = job_id_response(job_id)
-    if record:
-        record_activity({
-            "id": activity_id,
-            "job_id": job_id,
-            "source": source,
-            "request_kind": request_kind,
-            "status": "running",
-            "title": str(values.get("prompt") or "")[:80] or "Seedance task",
-            "request": request_data,
-            "response": response,
-            "workspace_id": ws_id,
-            "username": username,
-            "started_at": time.time(),
-            "restore": copy_files_to_restore(values, files, activity_id, ws_id),
-        }, ws_id)
-    thread = threading.Thread(target=run_job, args=(job_id, values, files, activity_id, ws_id), daemon=True)
-    thread.start()
+    try:
+        if record:
+            record_activity({
+                "id": activity_id,
+                "job_id": job_id,
+                "source": source,
+                "request_kind": request_kind,
+                "status": "running",
+                "title": str(values.get("prompt") or "")[:80] or "Seedance task",
+                "model": model,
+                "provider": provider,
+                "request": request_data,
+                "response": response,
+                "workspace_id": ws_id,
+                "username": username,
+                "started_at": time.time(),
+                "restore": restore_payload,
+            }, ws_id)
+        if activity_patch:
+            # 重试场景：新一次尝试要折进同一条活动记录（job_id/attempts/restore）
+            update_activity(activity_id, **activity_patch)
+        threading.Thread(target=run_job, args=(job_id, values, files, activity_id, media_scope), daemon=True).start()
+    except Exception:
+        # 入库之后、worker 起来之前失败了：必须把作业整个摘掉，绝不留下
+        # 永远 queued 的僵尸（调用方会把本次异常回成 400，用户可重试）。
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
+            _backlog_remove_locked(job_id)
+        try:
+            update_activity(
+                activity_id,
+                status="failed",
+                error="任务创建失败（队列未启动）：" + str(sys.exc_info()[1])[:160],
+                finished_at=time.time(),
+            )
+        except Exception:
+            pass
+        raise
     return job_id
 
 
@@ -2554,11 +2756,18 @@ def _run_local_video(job_id: str, index: int, form: cgi.FieldStorage, form_value
     if mode == "ref2v":
         values_payload["h3_ref_image_size"] = "max"
 
+    file_signature = [
+        (str(key), str(item.get("filename") or ""), len(str(item.get("data_url") or "")))
+        for key, item in sorted(files_payload.items())
+    ]
+    request_id = local_gateway.job_request_id(
+        job_id, index, model_kind, mode, file_signature
+    )
     submit = request_json(
         "POST",
         f"{base_url}/api/video_local/jobs/json",
         "",
-        {"values": values_payload, "files": files_payload},
+        {"values": values_payload, "files": files_payload, "request_id": request_id},
         timeout=int(form_values.get("timeout") or 3600),
     )
     local_job_id = submit.get("job_id")
@@ -2573,6 +2782,17 @@ def _run_local_video(job_id: str, index: int, form: cgi.FieldStorage, form_value
     results: list[dict[str, Any]] = []
     while True:
         if time.time() - start > timeout:
+            try:
+                request_json(
+                    "POST",
+                    f"{base_url}/api/video_local/jobs/{local_job_id}/cancel",
+                    "",
+                    None,
+                    timeout=5,
+                    max_retries=1,
+                )
+            except Exception:
+                pass
             raise RuntimeError(f"Local ComfyUI video job {local_job_id} timed out")
         time.sleep(poll_interval)
         if _job_cancel_requested(job_id):
@@ -2862,12 +3082,20 @@ def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tupl
                     # 取消不是错误：不记 errors、不计 done
                     add_event(job_id, "Run cancelled")
                 except APIError as exc:
-                    # 结构化 API 错误，记录错误类型方便前端展示
-                    error_msg = f"[{exc.error_category}] {exc.message}"
+                    # 结构化 API 错误，记录错误类型方便前端展示。
+                    # 提交阶段的 4xx 只带回方舟原始 error body（见 request_json），
+                    # 先过一遍中文规则表：命中就用可执行的中文提示替代整段 JSON
+                    # （真人素材被拒的 PrivacyInformation 正是走这条路径）。
+                    zh = (translate_ark_error_body(exc.message)
+                          or translate_ark_error_body(exc.raw_response))
+                    if zh:
+                        error_msg = f"[{exc.error_category}] {zh} 原始错误：{exc.message}"
+                    else:
+                        error_msg = f"[{exc.error_category}] {exc.message}"
                     with JOBS_LOCK:
                         JOBS[job_id]["errors"].append(error_msg)
                         JOBS[job_id]["done"] += 1
-                    add_event(job_id, f"API Error [{exc.error_category}]: {exc.message[:200]}")
+                    add_event(job_id, f"API Error [{exc.error_category}]: {(zh or exc.message)[:200]}")
                 except NetworkError as exc:
                     error_msg = f"[network_error] {exc}"
                     with JOBS_LOCK:
@@ -2882,7 +3110,7 @@ def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tupl
         with JOBS_LOCK:
             cancelled = bool(JOBS[job_id].get("cancel_requested"))
             errors = JOBS[job_id]["errors"]
-            final_job = json.loads(json.dumps(JOBS[job_id]))
+            final_job = public_job_snapshot(JOBS[job_id]) or {}
         if cancelled:
             # 已完成的条目保留（已真实生成且计费）；未完成条目不计
             final_status = "cancelled"
@@ -2904,7 +3132,7 @@ def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tupl
         except KeyError:
             print(f"[run_job] JOBS 条目缺失（异常前已被移出？）: {job_id}: {exc}", flush=True)
         with JOBS_LOCK:
-            final_job = json.loads(json.dumps(JOBS.get(job_id, {})))
+            final_job = public_job_snapshot(JOBS.get(job_id, {})) or {}
             _backlog_remove_locked(job_id)
         update_activity(activity_id, status="failed", error=str(exc), result=final_job, finished_at=time.time())
         add_event(job_id, f"Fatal: {exc}")
@@ -2954,9 +3182,38 @@ class Handler(SimpleHTTPRequestHandler):
             return str(STATIC_DIR / "index.html")
         return _safe_join_or_root(STATIC_DIR, path.lstrip("/"))
 
+    def _serve_sse(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        last_version = 0
+        try:
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while True:
+                with _SSE_COND:
+                    _SSE_COND.wait(timeout=15.0)
+                    version = _SSE_VERSION
+                if version != last_version:
+                    last_version = version
+                    payload = ("data: %d\n\n" % version).encode("utf-8")
+                    self.wfile.write(payload)
+                    self.wfile.flush()
+                else:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
     def do_GET(self) -> None:
         self._raw_path = self.path
         self.path = urllib.parse.urlparse(self.path).path
+        if self.path == "/api/events":
+            self._serve_sse()
+            return
         if self.path == "/api/v1/meta":
             json_response(self, 200, {
                 "app": "seedance",
@@ -2992,6 +3249,11 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/jobs":
             sees_all, username = _view_scope(self)
             items = []
+            # 僵尸自愈（2026-09-15）：worker 线程从未启动的作业会永久停在
+            # queued/total=0，前端只能一直显示「排队中」，点取消也没线程可收。
+            # 正常提交在同一次请求内就会开始跑，所以「排队超过 3 分钟且一点
+            # 进度都没有」= 无 worker 的僵尸，直接自愈成 failed 并从队列摘除。
+            _sweep_zombie_jobs()
             with JOBS_LOCK:
                 for jid, j in JOBS.items():
                     if not sees_all and j.get("username", "") != username:
@@ -3034,6 +3296,14 @@ class Handler(SimpleHTTPRequestHandler):
             sees_all, username = _view_scope(self)
             json_response(self, 200, activity_list(show_all=sees_all, username=username))
             return
+        if self.path.startswith("/api/activity/by-job/"):
+            job_id = urllib.parse.unquote(self.path.rsplit("/", 1)[-1])
+            record = find_activity_by_job_id(job_id)
+            ws = _workspace_id(self)
+            if record and record.get("workspace_id") != ws and not _is_admin(self):
+                record = None
+            json_response(self, 200 if record else 404, activity_record_for_client(record) or {"error": "activity not found"})
+            return
         if self.path.startswith("/api/activity/"):
             activity_id = self.path.rsplit("/", 1)[-1]
             ws = _workspace_id(self)
@@ -3054,6 +3324,12 @@ class Handler(SimpleHTTPRequestHandler):
             # by our own upload path but treat it as untrusted anyway.
             stored_name = Path(item.get("stored", "")).name if item else ""
             path = _ws_media_dir(ws) / stored_name if stored_name else None
+            if (path) and not path.exists():
+                legacy = _legacy_config_scope(ws)
+                if legacy:
+                    legacy_path = _ws_media_dir(legacy) / stored_name
+                    if legacy_path.exists():
+                        path = legacy_path
             if not item or not path or not path.exists():
                 json_response(self, 404, {"error": "media not found"})
                 return
@@ -3073,6 +3349,12 @@ class Handler(SimpleHTTPRequestHandler):
             stored = Path(urllib.parse.unquote(raw_name)).name
             ws = _config_scope(self)
             path = _ws_media_dir(ws) / stored
+            if (path) and not path.exists():
+                legacy = _legacy_config_scope(ws)
+                if legacy:
+                    legacy_path = _ws_media_dir(legacy) / stored
+                    if legacy_path.exists():
+                        path = legacy_path
             if not path.exists():
                 json_response(self, 404, {"error": "media not found"})
                 return
@@ -3090,7 +3372,7 @@ class Handler(SimpleHTTPRequestHandler):
             job_id = self.path.rsplit("/", 1)[-1]
             with JOBS_LOCK:
                 job = JOBS.get(job_id)
-                data = json.loads(json.dumps(job)) if job else None
+                data = public_job_snapshot(job)
             json_response(self, 200 if data else 404, data or {"error": "job not found"})
             return
         if self.path.startswith("/api/refmedia/"):
@@ -3128,15 +3410,42 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             st = path.stat()
             etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
-            if self.headers.get("If-None-Match", "") == etag:
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            range_header = self.headers.get("Range", "")
+            if self.headers.get("If-None-Match", "") == etag and not range_header:
                 self.send_response(304)
                 self.send_header("ETag", etag)
                 self.send_header("Cache-Control", "private, max-age=3600")
                 self.end_headers()
                 return
+            if range_header.startswith("bytes="):
+                start, end = self._parse_range(range_header, st.st_size)
+                self.send_response(206)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Disposition", f'inline; filename="{path.name}"')
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Range", f"bytes {start}-{end}/{st.st_size}")
+                self.send_header("Content-Length", str(end - start + 1))
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "private, max-age=3600")
+                self.end_headers()
+                try:
+                    with path.open("rb") as f:
+                        f.seek(start)
+                        remaining = end - start + 1
+                        while remaining > 0:
+                            chunk = f.read(min(65536, remaining))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            remaining -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                return
             self.send_response(200)
-            self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
-            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Disposition", f'inline; filename="{path.name}"')
+            self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(st.st_size))
             self.send_header("ETag", etag)
             self.send_header("Cache-Control", "private, max-age=3600")
@@ -3148,6 +3457,33 @@ class Handler(SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    @staticmethod
+    def _parse_range(range_header: str, size: int) -> tuple[int, int]:
+        spec = range_header[len("bytes="):].split(",", 1)[0].strip()
+        if not spec or "-" not in spec:
+            raise ValueError("invalid range")
+        start_s, end_s = spec.split("-", 1)
+        if start_s == "":
+            try:
+                length = int(end_s)
+            except ValueError:
+                length = 0
+            length = max(0, min(length, size))
+            return (size - length, size - 1) if length > 0 else (0, size - 1)
+        try:
+            start = int(start_s)
+        except ValueError:
+            start = 0
+        start = max(0, min(start, size - 1))
+        if end_s == "":
+            end = size - 1
+        else:
+            try:
+                end = int(end_s)
+            except ValueError:
+                end = size - 1
+            end = max(start, min(end, size - 1))
+        return start, end
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         if os.environ.get("CORS") == "1":
@@ -3209,6 +3545,7 @@ class Handler(SimpleHTTPRequestHandler):
                     pass
             add_event(job_id, "任务已取消。")
             report_final_to_portal(job_id, "cancelled")
+            notify_state_change()
             json_response(self, 200, {"ok": True, "status": "cancelled"})
             return
         if self.path == "/api/choose-output-dir":
@@ -3485,7 +3822,7 @@ class Handler(SimpleHTTPRequestHandler):
                 request_data = {"raw": summarize_payload(payload), "parsed": summarize_values_files(values, files)}
                 ws = _workspace_id(self)
                 values["_request_host"] = _public_base_url(self) or ""
-                job_id = create_job(values, files, "api", "json", request_data, ws, username=_decode_username(self))
+                job_id = create_job(values, files, "api", "json", request_data, ws, username=_decode_username(self), media_scope=_config_scope(self))
                 json_response(self, 200, job_id_response(job_id))
             except Exception as exc:
                 json_response(self, 400, api_error("invalid_request", str(exc)))
@@ -3519,7 +3856,7 @@ class Handler(SimpleHTTPRequestHandler):
         ws = _workspace_id(self)
         form_values["_request_host"] = _public_base_url(self) or ""
         try:
-            job_id = create_job(form_values, form_files, "page", "multipart", request_data, ws, username=_decode_username(self))
+            job_id = create_job(form_values, form_files, "page", "multipart", request_data, ws, username=_decode_username(self), media_scope=_config_scope(self))
         except Exception as exc:
             json_response(self, 400, api_error("invalid_request", str(exc)))
             return

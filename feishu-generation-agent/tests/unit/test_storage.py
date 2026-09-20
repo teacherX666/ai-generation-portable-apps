@@ -452,11 +452,11 @@ async def test_submission_identity_is_immutable_and_checked_by_cas(
     client_id = "e" * 32
     fingerprint = "f" * 64
     created, operation = await repo.create_submission_intent_if_absent(
-        "run-identity", "task-identity", "seedance", client_id, fingerprint
+        "run-identity", "task-identity", "seedance2.5", client_id, fingerprint
     )
 
     assert created is True
-    assert operation["provider"] == "seedance"
+    assert operation["provider"] == "seedance2.5"
     assert operation["task_fingerprint"] == fingerprint
     assert not await repo.compare_and_set_operation(
         "run-identity",

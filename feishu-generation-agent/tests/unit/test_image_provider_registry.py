@@ -142,13 +142,13 @@ async def test_video_task_still_routes_to_seedance(fake_services):
 
 
 async def test_video_task_explicit_seedance_requires_seedance_generator(fake_services):
-    """An explicit Seedance choice must not silently fall back to local video."""
-    aiport = "aiport-generator"
+    """Seedance deployment policy must not silently fall back to local video."""
     services = replace(
         fake_services,
-        settings=fake_services.settings.model_copy(update={"video_provider": "aiport"}),
-        aiport_video_generator=aiport,
-        video_generator=aiport,
+        settings=fake_services.settings.model_copy(update={"video_provider": "seedance"}),
+        aiport_video_generator="aiport-generator",
+        seedance_video_generator=None,
+        video_generator=None,
         provider_preferences=ProviderPreferences(
             video_provider="aiport",
             image_provider="seedream",
@@ -157,55 +157,18 @@ async def test_video_task_explicit_seedance_requires_seedance_generator(fake_ser
 
     task = _video_task().model_copy(update={"video_provider": "seedance"})
 
-    with pytest.raises(Exception, match="Seedance provider is unavailable"):
+    with pytest.raises(Exception, match="Seedance model is unavailable"):
         await _generator_for_task("run-1", task, services)
 
 
-async def test_video_task_explicit_seedance_uses_seedance_generator(fake_services):
+async def test_deployment_provider_overrides_stale_aiport_preference(fake_services):
     seedance = "seedance-generator"
     services = replace(
         fake_services,
-        settings=fake_services.settings.model_copy(update={"video_provider": "aiport"}),
+        settings=fake_services.settings.model_copy(update={"video_provider": "seedance"}),
         aiport_video_generator="aiport-generator",
         seedance_video_generator=seedance,
-        video_generator="aiport-generator",
-        provider_preferences=ProviderPreferences(
-            video_provider="aiport",
-            image_provider="seedream",
-        ),
-    )
-
-    task = _video_task().model_copy(update={"video_provider": "seedance"})
-
-    provider, generator = await _generator_for_task("run-1", task, services)
-
-    assert (provider, generator) == ("seedance", seedance)
-
-
-async def test_local_video_preference_never_falls_back_to_paid_seedance(
-    fake_services,
-):
-    services = replace(
-        fake_services,
-        aiport_video_generator=None,
-        seedance_video_generator="seedance-generator",
         video_generator="seedance-generator",
-        provider_preferences=ProviderPreferences(
-            video_provider="aiport",
-            image_provider="seedream",
-        ),
-    )
-
-    with pytest.raises(Exception, match="local video provider is unavailable"):
-        await _generator_for_task("run-1", _video_task(), services)
-
-
-async def test_video_task_prefers_local_aiport_when_preference_says_so(fake_services):
-    """云部署（settings.video_provider=seedance）时，用户偏好 aiport 则走本地。"""
-    aiport = "aiport-generator"
-    services = replace(
-        fake_services,
-        aiport_video_generator=aiport,
         provider_preferences=ProviderPreferences(
             video_provider="aiport",
             image_provider="seedream",
@@ -214,5 +177,23 @@ async def test_video_task_prefers_local_aiport_when_preference_says_so(fake_serv
 
     provider, generator = await _generator_for_task("run-1", _video_task(), services)
 
-    assert provider == "aiport"
-    assert generator == "aiport-generator"
+    assert (provider, generator) == ("seedance", seedance)
+
+
+async def test_aiport_remains_available_when_deployment_explicitly_selects_it(fake_services):
+    aiport = "aiport-generator"
+    services = replace(
+        fake_services,
+        settings=fake_services.settings.model_copy(update={"video_provider": "aiport"}),
+        aiport_video_generator=aiport,
+        seedance_video_generator="seedance-generator",
+        video_generator=aiport,
+        provider_preferences=ProviderPreferences(
+            video_provider="seedance",
+            image_provider="seedream",
+        ),
+    )
+
+    provider, generator = await _generator_for_task("run-1", _video_task(), services)
+
+    assert (provider, generator) == ("aiport", aiport)

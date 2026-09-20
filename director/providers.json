@@ -2,14 +2,14 @@
   "default_provider": "ark",
   "ark": {
     "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-    "model": "doubao-seedream-5-0-pro-260628",
+    "model": "ep-20260912121809-6wt62",
     "default_resolution": "2K",
     "default_aspect_ratio": "1:1",
     "default_count": 1
   },
   "deepseek": {
-    "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat"
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "model": "deepseek-v4-1-flash-260910"
   },
   "local": {
     "base_url": "http://UT-20210713KMWD.local:8801",

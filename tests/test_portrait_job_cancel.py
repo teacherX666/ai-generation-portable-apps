@@ -91,6 +91,27 @@ class JobCancelTests(unittest.TestCase):
         self.assertTrue(job["finished_at"])
         self.assertNotIn("X-Job-Id", h.sent_headers)
 
+    def test_cancel_deletes_provider_task(self):
+        calls = []
+        original = self.mod._ark_v3_call_once
+        self.mod._ark_v3_call_once = (
+            lambda method, path, body=None, timeout=120, api_key=None:
+            calls.append((method, path, body, timeout, api_key))
+        )
+        try:
+            with self.mod.JOBS_LOCK:
+                self.mod.JOBS["job-cloud"] = {
+                    "job_id": "job-cloud", "status": "running",
+                    "errors": [], "events": [],
+                    "provider_tasks": [{"task_id": "ark-task-1", "api_key": "sk-test"}],
+                }
+            h = self._cancel("job-cloud")
+        finally:
+            self.mod._ark_v3_call_once = original
+        self.assertEqual(h.status_code, 200)
+        self.assertEqual(calls[0][0], "DELETE")
+        self.assertEqual(calls[0][1], "/contents/generations/tasks/ark-task-1")
+        self.assertEqual(calls[0][4], "sk-test")
     def test_already_cancelled_is_idempotent(self):
         with self.mod.JOBS_LOCK:
             self.mod.JOBS["job2"] = {"job_id": "job2", "status": "cancelled",

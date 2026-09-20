@@ -50,12 +50,12 @@ set "PORTAL_URL=https://127.0.0.1:9090"
 set "PORTAL_FALLBACK=http://127.0.0.1:9089"
 echo Waiting for portal to start...
 for /l %%I in (1,1,60) do (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 '%PORTAL_URL%/api/platform/status'; if ($r.StatusCode -eq 200) { exit 0 } } catch { }" >nul 2>nul
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "& curl.exe -k -sS --fail --max-time 2 '%PORTAL_URL%/healthz' *> $null; if ($LASTEXITCODE -eq 0) { exit 0 }" >nul 2>nul
   if not errorlevel 1 (
     echo Portal ready.
     goto :opened
   )
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 '%PORTAL_FALLBACK%/api/platform/status'; if ($r.StatusCode -eq 200 -or $r.StatusCode -eq 301) { exit 0 } } catch { }" >nul 2>nul
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "& curl.exe -k -sS --fail --max-time 2 '%PORTAL_FALLBACK%/healthz' *> $null; if ($LASTEXITCODE -eq 0) { exit 0 }" >nul 2>nul
   if not errorlevel 1 (
     echo Portal ready ^(HTTP redirect port^).
     set "PORTAL_URL=%PORTAL_FALLBACK%"

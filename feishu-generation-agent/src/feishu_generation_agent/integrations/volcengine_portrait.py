@@ -15,6 +15,7 @@ from pydantic import SecretStr
 
 from feishu_generation_agent.domain.document import MediaAsset
 from feishu_generation_agent.domain.errors import AgentError, ErrorCategory, ErrorDetail
+from feishu_generation_agent.domain.video_models import VIDEO_MODEL_BY_KEY
 from feishu_generation_agent.integrations.public_media import (
     PublicMediaHost,
     PublicMediaUploadError,
@@ -369,16 +370,25 @@ class VolcenginePortraitVideoGenerator:
         self._model = model
         self._public_media_host = public_media_host
 
-    def for_run(self, run_id: str) -> SeedanceVideoGenerator:
+    def for_run(
+        self,
+        run_id: str,
+        *,
+        model_key: str | None = None,
+    ) -> SeedanceVideoGenerator:
         async def resolve_image(task: Any, reference: Any, asset: MediaAsset, content: bytes) -> str:
             del task, reference, content
             return await self._asset_client.ensure_image_asset(run_id, asset)
+
+        capability = VIDEO_MODEL_BY_KEY.get(model_key or "")
 
         return SeedanceVideoGenerator(
             self._http,
             base_url=self._base_url,
             api_key=self._api_key,
-            model=self._model,
+            model=capability.model if capability is not None else self._model,
+            capability=capability,
+            enforce_total_input_bytes=False,
             public_media_host=self._public_media_host,
             provider_name="volcengine_portrait",
             image_url_resolver=resolve_image,

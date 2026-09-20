@@ -111,7 +111,7 @@ def config_payload() -> dict[str, Any]:
     return {
         # 导演台默认走付费的火山方舟 Seedream；本地 AI Port 仅保留为
         # 兼容配置，不参与默认选择。
-        "model": ark.get("model", "doubao-seedream-5-0-pro-260628"),
+        "model": ark.get("model", "ep-20260912121809-6wt62"),
         "aspect_ratios": list(ASPECT_RATIOS),
         "resolutions": ["1K", "1.5K", "2K"],
         "default_resolution": ark.get("default_resolution", "2K"),
@@ -122,7 +122,7 @@ def config_payload() -> dict[str, Any]:
         "local_model": local.get("model_kind", "qwen2511"),
         "ark_ready": bool(_ark_key()),
         "deepseek_ready": bool(_load_deepseek_key() or SKILL_PATH.exists()),
-        "deepseek_model": deepseek.get("model", "deepseek-chat"),
+        "deepseek_model": deepseek.get("model", "deepseek-v4-1-flash-260910"),
     }
 
 
@@ -141,8 +141,8 @@ def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: Any,
     handler.wfile.write(data)
 
 
-DEEPSEEK_MODEL = PROVIDERS.get("deepseek", {}).get("model", "deepseek-chat")
-DEEPSEEK_BASE = PROVIDERS.get("deepseek", {}).get("base_url", "https://api.deepseek.com/v1")
+DEEPSEEK_MODEL = PROVIDERS.get("deepseek", {}).get("model", "deepseek-v4-1-flash-260910")
+DEEPSEEK_BASE = PROVIDERS.get("deepseek", {}).get("base_url", "https://ark.cn-beijing.volces.com/api/v3")
 
 # 导演台 v2 词库资产（来源见 tools/extract_director_assets.py 与各 JSON 的 source 字段）
 ASSETS_DIR = ROOT / "assets"
@@ -231,7 +231,7 @@ def _run_text2image(job_id: str, prompt: str, aspect_ratio: str,
     job = JOBS[job_id]
     ark = PROVIDERS.get("ark", {})
     base_url = str(ark.get("base_url") or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
-    model = str(ark.get("model") or "doubao-seedream-5-0-pro-260628")
+    model = str(ark.get("model") or "ep-20260912121809-6wt62")
     api_key = _ark_key()
     if not api_key:
         job["status"] = "failed"

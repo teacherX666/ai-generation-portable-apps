@@ -72,3 +72,11 @@ export function modelSupportsOperation(model: ModelSpec, operation: ModelOperati
 export function modelsForOperation(models: readonly ModelSpec[], operation: ModelOperation, inputMedia?: "text" | "image") {
     return models.filter((model) => modelSupportsOperation(model, operation) && (!inputMedia || model.input_media.includes(inputMedia)));
 }
+
+export function firstSelectableModel(models: readonly ModelSpec[]) {
+    return models.find((model) => !model.disabled);
+}
+
+export function modelOptionDisplayName(model: ModelSpec) {
+    return model.display_name + (model.disabled ? "（已失效）" : "");
+}

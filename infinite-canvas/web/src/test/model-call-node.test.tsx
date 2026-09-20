@@ -171,4 +171,20 @@ describe("ModelCallNode", () => {
         rerender(<ModelCallNode node={activeNode} models={[groupModel]} onChange={onChange} onRun={vi.fn()} />);
         expect(screen.getByLabelText("最多生成张数")).toHaveValue(4);
     });
+    it("greys disabled model options and falls back to the first enabled model", () => {
+        const disabled = { ...models[0], model_id: "disabled", display_name: "Disabled", disabled: true };
+        const onRun = vi.fn();
+        render(<ModelCallNode node={node} models={[disabled, models[0]]} onChange={vi.fn()} onRun={onRun} />);
+        expect(screen.getByRole("option", { name: "Disabled（已失效）" })).toBeDisabled();
+        expect(screen.getByLabelText("模型")).toHaveValue("image");
+        fireEvent.click(screen.getByRole("button", { name: "运行模型" }));
+        expect(onRun).toHaveBeenCalledTimes(1);
+    });
+
+    it("disables the run action when every model is disabled", () => {
+        const disabled = { ...models[0], disabled: true };
+        render(<ModelCallNode node={node} models={[disabled]} onChange={vi.fn()} onRun={vi.fn()} />);
+        expect(screen.getByLabelText("模型")).toHaveValue("");
+        expect(screen.getByRole("button", { name: "运行模型" })).toBeDisabled();
+    });
 });

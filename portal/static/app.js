@@ -3,7 +3,7 @@
 // === Utilities ===
 function workspaceId() {
   let id = localStorage.getItem('workspace_id');
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem('workspace_id', id); }
+  if (!id) { id = (window.crypto && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : ('ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)); localStorage.setItem('workspace_id', id); }
   return id;
 }
 
@@ -897,8 +897,15 @@ function DreaminaApp() {
     _dmBuildHistCard(item) {
       // 矩阵式历史卡片：缩略图 + 状态角标 + 类型/时间 + 一行提示词；点击放大预览
       const files = item.result?.files || [];
-      const thumb = files[0] ? '/dreamina/' + files[0].replace(/^\//, '') : '';
-      const isVid = thumb && /\.(mp4|mov|webm)$/i.test(thumb);
+      const fileUrl = (f) => '/dreamina/' + String(f).replace(/^\//, '');
+      const isVideoFile = (u) => /\.(mp4|mov|webm|m4v)$/i.test(u);
+      // 并发生成（一次多张）会有多条产出：格子最多画 4 张缩略图，多出来的
+      // 收进 +N 格子；放大预览里给编号条逐条切换（原来只看得到第一条）。
+      const MAX_THUMBS = 4;
+      const thumbs = files.length > MAX_THUMBS ? files.slice(0, MAX_THUMBS - 1) : files;
+      const overflow = files.length - thumbs.length;
+      const firstUrl = thumbs[0] ? fileUrl(thumbs[0]) : '';
+      const isVid = !!firstUrl && isVideoFile(firstUrl);
       const prompt = item.params?.prompt || '';
       const status = item.status || '';
       const timeText = (item.created_at || '').slice(5, 16);
@@ -910,42 +917,73 @@ function DreaminaApp() {
       tile.title = (prompt || [taskType, timeText].filter(Boolean).join(' · '));
 
       const media = document.createElement('div');
-      media.className = 'dm-tile-media';
-      // 产出文件可能已被 14 天清理策略删除：加载失败时换过期占位并禁用放大预览
+      media.className = 'dm-tile-media' + (thumbs.length > 1 ? ' dm-tile-media--multi' : '');
+      // 产出文件可能已被 14 天清理策略删除：该张换过期占位；全部过期才禁用放大预览
+      let liveThumbs = thumbs.length;
       const markExpired = (el) => {
-        el.remove();
-        tile.dataset.expired = '1';
+        liveThumbs -= 1;
+        if (liveThumbs <= 0) tile.dataset.expired = '1';
         const ph = document.createElement('span');
-        ph.className = 'dm-tile-placeholder';
-        ph.textContent = '🗑 已过期';
+        ph.className = 'dm-tile-thumb-gone';
+        ph.textContent = '🗑';
         ph.title = '产出文件已过期（保留 14 天后自动清理）';
-        media.insertBefore(ph, media.firstChild);
+        el.replaceWith(ph);
       };
-      if (thumb) {
-        if (isVid) {
-          const v = document.createElement('video');
-          v.src = thumb;
-          v.preload = 'metadata';
-          v.muted = true;
-          v.playsInline = true;
-          v.addEventListener('error', () => markExpired(v));
-          media.appendChild(v);
+      thumbs.forEach((f) => {
+        const url = fileUrl(f);
+        const vid = isVideoFile(url);
+        let el;
+        if (vid) {
+          el = document.createElement('video');
+          el.src = url;
+          el.preload = 'metadata';
+          el.muted = true;
+          el.playsInline = true;
         } else {
-          const img = document.createElement('img');
-          img.src = thumb;
-          img.loading = 'lazy';
-          img.alt = '结果预览';
-          img.addEventListener('error', () => markExpired(img));
-          media.appendChild(img);
+          el = document.createElement('img');
+          el.src = url;
+          el.loading = 'lazy';
+          el.alt = '结果预览';
         }
+        el.className = 'dm-tile-thumb';
+        el.addEventListener('error', () => markExpired(el));
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.openDmZoom(item, url, vid);
+        });
+        media.appendChild(el);
+      });
+      if (overflow > 0) {
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'dm-tile-thumb dm-tile-thumb--more';
+        more.textContent = '+' + overflow;
+        more.title = '还有 ' + overflow + ' 条产出，点开逐条查看';
+        more.addEventListener('click', (e) => { e.stopPropagation(); this.openDmZoom(item, firstUrl, isVid); });
+        media.appendChild(more);
+      }
+      if (thumbs.length) {
         const zoomHint = document.createElement('span');
         zoomHint.className = 'dm-tile-zoom';
         zoomHint.textContent = '⤢';
         media.appendChild(zoomHint);
+        if (thumbs.length > 1) {
+          const count = document.createElement('span');
+          count.className = 'dm-tile-count';
+          count.textContent = '×' + files.length;
+          count.title = '本次共 ' + files.length + ' 条产出';
+          media.appendChild(count);
+        }
       } else {
         const ph = document.createElement('span');
         ph.className = 'dm-tile-placeholder';
-        ph.textContent = status === 'failed' ? '❌' : '🎬';
+        if (status === 'cancelled' || status === 'canceled' || status === 'interrupted') {
+          ph.className = 'dm-tile-cancelled';
+          ph.innerHTML = '<span class="dm-cancel-stop"></span><span>' + (status === 'interrupted' ? '已中断' : '已取消') + '</span>';
+        } else {
+          ph.className = 'dm-tile-placeholder';
+          ph.textContent = status === 'failed' ? '❌' : '🎬';
+        }
         media.appendChild(ph);
       }
       const badge = document.createElement('span');
@@ -973,7 +1011,7 @@ function DreaminaApp() {
           if (typeof window.portalToast === 'function') window.portalToast('产出文件已过期（保留 14 天后自动清理）', 'info');
           return;
         }
-        this.openDmZoom(item, thumb, isVid);
+        this.openDmZoom(item, firstUrl, isVid);
       });
       return tile;
     },
@@ -1004,6 +1042,28 @@ function DreaminaApp() {
       const box = document.getElementById('dm-zoom-actions');
       if (box) {
         box.innerHTML = '';
+        // 多条产出：编号条逐条切换放大预览的内容（原来只能看第一条）
+        if (files.length > 1) {
+          const strip = document.createElement('div');
+          strip.className = 'preview-strip';
+          strip.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;flex-basis:100%;margin-bottom:4px';
+          files.forEach((f, i) => {
+            const u = '/dreamina/' + f.replace(/^\//, '');
+            const vid = /\.(mp4|mov|webm|m4v)$/i.test(u);
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'preview-strip-item' + (this.dmZoom.url === u ? ' is-active' : '');
+            b.textContent = String(i + 1);
+            b.title = f.split('/').pop();
+            b.addEventListener('click', () => {
+              this.dmZoom.url = u;
+              this.dmZoom.isVideo = vid;
+              this._dmZoomBuildActions(item);
+            });
+            strip.appendChild(b);
+          });
+          box.appendChild(strip);
+        }
         // 下载（_blobDownload：自签证书安全路径）
         for (const f of files) {
           const u = '/dreamina/' + f.replace(/^\//, '');
@@ -1503,6 +1563,7 @@ function StatsApp() {
     // consult this first, fall back to hardcoded golden set if fetch failed.
     appsMeta: {},
     recentActivity: [],
+    localGateway: null,
     isAdmin: false,
     users: [],
     newUser: { username: '', password: '', role: 'user' },
@@ -1640,6 +1701,7 @@ function StatsApp() {
     async loadPlatformStatus() {
       const res = await api('/api/platform/status');
       if (!res?.ok) return;
+      this.localGateway = res.local_gateway || null;
       const lan = document.getElementById('lanInfo');
       const lanUrl = `${location.protocol}//${res.lan_ip}:${res.portal_port}/`;
       lan.textContent = `LAN: ${location.protocol}//${res.lan_ip}:${res.portal_port} 📋`;
@@ -1657,6 +1719,11 @@ function StatsApp() {
         });
       }
       document.getElementById('barStats').textContent = `今日: ${this.todayJobs} jobs`;
+    },
+
+    localModuleSummary() {
+      const modules = (this.localGateway && this.localGateway.modules) || [];
+      return modules.map((item) => item.label || item.id).filter(Boolean).join('、') || '未识别';
     },
 
     async loadStats() {
@@ -2115,6 +2182,7 @@ function VolcenginePortraitApp() {
     statusText: '空闲',
     modelCaps: null,
     modelHint: '',
+    modelSummary: '',
     appPath,  // exposed to petite-vue templates (used in index.html for download urls)
     // 本地 AI Port 检测（PR #11）：/api/config 返回 local_ready/local_models
     localReady: false,
@@ -2129,7 +2197,7 @@ function VolcenginePortraitApp() {
     assets: [],
     assetName: '',
     genAssetId: '', extraAssetIds: [], extraFiles: [],
-    prompt: '', model: 'doubao-seedance-2-0-260128', duration: 12, resolution: '720p', ratio: '16:9', repeat: 1,
+    prompt: '', model: 'ep-20260912121738-vtd78', duration: 12, resolution: '720p', ratio: '16:9', repeat: 1,
     // Task-type switch — see seedance/static/app.js for the rationale.
     // Ark 2.5 auto-classifies as reference / extend / edit from the prompt;
     // this makes the classification explicit so the user can't accidentally
@@ -2154,7 +2222,7 @@ function VolcenginePortraitApp() {
         maxDuration: 15, duration_range: [4, 15], resolutions: ['480p', '720p'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
-        id: 'doubao-seedance-2-0-mini-260615', label: 'Seedance 2.0 mini（最快）',
+        id: 'ep-20260912121738-vtd78', label: 'Seedance 2.0 mini（最快）',
         maxDuration: 15, duration_range: [4, 15], resolutions: ['480p', '720p'], ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
       },
       {
@@ -2313,6 +2381,8 @@ function VolcenginePortraitApp() {
         });
         if (Array.isArray(d.extraAssetIds)) this.extraAssetIds = d.extraAssetIds;
         if (this.genAssetId) this.syncFig1Asset();
+        this.ensureAvailablePortraitModel();
+        this.onModelChange();
       } catch (e) { /* 草稿恢复尽力而为 */ }
     },
     saveDraft() {
@@ -2332,7 +2402,7 @@ function VolcenginePortraitApp() {
       this.genAssetId = '';
       this.extraAssetIds = [];
       this.extraFiles = [];
-      this.model = 'doubao-seedance-2-0-260128';
+      this.model = 'ep-20260912121738-vtd78';
       this.duration = 12;
       this.resolution = '720p';
       this.ratio = '16:9';
@@ -2598,6 +2668,8 @@ function VolcenginePortraitApp() {
         this.outputDirInput = this.outputDir;
         this.localReady = res.local_ready === true;
         this.applyLocalModels(res.local_models || []);
+        this.ensureAvailablePortraitModel();
+        this.onModelChange();
       }
     },
 
@@ -2690,6 +2762,23 @@ function VolcenginePortraitApp() {
     modelSpec() {
       return this.portraitModels.find(m => m.id === this.model) || this.portraitModels[0];
     },
+    ensureAvailablePortraitModel() {
+      const current = this.portraitModels.find(m => m.id === this.model);
+      const currentUnavailable = current
+        && (current.disabled || (this.isLocalModel(current.id) && !this.localReady));
+      if (!currentUnavailable) return false;
+      const fallback = this.portraitModels.find(m =>
+        !m.disabled && (!this.isLocalModel(m.id) || this.localReady)
+      );
+      if (!fallback) {
+        this.modelHint = '当前没有可用模型，请联系管理员处理。';
+        return false;
+      }
+      this.model = fallback.id;
+      this.modelHint = (current.disabled ? '所选模型已失效' : '本地模型未连接')
+        + '，已自动切换到 ' + fallback.label + '。';
+      return true;
+    },
     modelCapabilities() {
       return (window.ModelCapabilities && window.ModelCapabilities.capabilitiesFor)
         ? window.ModelCapabilities.capabilitiesFor({ __vp: { models: this.portraitModels } }, '__vp', this.model)
@@ -2715,8 +2804,18 @@ function VolcenginePortraitApp() {
     // Called from index.html on model change so a stale resolution or an
     // out-of-range duration is corrected before the user can submit.
     onModelChange() {
+      if (this.ensureAvailablePortraitModel()) return;
       const caps = this.modelCapabilities();
       this.modelCaps = caps;
+      const spec = this.modelSpec();
+      const providerLabel = this.isLocalModel(this.model) ? '本地 AI Port（免费）' : '火山方舟';
+      const summary = [providerLabel];
+      const support = [];
+      if (caps && caps.duration) support.push('时长 ' + Number(caps.duration.min) + '-' + Number(caps.duration.max) + ' 秒');
+      if (caps && Array.isArray(caps.resolution) && caps.resolution.length) support.push('分辨率 ' + caps.resolution.join(' / '));
+      if (caps && Array.isArray(caps.ratio) && caps.ratio.length) support.push('比例 ' + caps.ratio.join(' / '));
+      if (this.isLocalModel(this.model)) support.push('本地免费');
+      this.modelSummary = summary.concat(support).join(' · ') + '。';
       const hints = [];
       if (!caps) { this.modelHint = ''; return; }
       if (Array.isArray(caps.resolution) && caps.resolution.length && !caps.resolution.includes(this.resolution)) {
@@ -2770,6 +2869,10 @@ function VolcenginePortraitApp() {
     async createJob() {
       if (!this.genAssetId) { this.statusText = '请选择资产 ID（图1）'; return; }
       if (!this.prompt) { this.statusText = '请输入 Prompt'; return; }
+      if (this.ensureAvailablePortraitModel()) {
+        this.statusText = this.modelHint || '所选模型已失效，请选择其他模型后重新提交';
+        return;
+      }
       const vpCaps = this.modelCapabilities();
       if (vpCaps) {
         const vpProblems = [];
@@ -2788,7 +2891,7 @@ function VolcenginePortraitApp() {
       // 本地模型未连接时兜底：即使草稿/历史残留 local-* 模型，也切回云端再拦
       // 截，避免把本地模型请求发到不可达的 AI Port。
       if (this.isLocalModel(this.model) && !this.localReady) {
-        this.model = 'doubao-seedance-2-0-260128';
+        this.model = 'ep-20260912121738-vtd78';
         this.statusText = '本地模型未连接，已切回云端模型，请确认后重新提交';
         return;
       }
@@ -2877,8 +2980,8 @@ function VolcenginePortraitApp() {
     },
 
     // 取消任务（对齐画布上游 c701c97/2bb7466 的交互与兜底文案）
-    async cancelJob() {
-      const jobId = this.selectedVpJobId;
+    async cancelJob(jobId) {
+      jobId = jobId || this.selectedVpJobId;
       if (!jobId) return;
       const j = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
       if (j && String(j.status || '').toLowerCase() === 'running') {
@@ -2887,6 +2990,13 @@ function VolcenginePortraitApp() {
       const res = await vpApi.call(this, `${appPath}/api/virtual/jobs/${jobId}/cancel`, 'POST');
       if (res?.ok) {
         this.statusText = '任务已取消，输入和参数已保留。';
+        const current = (this.jobs || []).find(x => (x.job_id || x.id) === jobId);
+        if (current) {
+          current.status = 'cancelled';
+          current.finished_at = Date.now() / 1000;
+          if (!Array.isArray(current.errors) || !current.errors.length) current.errors = ['任务已取消。'];
+        }
+        this._syncVpHistory();
         if (typeof window.portalToast === 'function') window.portalToast('任务已取消', 'success');
         this.loadJobs();
       } else if (res && res.error) {
@@ -2992,6 +3102,7 @@ function VolcenginePortraitApp() {
           prompt: j.prompt || '',
           created_at: j.created_at || '',
           retryable: !!j.retryable,
+          cancellable: this.isVpCancellable(j),
           isLive: true,
           first: first ? { url: first.download_url, filename: first.filename || 'video', isVideo: true } : null,
         });
@@ -3006,6 +3117,7 @@ function VolcenginePortraitApp() {
           prompt: a.title || '',
           created_at: a.created_at || '',
           retryable: false,
+          cancellable: false,
           isLive: false,
           first: url ? { url: url, filename: a.first_filename || 'video', isVideo: true } : null,
         });
@@ -3049,9 +3161,10 @@ function VolcenginePortraitApp() {
         if (r && !r.error) live = r;
       } catch (e) { /* 内存任务已剪枝 → 只展示活动记录 */ }
       try {
-        const r = this.vpJobDetail && this.vpJobDetail.activity_id
-          ? await vpApi.call(this, `${appPath}/api/activity/${encodeURIComponent(this.vpJobDetail.activity_id)}`)
-          : null;
+        const knownActivityId = this.vpJobDetail && this.vpJobDetail.activity_id;
+        const r = knownActivityId
+          ? await vpApi.call(this, `${appPath}/api/activity/${encodeURIComponent(knownActivityId)}`)
+          : await vpApi.call(this, `${appPath}/api/activity/by-job/${encodeURIComponent(jobId)}`);
         if (r && !r.error) rec = r;
       } catch (e) { /* 活动记录缺失时只展示 live */ }
       if (!this.vpJobDetail || !this.vpJobDetailOpen || requestToken !== this._vpJobDetailRequest) return;
@@ -3180,17 +3293,22 @@ function HistoryApp() {
       if (!this._historyTabListenerBound) {
         this._historyTabListenerBound = true;
         document.addEventListener('portal:tabchange', (event) => {
-          if (event.detail && event.detail.tab === 'history') this.reload();
+          if (event.detail && event.detail.tab === 'history') this.refresh();
         });
-        this._historyAutoRefreshTimer = window.setInterval(() => {
+        document.addEventListener('portal:historyupdated', () => {
           const active = document.querySelector('.app-tab.active');
-          if (active && active.dataset.tab === 'history' && !document.hidden) this.reload();
-        }, 15000);
+          if (!active || active.dataset.tab !== 'history' || document.hidden) return;
+          clearTimeout(this._historyEventRefreshTimer);
+          this._historyEventRefreshTimer = window.setTimeout(() => this.refresh(), 200);
+        });
       }
       this.reload();
     },
     async reload() {
       this.page = 1;
+      await this._fetch();
+    },
+    async refresh() {
       await this._fetch();
     },
     async goPage(p) {
@@ -3220,7 +3338,10 @@ function HistoryApp() {
         this.total = res.total || 0;
       }
       if (this.page > this.totalPages) { this.page = this.totalPages; return this._fetch(); }
-      this.detail = null;
+      if (this.detail) {
+        const activeKey = this.favKey(this.detail);
+        this.detail = all.find((item) => this.favKey(item) === activeKey) || null;
+      }
     },
     favKey(it) { return (it && it.app) + ":" + (it && it.job_id); },
     isFav(it) { return !!this.favorites[this.favKey(it)]; },
@@ -3237,6 +3358,24 @@ function HistoryApp() {
       try { localStorage.setItem('portal_history_downloads', JSON.stringify(this.downloaded)); } catch (e) {}
     },
     openDetail(it) { this.detail = it; this.detailTab = "req"; },
+    historyTime(it) {
+      if (!it) return 0;
+      const value = it.submitted_at || it.created_at || it.completed_at || 0;
+      if (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim())) return Number(value);
+      return value;
+    },
+    historyTitle(it) {
+      if (!it) return "";
+      const prompt = String(it.prompt || "").trim();
+      if (prompt) return prompt;
+      const title = String(it.title || "").trim();
+      if (title) return title;
+      const label = it.display_name || ({ seedance: "视频生成", "nano-banana": "图片生成", dreamina: "即梦创作", "volcengine-portrait": "人像视频", "feishu-generation-agent": "飞书任务" }[it.app] || it.app || "生成任务");
+      const model = String(it.model || "").trim();
+      if (model) return label + " · " + model;
+      const jobId = String(it.job_id || "").trim();
+      return jobId ? label + " · " + jobId.slice(0, 8) : label;
+    },
     // ?????????????????????? URL
     thumbFor(it) {
       if (!it || !it.thumb_url) return "";
@@ -3282,7 +3421,7 @@ function HistoryApp() {
     async reuseParams(it) {
       if (!it) return;
       const params = it.params || {};
-      const prompt = it.prompt || params.prompt || '';
+      const prompt = it.prompt || params.prompt || it.title || '';
       const targetMap = {
         'seedance': 'seedance',
         'nano-banana': 'nb',

@@ -13,8 +13,8 @@ $ChildErrLog = Join-Path $StateDir "portal.err.log"
 $ChildPidFile = Join-Path $StateDir "portal-watchdog.child.pid"
 $StopFile = Join-Path $StateDir "portal-watchdog.stop"
 $HealthUrls = @(
-    "https://127.0.0.1:9090/api/platform/status",
-    "http://127.0.0.1:9090/api/platform/status"
+    "https://127.0.0.1:9090/healthz",
+    "http://127.0.0.1:9090/healthz"
 )
 $HealthIntervalSeconds = 10
 $HealthFailuresToRestart = 3
@@ -74,7 +74,7 @@ function Find-PortalPython {
 
 function Test-PortalHealth {
     foreach ($url in $HealthUrls) {
-        $output = & cmd.exe /d /c "curl.exe -k -sS --max-time 5 `"$url`" 2>nul"
+        $output = & cmd.exe /d /c "curl.exe -k -sS --fail --max-time 5 `"$url`" 2>nul"
         if ($LASTEXITCODE -eq 0) {
             return $true
         }

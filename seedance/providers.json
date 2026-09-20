@@ -22,7 +22,7 @@
       "models": [
         {
           "id": "minimax_h3_all_reference",
-          "label": "MiniMax H3 全能参考视频（免费）",
+          "label": "MiniMax H3 / 海螺 H3 全能参考视频（免费）",
           "duration_range": [
             4,
             12
@@ -47,7 +47,7 @@
       "api_style": "ark_seedance",
       "hint": "豆包官方火山方舟 API。本地图/视频/音频参考素材会先上传到公司 TOS bucket，再以预签名 URL 传给方舟。",
       "defaults": {
-        "model": "doubao-seedance-2-0-260128",
+        "model": "ep-20260912121738-vtd78",
         "duration": 12,
         "resolution": "720p",
         "ratio": "16:9",
@@ -103,8 +103,9 @@
           ]
         },
         {
-          "id": "doubao-seedance-2-0-mini-260615",
+          "id": "ep-20260912121738-vtd78",
           "label": "Seedance 2.0 mini（最快）",
+          "disabled": false,
           "duration_range": [
             4,
             15

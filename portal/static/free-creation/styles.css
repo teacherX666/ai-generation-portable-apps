@@ -183,6 +183,14 @@ svg { width: 1.15em; height: 1.15em; fill: none; stroke: currentColor; stroke-wi
 .fc-preview-media { display: grid; place-items: center; width: 100%; height: 100%; min-height: 300px; padding: 18px; }
 .fc-preview-media img, .fc-preview-media video { display: block; max-width: 100%; max-height: min(68vh, 780px); border-radius: 16px; box-shadow: 0 18px 50px rgba(0,0,0,.42); object-fit: contain; }
 .fc-preview-media img { cursor: zoom-in; }
+/* 智能抠图一次出多张：网格里每张单独可下载。棋盘底衬出 PNG 的透明背景，
+   网格自身可滚动，避免结果一多就把预览区撑破。 */
+.fc-result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); align-content: start; gap: 12px; width: 100%; max-height: min(68vh, 780px); padding: 4px; overflow: auto; scrollbar-width: thin; }
+.fc-result-cell { display: grid; place-items: center; overflow: hidden; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 14px; background: repeating-conic-gradient(#1b1c25 0% 25%, #23242f 0% 50%) 50% / 18px 18px; transition: transform .2s ease, border-color .2s ease; }
+.fc-result-cell:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.fc-result-cell img { max-width: 100%; max-height: 100%; border-radius: 0; box-shadow: none; object-fit: contain; }
+/* 参数面板里的说明文字（例如「本地超分很慢」） */
+.fc-param-hint { margin: 10px 2px 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .fc-preview-corner { position: absolute; right: 15px; bottom: 15px; }
 .fc-history-pill { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 11px; border: 1px solid rgba(255,255,255,.13); border-radius: 12px; color: var(--muted-strong); background: rgba(8,9,13,.72); backdrop-filter: blur(18px); cursor: pointer; font-size: 10px; transition: color .2s ease, border-color .2s ease, transform .2s ease; }
 .fc-history-pill:hover { color: white; border-color: rgba(255,255,255,.28); transform: translateY(-1px); }

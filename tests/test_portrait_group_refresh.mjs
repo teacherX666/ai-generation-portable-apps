@@ -73,6 +73,15 @@ vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync('portal/static/app.js', 'utf8'), sandbox);
 
 const app = mounted.VolcenginePortraitApp();
+const mini = app.portraitModels.find(m => m.id === 'doubao-seedance-2-0-mini-260615');
+assert.equal(mini.disabled, true, 'Seedance 2.0 mini must be disabled in the Portal selector');
+app.model = mini.id;
+assert.equal(app.ensureAvailablePortraitModel(), true, 'stale disabled model selection must trigger fallback');
+assert.equal(app.model, 'doubao-seedance-2-0-260128', 'Portal fallback must choose the first enabled model');
+assert.match(app.modelHint, /已失效/, 'Portal fallback must explain why the model changed');
+const portalHtml = fs.readFileSync('portal/static/index.html', 'utf8');
+assert.match(portalHtml, /!!m\.disabled/, 'Portal must grey out disabled models');
+assert.match(portalHtml, /已失效/, 'Portal disabled-model label must explain its state');
 app.groupName = '新建组';
 await app.createGroup();
 

@@ -58,6 +58,7 @@ class FakeNode {
     return matches;
   }
   setAttribute() {}
+  removeAttribute() {}
   scrollIntoView() {}
 }
 

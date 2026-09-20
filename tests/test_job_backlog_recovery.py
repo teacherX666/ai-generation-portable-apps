@@ -108,12 +108,16 @@ def test_retry_job_rebuilds_and_resubmits(tmp_path, monkeypatch):
     mod.write_activity_log(items)
 
     calls = {}
+    # 2026-09-15：retry_job 先预留 job_id 再入库（避免「已入库、线程未起」的僵尸），
+    # 因此 create_job 现在还会收到 job_id / prepared_restore / activity_patch。
     monkeypatch.setattr(mod, "create_job",
-                        lambda values, files, source, request_kind, request_data, ws_id, username:
+                        lambda values, files, source, request_kind, request_data, ws_id, username, **kw:
                         calls.update({"values": values, "source": source, "kind": request_kind,
-                                      "ws": ws_id, "user": username, "files": files}) or "new-id-1")
+                                      "ws": ws_id, "user": username, "files": files,
+                                      "job_id": kw.get("job_id"),
+                                      "prepared_restore": kw.get("prepared_restore")}) or kw.get("job_id"))
     new_id = mod.retry_job("job-old")
-    assert new_id == "new-id-1"
+    assert new_id and new_id == calls["job_id"]
     assert calls["values"]["prompt"] == "retry me"
     assert calls["values"]["ratio"] == "16:9"
     assert calls["source"] == "retry"
