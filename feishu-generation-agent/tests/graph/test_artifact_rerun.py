@@ -88,7 +88,11 @@ async def test_artifact_review_reruns_only_selected_task(
     rerun_review = rerun["__interrupt__"][0].value
     assert rerun_review["status"] == "waiting_review"
     assert services.video_generator.submit_calls == submits_before + 1
-    assert "动作再慢一点" in rerun["approved_tasks"][0]["prompt"]
+    # 融合不可用 → 正文保持原样；要求仍被记进 rework_requirements（2026-09-18）。
+    assert any(
+        "动作再慢一点" in item
+        for item in rerun["approved_tasks"][0]["rework_requirements"]
+    )
 
 
 async def test_second_rework_keeps_first_requirement(
@@ -153,8 +157,9 @@ async def test_second_rework_keeps_first_requirement(
 
     state = graph.get_state(config).values
     task = state["approved_plan"]["tasks"][0]
-    assert "手不要僵" in task["prompt"]
-    assert "背景太暗" in task["prompt"]
+    # 融合不可用时正文保持原样（2026-09-18「不要越叠越多，就地在正文里改」），
+    # 但要求**逐轮累积、一条都不会丢**。
+    assert "【返工要求】" not in task["prompt"]
     assert task["rework_requirements"] == ["手不要僵", "背景太暗"]
     assert task["rework_base_prompt"] == plan["tasks"][0]["prompt"]
     # 「改前原文」是**上一版**（第一次返工后的提示词），不是最初那一版：
@@ -279,14 +284,16 @@ async def test_rework_falls_back_when_fusion_raises(
 
     task = await _rework_once(graph, config, task_id)
 
-    assert "【返工要求】手不要僵" in task["prompt"]
+    # 2026-09-18 用户要求「不要越叠越多」：融合失败时**保持正文原样**，
+    # 不再把要求拼到末尾。要求仍累积在 rework_requirements 里。
+    assert "【返工要求】" not in task["prompt"]
     assert task["rework_requirements"] == ["手不要僵"]
 
 
 async def test_rework_falls_back_when_fusion_adds_reference_token(
     fake_services: GraphServices,
 ) -> None:
-    """融合结果擅自新增素材令牌 → 判为不合约，回退安全拼接。"""
+    """融合结果擅自新增素材令牌 → 判为不合约，正文保持原样。"""
     services = _fusing_services(
         fake_services,
         lambda base, requirements: f"{base} @图片9",
@@ -297,7 +304,8 @@ async def test_rework_falls_back_when_fusion_adds_reference_token(
 
     task = await _rework_once(graph, config, task_id)
 
-    assert "【返工要求】手不要僵" in task["prompt"]
+    assert "@图片9" not in task["prompt"]
+    assert "【返工要求】" not in task["prompt"]
 
 
 async def test_rework_keeps_requirements_in_body_not_in_constraints(

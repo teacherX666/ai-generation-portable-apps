@@ -326,6 +326,16 @@ def _is_rate_limited(exc: BaseException) -> bool:
     return any(marker in text for marker in _RATE_LIMIT_MARKERS)
 
 
+#: 镜头编号（用来卡"不许改结构"）。
+_SHOT_MARKER = re.compile(r"镜头\s*\d+")
+
+#: 只匹配**汇总段**的抬头 —— 用户在意的就是这种"结尾又多一坨"。
+#:
+#: 刻意不含泛化的「约束」（原文里本来就有「风格与约束：…」），也不含「返工要求」
+#: （那句由 REWORK_MARKER 单独拦，正常融合文本里出现这个词不该误伤）。
+_SUMMARY_BLOCK = re.compile(r"(补充约束|新增约束|必须避免|其他要求|补充说明)")
+
+
 def fusion_rejection_reason(
     fused: str | None,
     *,
@@ -359,6 +369,17 @@ def fusion_rejection_reason(
     added = fused_tokens - base_tokens
     if added:
         return "融合结果多出素材引用：" + "、".join(sorted(added))
+    # 结构校验：用户 2026-09-18 反复要求「不要越叠越多，就地在正文里改」。
+    # 只靠提示词约束模型不够（实测照旧追加），这里硬卡两条。
+    base_shots = _SHOT_MARKER.findall(base_prompt or "")
+    fused_shots = _SHOT_MARKER.findall(text)
+    if base_shots and fused_shots != base_shots:
+        return (
+            "融合结果改动了镜头结构（原文 "
+            f"{len(base_shots)} 个镜头，结果 {len(fused_shots)} 个）"
+        )
+    if _SUMMARY_BLOCK.search(text) and not _SUMMARY_BLOCK.search(base_prompt or ""):
+        return "融合结果在结尾新增了汇总段（要求必须就地并进原句）"
     return None
 
 
@@ -552,9 +573,9 @@ async def build_rework_prompt(
                 fused, base_prompt=base_prompt, max_chars=max_chars
             )
             if reason is None:
-                fused = _ensure_requirements_in_body(
-                    fused, must_avoid, max_chars=max_chars
-                )
+                # 刻意**不再**把 must_avoid 补进正文：用户 2026-09-18 明确要求
+                # 「不要越叠越多」，补写只能追加到末尾，正是他要避免的形态。
+                # 要求本身仍在 rework_requirements 里累积，下一轮还会带上。
                 return fused, False, must_avoid
             _LOGGER.warning(
                 "返工提示词融合结果不合契约（第 %d/%d 次尝试）：%s",
@@ -574,39 +595,17 @@ def build_fallback_prompt(
     *,
     max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
 ) -> tuple[str, bool]:
-    """安全兜底：把**全部**要求拼在提示词后，永远不超长、永远不抛错。
+    """融合不可用时的兜底：**保持正文原样**，不再把要求拼到末尾。
 
-    返回 `(prompt, truncated)`。空间不足时优先保要求、牺牲原始画面描述；
-    连要求都放不下时从**最旧**的条目开始丢，最新的返工诉求优先保住。
+    用户 2026-09-18（多次）：「不要越叠越多，就地在正文里改」。以前这里会把要求原样
+    拼在正文末尾（带【返工要求】标记），每返工一次就多一坨 —— 正是用户最反感的那种，
+    而且"结尾一坨"这个形态本身就说明融合没生效。
+
+    现在宁可不改：要求仍然累积在 `rework_requirements` 里，下一轮融合照样带上；
+    界面上会显示「本次返工没有改变提示词正文」，用户能看出这次没生效。
+
+    `requirements` 保留参数只为兼容旧调用点（不再使用）。
     """
+    del requirements
     base = base_prompt or ""
-    entries = [
-        item.strip()
-        for item in requirements
-        if isinstance(item, str) and item.strip()
-    ]
-    if not entries:
-        return _clip(base, max_chars), len(base) > max_chars
-
-    truncated = False
-    kept = list(entries)
-    while kept:
-        block = REWORK_MARKER + "\n".join(kept)
-        if len(block) + 1 <= max_chars:
-            break
-        if len(kept) == 1:
-            room = max(0, max_chars - 1 - len(REWORK_MARKER))
-            kept = [kept[0][:room]]
-            truncated = True
-            break
-        kept.pop(0)
-        truncated = True
-
-    block = REWORK_MARKER + "\n".join(kept)
-    base_room = max_chars - 1 - len(block)
-    if base_room <= 0:
-        return _clip(block, max_chars), True
-    clipped_base = base[:base_room].rstrip()
-    if len(clipped_base) != len(base):
-        truncated = True
-    return _clip(f"{clipped_base}\n{block}", max_chars), truncated
+    return _clip(base, max_chars), len(base) > max_chars

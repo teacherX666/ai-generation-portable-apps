@@ -207,51 +207,35 @@ def test_split_legacy_requirements_without_marker_is_identity() -> None:
     assert requirements == []
 
 
-# --- 兜底拼接：必须包含全部要求，且永不超长、永不抛错 ---
+# --- 兜底：融合不可用时**保持正文原样**（不再拼接要求，永不超长、永不抛错） ---
 
 
-def test_fallback_prompt_keeps_every_requirement() -> None:
+def test_fallback_prompt_keeps_base_unchanged() -> None:
+    """用户 2026-09-18：「不要越叠越多，就地在正文里改」。
+
+    以前兜底会把要求拼到末尾（带【返工要求】标记），每返工一次就多一坨。现在
+    宁可不改 —— 要求仍在 requirements 里累积，下一轮融合照样带上。
+    """
     prompt, truncated = build_fallback_prompt("原始画面", ["手不要僵", "背景太暗"])
-    assert "手不要僵" in prompt
-    assert "背景太暗" in prompt
+
+    assert prompt == "原始画面"
     assert truncated is False
+    assert "【返工要求】" not in prompt
 
 
-def test_fallback_prompt_single_requirement_matches_legacy_format() -> None:
-    prompt, _ = build_fallback_prompt("画面描述", ["动作再慢一点"])
-    assert prompt == "画面描述\n【返工要求】动作再慢一点"
-
-
-def test_fallback_prompt_truncates_base_instead_of_raising() -> None:
-    base = "画" * SEEDANCE_PROMPT_MAX_CHARS
-    prompt, truncated = build_fallback_prompt(base, ["背景太暗"])
-    assert len(prompt) <= SEEDANCE_PROMPT_MAX_CHARS
-    assert "背景太暗" in prompt
-    assert truncated is True
-
-
-def test_fallback_prompt_keeps_newest_when_requirements_alone_overflow() -> None:
-    prompt, truncated = build_fallback_prompt(
-        "原始画面",
-        ["旧" * 1200, "中" * 1200, "新" * 1200],
-    )
-    assert len(prompt) <= SEEDANCE_PROMPT_MAX_CHARS
-    assert truncated is True
-    assert "新" in prompt
-    assert "旧" not in prompt
-
-
-def test_fallback_prompt_never_exceeds_limit_for_single_huge_requirement() -> None:
-    prompt, truncated = build_fallback_prompt("原始画面", ["要" * 5000])
-    assert len(prompt) <= SEEDANCE_PROMPT_MAX_CHARS
-    assert truncated is True
-
-
-def test_fallback_prompt_without_requirements_clips_base() -> None:
+def test_fallback_prompt_clips_overlong_base_instead_of_raising() -> None:
     base = "画" * (SEEDANCE_PROMPT_MAX_CHARS + 50)
-    prompt, truncated = build_fallback_prompt(base, [])
+    prompt, truncated = build_fallback_prompt(base, ["背景太暗"])
+
     assert len(prompt) <= SEEDANCE_PROMPT_MAX_CHARS
     assert truncated is True
+
+
+def test_fallback_prompt_without_requirements_keeps_short_base() -> None:
+    prompt, truncated = build_fallback_prompt("原始画面", [])
+
+    assert prompt == "原始画面"
+    assert truncated is False
 
 
 # --- 融合结果验收：不合契约就回退，绝不让坏结果进生产 ---
@@ -371,7 +355,9 @@ async def test_build_rework_prompt_falls_back_when_fuser_raises() -> None:
         "原始画面", ["手不要僵"], fuse=fuse
     )
 
-    assert prompt == f"原始画面\n{REWORK_MARKER}手不要僵"
+    # 融合不可用时**保持正文原样**：不再把要求拼到末尾（用户 2026-09-18：
+    # 「不要越叠越多，就地在正文里改」）。要求仍在 requirements 里累积。
+    assert prompt == "原始画面"
     assert must_avoid == []
 
 
@@ -379,7 +365,9 @@ async def test_build_rework_prompt_falls_back_without_fuser() -> None:
     prompt, _truncated, must_avoid = await build_rework_prompt(
         "原始画面", ["手不要僵"]
     )
-    assert prompt == f"原始画面\n{REWORK_MARKER}手不要僵"
+    # 融合不可用时**保持正文原样**：不再把要求拼到末尾（用户 2026-09-18：
+    # 「不要越叠越多，就地在正文里改」）。要求仍在 requirements 里累积。
+    assert prompt == "原始画面"
     assert must_avoid == []
 
 
@@ -391,18 +379,18 @@ async def test_build_rework_prompt_rejects_fusion_that_drops_tokens() -> None:
         "@图片1 中的猫在跑", ["手不要僵"], fuse=fuse
     )
 
-    assert prompt == f"@图片1 中的猫在跑\n{REWORK_MARKER}手不要僵"
+    # 同上：兜底不再拼接，正文原样。
+    assert prompt == "@图片1 中的猫在跑"
 
 
 # --- 双通道：融合时顺带产出「必须避免」清单，写进 negative_constraints ---
 
 
-async def test_build_rework_prompt_writes_must_avoid_into_the_body() -> None:
-    """只出现在「必须避免」里的要求必须补进正文。
+async def test_build_rework_prompt_does_not_append_must_avoid_to_body() -> None:
+    """must_avoid **不**再补进正文。
 
-    用户 2026-09-18：「为什么我返工要求这么多他却不改一点提示词」—— 融合把否定式要求
-    全放进 must_avoid、正文一个字不改；而调用方已不再把 must_avoid 并进负向约束，
-    不补进正文就等于这些要求彻底丢了。
+    用户 2026-09-18 明确要求「不要越叠越多，就地在正文里改」：补写只能追加到末尾，
+    正是他要避免的形态。要求本身仍累积在 rework_requirements 里，下一轮融合还会带上。
     """
     async def fuse(original_prompt: str, requirements: list[str]) -> dict:
         return {
@@ -414,9 +402,7 @@ async def test_build_rework_prompt_writes_must_avoid_into_the_body() -> None:
         "原始画面", ["不要让红衣服老头跑出去"], fuse=fuse
     )
 
-    assert prompt.startswith("原始画面（已融合）")
-    assert "红衣服老头不得跑出起跑线" in prompt
-    assert "眼睛不得发光" in prompt
+    assert prompt == "原始画面（已融合）"  # 原样采用融合结果，不追加
     assert truncated is False
     assert must_avoid == ["红衣服老头不得跑出起跑线", "眼睛不得发光"]
 
@@ -560,7 +546,8 @@ async def test_build_rework_prompt_falls_back_on_non_rate_limit_error() -> None:
     )
 
     assert len(calls) == 1
-    assert "手不要僵" in prompt  # 安全拼接把要求带上了
+    # 兜底不再拼接：正文原样（要求仍在 requirements 里，下一轮还会带上）
+    assert prompt == "原始画面"
 
 
 async def test_build_rework_prompt_retries_rejected_fusion_until_accepted() -> None:
@@ -584,8 +571,7 @@ async def test_build_rework_prompt_retries_rejected_fusion_until_accepted() -> N
     )
 
     assert len(calls) == 2
-    assert prompt.startswith("@图片1 中的猫在跑（已融合）")
-    assert "手不得僵" in prompt  # 只出现在 must_avoid 里的要求补进了正文
+    assert prompt == "@图片1 中的猫在跑（已融合）"  # 原样采用，不追加 must_avoid
     assert REWORK_MARKER not in prompt
     assert truncated is False
     assert must_avoid == ["手不得僵"]
@@ -604,7 +590,8 @@ async def test_build_rework_prompt_gives_up_after_attempt_limit() -> None:
     )
 
     assert len(calls) == 3
-    assert prompt == f"@图片1 中的猫在跑\n{REWORK_MARKER}手不要僵"
+    # 同上：兜底不再拼接，正文原样。
+    assert prompt == "@图片1 中的猫在跑"
 
 
 async def test_build_rework_prompt_does_not_retry_upstream_exception(
@@ -622,7 +609,9 @@ async def test_build_rework_prompt_does_not_retry_upstream_exception(
     )
 
     assert len(calls) == 1
-    assert prompt == f"原始画面\n{REWORK_MARKER}手不要僵"
+    # 融合不可用时**保持正文原样**：不再把要求拼到末尾（用户 2026-09-18：
+    # 「不要越叠越多，就地在正文里改」）。要求仍在 requirements 里累积。
+    assert prompt == "原始画面"
 
 
 async def test_build_rework_prompt_logs_rejection_reason(caplog) -> None:

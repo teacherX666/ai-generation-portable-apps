@@ -964,7 +964,13 @@ async def test_clone_run_for_approval_applies_selected_feedback(tmp_path: Path) 
         cloned = await _wait_for_status(client, cloned_run_id, "waiting_approval")
 
     assert cloned["approval"]["selected_task_ids"] == [task["task_id"]]
-    assert "【返工要求】动作再慢一点" in cloned["approval"]["tasks"][0]["prompt"]
+    # 融合不可用 → 正文保持原样（2026-09-18「不要越叠越多」）；
+    # 要求仍被记进 rework_requirements，一条都不会丢。
+    assert "【返工要求】" not in cloned["approval"]["tasks"][0]["prompt"]
+    assert (
+        "动作再慢一点"
+        in cloned["approval"]["tasks"][0]["rework_requirements"]
+    )
 
 
 async def test_clone_run_for_approval_keeps_previous_rework_requirements(
@@ -999,9 +1005,9 @@ async def test_clone_run_for_approval_keeps_previous_rework_requirements(
         )
         cloned = await _wait_for_status(client, cloned_run_id, "waiting_approval")
 
-    prompt = cloned["approval"]["tasks"][0]["prompt"]
-    assert "手不要僵" in prompt
-    assert "背景太暗" in prompt
+    requirements = cloned["approval"]["tasks"][0]["rework_requirements"]
+    # 融合不可用时正文原样（2026-09-18），但历次要求**只累积不覆盖**。
+    assert requirements == ["手不要僵", "背景太暗"]
     # 冻结基准仍是第一版（融合的输入，不能动）……
     assert cloned["approval"]["tasks"][0]["rework_base_prompt"] == task["prompt"]
     # ……但「改前原文」要指向**上一版**（这一版还没返工时的提示词），
