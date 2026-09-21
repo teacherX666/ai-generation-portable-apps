@@ -23,6 +23,9 @@ const LOCAL_CAPABILITIES = {
   video_upscale: { mode: "video", label: "本地视频超分" },
 };
 // 只暴露「用户真的需要选」的参数，其余走网关默认值 —— 目标用户不是调参的人。
+// 注意 width/height 是「等比缩进这个框」，不是输出尺寸本身：竖屏素材塞进横屏框会
+// 比源素材还小（720x1280 选 1080p → 608x1080）。参数面板会用 upscaleFitHint()
+// 把实际输出尺寸摆出来并警告，别让用户再踩一次。
 const UPSCALE_TARGETS = [
   { label: "1080p", value: "1080p", width: 1920, height: 1080 },
   { label: "2K", value: "2K", width: 2560, height: 1440 },
@@ -858,12 +861,14 @@ function renderParams() {
         paramChoiceField("速度模式", UPSCALE_SPEED_MODES, "speed_mode", params.speed_mode),
         paramNumberField("画质 CRF", "crf", params.crf, 12, 28, "", "数值越小越清晰、文件越大（默认 18）"),
       );
-      // 实测（12.04 秒 / 720p 竖屏素材，目标 1080p）：标准 11.3 分钟、快速 4.8 分钟。
-      // 耗时基本随素材时长线性增长，先把预期说清楚，别让用户盯着一个不动的
-      // "running" 以为卡死了。
+      // 目标框是「等比缩进 box」：竖屏素材选 1080p 会被缩成 608x1080，比源素材还小
+      // （用户 2026-09-21 实测反馈「超分完比原视频还小」）。这里直接把实际输出尺寸
+      // 摆出来，并在会缩小时警告。素材尺寸由 probeVideoSize() 异步补上，
+      // 切换目标时由 renderParamSummary() 刷新同一元素。
       const hint = document.createElement("p");
       hint.className = "fc-param-hint";
-      hint.textContent = "本地超分耗时约等于「素材时长 × 1 分钟」（例：12 秒素材约 11 分钟）。快速模式约 2.4 倍速，但细节会下降。提交后请保持页面打开，界面上会显示已用时长。";
+      hint.id = "upscale-fit-hint";
+      hint.textContent = upscaleFitHint(params);
       els.paramForm.append(hint);
       return;
     }
@@ -933,6 +938,9 @@ function renderParamSummary() {
   else if (state.mode === "video") chips.push(values.ratio, values.resolution, `${values.duration}s`, values.repeat_count > 1 ? `\u00d7${values.repeat_count}` : "\u4e0d\u91cd\u590d");
   else chips.push(values.aspect_ratio, values.image_size, values.repeat_count > 1 ? `\u00d7${values.repeat_count}` : "1 \u5f20");
   els.paramSummary.innerHTML = chips.map((chip) => `<span class="fc-param-chip"><strong>${escapeHtml(chip)}</strong></span>`).join("");
+  // 切换「目标分辨率」时刷新超分的尺寸提示（素材宽高是异步补上的，所以这里也要更新）。
+  const fitHint = document.getElementById("upscale-fit-hint");
+  if (fitHint) fitHint.textContent = upscaleFitHint(values);
 }
 // 「继续修改」只在云端 Seedance 的视频编辑与图片修改里有实现；本地视频模型、抠图、
 // 超分都没有这个能力（本地视频会把编辑请求当成一次全新生成，白烧算力）。
@@ -946,15 +954,63 @@ function mediaKind(file) {
   return "unknown";
 }
 function addFiles(fileList) {
+  const added = [];
   [...fileList].forEach((file) => {
     const kind = mediaKind(file);
     if (kind === "unknown") { toast(`不支持的文件：${file.name}`, "error"); return; }
     //: 视频也要给预览：以前只给图片建 objectURL，视频在附件条上只显示「VID」两个字，
     //: 用户看不出自己传的是哪一段（2026-09-21：「上传的参考视频参考图没有预览」）。
     const previewUrl = kind === "image" || kind === "video" ? URL.createObjectURL(file) : "";
-    state.attachments.push({ id: uid(), file, kind, previewUrl });
+    const item = { id: uid(), file, kind, previewUrl };
+    state.attachments.push(item);
+    added.push(item);
   });
   renderAttachments();
+  // 视频素材读一下宽高：超分的「目标分辨率」是等比缩进一个框，竖屏素材可能被缩得
+  // 比源素材还小（用户 2026-09-21 反馈「超分完比原视频还小」）。拿到尺寸才能在
+  // 参数面板里把真实输出尺寸和警告摆出来。
+  added
+    .filter((item) => item.kind === "video" && item.previewUrl)
+    .forEach((item) => probeVideoSize(item).then(() => { renderParams(); renderParamSummary(); }));
+}
+// 用离屏 video 读素材宽高；拿不到就返回 null（UI 退回只显示耗时提示，不影响提交）。
+function probeVideoSize(attachment) {
+  return new Promise((resolve) => {
+    const probe = document.createElement("video");
+    let settled = false;
+    const finish = (size) => {
+      if (settled) return;
+      settled = true;
+      attachment.width = size ? size.width : 0;
+      attachment.height = size ? size.height : 0;
+      probe.removeAttribute("src");
+      resolve(size);
+    };
+    probe.muted = true;
+    probe.playsInline = true;
+    probe.preload = "metadata";
+    probe.addEventListener("loadedmetadata", () => finish({ width: probe.videoWidth, height: probe.videoHeight }), { once: true });
+    probe.addEventListener("error", () => finish(null), { once: true });
+    setTimeout(() => finish(null), 8000);
+    probe.src = attachment.previewUrl;
+  });
+}
+// 超分参数面板的说明文字：把「素材 → 实际输出」算出来。
+// 目标框是「等比缩进 box」，所以 720x1280 选 1080p 会得到 608x1080（比源素材小）。
+function upscaleFitHint(params) {
+  const video = state.attachments.find((item) => item.kind === "video" && item.width);
+  const base = "本地超分耗时约等于「素材时长 × 1 分钟」。快速模式约 2.4 倍速，但细节会下降。";
+  if (!video) return base;
+  const target = UPSCALE_TARGETS.find((item) => item.value === params.upscale_target) || UPSCALE_TARGETS[0];
+  const k = Math.min(target.width / video.width, target.height / video.height);
+  // 工作流里 ImageResizeKJv2 的 divisible_by=2，尺寸会取偶数
+  const outW = Math.max(2, Math.round(video.width * k / 2) * 2);
+  const outH = Math.max(2, Math.round(video.height * k / 2) * 2);
+  const head = `素材 ${video.width}×${video.height} → 输出 ${outW}×${outH}`;
+  if (k < 1) {
+    return `${head}（⚠️ 比素材还小，等于缩小。竖屏素材建议改选 2K 或 4K）`;
+  }
+  return `${head}（放大 ${k.toFixed(2)} 倍）。${base}`;
 }
 function renderAttachments() {
   els.attachments.innerHTML = "";
@@ -1454,7 +1510,11 @@ function switchActiveTask(id) {
 const HISTORY_RENDER_LIMIT = 12;
 
 function renderHistory() {
-  const successes = (activeConversation()?.tasks || []).filter((task) => task.resultUrl);
+  //: 历史条也要包含**正在生成**的那条（用户 2026-09-21：「查看历史记录里面没有正在生成
+  //: 的任务」）。原来只 filter(resultUrl)，于是"生成中"的任务在历史里完全看不到。
+  const successes = (activeConversation()?.tasks || []).filter(
+    (task) => task.resultUrl || RUNNING.has(String(task.status || "").toLowerCase()),
+  );
   const shown = successes.slice(-HISTORY_RENDER_LIMIT);
   //: 渲染签名：内容没变就**不重建 DOM**。
   //:
@@ -1480,7 +1540,12 @@ function renderHistory() {
     else node.classList.add("fc-no-enter");
     node.classList.toggle("is-active", task.id === state.activeTaskId);
     const thumb = node.querySelector(".fc-history-thumb");
-    if (task.mode === "video") {
+    //: 正在生成的那条没有 resultUrl，缩略图位置给一个"生成中"标记（不挂 video/img，
+    //: 否则会拿 undefined 当 src 发请求）。
+    if (!task.resultUrl) {
+      node.classList.add("is-pending");
+      thumb.textContent = "生成中";
+    } else if (task.mode === "video") {
       const video = document.createElement("video");
       video.muted = true;
       // 收起时先不挂 src；展开后由 setHistoryStripOpen 触发一次重渲染再加载
