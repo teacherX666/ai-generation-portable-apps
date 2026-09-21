@@ -869,7 +869,10 @@ function addFiles(fileList) {
   [...fileList].forEach((file) => {
     const kind = mediaKind(file);
     if (kind === "unknown") { toast(`不支持的文件：${file.name}`, "error"); return; }
-    state.attachments.push({ id: uid(), file, kind, previewUrl: kind === "image" ? URL.createObjectURL(file) : "" });
+    //: 视频也要给预览：以前只给图片建 objectURL，视频在附件条上只显示「VID」两个字，
+    //: 用户看不出自己传的是哪一段（2026-09-21：「上传的参考视频参考图没有预览」）。
+    const previewUrl = kind === "image" || kind === "video" ? URL.createObjectURL(file) : "";
+    state.attachments.push({ id: uid(), file, kind, previewUrl });
   });
   renderAttachments();
 }
@@ -878,8 +881,19 @@ function renderAttachments() {
   state.attachments.forEach((item) => {
     const node = $("#asset-template").content.firstElementChild.cloneNode(true); node.dataset.id = item.id;
     const preview = node.querySelector(".fc-asset-preview");
-    if (item.kind === "image") { const image = document.createElement("img"); image.src = item.previewUrl; image.alt = ""; preview.append(image); }
-    else preview.textContent = item.kind === "video" ? "VID" : "AUD";
+    //: 图片 / 视频都出缩略图；拿不到预览地址（例如从草稿恢复、File 已不在）时退回类型标签，
+    //: 不留下一个破图。
+    if (item.kind === "image" && item.previewUrl) {
+      const image = document.createElement("img"); image.src = item.previewUrl; image.alt = ""; image.decoding = "async";
+      preview.append(image);
+    } else if (item.kind === "video" && item.previewUrl) {
+      const video = document.createElement("video");
+      video.src = item.previewUrl; video.muted = true; video.playsInline = true;
+      video.preload = "metadata";   // 只取首帧当封面，不整段加载
+      preview.append(video);
+    } else {
+      preview.textContent = item.kind === "video" ? "VID" : item.kind === "image" ? "IMG" : "AUD";
+    }
     node.querySelector("strong").textContent = item.file.name;
     node.querySelector("span").textContent = `${item.kind === "image" ? "图片" : item.kind === "video" ? "视频" : "音频"} · ${(item.file.size / 1024 / 1024).toFixed(1)} MB`;
     node.querySelector("button").addEventListener("click", () => {
@@ -1463,7 +1477,8 @@ function bindEvents() {
         id: uid(),
         file,
         kind: task.mode === "video" ? "video" : "image",
-        previewUrl: task.mode === "image" ? URL.createObjectURL(file) : "",
+        // 编辑态带进来的原视频也要出缩略图（同上：以前只有图片建预览）。
+        previewUrl: task.mode === "image" || task.mode === "video" ? URL.createObjectURL(file) : "",
         sourceTaskId: task.id,
       }];
       els.prompt.value = `${originalPrompt}${originalPrompt ? "\n\n" : ""}\u4fee\u6539\u8981\u6c42\uff1a`;
