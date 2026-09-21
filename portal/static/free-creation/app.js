@@ -1335,22 +1335,10 @@ function renderHistory() {
     }
     node.querySelector("strong").textContent = task.prompt.slice(0, 28);
     node.querySelector("small").textContent = formatTime(task.updatedAt);
+    // 历史卡片只负责"切到这一版"。**不在这里放「继续修改」**（用户 2026-09-21 要求去掉）；
+    // 要改某一版：先点这条历史选中它，再点工具条的「继续修改」；或用视频模型里的
+    // 「Seedance 2.5 · 视频编辑」自己上传原视频。
     node.addEventListener("click", () => switchActiveTask(task.id));
-    //: 每条历史自带「继续修改」（用户 2026-09-21：「无法方便修改之前的视频」）——
-    //: 直接在这一版上进编辑态，不用先选中、再去点工具条那个按钮。
-    const editChip = node.querySelector(".fc-history-edit");
-    if (editChip) {
-      const startEdit = (event) => {
-        event.stopPropagation();
-        event.preventDefault();
-        state.activeTaskId = task.id;
-        els.refine.click();
-      };
-      editChip.addEventListener("click", startEdit);
-      editChip.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") startEdit(event);
-      });
-    }
     els.historyStrip.append(node);
   });
   els.historyToggle.hidden = successes.length < 2;
