@@ -839,6 +839,21 @@ function renderParams() {
       els.paramForm.append(hint);
       return;
     }
+    //: 编辑模式（「Seedance 2.5 · 视频编辑」）：Ark 规定 `duration` 必须 -1、
+    //: `ratio` 必须 adaptive（见 portal/ark_errors.py 的错误翻译），**这两个值不由用户选**。
+    //: 以前照常渲染数字输入框，min/max 都是 -1 → 浏览器把非法值显示成 0，用户以为
+    //: "只能选 -1 秒、默认 0"（2026-09-21）。这里直接不给这两个控件，改成说明文字。
+    if (model.editOnly) {
+      els.paramForm.append(
+        paramField("分辨率", model.resolutions || ["720p"], "resolution", params.resolution),
+        paramNumberField("重复次数", "repeat_count", params.repeat_count, 1, 4, "次", "范围 1-4 次"),
+      );
+      const editHint = document.createElement("p");
+      editHint.className = "fc-param-hint";
+      editHint.textContent = "编辑模式：时长由模型按原视频自动决定（接口固定 -1），比例固定为「自适应」—— 不用你选，提交时会自动带上。";
+      els.paramForm.append(editHint);
+      return;
+    }
     const start = model.duration?.[0] || 4;
     const end = model.duration?.[1] || 15;
     els.paramForm.append(
