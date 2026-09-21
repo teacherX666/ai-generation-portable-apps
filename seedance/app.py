@@ -2307,7 +2307,7 @@ def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index
         "duration": int(get_field(form, "duration", "12")),
         "ratio": get_field(form, "ratio", "16:9"),
         "resolution": get_field(form, "resolution", "720p"),
-        "generate_audio": parse_bool(get_field(form, "generate_audio")),
+        "generate_audio": parse_bool(get_field(form, "generate_audio", "1")),
         "watermark": parse_bool(get_field(form, "watermark")),
     }
     if seed is not None:

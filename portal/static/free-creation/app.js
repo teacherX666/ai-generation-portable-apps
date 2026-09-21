@@ -36,6 +36,14 @@ const SEGMENT_THRESHOLDS = [
 ];
 // 网关 read_json_body 上限 200MB，base64 放大 4/3 → 输入视频卡在 120MB。
 const UPSCALE_MAX_INPUT_BYTES = 120 * 1024 * 1024;
+// 超分的速度模式：标准 = 原尺寸重建；快速 = 先把输入缩一半再重建（网关的
+// resize_factor=0.5）。同一条 12.04 秒 720p 素材实测：标准 11.3 分钟 / 快速
+// 4.8 分钟（快 2.4 倍）。但 1:1 放大并排对比下，快速版细节明显下降、边缘发糊、
+// 皮肤过渡区出现伪影 —— 是实打实的画质换速度，所以交给用户按场景选。
+const UPSCALE_SPEED_MODES = [
+  { label: "标准（画质优先）", value: "standard" },
+  { label: "快速（约 2.4 倍速，细节下降）", value: "fast" },
+];
 const HISTORY_SOURCES = {
   seedance: { mode: "video", mount: "/seedance" },
   "nano-banana": { mode: "image", mount: "/nano-banana" },
@@ -76,7 +84,7 @@ const els = {
 const state = {
   mode: "video", models: { video: [], image: [] }, selected: { video: null, image: null },
   params: {
-    video: { ratio: "16:9", resolution: "720p", duration: 8, repeat_count: 1, upscale_target: "1080p", crf: 18 },
+    video: { ratio: "16:9", resolution: "720p", duration: 8, repeat_count: 1, upscale_target: "1080p", crf: 18, speed_mode: "standard" },
     image: { aspect_ratio: "1:1", image_size: "2K", repeat_count: 1, max_objects: 8, threshold: 0.3 },
   },
   attachments: [], conversations: [], activeConversationId: null, activeTaskId: null, busy: false, editSourceTaskId: null, editBasePrompt: "",
@@ -650,6 +658,7 @@ function setMode(mode) {
       repeat_count: clampNumber(current.repeat_count, 1, 4, d.repeat_count || 1),
       upscale_target: ["1080p", "2K", "4K"].includes(current.upscale_target) ? current.upscale_target : "1080p",
       crf: clampNumber(current.crf, 12, 28, 18),
+      speed_mode: current.speed_mode === "fast" ? "fast" : "standard",
     };
   }
   if (state.selected.image) {
@@ -704,10 +713,12 @@ function applyModelDefaults(model) {
   const d = model.defaults || {};
   const params = state.params[state.mode];
   if (state.mode === "video") {
-    // 超分是「换任务」不是「换模型」：比例/分辨率/时长都不适用，只有目标尺寸和画质。
+    // 超分是「换任务」不是「换模型」：比例/分辨率/时长都不适用，只有目标尺寸、
+    // 画质和速度模式。
     if (model.module === "video_upscale") {
       params.upscale_target = clampOption(params.upscale_target, UPSCALE_TARGETS.map((item) => item.value), "1080p");
       params.crf = clampNumber(params.crf, 12, 28, Number(d.crf) || 18);
+      params.speed_mode = clampOption(params.speed_mode, UPSCALE_SPEED_MODES.map((item) => item.value), "standard");
       return;
     }
     params.ratio = clampOption(params.ratio, model.ratios, d.ratio || "16:9");
@@ -816,13 +827,15 @@ function renderParams() {
     if (model.module === "video_upscale") {
       els.paramForm.append(
         paramChoiceField("目标分辨率", UPSCALE_TARGETS, "upscale_target", params.upscale_target),
+        paramChoiceField("速度模式", UPSCALE_SPEED_MODES, "speed_mode", params.speed_mode),
         paramNumberField("画质 CRF", "crf", params.crf, 12, 28, "", "数值越小越清晰、文件越大（默认 18）"),
       );
-      // 实测：15 秒 / 720p 竖屏素材要切 18 块、约 27 分钟。先说清楚，别让用户
-      // 盯着一个不动的 "running" 以为卡死了。
+      // 实测（12.04 秒 / 720p 竖屏素材，目标 1080p）：标准 11.3 分钟、快速 4.8 分钟。
+      // 耗时基本随素材时长线性增长，先把预期说清楚，别让用户盯着一个不动的
+      // "running" 以为卡死了。
       const hint = document.createElement("p");
       hint.className = "fc-param-hint";
-      hint.textContent = "本地超分很慢：按片段逐块重算，约 15 秒的 720p 素材要 25~30 分钟。提交后请保持页面打开，界面上会显示已用时长。";
+      hint.textContent = "本地超分耗时约等于「素材时长 × 1 分钟」（例：12 秒素材约 11 分钟）。快速模式约 2.4 倍速，但细节会下降。提交后请保持页面打开，界面上会显示已用时长。";
       els.paramForm.append(hint);
       return;
     }
@@ -867,7 +880,7 @@ function renderParamSummary() {
   els.refine.title = refineAllowed ? "\u5728\u5f53\u524d\u7ed3\u679c\u4e0a\u7ee7\u7eed\u4fee\u6539" : "抠图 / 超分不支持继续修改";
   const chips = [];
   if (capability === "image_segment") chips.push(`${values.max_objects} 个物体`, `阈值 ${values.threshold}`);
-  else if (capability === "video_upscale") chips.push(values.upscale_target, `CRF ${values.crf}`);
+  else if (capability === "video_upscale") chips.push(values.upscale_target, values.speed_mode === "fast" ? "快速" : "标准", `CRF ${values.crf}`);
   else if (state.mode === "video" && isEdit) chips.push("\u667a\u80fd\u89c6\u9891\u7f16\u8f91");
   else if (state.mode === "video") chips.push(values.ratio, values.resolution, `${values.duration}s`, values.repeat_count > 1 ? `\u00d7${values.repeat_count}` : "\u4e0d\u91cd\u590d");
   else chips.push(values.aspect_ratio, values.image_size, values.repeat_count > 1 ? `\u00d7${values.repeat_count}` : "1 \u5f20");
@@ -1092,6 +1105,9 @@ async function buildPayload() {
           crf: Number(params.crf),
           repeat_count: 1,
           concurrency: 1,
+          // 快速模式：网关把这个值写进 FlashVSR 节点的 resize_factor，先把输入帧
+          // 缩一半再重建。标准模式传 1.0（= 原尺寸，与网关默认一致）。
+          resize_factor: params.speed_mode === "fast" ? 0.5 : 1.0,
         },
         files: { video_1: await mediaItem(videos[0]) },
       },
@@ -1141,6 +1157,10 @@ async function buildPayload() {
         repeat_count: Number(params.repeat_count),
         concurrency: 1,
         vary_seed: true,
+        //: 生成音频（Seedance 原生带声）。以前前端**从不传这个字段**，后端
+        //: `parse_bool(get_field(form,"generate_audio"))` 拿到空值 → False →
+        //: 生成的视频一律没有声音（用户 2026-09-21：「为什么生成的视频都没有声音」）。
+        generate_audio: "1",
         media,
       },
     };
