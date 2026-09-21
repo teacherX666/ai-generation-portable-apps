@@ -1,34 +1,11 @@
 "use strict";
 
-//: 版本自愈：如果服务器上的 app.js 版本串和自己被加载时的版本串不一致，说明浏览器还在
-//: 跑旧代码，直接 reload 自己（在 iframe 里就是刷新这个 iframe）。
-//:
-//: 为什么需要它：自由创作跑在 Portal 的 iframe 里，iframe 一旦加载完成就**不会**因为
-//: 外层页面改动而重新导航；用户「Ctrl+F5 了还是没变化」就是这个原因。实测（2026-09-21）
-//: 用真实会话直接取服务端文件，`app.js` / `styles.css` 都是最新的，问题 100% 在浏览器。
-(function watchBundleVersion() {
-  const src = (document.currentScript && document.currentScript.src) || "";
-  const ownVersion = (src.match(/[?&]v=([^&]+)/) || [])[1];
-  if (!ownVersion) return;
-  let checking = false;
-  const check = async () => {
-    if (checking || document.visibilityState !== "visible") return;
-    checking = true;
-    try {
-      const response = await fetch("./index.html", { cache: "no-store" });
-      const html = await response.text();
-      const latest = (html.match(/app\.js\?v=([^"'&\s]+)/) || [])[1];
-      if (latest && latest !== ownVersion) location.reload();
-    } catch (error) {
-      void error;   // 拿不到就算了，不打扰用户
-    }
-    checking = false;
-  };
-  window.setInterval(check, 20000);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") check();
-  });
-})();
+//: 【已移除】页面内版本自愈 —— 2026-09-21 它导致 iframe 反复 location.reload()，
+//: 严重干扰用户工作（「为什么我页面一直刷新呢」）。原因：判断依赖
+//: `document.currentScript.src` 与重新拉取 `./index.html` 得到的版本串是否一致，
+//: 在 iframe 的 URL 带着旧 `?v=` 的情况下会长期不一致 → 无限刷新。
+//: 教训：**不要在页面里做会自己触发 reload 的逻辑**，缓存问题交给「外壳按需重载 iframe」
+//: 那一侧处理（只比对版本变化、且带冷却），或干脆让用户手动刷新。
 
 const STORAGE_KEY = "redcraft.free-creation.v1";
 const SCHEMA_URLS = {
