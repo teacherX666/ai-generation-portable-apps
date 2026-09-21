@@ -1313,7 +1313,8 @@ function renderPreview({ animateSwitch = false } = {}) {
     //: 运行中可以取消（用户 2026-09-21：「正在生成的任务能不能取消」）。
     //: 子应用有 `POST /api/jobs/{id}/cancel`，只是以前前端没接。
     const cancellable = Boolean(task.jobId) && RUNNING.has(String(task.status || "").toLowerCase());
-    els.previewMedia.innerHTML = `<div style="text-align:center;color:var(--muted);font-size:12px;line-height:1.7"><strong style="display:block;color:var(--text);font-size:15px">${title}</strong><span>${escapeHtml(task.error || task.progress || "请稍候…")}</span>${cancellable ? '<button class="fc-cancel-job" type="button">取消这次生成</button>' : ""}</div>`;
+    //: 进度那行单独给个 span：秒级刷新只改它的文本，不重建整个预览（否则视频会被重载）。
+    els.previewMedia.innerHTML = `<div style="text-align:center;color:var(--muted);font-size:12px;line-height:1.7"><strong style="display:block;color:var(--text);font-size:15px">${title}</strong><span class="fc-progress-text">${escapeHtml(task.error || task.progress || "请稍候…")}</span></div>${cancellable ? '<button class="fc-cancel-job" type="button">取消这次生成</button>' : ""}`;
     const cancelButton = els.previewMedia.querySelector(".fc-cancel-job");
     if (cancelButton) cancelButton.addEventListener("click", () => cancelActiveJob(task));
     els.download.disabled = true;
@@ -1594,6 +1595,18 @@ function bindEvents() {
   ["dragleave", "drop"].forEach((name) => composer.addEventListener(name, (event) => { event.preventDefault(); $("#drop-overlay").hidden = true; }));
   composer.addEventListener("drop", (event) => addFiles(event.dataTransfer.files));
   els.previewPanel.addEventListener("animationend", (event) => { if (event.animationName === "fc-history-switch") els.previewPanel.classList.remove("is-switching"); });
+  //: 秒级刷新「已用时长」。以前这行只在 5 秒一次的 reconcileRunningTasks 里重算，
+  //: 看起来就是"每 5 秒才跳一次"（用户 2026-09-21）。这里**只改那行文本**，不重建
+  //: 预览 —— 重建会让 <video> 重新拉流。云端任务有 done/total 时不碰它。
+  window.setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    const span = els.previewMedia ? els.previewMedia.querySelector(".fc-progress-text") : null;
+    if (!span || !span.textContent.includes("已用")) return;
+    const task = activeTask();
+    if (!task || !RUNNING.has(String(task.status || "").toLowerCase())) return;
+    const next = progressText(task, null, String(task.status || "").toLowerCase());
+    if (span.textContent !== next) span.textContent = next;
+  }, 1000);
   window.addEventListener("resize", () => { closeAllPopovers(); syncSidebarAccessibility(); });
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); startNewConversation(); }

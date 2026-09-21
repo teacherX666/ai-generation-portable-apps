@@ -2003,5 +2003,9 @@ body,
 
 
 /* 生成中/排队中的「取消这次生成」按钮（用户 2026-09-21 要求可取消） */
-.fc-cancel-job { margin-top: 12px; padding: 6px 14px; border: 1px solid rgba(154,158,170,.45); border-radius: 999px; color: var(--text); background: rgba(154,158,170,.12); font-size: 12px; cursor: pointer; transition: background .2s ease, border-color .2s ease; }
+/* 取消按钮：红色、固定在预览框右下角（用户 2026-09-21 要求） */
+.fc-cancel-job { position: absolute; right: 14px; bottom: 14px; z-index: 3; padding: 7px 16px; border: 1px solid rgba(226,74,74,.85); border-radius: 999px; color: #fff; background: rgba(198,54,54,.92); font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.3); transition: background .2s ease, transform .2s ease; }
+.fc-cancel-job:hover { background: #e04b4b; transform: translateY(-1px); }
+/* 进度那行：秒级刷新只改它的文本 */
+.fc-progress-text { display: inline-block; }
 .fc-cancel-job:hover { border-color: rgba(220,90,90,.65); color: #ff8a8a; background: rgba(220,90,90,.12); }
