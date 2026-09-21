@@ -468,7 +468,7 @@ FALLBACK_PROVIDERS = {
             "base_url": DEFAULT_BASE_URL,
             "api_style": "openai_images",
             "defaults": {"mode": "img2img", "model": "gemini-3-pro-image", "aspect_ratio": "auto", "image_size": "2K", "response_format": "url", "control_after_generate": "randomize", "repeat_count": 1, "concurrency": 1, "poll_interval": 10, "timeout": 900, "vary_seed": True, "resize_enabled": False, "resize_width": 1700, "resize_height": 2500, "resize_interpolation": "high", "resize_method": "stretch", "resize_condition": "always", "resize_multiple_of": 0},
-            "models": [{"id": "nano-banana-2", "label": "nano-banana-2"}, {"id": "gemini-3.1-flash-image-preview", "label": "gemini-3.1-flash-image-preview"}, {"id": "gemini-3-pro-image-2k", "label": "gemini-3-pro-image-2k"}, {"id": "gemini-3-pro-image-4k", "label": "gemini-3-pro-image-4k"}, {"id": "gpt-image-2.5-flare", "label": "GPT Image 2.5 Flare"}, {"id": "gpt-image-2.5-flare-2k", "label": "GPT Image 2.5 Flare 2K"}, {"id": "gpt-image-2.5-flare-4k", "label": "GPT Image 2.5 Flare 4K"}, {"id": "gpt-image-2.5-sunburst", "label": "GPT Image 2.5 Sunburst"}, {"id": "gpt-image-2.5-sunburst-2k", "label": "GPT Image 2.5 Sunburst 2K"}, {"id": "gpt-image-2.5-sunburst-4k", "label": "GPT Image 2.5 Sunburst 4K"}],
+            "models": [{"id": "nano-banana-2", "label": "nano-banana-2"}, {"id": "gemini-3.1-flash-image-preview", "label": "gemini-3.1-flash-image-preview", "api_style": "openai_chat"}, {"id": "gemini-3-pro-image-2k", "label": "gemini-3-pro-image-2k", "api_style": "openai_chat"}, {"id": "gemini-3-pro-image-4k", "label": "gemini-3-pro-image-4k", "api_style": "openai_chat"}, {"id": "gpt-image-2.5-flare", "label": "GPT Image 2.5 Flare"}, {"id": "gpt-image-2.5-flare-2k", "label": "GPT Image 2.5 Flare 2K"}, {"id": "gpt-image-2.5-flare-4k", "label": "GPT Image 2.5 Flare 4K"}, {"id": "gpt-image-2.5-sunburst", "label": "GPT Image 2.5 Sunburst"}, {"id": "gpt-image-2.5-sunburst-2k", "label": "GPT Image 2.5 Sunburst 2K"}, {"id": "gpt-image-2.5-sunburst-4k", "label": "GPT Image 2.5 Sunburst 4K"}],
         },
         "gemini": {
             "label": "Chiyun",
@@ -2235,6 +2235,30 @@ def truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"on", "true", "1", "yes"}
 
 
+def _model_api_style(provider_cfg: dict[str, Any], model_id: str) -> str:
+    """Return the per-model API style, falling back to the provider style."""
+    wanted = str(model_id or "").strip()
+    for item in provider_cfg.get("models") or []:
+        if isinstance(item, dict) and str(item.get("id") or "") == wanted:
+            return str(item.get("api_style") or provider_cfg.get("api_style") or "")
+    return str(provider_cfg.get("api_style") or "")
+
+
+def build_chat_image_payload(model: str, prompt: str, reference_files: list[tuple[str, bytes]]) -> dict[str, Any]:
+    """OpenAI-compatible multimodal image request used by T8Star Gemini models."""
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for filename, blob in reference_files:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": file_to_data_url(filename, blob)},
+        })
+    return {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 256,
+    }
+
+
 def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tuple[str, bytes]], ws_id: str = "localhost") -> dict[str, Any]:
     form = build_form(values, files)
     api_key = str(values["api_key"]).strip()
@@ -2266,6 +2290,7 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
     add_event(job_id, f"Run {index}: submitting {provider}/{common['model']}/{mode}{seed_label}")
     config, _ = load_provider_config()
     provider_cfg = (config.get("providers") or {}).get(provider) or {}
+    model_api_style = _model_api_style(provider_cfg, str(common["model"]))
     if provider_cfg.get("company_key"):
         # A server-managed credential must never follow a client-controlled
         # URL. Lock managed providers to their committed official endpoint.
@@ -2458,6 +2483,57 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             "task_id": task_id,
             "status": "succeeded",
             "seed": None,
+            "images": file_token_results,
+        }
+
+    if model_api_style == "openai_chat":
+        # T8Star exposes Gemini image models through OpenAI-compatible
+        # /v1/chat/completions, not /v1/images/edits. Keep the same model and
+        # provider in the UI, but route the request correctly.
+        reference_files: list[tuple[str, bytes]] = []
+        for i in range(1, 15):
+            file_data = get_file_or_saved(form, f"image_{i}", ws_id)
+            if file_data:
+                reference_files.append(file_data)
+        if mode == "img2img" and not reference_files:
+            raise ValueError("图生图模式至少需要一张参考图，请重新上传图片或切换到文生图")
+        task_id = f"chat_{uuid.uuid4().hex[:12]}"
+        result = request_chat_completion(
+            f"{base_url}/v1/chat/completions",
+            api_key,
+            build_chat_image_payload(str(common["model"]), str(common["prompt"]), reference_files),
+            timeout=int(values.get("timeout") or 300),
+        )
+        items = extract_chat_completion_images(result)
+        if not items:
+            raise RuntimeError(f"No image result found: {result}")
+        _ensure_output_dir(values, job_id)
+        out_dir = resolve_output_dir(values.get("output_dir"))
+        file_token_results = []
+        custom_name = values.get("output_name", "").strip()
+        if custom_name:
+            total = max(1, int(values.get("repeat_count") or 1), int(values.get("concurrency") or 1))
+            prefix = f"{custom_name}-{index}" if total > 1 else custom_name
+        else:
+            prefix = f"{time.strftime('%Y%m%d_%H%M%S')}_run{index}_{task_id}"
+        for i, item in enumerate(items, 1):
+            image_url, local_path = save_image_item(item, out_dir, prefix, i)
+            token = uuid.uuid4().hex
+            with LOCK:
+                FILES[token] = Path(local_path)
+                save_files_map()
+            file_token_results.append({
+                "image_url": image_url,
+                "download_url": f"/api/download/{token}",
+                "filename": Path(local_path).name,
+                "local_path": local_path,
+            })
+        add_event(job_id, f"Run {index}: saved {len(file_token_results)} image(s), input_images:{len(reference_files)}")
+        return {
+            "index": index,
+            "task_id": task_id,
+            "status": "succeeded",
+            "seed": seed or None,
             "images": file_token_results,
         }
 

@@ -36,7 +36,11 @@
         {
           "id": "qwen2511",
           "label": "图片编辑 Qwen 2511（免费）",
-          "capabilities": { "modes": ["img2img"] }
+          "capabilities": {
+            "modes": [
+              "img2img"
+            ]
+          }
         },
         {
           "id": "flux2_klein_allinone",
@@ -45,7 +49,11 @@
         {
           "id": "krea2_three_stage",
           "label": "Krea 文生图（免费）",
-          "capabilities": { "modes": ["text2img"] }
+          "capabilities": {
+            "modes": [
+              "text2img"
+            ]
+          }
         },
         {
           "id": "anime2real_auto",
@@ -103,7 +111,8 @@
               "1K",
               "2K"
             ]
-          }
+          },
+          "api_style": "openai_chat"
         },
         {
           "id": "gemini-3.1-flash-image-preview",
@@ -112,7 +121,8 @@
             "image_size": [
               "1K"
             ]
-          }
+          },
+          "api_style": "openai_chat"
         },
         {
           "id": "gemini-3-pro-image-2k",
@@ -121,7 +131,8 @@
             "image_size": [
               "2K"
             ]
-          }
+          },
+          "api_style": "openai_chat"
         },
         {
           "id": "gemini-3-pro-image-4k",
@@ -130,7 +141,8 @@
             "image_size": [
               "4K"
             ]
-          }
+          },
+          "api_style": "openai_chat"
         },
         {
           "id": "gpt-image-2.5-flare",

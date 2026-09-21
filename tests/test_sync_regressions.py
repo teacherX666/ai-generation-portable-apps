@@ -69,3 +69,39 @@ def test_feishu_uses_its_own_venv_interpreter():
     specs = app_spec.load_specs(ROOT / "portal" / "apps.json", ROOT)
     feishu = next(item for item in specs if item.name == "feishu-generation-agent")
     assert feishu.interpreter == "feishu-generation-agent/.venv/bin/python"
+
+
+def test_t8star_gemini_uses_openai_chat_route():
+    providers = json.loads((ROOT / "nano-banana" / "providers.json").read_text(encoding="utf-8"))
+    provider_cfg = providers["providers"]["t8star"]
+    nano = _load_module("nano-banana/app.py", "nano_t8star_chat_regression")
+    model_id = "gemini-3-pro-image-2k"
+    model_cfg = next(item for item in provider_cfg["models"] if item["id"] == model_id)
+    assert model_cfg["api_style"] == "openai_chat"
+    assert nano._model_api_style(provider_cfg, model_id) == "openai_chat"
+
+
+def test_chat_image_payload_and_response_extraction():
+    nano = _load_module("nano-banana/app.py", "nano_chat_payload_regression")
+    payload = nano.build_chat_image_payload(
+        "gemini-3-pro-image-2k",
+        "改一下这张图",
+        [("ref.png", b"reference-bytes")],
+    )
+    assert payload["model"] == "gemini-3-pro-image-2k"
+    content = payload["messages"][0]["content"]
+    assert content[0] == {"type": "text", "text": "改一下这张图"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    result = {
+        "choices": [{
+            "message": {
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/result.png"},
+                }],
+            },
+        }],
+    }
+    assert nano.extract_chat_completion_images(result) == [{"url": "https://example.com/result.png"}]
