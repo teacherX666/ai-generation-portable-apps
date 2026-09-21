@@ -155,6 +155,12 @@ function saveActiveConversationDraft() {
   if (!conversation) return;
   conversation.prompt = els.prompt ? els.prompt.value : conversation.prompt || "";
   conversation.params = structuredClone(state.params);
+  //: 选中的模型也要存 —— 以前只存 prompt/params，刷新后 loadModels() 会把模型重置成默认的
+  //: Seedance 2.5（用户 2026-09-21：「刷新的时候提示词选择的模型全部变成默认的了」）。
+  conversation.selected = {
+    video: state.selected.video?.id || "",
+    image: state.selected.image?.id || "",
+  };
 }
 function restoreConversationDraft(conversation) {
   if (!conversation) return;
@@ -162,6 +168,10 @@ function restoreConversationDraft(conversation) {
   state.params.video = { ...state.params.video, ...(draft.video || {}) };
   state.params.image = { ...state.params.image, ...(draft.image || {}) };
   els.prompt.value = conversation.prompt || "";
+  //: 模型要等 loadModels() 建好列表之后再套用（那时才有可选项），先记下来。
+  state.pendingSelected = conversation.selected && typeof conversation.selected === "object"
+    ? conversation.selected
+    : null;
   autoResize();
 }
 function scheduleDraftSave() {
@@ -619,6 +629,15 @@ function setMode(mode) {
   state.models = { video, image };
   state.selected.video = video.find((model) => model.available && model.id === "doubao-seedance-2-5-260628") || video.find((model) => model.available) || video[0] || null;
   state.selected.image = image.find((model) => model.available && model.local) || image.find((model) => model.available) || image[0] || null;
+  //: 套用草稿里存的模型选择（刷新后不该被重置成默认；2026-09-21）。
+  const pending = state.pendingSelected;
+  if (pending && typeof pending === "object") {
+    const videoPick = video.find((model) => model.id === pending.video && model.available);
+    const imagePick = image.find((model) => model.id === pending.image && model.available);
+    if (videoPick) state.selected.video = videoPick;
+    if (imagePick) state.selected.image = imagePick;
+  }
+  state.pendingSelected = null;
   if (state.selected.video) {
     const d = state.selected.video.defaults || {};
     const start = state.selected.video.duration?.[0] || 4;
@@ -1271,11 +1290,44 @@ function renderPreview({ animateSwitch = false } = {}) {
   } else {
     els.mediaLoading.hidden = false;
     const title = task.status === "failed" ? "生成失败" : task.status === "success" ? "正在读取结果" : "正在生成";
-    els.previewMedia.innerHTML = `<div style="text-align:center;color:var(--muted);font-size:12px;line-height:1.7"><strong style="display:block;color:var(--text);font-size:15px">${title}</strong><span>${escapeHtml(task.error || task.progress || "请稍候…")}</span></div>`;
+    //: 运行中可以取消（用户 2026-09-21：「正在生成的任务能不能取消」）。
+    //: 子应用有 `POST /api/jobs/{id}/cancel`，只是以前前端没接。
+    const cancellable = Boolean(task.jobId) && RUNNING.has(String(task.status || "").toLowerCase());
+    els.previewMedia.innerHTML = `<div style="text-align:center;color:var(--muted);font-size:12px;line-height:1.7"><strong style="display:block;color:var(--text);font-size:15px">${title}</strong><span>${escapeHtml(task.error || task.progress || "请稍候…")}</span>${cancellable ? '<button class="fc-cancel-job" type="button">取消这次生成</button>' : ""}</div>`;
+    const cancelButton = els.previewMedia.querySelector(".fc-cancel-job");
+    if (cancelButton) cancelButton.addEventListener("click", () => cancelActiveJob(task));
     els.download.disabled = true;
   }
   renderHistory(); renderConversations();
 }
+//: 取消正在跑的任务：调子应用的 `POST /api/jobs/{id}/cancel`。
+//:
+//: 用户 2026-09-21：「正在生成的任务能不能取消」—— 接口早就有，前端一直没接。
+async function cancelActiveJob(task) {
+  if (!task?.jobId) return;
+  const base = task.base || (task.app === "volcengine-portrait"
+    ? "/volcengine-portrait"
+    : task.mode === "video" ? "/seedance" : "/nano-banana");
+  const jobPath = task.jobPath || "/api/jobs";
+  try {
+    const response = await fetch(`${base}${jobPath}/${encodeURIComponent(task.jobId)}/cancel`, {
+      method: "POST",
+      headers: { "X-Workspace-Id": task.conversationId || activeConversation()?.id || "" },
+    });
+    if (!response.ok) throw new Error(`取消失败 (${response.status})`);
+    task.status = "cancelled";
+    task.progress = "已取消";
+    task.updatedAt = Date.now();
+    saveStore();
+    renderPreview();
+    renderConversations();
+    renderHistory();
+    toast("已取消这次生成");
+  } catch (error) {
+    toast(error.message || "取消失败", "error");
+  }
+}
+
 function setHistoryStripOpen(open) {
   const visible = Boolean(open);
   els.historyStrip.classList.toggle("is-open", visible);
