@@ -622,6 +622,11 @@ function setMode(mode) {
   //: duration=-1、ratio=adaptive —— 由后端 seedance 按编辑任务处理。
   video.unshift({
     id: "seedance-2.5-edit",
+    //: 下发给 Ark 的**真实模型 id** —— 上面那个 id 只是界面用的伪 id（下拉框需要一个唯一值），
+    //: 不能直接当模型名发出去，否则 Ark 报
+    //: `InvalidEndpointOrModel.NotFound: The model or endpoint seedance-2.5-edit does not exist`
+    //: （2026-09-21 线上实测）。
+    modelId: "doubao-seedance-2-5-260628",
     label: "Seedance 2.5 · 视频编辑（局部修改已有视频）",
     provider: "volcengine",
     providerLabel: "火山方舟",
@@ -1163,7 +1168,8 @@ async function buildPayload() {
         // provider 由所选模型决定：本地走 comfyui_local（后端会把 base_url 锁到本地
         // 网关并清空密钥），云端走 volcengine（后端注入公司 key，浏览器永远拿不到）。
         provider: model.provider,
-        model: model.id,
+        //: 发真实模型 id：编辑入口的 `id` 是界面伪 id，真名在 `modelId`（2026-09-21 修）。
+        model: model.modelId || model.id,
         prompt,
         task_mode: hasEditVideo ? "edit" : "reference",
         duration: hasEditVideo ? -1 : Number(params.duration),
