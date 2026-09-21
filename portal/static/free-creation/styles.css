@@ -2154,3 +2154,14 @@ body,
   margin-top: 0 !important;
   padding-top: 10px;
 }
+
+/* ── 历史条展开时高度【固定】，不被预览框挤占 ────────────────────────────────────
+   用户 2026-09-21：「历史记录展开后的高度不统一，会被预览框的高度挤占」。
+   原因：面板是 flex column，预览框 flex:1 会去抢空间，而历史条默认 flex-shrink:1
+   会被压扁 → 展开后的高度取决于预览框剩多少。现在反过来：
+   · 历史条 flex:0 0 auto + 固定 height:96px（展开时），不参与收缩；
+   · 预览框 flex:1 1 auto + min-height:0，负责吸收剩余空间（该缩的是它）。
+   这样历史条高度恒定，切换不同任务也不会变。 */
+#stage.is-preview .fc-history-strip { flex: 0 0 auto !important; }
+#stage.is-preview .fc-history-strip.is-open { height: 96px !important; max-height: 96px !important; }
+#stage.is-preview .fc-preview-frame { flex: 1 1 auto !important; min-height: 0 !important; }
