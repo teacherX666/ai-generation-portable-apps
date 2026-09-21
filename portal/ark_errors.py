@@ -53,6 +53,15 @@ ARK_ERROR_MATCHERS: Tuple[ArkErrorMatcher, ...] = (
     ("InvalidParameter", "is not an image",
      "上传的文件是视频或音频，但被放到了参考图槽位。请把它放到「参考视频」或「参考音频」槽位。"),
 
+    # 2026-09-21 生产实锤：方舟把「参考图校验失败」也塞进 "Error while downloading
+    # image" 这个前缀里 —— 下载本身是成功的，失败的是随后的尺寸/比例校验。
+    # 泛化条目会把「长宽比超限」误报成「链接失效/需要登录」，用户照着提示反复
+    # 换图、换公网链接都修不好。必须排在下面那条泛化条目之前（前缀 + 子串匹配，
+    # 先命中先返回）。精确数字由 _aspect_ratio_hint() 动态拼，这里只是兜底。
+    ("InvalidParameter", "expected the aspect ratio to be between",
+     "参考图长宽比超限：方舟允许 0.39~2.50（按「高÷宽」判定）。请裁剪或补边把比例"
+     "改到范围内（竖图不超过 1:2.5，例如 9:16；横图不超过约 2.56:1，例如 16:9）后重新提交。"),
+
     # 2026-09-04 起出现：方舟侧拉取参考图的公网 URL 失败（链接失效 / 需登录 /
     # 对方服务器拒绝）。提示用户重新上传而不是换 URL 试错。
     ("InvalidParameter", "Error while downloading image",
@@ -107,10 +116,53 @@ ARK_ERROR_MATCHERS: Tuple[ArkErrorMatcher, ...] = (
 )
 
 
+# 方舟 Seedance 参考图比例校验：实测报的是「高÷宽」，不是宽÷高。
+# 证据（2026-09-21，seedance activity_log）：609x1687 报 2.77、872x2318 报 2.66，
+# 都是 height/width。所以允许区间 [0.39, 2.50] 等价于「竖图不超过 1:2.5、
+# 横图不超过约 2.56:1」。
+_ASPECT_RATIO_RE = re.compile(
+    r"expected the aspect ratio to be between\s*([\d.]+)\s*and\s*([\d.]+)"
+    r".*?received image with aspect ratio:\s*([\d.]+)",
+    re.S,
+)
+
+
+def _aspect_ratio_hint(message: str) -> Optional[str]:
+    """Build a precise Chinese hint for Ark's image aspect-ratio rejection.
+
+    Ark reports the offending ratio but never says which uploaded file it came
+    from or what to do about it. Returns None when the message doesn't carry
+    parseable numbers (the table entry above then fires as a fallback).
+    """
+    found = _ASPECT_RATIO_RE.search(message or "")
+    if not found:
+        return None
+    low, high, got = found.group(1), found.group(2), found.group(3)
+    try:
+        too_tall = float(got) > float(high)
+    except ValueError:
+        return None
+    if too_tall:
+        direction = "竖图过高"
+        fix = f"把图裁短、或左右补边加宽，使「高÷宽」≤ {high}（例如裁成 9:16 = 1.78）"
+    else:
+        direction = "横图过宽"
+        fix = f"把图裁窄、或上下补边加高，使「高÷宽」≥ {low}（例如裁成 16:9 = 0.56）"
+    return (
+        f"参考图长宽比超限（{direction}）：方舟按「高÷宽」判定，允许 {low}~{high}，"
+        f"当前这张是 {got}。请{fix}后重新提交（多张参考图时请逐张核对）。"
+    )
+
+
 def translate_ark_error(code: str, message: str) -> Optional[str]:
     """Return a Chinese explanation for a matched Ark error, or None if no
     matcher fires. The caller is responsible for still surfacing the raw
     code/message so the operator can find the Ark request id."""
+    # 比例超限要带上实测数字，先试动态版本（命中即返回，比表里的兜底文案更具体）。
+    if code.startswith("InvalidParameter"):
+        hint = _aspect_ratio_hint(message)
+        if hint:
+            return hint
     for code_prefix, msg_sub, zh in ARK_ERROR_MATCHERS:
         if not code.startswith(code_prefix):
             continue

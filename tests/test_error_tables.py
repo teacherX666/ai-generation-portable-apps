@@ -28,6 +28,36 @@ class ArkErrorsTableTests(unittest.TestCase):
             "InvalidParameter", "Error while downloading image, error: http status 403")
         self.assertIn("参考图网络地址下载失败", zh)
 
+    def test_aspect_ratio_not_misreported_as_download_failure(self):
+        # 2026-09-21 生产实锤：方舟把「比例校验失败」也包在 "Error while downloading
+        # image" 前缀里，泛化条目会误报成「链接失效」，用户换图换链接都修不好。
+        msg = ("Error while downloading image, error: expected the aspect ratio to be "
+               "between 0.39 and 2.50, but received image with aspect ratio: 2.77 instead "
+               "Request id: 0217899611817000e23c04e8b740c94d8512f0597aa5fa6126bf4")
+        zh = self.ark.translate_ark_error("InvalidParameter", msg)
+        self.assertIn("2.77", zh)
+        self.assertIn("竖图", zh)
+        self.assertNotIn("下载失败", zh)
+
+    def test_aspect_ratio_too_wide(self):
+        msg = ("Error while downloading image, error: expected the aspect ratio to be "
+               "between 0.39 and 2.50, but received image with aspect ratio: 0.31 instead")
+        zh = self.ark.translate_ark_error("InvalidParameter", msg)
+        self.assertIn("横图", zh)
+        self.assertIn("0.31", zh)
+
+    def test_real_download_failure_survives_dynamic_branch(self):
+        # 动态比例分支不能把真正的下载失败（没有数字）也吃掉
+        zh = self.ark.translate_ark_error(
+            "InvalidParameter", "Error while downloading image, error: http status 404")
+        self.assertIn("下载失败", zh)
+
+    def test_body_helper_translates_aspect_ratio_json(self):
+        raw = ('{"error":{"code":"InvalidParameter","message":"Error while downloading image, '
+               'error: expected the aspect ratio to be between 0.39 and 2.50, but received '
+               'image with aspect ratio: 2.66 instead","param":"image_url","type":"BadRequest"}}')
+        self.assertIn("2.66", self.ark.translate_ark_error_body(raw))
+
     def test_existing_entries_still_match(self):
         self.assertIsNotNone(self.ark.translate_ark_error(
             "InvalidParameter", "reference asset is not found"))
@@ -70,6 +100,47 @@ class ArkErrorsTableTests(unittest.TestCase):
         # 未命中/空 body 返回 None，调用方继续展示原文
         self.assertIsNone(self.ark.translate_ark_error_body("not json at all"))
         self.assertIsNone(self.ark.translate_ark_error_body(None))
+
+
+class SeedanceReferenceImageRatioTests(unittest.TestCase):
+    """提交前拦掉方舟必定会拒的参考图比例，并点名是哪张图。
+
+    真实样本：609x1687（高÷宽 2.77）、872x2318（2.66）被方舟 400 拒；方舟报错里
+    只有比例数字，不说哪张图、也不给动作，多图任务尤其难查。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sd = _load(ROOT / "seedance" / "app.py", "seedance_app_for_ratio_test")
+
+    @staticmethod
+    def _image(width, height):
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (width, height), (200, 200, 200)).save(buf, format="JPEG")
+        return buf.getvalue()
+
+    def test_tall_reference_image_flagged_with_filename_and_size(self):
+        problem = self.sd.ark_image_aspect_problem("image-2.jpg", self._image(609, 1687))
+        self.assertIn("image-2.jpg", problem)
+        self.assertIn("609x1687", problem)
+        self.assertIn("竖图", problem)
+
+    def test_wide_reference_image_flagged(self):
+        problem = self.sd.ark_image_aspect_problem("wide.png", self._image(2560, 800))
+        self.assertIn("横图", problem)
+
+    def test_supported_ratios_pass(self):
+        for width, height in ((816, 816), (720, 1280), (1920, 1080), (872, 2180)):
+            with self.subTest(size=(width, height)):
+                self.assertEqual("", self.sd.ark_image_aspect_problem("ok.png", self._image(width, height)))
+
+    def test_undecodable_blob_is_not_blocked(self):
+        # 量不出尺寸就不拦：绝不用本地探测能力不足挡掉一次本来能跑的任务
+        self.assertEqual("", self.sd.ark_image_aspect_problem("x.png", b"not an image at all"))
 
 
 class DreaminaTableTests(unittest.TestCase):

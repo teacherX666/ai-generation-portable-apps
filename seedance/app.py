@@ -2240,6 +2240,48 @@ def _seedance_h3_megapixels(resolution: str) -> float:
     )
 
 
+# 方舟参考图比例校验：按「高÷宽」判定，允许 [0.39, 2.50]。
+# 实测 2026-09-21（activity_log）：609x1687 → 报 2.77 被拒、872x2318 → 报 2.66 被拒，
+# 两张都是竖版长图，确认方舟用的是 height/width 而不是 width/height。
+# 方舟只在报错里给一个比例数字，既不说哪张图有问题、也不给下一步动作，用户会以为
+# 是「链接失效」反复换图。提交前自己量一遍，直接把文件名和尺寸点出来。
+ARK_IMAGE_MIN_RATIO = 0.39
+ARK_IMAGE_MAX_RATIO = 2.50
+
+
+def ark_image_aspect_problem(filename: str, blob: bytes) -> str:
+    """返回方舟比例校验必定会拒的中文说明；合规或量不出尺寸时返回空串。
+
+    量不出尺寸（Pillow 没装 / 格式怪）时**不拦** —— 交给方舟自己报错，
+    绝不因为本地探测能力不足而挡掉一次本来能跑的任务。
+    """
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(blob)) as img:
+            width, height = img.size
+    except Exception:
+        return ""
+    if not width or not height:
+        return ""
+    ratio = height / width
+    if ARK_IMAGE_MIN_RATIO <= ratio <= ARK_IMAGE_MAX_RATIO:
+        return ""
+    if ratio > ARK_IMAGE_MAX_RATIO:
+        fix = (f"竖图过高：请裁短、或左右补边加宽，使「高÷宽」≤ {ARK_IMAGE_MAX_RATIO:.2f}"
+               f"（例如裁成 9:16）")
+    else:
+        fix = (f"横图过宽：请裁窄、或上下补边加高，使「高÷宽」≥ {ARK_IMAGE_MIN_RATIO:.2f}"
+               f"（例如裁成 16:9）")
+    return (
+        f"参考图「{filename}」{width}x{height} 的长宽比 {ratio:.2f} 超出方舟允许范围 "
+        f"{ARK_IMAGE_MIN_RATIO:.2f}~{ARK_IMAGE_MAX_RATIO:.2f}（方舟按「高÷宽」判定）。"
+        f"{fix}后重新提交。"
+    )
+
+
 def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index: int, ws_id: str = "localhost", request_host: str | None = None) -> dict[str, Any]:
     provider = get_field(form, "provider", "volcengine")
     prompt = replace_refs(get_field(form, "prompt").strip())
@@ -2271,6 +2313,13 @@ def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index
         has_reference_input = True
         has_visual_reference = True
         filename, blob = file_data
+        # 参考图先自己量一遍比例：方舟的 2.50 上限拒绝是 submit 阶段 400，
+        # 白等一次往返，而且报错不点名是哪张图（多图任务尤其难查）。
+        # 只拦参考图——首尾帧没有实测证据，不做超出证据的拦截。
+        if provider == "volcengine":
+            problem = ark_image_aspect_problem(filename, blob)
+            if problem:
+                raise RuntimeError(problem)
         mime = mimetypes.guess_type(filename)[0] or "image/png"
         ref = media_reference(provider, base_url, api_key, blob, filename, mime, request_host=request_host)
         content.append({"type": "image_url", "image_url": ref, "role": "reference_image"})
