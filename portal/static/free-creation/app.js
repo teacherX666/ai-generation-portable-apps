@@ -134,7 +134,14 @@ function loadStore() {
   saveActiveConversationDraft();
   const regular = state.conversations.filter((item) => !item.historyConversation);
   const imported = state.conversations.filter((item) => item.historyConversation);
-  const conversations = [...regular.slice(0, 80), ...imported];
+  //: 附件是内存里的 File 对象（切换对话时挂在 conversation.attachments 上），
+  //: JSON 化会变成坏数据，写库前先剥掉。
+  const conversations = [...regular.slice(0, 80), ...imported].map((item) => {
+    if (!item || !item.attachments) return item;
+    const { attachments, ...rest } = item;
+    void attachments;
+    return rest;
+  });
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ conversations, activeConversationId: state.activeConversationId }));
 }
 function promptConversationTitle(prompt) {
@@ -551,7 +558,12 @@ function setMode(mode) {
     }
     state.activeConversationId = conversation.id;
     state.activeTaskId = null;
-    state.attachments = [];
+    //: 附件跟着对话走（用户 2026-09-21：「切换对话，之前上传的视频就没了」）。
+    //: File 对象只在内存里有效，所以切走时留在对话对象上、切回来再取回；
+    //: saveStore() 会把它剥掉，避免写进 localStorage 变成坏数据。
+    const outgoing = state.conversations.find((item) => item.id !== conversation.id && item.attachments === state.attachments);
+    if (outgoing) outgoing.attachments = state.attachments;
+    state.attachments = Array.isArray(conversation.attachments) ? conversation.attachments : [];
     renderAttachments();
     restoreConversationDraft(conversation);
     const latest = latestSuccess(conversation) || latestTask(conversation);
@@ -1333,7 +1345,10 @@ function renderPreview({ animateSwitch = false } = {}) {
       els.previewMedia.append(media); els.download.disabled = false;
     }
   } else {
-    els.mediaLoading.hidden = false;
+    //: 那三个跳动的点**只在真正跑的时候**显示。以前无论什么状态都 `hidden = false`，
+    //: 生成失败后它们还在动，看着像"还能继续生成"（用户 2026-09-21）。
+    const isRunning = RUNNING.has(String(task.status || "").toLowerCase());
+    els.mediaLoading.hidden = !isRunning;
     const title = task.status === "failed" ? "生成失败" : task.status === "success" ? "正在读取结果" : "正在生成";
     //: 运行中可以取消（用户 2026-09-21：「正在生成的任务能不能取消」）。
     //: 子应用有 `POST /api/jobs/{id}/cancel`，只是以前前端没接。
