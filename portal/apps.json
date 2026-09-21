@@ -92,6 +92,7 @@
     "mount": "iframe",
     "iframe_url": "/feishu-generation-agent/",
     "managed": true,
+    "interpreter": "feishu-generation-agent/.venv/bin/python",
     "credential_scheme": "none",
     "job_type": "dynamic",
     "metrics": ["images", "seconds"],

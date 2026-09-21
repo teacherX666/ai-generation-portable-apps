@@ -895,6 +895,19 @@ class AppManager:
         if not (app_dir / "app.py").exists():
             self.status[name] = {"status": "missing", "error": "app.py not found"}
             return
+        python_exe = sys.executable
+        if spec is not None and spec.interpreter:
+            interpreter = Path(spec.interpreter)
+            if not interpreter.is_absolute():
+                interpreter = ROOT.parent / interpreter
+            if not interpreter.exists():
+                self.status[name] = {
+                    "status": "missing",
+                    "error": f"interpreter not found: {interpreter}",
+                    "port": config["port"],
+                }
+                return
+            python_exe = str(interpreter)
         self._kill_port_squatter(config["port"])
         env = os.environ.copy()
         env["PORT"] = str(config["port"])
@@ -930,7 +943,9 @@ class AppManager:
         venv_uvicorn = ROOT.parent / ".venv" / "bin" / "uvicorn"
         expat_lib = "/opt/homebrew/opt/expat/lib"
         if engine == "fastapi" and fastapi_path.exists():
-            if sys.platform == "win32":
+            if spec is not None and spec.interpreter:
+                uvicorn_cmd = [python_exe, "-m", "uvicorn"]
+            elif sys.platform == "win32":
                 uvicorn_cmd = [sys.executable, "-m", "uvicorn"]
             elif venv_uvicorn.exists():
                 # DYLD lets Homebrew Python 3.12 load Homebrew expat rather than
@@ -940,7 +955,7 @@ class AppManager:
             else:
                 uvicorn_cmd = None
             if uvicorn_cmd is None:
-                cmd = [sys.executable, "app.py"]
+                cmd = [python_exe, "app.py"]
             else:
                 cmd = uvicorn_cmd + [
                     "app_fastapi:app",
@@ -949,7 +964,7 @@ class AppManager:
                     "--log-level", "warning",
                 ]
         else:
-            cmd = [sys.executable, "app.py"]
+            cmd = [python_exe, "app.py"]
         try:
             proc = subprocess.Popen(
                 cmd, cwd=str(app_dir), env=env,
