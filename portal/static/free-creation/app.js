@@ -201,6 +201,13 @@ function activeTask() {
   return conversation?.historyConversation ? latestSuccess(conversation) || latestTask(conversation) : latestTask(conversation);
 }
 function latestSuccess(conversation = activeConversation()) { return [...(conversation?.tasks || [])].reverse().find((item) => item.resultUrl) || null; }
+//: 当前对话里正在跑的任务（有 → 生成按钮显示成方形暂停键）。
+function runningTask(conversation = activeConversation()) {
+  const tasks = conversation?.tasks || [];
+  return tasks.find(
+    (task) => task.jobId && RUNNING.has(String(task.status || "").toLowerCase()),
+  ) || null;
+}
 //: 编辑输入超过这个大小就先提示一声（整段视频要读进内存，几十 MB 会明显卡一下）。
 const EDIT_INPUT_WARN_BYTES = 40 * 1024 * 1024;
 //: 「继续修改」要改的是**当前选中的那条**结果，不是永远最新那条。
@@ -494,6 +501,7 @@ async function reconcileRunningTasks() {
     saveStore();
     renderConversations();
     renderPreview();
+    renderParamSummary();   // 发送键要在「生成中 ↔ 空闲」之间切换
   }
   return changed;
 }
@@ -514,7 +522,10 @@ function toast(message, type = "") {
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { els.toast.className = "fc-toast"; }, 3200);
 }
-function setBusy(value) { state.busy = value; els.generate.classList.toggle("is-busy", value); els.generate.disabled = value; }
+//: 生成按钮在"有任务在跑"时要变成暂停键，所以**不能再靠 disabled 拦住重复提交**
+//: （以前 setBusy(true) 会把按钮禁掉，用户既不能生成也不能暂停，正是
+//: 「当前任务在进行的话没办法开始生成」）。重复提交由 generate() 里的 state.busy 兜住。
+function setBusy(value) { state.busy = value; els.generate.classList.toggle("is-busy", value); }
 // 「继续修改」会把 `修改要求：` 追加进输入框。退出编辑态时如果不把它一起收回去，
 // 残片会跟着下一次提交走：buildPayload() 里 isEdit 已经是 false，于是这段文本被
 // 当成普通提示词发出去（视频退回 task_mode=reference，编辑态按钮/角标也全没了）。
@@ -901,9 +912,14 @@ function renderParamSummary() {
   const capability = model?.module;
   if (els.modelSummary) els.modelSummary.textContent = model?.label || "\u9009\u62e9\u6a21\u578b";
   const verb = capability === "image_segment" ? "开始抠图" : capability === "video_upscale" ? "开始超分" : state.mode === "video" ? "\u751f\u6210\u89c6\u9891" : "\u751f\u6210\u56fe\u7247";
-  if (els.generateLabel) els.generateLabel.textContent = isEdit ? "\u63d0\u4ea4\u4fee\u6539" : verb;
-  els.generate.setAttribute("aria-label", isEdit ? "\u63d0\u4ea4\u4fee\u6539" : verb);
-  els.generate.setAttribute("title", isEdit ? "\u63d0\u4ea4\u4fee\u6539" : verb);
+  //: 有任务在跑时，这个按钮变成**方形暂停键**，点它就是取消（用户 2026-09-21 要求：
+  //: 「当前任务在进行的话没办法开始生成，那个键就会变成一个暂停任务的标记」）。
+  const running = runningTask();
+  els.generate.classList.toggle("is-running", Boolean(running));
+  const actionLabel = running ? "暂停任务" : (isEdit ? "提交修改" : verb);
+  if (els.generateLabel) els.generateLabel.textContent = actionLabel;
+  els.generate.setAttribute("aria-label", actionLabel);
+  els.generate.setAttribute("title", actionLabel);
   // 抠图 / 超分没有「在原结果上继续改」的语义，禁用而不是隐藏（避免按钮位置跳动）。
   const refineAllowed = canRefine(model);
   els.refine.disabled = !refineAllowed;
@@ -1350,13 +1366,10 @@ function renderPreview({ animateSwitch = false } = {}) {
     const isRunning = RUNNING.has(String(task.status || "").toLowerCase());
     els.mediaLoading.hidden = !isRunning;
     const title = task.status === "failed" ? "生成失败" : task.status === "success" ? "正在读取结果" : "正在生成";
-    //: 运行中可以取消（用户 2026-09-21：「正在生成的任务能不能取消」）。
-    //: 子应用有 `POST /api/jobs/{id}/cancel`，只是以前前端没接。
-    const cancellable = Boolean(task.jobId) && RUNNING.has(String(task.status || "").toLowerCase());
+    //: 取消入口**已经移到发送键**（有任务在跑时它变成方形暂停键，用户 2026-09-21 要求），
+    //: 预览区这里只留状态文字，不再放按钮。
     //: 进度那行单独给个 span：秒级刷新只改它的文本，不重建整个预览（否则视频会被重载）。
-    els.previewMedia.innerHTML = `<div style="text-align:center;color:var(--muted);font-size:12px;line-height:1.7"><strong style="display:block;color:var(--text);font-size:15px">${title}</strong><span class="fc-progress-text">${escapeHtml(task.error || task.progress || "请稍候…")}</span></div>${cancellable ? '<button class="fc-cancel-job" type="button">取消这次生成</button>' : ""}`;
-    const cancelButton = els.previewMedia.querySelector(".fc-cancel-job");
-    if (cancelButton) cancelButton.addEventListener("click", () => cancelActiveJob(task));
+    els.previewMedia.innerHTML = `<div style="text-align:center;color:var(--muted);font-size:12px;line-height:1.7"><strong style="display:block;color:var(--text);font-size:15px">${title}</strong><span class="fc-progress-text">${escapeHtml(task.error || task.progress || "请稍候…")}</span></div>`;
     els.download.disabled = true;
   }
   renderHistory(); renderConversations();
@@ -1383,6 +1396,7 @@ async function cancelActiveJob(task) {
     renderPreview();
     renderConversations();
     renderHistory();
+    renderParamSummary();   // 发送键要变回「生成视频」
     toast("已取消这次生成");
   } catch (error) {
     toast(error.message || "取消失败", "error");
@@ -1623,7 +1637,13 @@ function bindEvents() {
     scheduleDraftSave();
   });
   els.prompt.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); generate(); } });
-  els.generate.addEventListener("click", generate); els.upload.addEventListener("click", () => els.fileInput.click());
+  //: 有任务在跑时这个键是"暂停"：点它取消当前任务，而不是再提交一个（用户 2026-09-21）。
+  els.generate.addEventListener("click", () => {
+    const running = runningTask();
+    if (running) { cancelActiveJob(running); return; }
+    generate();
+  });
+  els.upload.addEventListener("click", () => els.fileInput.click());
   els.fileInput.addEventListener("change", () => { addFiles(els.fileInput.files); els.fileInput.value = ""; });
   els.modeSwitch.querySelectorAll(".fc-mode-option").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
   els.modelModeSwitch.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
@@ -1631,8 +1651,26 @@ function bindEvents() {
   $$("[data-close]").forEach((button) => button.addEventListener("click", () => closePopover(button.dataset.close)));
   document.addEventListener("click", (event) => { if (!event.target.closest(".fc-popover, #model-bubble, #params-bubble, #upload-bubble, #generate")) closeAllPopovers(); });
   const composer = els.prompt.closest(".fc-composer");
-  ["dragenter", "dragover"].forEach((name) => composer.addEventListener(name, (event) => { event.preventDefault(); $("#drop-overlay").hidden = false; }));
-  ["dragleave", "drop"].forEach((name) => composer.addEventListener(name, (event) => { event.preventDefault(); $("#drop-overlay").hidden = true; }));
+  //: 拖拽高亮用**计数器**，不能用 add/remove 直接切：`dragover` 每几毫秒触发一次，
+  //: `dragleave` 只要拖过任何一个子元素就会触发 —— 直接 add/remove 会反复横跳，
+  //: 表现就是"素材拖进来的时候页面一直闪"（用户 2026-09-21）。
+  let dragDepth = 0;
+  const dropOverlay = $("#drop-overlay");
+  ["dragenter", "dragover"].forEach((name) => composer.addEventListener(name, (event) => {
+    event.preventDefault();
+    if (name === "dragenter") dragDepth += 1;
+    dropOverlay.hidden = false;
+  }));
+  ["dragleave", "drop"].forEach((name) => composer.addEventListener(name, (event) => {
+    event.preventDefault();
+    if (name === "dragleave") {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth > 0) return;   // 还在内部移动，不收高亮
+    } else {
+      dragDepth = 0;
+    }
+    dropOverlay.hidden = true;
+  }));
   composer.addEventListener("drop", (event) => addFiles(event.dataTransfer.files));
   els.previewPanel.addEventListener("animationend", (event) => { if (event.animationName === "fc-history-switch") els.previewPanel.classList.remove("is-switching"); });
   //: 秒级刷新「已用时长」。以前这行只在 5 秒一次的 reconcileRunningTasks 里重算，
