@@ -1122,6 +1122,17 @@ function conversationNode(conversation, archived) {
     : `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg>`;
   if (archived) {
     node.querySelector(".fc-restore").addEventListener("click", (event) => { event.stopPropagation(); restoreConversation(conversation.id); });
+    //: 归档卡片也要能删（用户 2026-09-21：「只有恢复键没有删除键」）。
+    const deleteArchived = node.querySelector(".fc-delete-archived");
+    if (deleteArchived) {
+      deleteArchived.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (!window.confirm(`确定删除这条归档对话？删除后无法恢复。`)) return;
+        state.conversations = state.conversations.filter((item) => item.id !== conversation.id);
+        saveStore();
+        renderConversations();
+      });
+    }
     return node;
   }
   const open = () => openConversation(conversation.id);

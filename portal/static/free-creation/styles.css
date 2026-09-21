@@ -2056,3 +2056,28 @@ body,
 .fc-archive-bulk button { flex: 1; min-height: 28px; border: 1px solid rgba(154,158,170,.4); border-radius: 9px; color: var(--muted-strong, #6b6f7d); background: rgba(154,158,170,.1); font-size: 11px; cursor: pointer; transition: background .18s ease, color .18s ease, border-color .18s ease; }
 .fc-archive-bulk button:hover { background: rgba(154,158,170,.2); color: var(--text); }
 .fc-archive-bulk button[data-danger]:hover { border-color: rgba(220,90,90,.6); color: #e05656; background: rgba(220,90,90,.12); }
+
+/* 历史条固定在预览面板底部的预留区里（面板本来就有 padding-bottom: 106px），
+   不再把预览框往上挤、也不压住下载/继续修改按钮
+   （用户 2026-09-21：「展开历史记录上面的预览框会往上挤，导致和上方的下载等按钮部分重叠，
+   本来的预览框位置下方就够塞下历史记录」）。 */
+.fc-preview-panel { position: relative; }
+.fc-history-strip { position: absolute; left: 0; right: 0; bottom: 0; max-height: 96px; margin-top: 0; }
+.fc-history-strip.is-open { max-height: 96px; margin-top: 0; }
+.fc-preview-actions { bottom: 112px; }   /* 挪到预留区上方，与展开的历史条不重叠 */
+
+/* 归档卡片的「删除」按钮：和「恢复」并排，样式区分（危险操作用红色描边） */
+.fc-delete-archived { margin-left: 6px; min-height: 28px; padding: 0 8px; border: 1px solid rgba(220,90,90,.45); border-radius: 8px; color: #c0504f; background: #fff; cursor: pointer; font-size: 10px; }
+.fc-delete-archived:hover { border-color: rgba(220,90,90,.8); background: rgba(220,90,90,.1); }
+
+/* ── 预览状态下「预览面板」与「输入框」必须同宽（用户 2026-09-21 反复反馈对不齐）──
+   原因：.fc-stage.is-preview .fc-composer 历史上有多条互相覆盖的宽度规则
+   （min(920px,100vw-sidebar-88) / min(880px,100vw-44) / calc(100vw-24px)），
+   最后一条甚至忽略侧栏；而预览面板用的是 min(880px, 100vw-sidebar-92)。两套算式永远对不齐。
+   这里用一条最终规则把两者锁成同一个表达式，并用 !important 压过前面所有覆盖。 */
+.fc-stage.is-preview .fc-composer,
+.fc-stage.is-preview .fc-preview-panel {
+  width: min(880px, calc(100vw - var(--sidebar-width) - 92px)) !important;
+  max-width: 100%;
+}
+.fc-stage.is-preview .fc-composer { left: 50%; transform: translateX(-50%); }
