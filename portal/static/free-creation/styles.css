@@ -2106,3 +2106,51 @@ body,
 .fc-history-strip { position: absolute; left: 0; right: 0; bottom: 0; max-height: 96px; }
 .fc-history-strip.is-open { max-height: 96px; }
 .fc-preview-actions { position: absolute; right: 0; bottom: 104px; }
+
+/* ── 预览框：必须填满面板宽度 ─────────────────────────────────────────────────────
+   实测（临时明文反代 + 浏览器量取，2026-09-21）：
+     previewPanel  width=762  ← 面板
+     composer      width=762  ← 输入框（两者本来就已经对齐 ✓）
+     previewFrame  width=312  height=312  aspectRatio="1 / 1"  ← 【真凶】✗
+   规则 .fc-stage.is-preview .fc-preview-frame { aspect-ratio: 1/1 !important; … } 把它
+   强制成正方形：宽度只有面板的 41%（看着没对齐），而且高度 312 > 面板 230 → 上下溢出
+   → 压到 .fc-preview-actions 上（下载按钮位置错乱）。两个问题同一个根因。
+   这里用 #preview-frame（id）压过所有历史规则，让它 width:100% + flex:1 填满面板。 */
+#stage.is-preview #preview-frame {
+  aspect-ratio: auto !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  flex: 1 1 auto !important;
+  margin: 0 !important;
+}
+/* 底部预留区：放得下「下载/继续修改」按钮（104..148）与历史条（0..96），互不重叠 */
+.fc-preview-panel { padding-bottom: 150px; }
+.fc-preview-actions { position: absolute; right: 0; bottom: 104px; }
+.fc-history-strip { position: absolute; left: 0; right: 0; bottom: 0; max-height: 96px; }
+.fc-history-strip.is-open { max-height: 96px; }
+
+/* 预览面板底部预留：必须用 id 选择器（实测 .fc-preview-panel 的 padding-bottom 被别的
+   规则清成了 0，导致按钮直接压在预览框上）。同时禁止动作按钮换行 —— 它们换行后高 111px，
+   远超预留高度。 */
+#stage.is-preview .fc-preview-panel { padding-bottom: 150px !important; }
+.fc-preview-actions { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
+.fc-preview-actions .fc-secondary-button, .fc-preview-actions .fc-primary-button { white-space: nowrap; }
+
+/* ── 预览面板：改回【自然流】布局 ─────────────────────────────────────────────────
+   绝对定位那套太脆：实测动作按钮换行后高 111px，无论怎么调 bottom 都会压到预览框上。
+   现在面板（flex column）里按顺序排：预览框(flex:1) → 动作按钮 → 历史条。
+   三者都在流里，从根上不可能重叠；历史条收起时高度为 0，不影响布局。 */
+#stage.is-preview .fc-preview-panel { padding-bottom: 0 !important; }
+#stage.is-preview .fc-preview-actions { position: static !important; display: flex; flex-wrap: nowrap; justify-content: flex-end; align-items: center; gap: 8px; padding: 10px 0 8px; }
+.fc-preview-actions .fc-secondary-button, .fc-preview-actions .fc-primary-button { white-space: nowrap; }
+#stage.is-preview .fc-history-strip { position: static !important; left: auto; right: auto; bottom: auto; margin-top: 0; max-height: 96px; }
+
+/* 历史条展开时清掉收起态的 translateY(-10px)（它是视觉偏移，会让展开后的条上移 10px
+   压到预览框上，实测 2026-09-21）。 */
+#stage.is-preview .fc-history-strip, #stage.is-preview .fc-history-strip.is-open {
+  transform: none !important;
+  margin-top: 0 !important;
+  padding-top: 10px;
+}
