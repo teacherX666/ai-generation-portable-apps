@@ -1160,7 +1160,11 @@ async function buildPayload() {
     if (isEdit && local) throw new Error("本地视频模型不支持继续修改原视频，请改用云端 Seedance，或直接重新生成");
     if (isEdit && !hasEditVideo) throw new Error("视频编辑需要一段原视频：请上传视频，或从历史结果上点「继续修改」");
     const prompt = hasEditVideo
-      ? `\u7f16\u8f91\u53c2\u8003\u89c6\u9891\u3002\u4fdd\u6301\u539f\u89c6\u9891\u4e3b\u4f53\u3001\u6784\u56fe\u4e0e\u8fd0\u52a8\u8fde\u7eed\u6027\uff0c\u53ea\u6267\u884c\u4ee5\u4e0b\u4fee\u6539\uff1a${requestedChange}`
+      //: 外壳提示词要**要求看得见的变化**。旧写法「保持原视频主体、构图与运动连续性，
+      //: 只执行以下修改：…」等于给了模型"什么都不改"的许可 —— 2026-09-21 实测：
+      //: 产物与输入**逐帧几乎完全一致**（241 帧/10.04s/720×1280 全同，同帧像素差仅 3.9~4.3/255
+      //: ≈ 重编码噪声），用户反馈「编辑功能感觉没变化」。
+      ? `编辑这段参考视频：必须按下面的要求改变画面，改完后要能明显看出与原视频不同（除非要求本身写了保持原样）；未被要求改动的部分保持主体、构图与运动连续性。修改要求：${requestedChange}`
       : els.prompt.value.trim();
     return {
       endpoint: "/seedance/api/jobs/json", app: "seedance", base: "/seedance", jobPath: "/api/jobs",
