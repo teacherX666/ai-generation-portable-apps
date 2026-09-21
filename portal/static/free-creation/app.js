@@ -1439,6 +1439,15 @@ function bindEvents() {
     });
   });
   els.historyToggle.addEventListener("click", () => setHistoryStripOpen(!els.historyStrip.classList.contains("is-open")));
+  //: 历史条横向滚动：Windows 上滚轮默认不驱动横向容器，用户只能去抓那条细细的
+  //: 滚动条（用户 2026-09-21：「历史记录没有滑动条，无法切到后面的视频」）。
+  //: 这里把纵向滚轮转成横向滚动，滚轮/触控板都能直接翻到后面的版本。
+  els.historyStrip.addEventListener("wheel", (event) => {
+    if (!event.deltaY) return;
+    if (els.historyStrip.scrollWidth <= els.historyStrip.clientWidth) return;
+    event.preventDefault();
+    els.historyStrip.scrollLeft += event.deltaY;
+  }, { passive: false });
   els.refine.addEventListener("click", async () => {
     const task = refineTarget();
     if (!task) return;

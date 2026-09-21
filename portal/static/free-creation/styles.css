@@ -1995,3 +1995,17 @@ body,
 
 /* 老条目重建时不再播入场动画（否则生成期间每 5 秒重播一次 = 看起来一直在跳） */
 .fc-history-card.fc-no-enter { animation: none; }
+
+/* 历史条：滚动条要看得见（用户 2026-09-21：「历史记录没有滑动条，无法切到后面的视频」）。
+   原来是 scrollbar-width: thin + 深色主题，Windows 上几乎不可见。 */
+.fc-history-strip { overflow-x: auto; overflow-y: hidden; scrollbar-color: color-mix(in srgb, var(--accent) 60%, #8b8b8b) rgba(127,127,127,.16); }
+.fc-history-strip::-webkit-scrollbar { height: 9px; }
+.fc-history-strip::-webkit-scrollbar-track { background: rgba(127,127,127,.16); border-radius: 999px; }
+.fc-history-strip::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--accent) 60%, #8b8b8b); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+.fc-history-strip::-webkit-scrollbar-thumb:hover { background: var(--accent); background-clip: padding-box; }
+
+/* 「继续修改」药丸：原来深底 + 深字，看着就是一团黑的（用户 2026-09-21）。改成
+   实底强调色 + 白字，并且默认就半可见（悬停/选中时全亮），方便发现。 */
+.fc-history-edit { color: #fff !important; background: var(--accent) !important; font-weight: 600; opacity: .72; box-shadow: 0 2px 8px rgba(0,0,0,.28); }
+.fc-history-card:hover .fc-history-edit, .fc-history-card:focus-within .fc-history-edit, .fc-history-card.is-active .fc-history-edit { opacity: 1; }
+.fc-history-edit:hover { filter: brightness(1.12); }
