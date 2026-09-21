@@ -236,8 +236,56 @@
 
   initConfiguredIframes();
 
+  // ── iframe 版本自愈 ─────────────────────────────────────────────────────────
+  // 用户 2026-09-21：「前端改动没生效」「我是小白，搞不来你那些」。
+  // 子应用跑在 iframe 里，iframe 一旦加载完成就**不会**因为外层改动而重新导航，
+  // 所以"改完前端让用户 Ctrl+F5"经常无效（实测：服务端返回的确实是最新代码）。
+  // 这里让**外壳**自己定期比对子应用 index.html 里引用的资源版本串：
+  //   · 第一次检查：无条件重载一次（修掉"当前已经跑着旧代码"的状态）；
+  //   · 之后：版本串变了才重载。
+  // 外壳是顶层页面，用户按一次 F5 让这段逻辑生效之后，以后就全自动了。
+  function iframeResourceVersion(html) {
+    const match = html.match(/(?:app|index)\.(?:js|html)\?v=([^"'&\s]+)/);
+    return match ? match[1] : '';
+  }
+
+  async function refreshIframeIfStale(iframe) {
+    const base = iframe.dataset.src || iframe.dataset.fallbackSrc || '';
+    const current = iframe.getAttribute('src') || '';
+    if (!base || !current || current === 'about:blank') return;
+    try {
+      const response = await fetch(base, { cache: 'no-store' });
+      if (!response.ok) return;
+      const latest = iframeResourceVersion(await response.text());
+      if (!latest) return;
+      const checkedOnce = iframe.dataset.versionChecked === 'true';
+      iframe.dataset.versionChecked = 'true';
+      const loaded = iframe.dataset.loadedVersion || '';
+      iframe.dataset.loadedVersion = latest;
+      if (!checkedOnce || (loaded && loaded !== latest)) {
+        iframe.src = 'about:blank';
+        requestAnimationFrame(() => { iframe.src = current; });
+      }
+    } catch (error) {
+      void error;   // 拿不到就算了，不打扰用户
+    }
+  }
+
+  function checkAllIframeVersions() {
+    if (document.visibilityState !== 'visible') return;
+    document.querySelectorAll('iframe.portal-iframe').forEach((iframe) => {
+      if (iframe.dataset.loaded === 'true') refreshIframeIfStale(iframe);
+    });
+  }
+
+  window.setInterval(checkAllIframeVersions, 20000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkAllIframeVersions();
+  });
+
   window.activatePortalTab = activatePortalTab;
   window.loadPortalIframe = loadPortalIframe;
   window.loadIframeForPanel = loadIframeForPanel;
   window.initConfiguredIframes = initConfiguredIframes;
+  window.checkAllIframeVersions = checkAllIframeVersions;
 })();
