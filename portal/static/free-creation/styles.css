@@ -2067,7 +2067,9 @@ body,
 .fc-preview-actions { bottom: 112px; }   /* 挪到预留区上方，与展开的历史条不重叠 */
 
 /* 归档卡片的「删除」按钮：和「恢复」并排，样式区分（危险操作用红色描边） */
-.fc-delete-archived { margin-left: 6px; min-height: 28px; padding: 0 8px; border: 1px solid rgba(220,90,90,.45); border-radius: 8px; color: #c0504f; background: #fff; cursor: pointer; font-size: 10px; }
+/* 归档卡片的「删除」：只留垃圾桶图标，不要文字（用户 2026-09-21） */
+.fc-delete-archived { display: grid; place-items: center; margin-left: 6px; width: 28px; height: 28px; padding: 0; border: 1px solid rgba(220,90,90,.45); border-radius: 8px; color: #c0504f; background: #fff; cursor: pointer; }
+.fc-delete-archived svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .fc-delete-archived:hover { border-color: rgba(220,90,90,.8); background: rgba(220,90,90,.1); }
 
 /* ── 预览状态下「预览面板」与「输入框」必须同宽（用户 2026-09-21 反复反馈对不齐）──
@@ -2081,3 +2083,26 @@ body,
   max-width: 100%;
 }
 .fc-stage.is-preview .fc-composer { left: 50%; transform: translateX(-50%); }
+
+/* ── 预览态宽度：用 ID 选择器一次性压过所有历史遗留的 !important 规则 ──────────────
+   历史包袱：.fc-stage.is-preview .fc-composer 被反复覆盖过
+   （min(920px,100vw-sidebar-88) / min(880px,100vw-44) / calc(100vw-24) /
+     min(920px,100%) !important / 100% !important ×3），
+   而 composer 是 position:absolute，它的 100% 是 stage 的 **padding box**，
+   面板的 100% 是 **content box** —— 两者天生差一段，所以怎么调都没对齐
+   （用户 2026-09-21 连续三轮反馈）。
+   这里用 #stage（真实 id）提高优先级，把两者锁成同一个表达式，且必须放在文件最后。 */
+#stage.is-preview .fc-composer,
+#stage.is-preview .fc-preview-panel {
+  width: min(880px, calc(100vw - var(--sidebar-width) - 92px)) !important;
+  max-width: min(880px, calc(100vw - var(--sidebar-width) - 92px)) !important;
+}
+#stage.is-preview .fc-composer { left: 50%; transform: translateX(-50%); }
+
+/* ── 预览面板底部：预留区同时容纳「历史条」和「下载/继续修改」按钮 ────────────────
+   上一版把按钮挪到 bottom:112px 结果压进了预览框里（用户 2026-09-21：「下载的按钮位置
+   错乱了」）。现在把预留区加大到 170px，按钮放 104px、历史条放 0，三者互不重叠。 */
+.fc-preview-panel { padding-bottom: 170px; }
+.fc-history-strip { position: absolute; left: 0; right: 0; bottom: 0; max-height: 96px; }
+.fc-history-strip.is-open { max-height: 96px; }
+.fc-preview-actions { position: absolute; right: 0; bottom: 104px; }
