@@ -245,10 +245,13 @@
       '.portal-notify-pop.is-bad{border-left-color:#ef4444}',
       '.portal-notify-pop.is-cancel{border-left-color:#f59e0b}',
       '@keyframes portalNotifyIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}',
-      '.portal-notify-pop__head{display:flex;align-items:center;gap:8px;font-weight:700}',
-      '.portal-notify-pop__icon{font-size:16px}',
-      '.portal-notify-pop__title{flex:1}',
-      '.portal-notify-pop__close{border:0;background:none;color:var(--text-secondary,#475569);font-size:16px;cursor:pointer;padding:0 4px;line-height:1}',
+      '.portal-notify-pop__head{display:flex;flex-direction:row;align-items:center;gap:8px;font-weight:700}',
+      '.portal-notify-pop__icon{flex:0 0 auto;font-size:16px}',
+      // 标题必须横排：原来只写 flex:1（= flex:1 1 0%），中文的 min-width:auto 等于一个字宽，
+      // flex 会把它压成【一个字一行的竖排】，卡片被撑高、关闭键被挤到中间（用户 2026-09-21）。
+      '.portal-notify-pop__title{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      // 关闭键固定在右上角，并显式清掉全局 button 样式可能带来的边框/宽度
+      '.portal-notify-pop__close{flex:0 0 auto;margin-left:auto;width:auto;height:auto;border:0;background:none;color:var(--text-secondary,#475569);font-size:16px;cursor:pointer;padding:0 4px;line-height:1}',
       '.portal-notify-pop__close:hover{color:var(--text,#172033)}',
       '.portal-notify-pop__body{color:var(--text-secondary,#475569);margin:6px 0 8px;font-size:12px}',
       '.portal-notify-pop__go{border:1px solid var(--accent,#235fd6);background:var(--accent,#235fd6);color:#fff;font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer;font-weight:600}',
