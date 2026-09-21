@@ -1335,6 +1335,12 @@ async function buildPayload() {
         //: `parse_bool(get_field(form,"generate_audio"))` 拿到空值 → False →
         //: 生成的视频一律没有声音（用户 2026-09-21：「为什么生成的视频都没有声音」）。
         generate_audio: "1",
+        //: 显式声明"不要水印"。方舟官方文档：watermark 默认 false（true 才在右下角加
+        //: 「AI 生成」水印）。后端 `parse_bool(get_field(form,"watermark"))` 拿到空值也是
+        //: False，但显式传一次更保险（用户 2026-09-21：「视频为什么一直有水印」）。
+        //: 注意：如果账号在控制台开了「AI 生成水印」，平台会**强制**加，API 传 false 也压不住
+        //: —— 那种情况要去火山引擎控制台 →「AI生成水印设置」→ 打开「去除水印」开关。
+        watermark: "0",
         media,
       },
     };
