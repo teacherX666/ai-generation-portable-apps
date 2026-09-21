@@ -43,6 +43,11 @@ const HISTORY_SOURCES = {
   dreamina: { mode: null, mount: "/dreamina" },
 };
 const HISTORY_SYNC_INTERVAL = 15000;
+
+//: 渲染签名缓存：内容没变就不重建 DOM（用户 2026-09-21：「正在生成的时候历史记录下面
+//: 一直在跳」—— 生成期间 reconcileRunningTasks 每 5 秒把历史条与会话列表整块重建）。
+const renderSignature = { history: '', historyOpen: null, historyIds: null, conversations: '', preview: '' };
+const stripOpenNow = () => document.querySelector('#history-strip').classList.contains('is-open');
 const TERMINAL_SUCCESS = new Set(["succeeded", "success", "done", "completed", "completed_with_errors"]);
 const TERMINAL_FAILURE = new Set(["failed", "error", "cancelled", "canceled", "interrupted"]);
 const RUNNING = new Set(["pending", "queued", "submitted", "running", "processing", "generating"]);
@@ -890,6 +895,16 @@ function renderAttachments() {
 function renderConversations() {
   const activeItems = state.conversations.filter((item) => !item.archivedAt && (item.mode || "video") === state.mode).sort((a, b) => b.updatedAt - a.updatedAt);
   const archivedItems = state.conversations.filter((item) => item.archivedAt && (item.mode || "video") === state.mode).sort((a, b) => b.archivedAt - a.archivedAt);
+  //: 同样加签名：生成期间 renderPreview 末尾会级联调用本函数，内容没变就不该重建
+  //: （否则侧栏列表每 5 秒重建一次，看起来在闪）。
+  const signature = [
+    state.mode,
+    state.activeConversationId || "",
+    activeItems.map((item) => [item.id, conversationDisplayTitle(item), item.updatedAt].join("|")).join(";"),
+    archivedItems.map((item) => [item.id, item.archivedAt].join("|")).join(";"),
+  ].join("::");
+  if (renderSignature.conversations === signature) return;
+  renderSignature.conversations = signature;
   els.conversations.innerHTML = "";
   els.conversationCount.textContent = String(activeItems.length);
   activeItems.forEach((conversation) => els.conversations.append(conversationNode(conversation, false)));
@@ -1275,12 +1290,28 @@ const HISTORY_RENDER_LIMIT = 12;
 function renderHistory() {
   const successes = (activeConversation()?.tasks || []).filter((task) => task.resultUrl);
   const shown = successes.slice(-HISTORY_RENDER_LIMIT);
-  const stripOpen = els.historyStrip.classList.contains("is-open");
+  //: 渲染签名：内容没变就**不重建 DOM**。
+  //:
+  //: 用户 2026-09-21：「正在生成的时候历史记录下面一直在跳」。原因是生成期间
+  //: reconcileRunningTasks 每 5 秒一次，只要有任何进度变化就整块重建：`<video>`
+  //: 被重新创建（重新拉流、闪一下），入场动画 `fc-strip` 也每 5 秒重播一次。
+  const signature = shown
+    .map((task) => [task.id, task.status, task.resultUrl, task.id === state.activeTaskId].join("|"))
+    .join(";");
+  if (renderSignature.history === signature && renderSignature.historyOpen === stripOpenNow()) return;
+  const known = renderSignature.historyIds || new Set();
+  const nextIds = new Set(shown.map((task) => task.id));
+  renderSignature.history = signature;
+  renderSignature.historyIds = nextIds;
+  renderSignature.historyOpen = stripOpenNow();
+  const stripOpen = stripOpenNow();
   els.historyStrip.innerHTML = "";
   shown.forEach((task, index) => {
     const node = $("#history-template").content.firstElementChild.cloneNode(true);
     node.dataset.id = task.id;
-    node.style.animationDelay = `${Math.min(index * 35, 210)}ms`;
+    // 只有**新出现**的那一条才播入场动画；老条目重建时保持静止（否则看起来一直在跳）。
+    if (!known.has(task.id)) node.style.animationDelay = `${Math.min(index * 35, 210)}ms`;
+    else node.classList.add("fc-no-enter");
     node.classList.toggle("is-active", task.id === state.activeTaskId);
     const thumb = node.querySelector(".fc-history-thumb");
     if (task.mode === "video") {

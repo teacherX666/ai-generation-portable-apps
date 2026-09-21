@@ -1992,3 +1992,6 @@ body,
 .fc-history-edit { position: absolute; right: 6px; bottom: 5px; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; line-height: 1.25; white-space: nowrap; color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, rgba(15,16,23,.85)); opacity: 0; transition: opacity .2s ease, background .2s ease; }
 .fc-history-card:hover .fc-history-edit, .fc-history-card:focus-within .fc-history-edit, .fc-history-card.is-active .fc-history-edit { opacity: 1; }
 .fc-history-edit:hover { background: color-mix(in srgb, var(--accent) 32%, rgba(15,16,23,.85)); }
+
+/* 老条目重建时不再播入场动画（否则生成期间每 5 秒重播一次 = 看起来一直在跳） */
+.fc-history-card.fc-no-enter { animation: none; }
