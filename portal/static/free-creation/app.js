@@ -1348,9 +1348,15 @@ function renderPreview({ animateSwitch = false } = {}) {
       const grid = document.createElement("div"); grid.className = "fc-result-grid";
       urls.forEach((url, index) => {
         const cell = document.createElement("a"); cell.className = "fc-result-cell";
-        cell.href = url; cell.target = "_blank"; cell.rel = "noopener";
+        //: 这里也用 blob 下载（同上面的原因）：直接 `<a href download>` 在自签 HTTPS 下
+        //: 会被下载管理器拒掉，报"网络问题"。
+        cell.href = url; cell.rel = "noopener";
         cell.download = `${task.resultName || "result"}-${index + 1}`;
         cell.title = `下载第 ${index + 1} 张`;
+        cell.addEventListener("click", (event) => {
+          event.preventDefault();
+          blobDownload(url, cell.download).catch((error) => toast(error.message || "下载失败", "error"));
+        });
         const image = document.createElement("img"); image.src = url; image.alt = `${task.prompt} ${index + 1}`; image.loading = "lazy"; image.decoding = "async";
         cell.append(image); grid.append(cell);
       });
@@ -1401,6 +1407,25 @@ async function cancelActiveJob(task) {
   } catch (error) {
     toast(error.message || "取消失败", "error");
   }
+}
+
+//: 自签 HTTPS 下 `<a href download>` 直接 click 会失败：浏览器**下载管理器**把它当成
+//: 一次独立请求、重新校验证书，而它对自签证书的容忍度比页面上下文严格得多 →
+//: Chrome 报「检查互联网连接 / 网络问题」（本机文档里记过的老坑，Portal 主壳、
+//: seedance、nano-banana 都改过了，自由创作漏了）。
+//: 正确做法：fetch → blob → objectURL → a[download].click()，blob: 协议绕过下载管理器。
+async function blobDownload(url, filename) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`下载失败 (${response.status})`);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename || "download";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
 }
 
 function setHistoryStripOpen(open) {
@@ -1557,15 +1582,19 @@ function bindEvents() {
   els.menu.addEventListener("click", toggleSidebar); els.scrim.addEventListener("click", closeSidebar);
   els.archiveToggle.addEventListener("click", () => { els.archivedList.hidden = !els.archivedList.hidden; els.archiveToggle.setAttribute("aria-expanded", String(!els.archivedList.hidden)); });
   els.newChat.addEventListener("click", startNewConversation);
-  els.download.addEventListener("click", () => {
+  els.download.addEventListener("click", async () => {
     const task = activeTask(); if (!task?.resultUrl) return;
     const urls = Array.isArray(task.resultUrls) && task.resultUrls.length ? task.resultUrls : [task.resultUrl];
-    urls.forEach((url, index) => {
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = urls.length > 1 ? `${task.resultName || "result"}-${index + 1}` : (task.resultName || "creation");
-      link.target = "_blank"; link.click();
-    });
+    for (const [index, url] of urls.entries()) {
+      const name = urls.length > 1 ? `${task.resultName || "result"}-${index + 1}` : (task.resultName || "creation");
+      try {
+        await blobDownload(url, name);
+      } catch (error) {
+        toast(error.message || "下载失败", "error");
+        return;
+      }
+      if (urls.length > 1) await new Promise((resolve) => setTimeout(resolve, 400));
+    }
   });
   els.historyToggle.addEventListener("click", () => setHistoryStripOpen(!els.historyStrip.classList.contains("is-open")));
   //: 历史条横向滚动：Windows 上滚轮默认不驱动横向容器，用户只能去抓那条细细的
