@@ -1610,7 +1610,9 @@ function renderHistory() {
       }
       thumb.append(image);
     }
-    node.querySelector("strong").textContent = task.prompt.slice(0, 28);
+    //: 标题只取前 10 个字就够（用户 2026-09-21：「我想的是标题展示大约十个字的长度就够了」）。
+    //: 以前取 28 个字，配合 flex 子项默认的 min-width:auto，会把卡片顶宽、把缩略图挤没。
+    node.querySelector("strong").textContent = task.prompt.slice(0, 10);
     node.querySelector("small").textContent = formatTime(task.updatedAt);
     // 历史卡片只负责"切到这一版"。**不在这里放「继续修改」**（用户 2026-09-21 要求去掉）；
     // 要改某一版：先点这条历史选中它，再点工具条的「继续修改」；或用视频模型里的
