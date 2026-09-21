@@ -1575,6 +1575,20 @@ function switchActiveTask(id) {
 // 自由创作就发起上百个大文件请求，页面与 Portal 代理双双卡死 —— 表现为“打不开”。
 const HISTORY_RENDER_LIMIT = 12;
 
+//: 历史卡片标题：去掉「修改要求：」这类编辑标记，尽量显示能认出是哪一版的文字。
+//: 编辑任务优先用它基于的那一版（editBasePrompt），否则用去掉标记后的 prompt。
+function historyTitle(task) {
+  const strip = (value) => String(value || "")
+    .replace(/^[\s\S]*?修改要求\s*[:：]\s*/, "")
+    .replace(/^[\s\S]*?编辑参考视频[：:]\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const fromBase = strip(task.editBasePrompt);
+  const fromPrompt = strip(task.prompt);
+  const text = fromBase || fromPrompt || String(task.prompt || "").trim();
+  return text.slice(0, 10);
+}
+
 function renderHistory() {
   //: 历史条也要包含**正在生成**的那条（用户 2026-09-21：「查看历史记录里面没有正在生成
   //: 的任务」）。原来只 filter(resultUrl)，于是"生成中"的任务在历史里完全看不到。
@@ -1638,7 +1652,11 @@ function renderHistory() {
     }
     //: 标题只取前 10 个字就够（用户 2026-09-21：「我想的是标题展示大约十个字的长度就够了」）。
     //: 以前取 28 个字，配合 flex 子项默认的 min-width:auto，会把卡片顶宽、把缩略图挤没。
-    node.querySelector("strong").textContent = task.prompt.slice(0, 10);
+    //: 标题：**去掉编辑标记**再取前 10 个字。
+    //: 用户 2026-09-21（附截图）：「历史记录完全混乱」—— 实测那排卡片里有两张标题就是
+    //: 「修改要求...」：编辑类任务的 prompt 以「修改要求：」开头，直接截前 10 个字等于把
+    //: 标记当标题，完全看不出是哪一版。现在优先显示它**基于的那一版**的正文开头。
+    node.querySelector("strong").textContent = historyTitle(task);
     //: 用【创建时间】而不是更新时间：更新时间每次轮询都会变，卡片上的时间会跳。
     node.querySelector("small").textContent = formatTime(task.createdAt || task.updatedAt);
     // 历史卡片只负责"切到这一版"。**不在这里放「继续修改」**（用户 2026-09-21 要求去掉）；
