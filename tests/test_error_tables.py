@@ -142,6 +142,83 @@ class SeedanceReferenceImageRatioTests(unittest.TestCase):
         # 量不出尺寸就不拦：绝不用本地探测能力不足挡掉一次本来能跑的任务
         self.assertEqual("", self.sd.ark_image_aspect_problem("x.png", b"not an image at all"))
 
+    # --- 自动补边 ------------------------------------------------------
+
+    def _padded(self, width, height, fmt="JPEG"):
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (width, height), (180, 120, 90)).save(buf, format=fmt)
+        return self.sd.pad_image_to_ark_ratio("ref.jpg", buf.getvalue())
+
+    def test_slightly_tall_image_is_padded_instead_of_rejected(self):
+        # 真实生产样本 609x1687（2.77）：只需左右各补 33px，不该让用户去改图
+        blob, note = self._padded(609, 1687)
+        self.assertTrue(note, "应当补边而不是原样返回")
+        self.assertIn("609x1687", note)
+        self.assertIn("补边", note)
+        self.assertEqual("", self.sd.ark_image_aspect_problem("ref.jpg", blob))
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(blob)) as img:
+            self.assertEqual((675, 1687), img.size)
+
+    def test_second_real_sample_also_fixed(self):
+        # 872x2318（2.66）→ 928x2318
+        blob, note = self._padded(872, 2318)
+        self.assertTrue(note)
+        self.assertEqual("", self.sd.ark_image_aspect_problem("ref.jpg", blob))
+
+    def test_wide_image_padded_top_bottom(self):
+        # 2560x900（0.35）只差 99px 高度 → 上下补边；2560x800 要补 25% 就该拒绝
+        blob, note = self._padded(2560, 900, fmt="PNG")
+        self.assertTrue(note)
+        self.assertIn("上下", note)
+        self.assertEqual("", self.sd.ark_image_aspect_problem("ref.png", blob))
+        wide, wide_note = self._padded(2560, 800, fmt="PNG")
+        self.assertEqual("", wide_note)
+        self.assertIn("横图", self.sd.ark_image_aspect_problem("ref.png", wide))
+
+    def test_compliant_image_returned_untouched(self):
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (720, 1280), (10, 10, 10)).save(buf, format="JPEG")
+        original = buf.getvalue()
+        blob, note = self.sd.pad_image_to_ark_ratio("ok.jpg", original)
+        self.assertEqual(original, blob)
+        self.assertEqual("", note)
+
+    def test_extreme_ratio_left_to_explicit_error(self):
+        # 1:5 的长图要补一倍宽度 —— 补边等于凭空造半个画面，交给显式报错
+        blob, note = self._padded(400, 2000)
+        self.assertEqual("", note)
+        self.assertIn("竖图", self.sd.ark_image_aspect_problem("ref.jpg", blob))
+
+    def test_alpha_and_format_are_preserved(self):
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGBA", (600, 1800), (255, 0, 0, 0)).save(buf, format="PNG")
+        blob, note = self.sd.pad_image_to_ark_ratio("cut.png", buf.getvalue())
+        self.assertTrue(note)
+        with Image.open(io.BytesIO(blob)) as img:
+            self.assertEqual("PNG", img.format)
+            self.assertEqual("RGBA", img.mode)
+
+    def test_undecodable_blob_returned_untouched(self):
+        blob, note = self.sd.pad_image_to_ark_ratio("x.png", b"not an image")
+        self.assertEqual(b"not an image", blob)
+        self.assertEqual("", note)
+
 
 class DreaminaTableTests(unittest.TestCase):
     @classmethod

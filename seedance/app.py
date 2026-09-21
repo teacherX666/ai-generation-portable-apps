@@ -2248,6 +2248,17 @@ def _seedance_h3_megapixels(resolution: str) -> float:
 ARK_IMAGE_MIN_RATIO = 0.39
 ARK_IMAGE_MAX_RATIO = 2.50
 
+# 自动补边的上限：补出来的像素不超过原边长的 20%。实测那两张超限图只需要补
+# 6%~11%（左右各 28~33px），补边比让用户回剪辑软件改图划算得多；但一张 1:5 的
+# 长图要补一倍宽度，硬补等于凭空造出半个画面，这种宁可给明确报错让用户去裁。
+ARK_IMAGE_MAX_PAD_GROWTH = 0.20
+
+
+def _ref_image_autopad_enabled() -> bool:
+    """补边默认开；SEEDANCE_REF_IMAGE_AUTOPAD=0 可关掉（排查用）。"""
+    raw = str(os.environ.get("SEEDANCE_REF_IMAGE_AUTOPAD", "1")).strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
 
 def ark_image_aspect_problem(filename: str, blob: bytes) -> str:
     """返回方舟比例校验必定会拒的中文说明；合规或量不出尺寸时返回空串。
@@ -2282,7 +2293,92 @@ def ark_image_aspect_problem(filename: str, blob: bytes) -> str:
     )
 
 
-def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index: int, ws_id: str = "localhost", request_host: str | None = None) -> dict[str, Any]:
+def pad_image_to_ark_ratio(filename: str, blob: bytes) -> tuple[bytes, str]:
+    """把长宽比超限的参考图自动补边到方舟允许区间。
+
+    返回 ``(图片字节, 中文说明)``：需要且补成功时返回新图 + 说明；不需要补、
+    补不了（Pillow 缺失 / 解码失败）、或超标太多（见 ARK_IMAGE_MAX_PAD_GROWTH）
+    时原样返回 blob + 空说明 —— 调用方随后走 ark_image_aspect_problem 显式报错。
+
+    补边方式是把最外一列/一行像素拉伸填满（edge replicate）：不引入任何新内容，
+    只把边界延续出去，比纯白/纯黑条更不容易被模型当成画面元素。格式与扩展名保持
+    不变（TOS 对象 key 的扩展名取自文件名，换格式会让 mime 对不上）。
+    """
+    try:
+        import io
+        import math
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(blob)) as src:
+            src.load()
+            width, height = src.size
+            if not width or not height:
+                return blob, ""
+            ratio = height / width
+            if ARK_IMAGE_MIN_RATIO <= ratio <= ARK_IMAGE_MAX_RATIO:
+                return blob, ""
+
+            fmt = (src.format or "PNG").upper()
+            if fmt not in ("JPEG", "PNG", "WEBP"):
+                fmt = "PNG"
+            has_alpha = src.mode in ("RGBA", "LA", "PA") or (
+                src.mode == "P" and "transparency" in src.info
+            )
+            mode = "RGBA" if has_alpha else "RGB"
+            img = src.convert(mode)
+
+            if ratio > ARK_IMAGE_MAX_RATIO:
+                # 竖图过高 → 左右补边加宽
+                new_w = int(math.ceil(height / ARK_IMAGE_MAX_RATIO))
+                grow = (new_w - width) / width
+                if grow <= 0 or grow > ARK_IMAGE_MAX_PAD_GROWTH:
+                    return blob, ""
+                left = (new_w - width) // 2
+                right = new_w - width - left
+                canvas = Image.new(mode, (new_w, height))
+                canvas.paste(img, (left, 0))
+                if left:
+                    edge = img.crop((0, 0, 1, height)).resize((left, height), Image.NEAREST)
+                    canvas.paste(edge, (0, 0))
+                if right:
+                    edge = img.crop((width - 1, 0, width, height)).resize((right, height), Image.NEAREST)
+                    canvas.paste(edge, (left + width, 0))
+                note = (f"参考图「{filename}」{width}x{height}（高÷宽 {ratio:.2f}）超出方舟上限，"
+                        f"已左右各补边到 {new_w}x{height}（{height / new_w:.2f}）后提交")
+            else:
+                # 横图过宽 → 上下补边加高
+                new_h = int(math.ceil(width * ARK_IMAGE_MIN_RATIO))
+                grow = (new_h - height) / height
+                if grow <= 0 or grow > ARK_IMAGE_MAX_PAD_GROWTH:
+                    return blob, ""
+                top = (new_h - height) // 2
+                bottom = new_h - height - top
+                canvas = Image.new(mode, (width, new_h))
+                canvas.paste(img, (0, top))
+                if top:
+                    edge = img.crop((0, 0, width, 1)).resize((width, top), Image.NEAREST)
+                    canvas.paste(edge, (0, 0))
+                if bottom:
+                    edge = img.crop((0, height - 1, width, height)).resize((width, bottom), Image.NEAREST)
+                    canvas.paste(edge, (0, top + height))
+                note = (f"参考图「{filename}」{width}x{height}（高÷宽 {ratio:.2f}）低于方舟下限，"
+                        f"已上下各补边到 {width}x{new_h}（{new_h / width:.2f}）后提交")
+
+            out = io.BytesIO()
+            if fmt == "JPEG":
+                canvas.convert("RGB").save(out, "JPEG", quality=95, optimize=True)
+            elif fmt == "WEBP":
+                canvas.save(out, "WEBP", quality=95)
+            else:
+                canvas.save(out, "PNG", optimize=True)
+            return out.getvalue(), note
+    except Exception:
+        # 补边只是"顺手帮忙"，任何失败都退回原图 + 让显式报错兜底
+        return blob, ""
+
+
+def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index: int, ws_id: str = "localhost", request_host: str | None = None, notes: list[str] | None = None) -> dict[str, Any]:
     provider = get_field(form, "provider", "volcengine")
     prompt = replace_refs(get_field(form, "prompt").strip())
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -2313,10 +2409,16 @@ def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index
         has_reference_input = True
         has_visual_reference = True
         filename, blob = file_data
-        # 参考图先自己量一遍比例：方舟的 2.50 上限拒绝是 submit 阶段 400，
-        # 白等一次往返，而且报错不点名是哪张图（多图任务尤其难查）。
-        # 只拦参考图——首尾帧没有实测证据，不做超出证据的拦截。
+        # 参考图先自己量一遍比例：
+        #  1) 轻微超限（≤20% 边长）自动补边，用户无感 —— 实测生产里那两张只差
+        #     28~33px，让用户回剪辑软件改图不值当；
+        #  2) 补不了/超太多，才抛带文件名和尺寸的报错（方舟的 400 不点名是哪张图）。
+        # 只处理参考图——首尾帧没有实测证据，而且给首帧加边有可能被烧进成片。
         if provider == "volcengine":
+            if _ref_image_autopad_enabled():
+                blob, pad_note = pad_image_to_ark_ratio(filename, blob)
+                if pad_note and notes is not None:
+                    notes.append(pad_note)
             problem = ark_image_aspect_problem(filename, blob)
             if problem:
                 raise RuntimeError(problem)
@@ -2932,7 +3034,10 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
         raise TaskCancelled("任务已取消。")
     add_event(job_id, f"Run {index}: preparing payload")
     request_host = form_values.get("_request_host") or None
-    payload = build_payload(form, api_key, base_url, index - 1, ws_id, request_host=request_host)
+    notes: list[str] = []
+    payload = build_payload(form, api_key, base_url, index - 1, ws_id, request_host=request_host, notes=notes)
+    for note in notes:
+        add_event(job_id, f"Run {index}: {note}")
     add_event(job_id, f"Run {index}: creating task ({content_counts(payload)})")
     create_result = request_json("POST", create_url, api_key, payload)
     task_id = create_result.get("id") or create_result.get("task_id")
