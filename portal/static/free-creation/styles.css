@@ -2013,12 +2013,15 @@ body,
 .fc-progress-text { display: inline-block; }
 .fc-cancel-job:hover { border-color: rgba(220,90,90,.65); color: #ff8a8a; background: rgba(220,90,90,.12); }
 
-/* 发送键在「有任务在跑」时变成方形暂停键（用户 2026-09-21 要求）：
-   红色实底 + 只显示一个方形图标，点它取消当前任务。 */
+/* 停止态（有任务在跑）：参考 Codex / ChatGPT 的停止键 —— 去掉彩虹环与玻璃质感，
+   换成**中性深色实底 + 白色方块**，方框加大。不再用红色
+   （用户 2026-09-21：「停止按钮太丑了，不要用红色，可以学习 codex 等 agent 应用的设计，方框大一点」）。 */
 .fc-send-button .fc-pause-icon { display: none; }
-.fc-send-button.is-running { background: rgba(198,54,54,.94) !important; border-color: rgba(226,74,74,.9) !important; color: #fff !important; }
+.fc-send-button.is-running { background: #23242c !important; border: 0 !important; color: #fff !important; box-shadow: 0 10px 26px rgba(0,0,0,.3) !important; }
+.fc-send-button.is-running::before, .fc-send-button.is-running::after { display: none !important; }
 .fc-send-button.is-running .fc-send-icon { display: none; }
-.fc-send-button.is-running .fc-pause-icon { display: block; }
+.fc-send-button.is-running .fc-pause-icon { display: block; width: 26px; height: 26px; }
 .fc-send-button.is-running #generate-label { display: none; }
-.fc-send-button.is-running:hover { background: #e04b4b !important; }
+.fc-send-button.is-running svg { color: #fff !important; filter: none !important; }
+.fc-send-button.is-running:hover { background: #2f313c !important; transform: translateY(-2px) scale(1.04); filter: none; }
 .fc-send-button .fc-pause-icon rect { fill: currentColor; }
