@@ -84,8 +84,8 @@ svg { width: 1.15em; height: 1.15em; fill: none; stroke: currentColor; stroke-wi
 .fc-new-chat-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 10px; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 30%, transparent); }
 .fc-new-chat kbd { margin-left: auto; padding: 3px 6px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: rgba(0,0,0,.18); font-size: 10px; }
 .fc-history-heading { display: flex; justify-content: space-between; margin: 24px 6px 9px; color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
-.fc-conversation-list { flex: 1; min-height: 0; overflow: auto; padding-right: 2px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.12) transparent; }
-.fc-conversation-item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 56px; padding: 8px 9px; border: 1px solid transparent; border-radius: 14px; background: transparent; text-align: left; cursor: pointer; transition: background .22s ease, border-color .22s ease, transform .22s ease; }
+.fc-conversation-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 2px; scrollbar-width: thin; scrollbar-color: rgba(154,158,170,.75) rgba(154,158,170,.14); }
+.fc-conversation-item { position: relative; overflow: hidden; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 56px; padding: 8px 9px; border: 1px solid transparent; border-radius: 14px; background: transparent; text-align: left; cursor: pointer; transition: background .22s ease, border-color .22s ease, transform .22s ease; }
 .fc-conversation-item:hover { transform: translateX(2px); background: rgba(255,255,255,.045); }
 .fc-conversation-item.is-active { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, rgba(255,255,255,.025)); }
 .fc-conversation-symbol { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 11px; color: var(--muted-strong); background: rgba(255,255,255,.035); }
@@ -509,7 +509,7 @@ html, body { background: #f5f6f8; color: var(--text); }
 .fc-archive-toggle svg { width: 15px; height: 15px; }
 .fc-archive-toggle span:nth-child(2) { flex: 1; }
 .fc-archive-toggle span:last-child { min-width: 20px; text-align: right; }
-.fc-archived-list { display: grid; gap: 3px; margin-top: 4px; }
+.fc-archived-list { display: grid; gap: 3px; margin-top: 4px; overflow-y: auto; overflow-x: hidden; max-height: 45vh; padding-right: 2px; scrollbar-width: thin; scrollbar-color: rgba(154,158,170,.75) rgba(154,158,170,.14); }
 .fc-conversation-item { position: relative; cursor: pointer; }
 .fc-conversation-more { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 28px; height: 28px; padding: 0 0 4px; border: 0; border-radius: 8px; color: #8b8e9b; background: transparent; opacity: 0; cursor: pointer; transition: opacity .2s ease, background .2s ease, color .2s ease; }
 .fc-conversation-item:hover .fc-conversation-more, .fc-conversation-item.is-menu-open .fc-conversation-more { opacity: 1; }
@@ -2039,3 +2039,20 @@ body,
 .fc-loading-dots span:nth-child(3) { animation-delay: .24s; background: var(--accent-3); }
 .fc-loading-block strong { color: var(--text); font-size: 15px; }
 .fc-loading-block .fc-progress-text { color: var(--muted); font-size: 12px; line-height: 1.7; }
+
+/* 侧栏滚动条：和上方对话列表、下方已归档列表统一成「浅灰、看得见」的样式
+   （用户 2026-09-21：「左边对话的滑动条不明显，已归档内容也增加滑动条」）。 */
+.fc-conversation-list::-webkit-scrollbar, .fc-archived-list::-webkit-scrollbar { width: 9px; }
+.fc-conversation-list::-webkit-scrollbar-track, .fc-archived-list::-webkit-scrollbar-track { background: rgba(154,158,170,.14); border-radius: 999px; }
+.fc-conversation-list::-webkit-scrollbar-thumb, .fc-archived-list::-webkit-scrollbar-thumb { background: rgba(154,158,170,.75); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+.fc-conversation-list::-webkit-scrollbar-thumb:hover, .fc-archived-list::-webkit-scrollbar-thumb:hover { background: rgba(126,130,142,.95); background-clip: padding-box; }
+
+/* 会话卡片里的按钮组（重命名/归档/删除）与已归档卡片的「恢复」都留在框内，不被裁掉 */
+.fc-conversation-copy { min-width: 0; flex: 1; }
+.fc-conversation-item .fc-conversation-actions, .fc-conversation-item .fc-restore { z-index: 2; }
+
+/* 已归档区域的「全部恢复 / 全部删除」 */
+.fc-archive-bulk { display: flex; gap: 6px; padding: 2px 4px 4px; }
+.fc-archive-bulk button { flex: 1; min-height: 28px; border: 1px solid rgba(154,158,170,.4); border-radius: 9px; color: var(--muted-strong, #6b6f7d); background: rgba(154,158,170,.1); font-size: 11px; cursor: pointer; transition: background .18s ease, color .18s ease, border-color .18s ease; }
+.fc-archive-bulk button:hover { background: rgba(154,158,170,.2); color: var(--text); }
+.fc-archive-bulk button[data-danger]:hover { border-color: rgba(220,90,90,.6); color: #e05656; background: rgba(220,90,90,.12); }

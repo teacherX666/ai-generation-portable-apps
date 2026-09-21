@@ -40,6 +40,10 @@
           <span>已归档</span><span id="archived-count">0</span>
         </button>
         <div class="fc-archived-list" id="archived-list" hidden></div>
+        <div class="fc-archive-bulk" id="archive-bulk" hidden>
+          <button type="button" id="restore-all-archived">全部恢复</button>
+          <button type="button" id="delete-all-archived" data-danger>全部删除</button>
+        </div>
       </div>
       <footer class="fc-sidebar-footer">
         <div class="fc-capability-row"><span class="fc-capability-dot"></span><span id="service-state">正在连接模型服务</span></div>
@@ -107,6 +111,6 @@
   </template>
   <template id="archived-template"><article class="fc-conversation-item is-archived"><span class="fc-conversation-symbol"><svg viewBox="0 0 24 24"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg></span><span class="fc-conversation-copy"><strong></strong><small></small></span><button class="fc-restore" type="button">恢复</button></article></template>
   <template id="history-template"><button class="fc-history-card" type="button"><span class="fc-history-thumb"></span><span class="fc-history-copy"><strong></strong><small></small></span></button></template>
-  <script src="./app.js?v=20260921-align-loading" defer></script>
+  <script src="./app.js?v=20260921-sidebar" defer></script>
 </body>
 </html>

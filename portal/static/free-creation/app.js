@@ -116,6 +116,7 @@ const els = {
   fileInput: $("#file-input"), upload: $("#upload-bubble"), modelBubble: $("#model-bubble"), paramsBubble: $("#params-bubble"), generate: $("#generate"), toast: $("#toast"),
   serviceState: $("#service-state"), capabilityDot: $(".fc-capability-dot"),
   archiveToggle: $("#archive-toggle"), archivedList: $("#archived-list"), archivedCount: $("#archived-count"),
+  archiveBulk: $("#archive-bulk"), restoreAllArchived: $("#restore-all-archived"), deleteAllArchived: $("#delete-all-archived"),
 };
 
 const state = {
@@ -1102,6 +1103,10 @@ function renderConversations() {
   els.archivedCount.textContent = String(archivedItems.length);
   els.archivedList.innerHTML = "";
   archivedItems.forEach((conversation) => els.archivedList.append(conversationNode(conversation, true)));
+  //: 「全部恢复 / 全部删除」只在**展开且确实有归档**时出现（用户 2026-09-21 要求）。
+  if (els.archiveBulk) {
+    els.archiveBulk.hidden = !archivedItems.length || els.archivedList.hidden;
+  }
   if (!activeItems.length) els.conversations.innerHTML = '<p class="fc-empty-conversations">暂无对话</p>';
 }
 
@@ -1172,6 +1177,32 @@ function restoreConversation(id) {
   conversation.archivedAt = null;
   conversation.updatedAt = Date.now();
   openConversation(id);
+}
+//: 「全部恢复 / 全部删除」——**只作用于已归档的**（用户 2026-09-21 要求），
+//: 而且只处理当前模式（视频/图片）下的归档，避免误伤另一侧的记录。
+function archivedConversations() {
+  return state.conversations.filter(
+    (item) => item.archivedAt && (item.mode || "video") === state.mode,
+  );
+}
+function restoreAllArchived() {
+  const targets = archivedConversations();
+  if (!targets.length) return;
+  const stamp = Date.now();
+  targets.forEach((item) => { item.archivedAt = null; item.updatedAt = stamp; });
+  saveStore();
+  renderConversations();
+  toast(`已恢复 ${targets.length} 条归档对话`);
+}
+function deleteAllArchived() {
+  const targets = archivedConversations();
+  if (!targets.length) return;
+  if (!window.confirm(`确定删除全部 ${targets.length} 条已归档对话？删除后无法恢复。`)) return;
+  const doomed = new Set(targets.map((item) => item.id));
+  state.conversations = state.conversations.filter((item) => !doomed.has(item.id));
+  saveStore();
+  renderConversations();
+  toast(`已删除 ${targets.length} 条归档对话`);
 }function openConversation(id) {
   saveStore();
   const conversation = state.conversations.find((item) => item.id === id);
@@ -1694,7 +1725,16 @@ function setupDraggableBubbles() {
 }
 function bindEvents() {
   els.menu.addEventListener("click", toggleSidebar); els.scrim.addEventListener("click", closeSidebar);
-  els.archiveToggle.addEventListener("click", () => { els.archivedList.hidden = !els.archivedList.hidden; els.archiveToggle.setAttribute("aria-expanded", String(!els.archivedList.hidden)); });
+  els.archiveToggle.addEventListener("click", () => {
+    els.archivedList.hidden = !els.archivedList.hidden;
+    els.archiveToggle.setAttribute("aria-expanded", String(!els.archivedList.hidden));
+    //: 展开/收起时同步「全部恢复 / 全部删除」的显示（只作用于归档，用户 2026-09-21 要求）。
+    if (els.archiveBulk) {
+      els.archiveBulk.hidden = els.archivedList.hidden || !archivedConversations().length;
+    }
+  });
+  if (els.restoreAllArchived) els.restoreAllArchived.addEventListener("click", restoreAllArchived);
+  if (els.deleteAllArchived) els.deleteAllArchived.addEventListener("click", deleteAllArchived);
   els.newChat.addEventListener("click", startNewConversation);
   els.download.addEventListener("click", async () => {
     const task = activeTask(); if (!task?.resultUrl) return;
