@@ -171,6 +171,18 @@ function activeTask() {
   return conversation?.historyConversation ? latestSuccess(conversation) || latestTask(conversation) : latestTask(conversation);
 }
 function latestSuccess(conversation = activeConversation()) { return [...(conversation?.tasks || [])].reverse().find((item) => item.resultUrl) || null; }
+//: 编辑输入超过这个大小就先提示一声（整段视频要读进内存，几十 MB 会明显卡一下）。
+const EDIT_INPUT_WARN_BYTES = 40 * 1024 * 1024;
+//: 「继续修改」要改的是**当前选中的那条**结果，不是永远最新那条。
+//:
+//: 用户 2026-09-21：「我编辑之前的历史视频好像界面卡住了，而且修改的是最新的视频，
+//: 不能上传修改历史视频」。原来这里直接取 latestSuccess()，在历史条上点「继续修改」
+//: 却改了最新一条 —— 现在优先用 state.activeTaskId（点历史条/结果卡片会更新它）。
+function refineTarget(conversation = activeConversation()) {
+  const tasks = conversation?.tasks || [];
+  const active = tasks.find((item) => item.id === state.activeTaskId && item.resultUrl);
+  return active || latestSuccess(conversation);
+}
 function formatTime(ts) { return new Date(ts || Date.now()).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }); }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
 function historySource(record) {
@@ -580,6 +592,25 @@ function setMode(mode) {
   };
   addLocalCapability("image_segment", segment);
   addLocalCapability("video_upscale", upscale);
+  //: 独立的「视频编辑」入口（用户 2026-09-21 要求「单独再开一个模型，视频编辑」）。
+  //:
+  //: 选它即进入编辑态：原视频由用户**自己上传**或从历史里选，不再绑死"最新一条"
+  //: （那正是「不能上传修改历史视频」的根源）。提交时固定 task_mode=edit、
+  //: duration=-1、ratio=adaptive —— 由后端 seedance 按编辑任务处理。
+  video.unshift({
+    id: "seedance-2.5-edit",
+    label: "Seedance 2.5 · 视频编辑（局部修改已有视频）",
+    provider: "volcengine",
+    providerLabel: "火山方舟",
+    local: false,
+    available: true,
+    badge: "2.5 专属",
+    editOnly: true,
+    duration: [-1, -1],
+    resolutions: ["720p", "1080p", "2K"],
+    ratios: ["adaptive"],
+    defaults: {},
+  });
   state.models = { video, image };
   state.selected.video = video.find((model) => model.available && model.id === "doubao-seedance-2-5-260628") || video.find((model) => model.available) || video[0] || null;
   state.selected.image = image.find((model) => model.available && model.local) || image.find((model) => model.available) || image[0] || null;
@@ -797,7 +828,7 @@ function renderParams() {
 function renderParamSummary() {
   const model = currentModel();
   const values = state.params[state.mode];
-  const isEdit = Boolean(state.editSourceTaskId) && canRefine(model);
+  const isEdit = (Boolean(state.editSourceTaskId) || Boolean(model?.editOnly)) && canRefine(model);
   const capability = model?.module;
   if (els.modelSummary) els.modelSummary.textContent = model?.label || "\u9009\u62e9\u6a21\u578b";
   const verb = capability === "image_segment" ? "开始抠图" : capability === "video_upscale" ? "开始超分" : state.mode === "video" ? "\u751f\u6210\u89c6\u9891" : "\u751f\u6210\u56fe\u7247";
@@ -1030,16 +1061,20 @@ async function buildPayload() {
     else media[`ref_audio_${audioIndex++}`] = item;
   }
   const editSourceTaskId = state.editSourceTaskId;
-  const isEdit = Boolean(editSourceTaskId);
+  //: 选了独立的「视频编辑」模型（model.editOnly）也算编辑态 —— 这时原视频由用户
+  //: 自己上传，不要求它来自某条历史结果。
+  const isEdit = Boolean(editSourceTaskId) || Boolean(model?.editOnly);
   const requestedChange = isEdit ? editInstruction() : "";
   if (isEdit && !requestedChange) throw new Error("请补充具体修改要求");
   if (state.mode === "video") {
     const local = model.provider === "comfyui_local";
-    const hasEditVideo = isEdit && state.attachments.some((item) => item.kind === "video" && item.sourceTaskId === editSourceTaskId);
+    const hasEditVideo = isEdit && state.attachments.some(
+      (item) => item.kind === "video" && (!editSourceTaskId || item.sourceTaskId === editSourceTaskId),
+    );
     // 本地 H3 没有「在原视频上改」这条路径：它会把 duration=-1 兜成 12 秒、当成一次
     // 全新生成，白烧算力。这里硬拦，而不是悄悄退化成普通生成。
     if (isEdit && local) throw new Error("本地视频模型不支持继续修改原视频，请改用云端 Seedance，或直接重新生成");
-    if (isEdit && !hasEditVideo) throw new Error("视频编辑需要保留原视频素材");
+    if (isEdit && !hasEditVideo) throw new Error("视频编辑需要一段原视频：请上传视频，或从历史结果上点「继续修改」");
     const prompt = hasEditVideo
       ? `\u7f16\u8f91\u53c2\u8003\u89c6\u9891\u3002\u4fdd\u6301\u539f\u89c6\u9891\u4e3b\u4f53\u3001\u6784\u56fe\u4e0e\u8fd0\u52a8\u8fde\u7eed\u6027\uff0c\u53ea\u6267\u884c\u4ee5\u4e0b\u4fee\u6539\uff1a${requestedChange}`
       : els.prompt.value.trim();
@@ -1074,7 +1109,7 @@ async function buildPayload() {
   if (!prompt && !capability) { toast("请先描述你想创作的内容", "error"); els.prompt.focus(); return; }
   if (state.editSourceTaskId && !canRefine(model)) { toast("抠图 / 超分 / 本地视频不支持继续修改", "error"); return; }
   if (state.editSourceTaskId && !editInstruction()) { toast("请补充具体修改要求", "error"); els.prompt.focus(); return; }
-  if (!state.editSourceTaskId && EDIT_MARKER_RE.test(els.prompt.value)) { toast("已退出编辑态，请重新点「继续修改」再提交", "error"); els.prompt.focus(); return; }
+  if (!state.editSourceTaskId && !model?.editOnly && EDIT_MARKER_RE.test(els.prompt.value)) { toast("已退出编辑态，请重新点「继续修改」再提交", "error"); els.prompt.focus(); return; }
   if (!model?.available) { toast("当前模型尚未接入执行能力", "error"); return; }
   const route = taskRoute(model, state.mode);
   const taskPrompt = prompt || (capability === "image_segment" ? "智能抠图" : capability === "video_upscale" ? "视频超分" : "");
@@ -1359,13 +1394,23 @@ function bindEvents() {
   });
   els.historyToggle.addEventListener("click", () => setHistoryStripOpen(!els.historyStrip.classList.contains("is-open")));
   els.refine.addEventListener("click", async () => {
-    const task = latestSuccess();
+    const task = refineTarget();
     if (!task) return;
     const originalPrompt = String(task.prompt || "");
     state.activeTaskId = task.id;
+    // 整段视频要读进内存才能当编辑输入（几十~上百 MB），以前这里**没有任何反馈**，
+    // 用户看到的就是"界面卡住"（2026-09-21）。现在：按钮变文案 + 大文件先提示。
+    const previousLabel = els.refine.textContent;
+    els.refine.disabled = true;
+    els.refine.textContent = task.mode === "video" ? "载入原视频…" : "载入原图…";
     try {
       const response = await fetch(task.resultUrl);
       if (!response.ok) throw new Error(`读取结果失败 (${response.status})`);
+      const declared = Number(response.headers.get("content-length") || 0);
+      if (declared > EDIT_INPUT_WARN_BYTES) {
+        const mb = Math.round(declared / 1048576);
+        toast(`原视频约 ${mb}MB，载入需要几秒，请稍候`, "info");
+      }
       const blob = await response.blob();
       const name = task.resultName || (task.mode === "video" ? "previous.mp4" : "previous.png");
       const file = new File([blob], name, { type: blob.type || (task.mode === "video" ? "video/mp4" : "image/png") });
@@ -1393,6 +1438,8 @@ function bindEvents() {
       autoResize();
       toast("\u65e0\u6cd5\u8bfb\u53d6\u5f53\u524d\u7ed3\u679c\uff0c\u672a\u8fdb\u5165\u4fee\u6539\u6a21\u5f0f", "error");
     }
+    els.refine.disabled = false;
+    els.refine.textContent = previousLabel;
     els.prompt.focus();
     els.prompt.setSelectionRange(els.prompt.value.length, els.prompt.value.length);
     els.prompt.closest(".fc-composer").scrollIntoView({ behavior: "smooth", block: "center" });
