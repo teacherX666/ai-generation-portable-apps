@@ -1985,3 +1985,10 @@ body,
     --preview-frame-size: min(var(--composer-width), 58vh);
   }
 }
+
+/* 每条历史自带的「继续修改」小药丸：绝对定位在右下角，悬停/聚焦时出现 ——
+   不占布局、不会挤坏 164px 的卡片（用户 2026-09-21：「无法方便修改之前的视频」）。 */
+.fc-history-card { position: relative; }
+.fc-history-edit { position: absolute; right: 6px; bottom: 5px; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; line-height: 1.25; white-space: nowrap; color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, rgba(15,16,23,.85)); opacity: 0; transition: opacity .2s ease, background .2s ease; }
+.fc-history-card:hover .fc-history-edit, .fc-history-card:focus-within .fc-history-edit, .fc-history-card.is-active .fc-history-edit { opacity: 1; }
+.fc-history-edit:hover { background: color-mix(in srgb, var(--accent) 32%, rgba(15,16,23,.85)); }
