@@ -122,7 +122,7 @@ svg { width: 1.15em; height: 1.15em; fill: none; stroke: currentColor; stroke-wi
 .fc-orbit-core { position: absolute; inset: 41%; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 50%; background: color-mix(in srgb, var(--accent) 6%, transparent); box-shadow: 0 0 80px color-mix(in srgb, var(--accent) 12%, transparent); }
 @keyframes fc-spin { to { transform: rotate(360deg); } }
 
-.fc-composer { position: relative; z-index: 8; width: min(880px, calc(100vw - var(--sidebar-width) - 92px)); padding: 1px; border-radius: var(--radius-xl); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 56%, transparent), rgba(255,255,255,.08) 34%, color-mix(in srgb, var(--accent-2) 52%, transparent)); box-shadow: var(--shadow-xl); transition: width .65s cubic-bezier(.2,.8,.2,1), transform .65s cubic-bezier(.2,.8,.2,1), margin .65s cubic-bezier(.2,.8,.2,1); }
+.fc-composer { position: relative; z-index: 8; margin: 0 auto; width: min(880px, calc(100vw - var(--sidebar-width) - 92px)); padding: 1px; border-radius: var(--radius-xl); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 56%, transparent), rgba(255,255,255,.08) 34%, color-mix(in srgb, var(--accent-2) 52%, transparent)); box-shadow: var(--shadow-xl); transition: width .65s cubic-bezier(.2,.8,.2,1), transform .65s cubic-bezier(.2,.8,.2,1), margin .65s cubic-bezier(.2,.8,.2,1); }
 .fc-stage.is-preview .fc-composer { position: absolute; left: 50%; bottom: 28px; width: min(920px, calc(100vw - var(--sidebar-width) - 88px)); transform: translateX(-50%); }
 .fc-composer::before { content: ""; position: absolute; inset: 1px; z-index: -1; border-radius: calc(var(--radius-xl) - 1px); background: rgba(18,19,27,.91); backdrop-filter: blur(30px); }
 .fc-composer-glow { position: absolute; inset: -1px; z-index: -2; border-radius: inherit; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 34%, transparent), transparent 40%, color-mix(in srgb, var(--accent-2) 28%, transparent)); filter: blur(24px); opacity: .42; transition: background .55s ease; }
@@ -177,7 +177,7 @@ svg { width: 1.15em; height: 1.15em; fill: none; stroke: currentColor; stroke-wi
 .fc-drop-overlay strong { color: var(--text); font-size: 15px; }
 .fc-drop-overlay span { font-size: 11px; }
 
-.fc-preview-panel { position: relative; z-index: 5; display: flex; flex-direction: column; width: min(880px, calc(100vw - var(--sidebar-width) - 92px)); max-width: 100%; min-height: 0; margin: 0 auto; padding-bottom: 106px; animation: fc-preview-in .72s cubic-bezier(.2,.9,.2,1) both; }
+.fc-preview-panel { position: relative; z-index: 5; display: flex; flex-direction: column; flex: 0 0 auto; width: min(880px, calc(100vw - var(--sidebar-width) - 92px)); max-width: 100%; min-height: 0; margin: 0 auto; padding-bottom: 106px; animation: fc-preview-in .72s cubic-bezier(.2,.9,.2,1) both; }
 @keyframes fc-preview-in { from { opacity: 0; transform: translateY(14px) scale(.985); } }
 .fc-preview-frame { position: relative; display: grid; place-items: center; flex: 1; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 26px; background: rgba(12,13,18,.76); box-shadow: var(--shadow-xl); }
 .fc-preview-media { display: grid; place-items: center; width: 100%; height: 100%; min-height: 300px; padding: 18px; }
@@ -2029,3 +2029,13 @@ body,
 /* 历史条里正在生成的那一条：缩略图位置放文字标记，卡片稍微提亮以示区别 */
 .fc-history-card.is-pending .fc-history-thumb { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .02em; background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .fc-history-card.is-pending { border-color: color-mix(in srgb, var(--accent) 26%, transparent); }
+
+/* 加载态：三个点和文字**放在同一个居中块里**（用户 2026-09-21：「三个点飘到最上面了，
+   需要把文字三个点这些都放中间，合理编排不要打架」）。 */
+.fc-loading-block { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+.fc-loading-dots { display: flex; gap: 8px; }
+.fc-loading-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: fc-dot 1s ease-in-out infinite; }
+.fc-loading-dots span:nth-child(2) { animation-delay: .12s; background: var(--accent-2); }
+.fc-loading-dots span:nth-child(3) { animation-delay: .24s; background: var(--accent-3); }
+.fc-loading-block strong { color: var(--text); font-size: 15px; }
+.fc-loading-block .fc-progress-text { color: var(--muted); font-size: 12px; line-height: 1.7; }

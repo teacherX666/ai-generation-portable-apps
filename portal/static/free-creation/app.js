@@ -1472,12 +1472,13 @@ function renderPreview({ animateSwitch = false } = {}) {
     //: 那三个跳动的点**只在真正跑的时候**显示。以前无论什么状态都 `hidden = false`，
     //: 生成失败后它们还在动，看着像"还能继续生成"（用户 2026-09-21）。
     const isRunning = RUNNING.has(String(task.status || "").toLowerCase());
-    els.mediaLoading.hidden = !isRunning;
+    //: 三个点**不再用那个 absolute 的 #media-loading**（它会飘到预览框顶上、和文字打架，
+    //: 用户 2026-09-21：「三个点飘到最上面了…需要把文字三个点这些都放中间，合理编排不要打架」）。
+    //: 现在把点和文字放进同一个居中块，只有真正在跑时才显示点。
+    els.mediaLoading.hidden = true;
     const title = task.status === "failed" ? "生成失败" : task.status === "success" ? "正在读取结果" : "正在生成";
-    //: 取消入口**已经移到发送键**（有任务在跑时它变成方形暂停键，用户 2026-09-21 要求），
-    //: 预览区这里只留状态文字，不再放按钮。
     //: 进度那行单独给个 span：秒级刷新只改它的文本，不重建整个预览（否则视频会被重载）。
-    els.previewMedia.innerHTML = `<div style="text-align:center;color:var(--muted);font-size:12px;line-height:1.7"><strong style="display:block;color:var(--text);font-size:15px">${title}</strong><span class="fc-progress-text">${escapeHtml(task.error || task.progress || "请稍候…")}</span></div>`;
+    els.previewMedia.innerHTML = `<div class="fc-loading-block">${isRunning ? '<div class="fc-loading-dots"><span></span><span></span><span></span></div>' : ""}<strong>${title}</strong><span class="fc-progress-text">${escapeHtml(task.error || task.progress || "请稍候…")}</span></div>`;
     els.download.disabled = true;
   }
   renderHistory(); renderConversations();
