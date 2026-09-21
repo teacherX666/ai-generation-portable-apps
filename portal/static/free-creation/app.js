@@ -1,5 +1,35 @@
 "use strict";
 
+//: 版本自愈：如果服务器上的 app.js 版本串和自己被加载时的版本串不一致，说明浏览器还在
+//: 跑旧代码，直接 reload 自己（在 iframe 里就是刷新这个 iframe）。
+//:
+//: 为什么需要它：自由创作跑在 Portal 的 iframe 里，iframe 一旦加载完成就**不会**因为
+//: 外层页面改动而重新导航；用户「Ctrl+F5 了还是没变化」就是这个原因。实测（2026-09-21）
+//: 用真实会话直接取服务端文件，`app.js` / `styles.css` 都是最新的，问题 100% 在浏览器。
+(function watchBundleVersion() {
+  const src = (document.currentScript && document.currentScript.src) || "";
+  const ownVersion = (src.match(/[?&]v=([^&]+)/) || [])[1];
+  if (!ownVersion) return;
+  let checking = false;
+  const check = async () => {
+    if (checking || document.visibilityState !== "visible") return;
+    checking = true;
+    try {
+      const response = await fetch("./index.html", { cache: "no-store" });
+      const html = await response.text();
+      const latest = (html.match(/app\.js\?v=([^"'&\s]+)/) || [])[1];
+      if (latest && latest !== ownVersion) location.reload();
+    } catch (error) {
+      void error;   // 拿不到就算了，不打扰用户
+    }
+    checking = false;
+  };
+  window.setInterval(check, 20000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") check();
+  });
+})();
+
 const STORAGE_KEY = "redcraft.free-creation.v1";
 const SCHEMA_URLS = {
   video: "/seedance/api/schema",
@@ -23,13 +53,17 @@ const LOCAL_CAPABILITIES = {
   video_upscale: { mode: "video", label: "本地视频超分" },
 };
 // 只暴露「用户真的需要选」的参数，其余走网关默认值 —— 目标用户不是调参的人。
-// 注意 width/height 是「等比缩进这个框」，不是输出尺寸本身：竖屏素材塞进横屏框会
-// 比源素材还小（720x1280 选 1080p → 608x1080）。参数面板会用 upscaleFitHint()
-// 把实际输出尺寸摆出来并警告，别让用户再踩一次。
+//
+// 「分辨率档位」按平台统一口径 = **短边像素**，与视频生成模块（Seedance 的
+// resolution + ratio）完全一致：9:16 + 720p = 720x1280，16:9 + 1080p = 1920x1080。
+// 用户 2026-09-21 指出这里原先用的是「等比缩进横屏框」——竖屏 720x1280 选 1080p 会
+// 被缩成 608x1080（比源素材还小），跟其它模块两套标准打架。现在只传档位，
+// 输出框由网关按真实素材尺寸算（modules/video_upscale.py fit_box_for_short_side）。
 const UPSCALE_TARGETS = [
-  { label: "1080p", value: "1080p", width: 1920, height: 1080 },
-  { label: "2K", value: "2K", width: 2560, height: 1440 },
-  { label: "4K", value: "4K", width: 3840, height: 2160 },
+  { label: "720p", value: "720p", shortSide: 720 },
+  { label: "1080p", value: "1080p", shortSide: 1080 },
+  { label: "2K", value: "2K", shortSide: 1440 },
+  { label: "4K", value: "4K", shortSide: 2160 },
 ];
 const SEGMENT_THRESHOLDS = [
   { label: "宽松 0.2", value: 0.2 },
@@ -687,7 +721,7 @@ function setMode(mode) {
       resolution: clampOption(current.resolution, state.selected.video.resolutions, d.resolution || "720p"),
       duration: clampNumber(current.duration, start, end, d.duration || 8),
       repeat_count: clampNumber(current.repeat_count, 1, 4, d.repeat_count || 1),
-      upscale_target: ["1080p", "2K", "4K"].includes(current.upscale_target) ? current.upscale_target : "1080p",
+      upscale_target: UPSCALE_TARGETS.some((item) => item.value === current.upscale_target) ? current.upscale_target : "1080p",
       crf: clampNumber(current.crf, 12, 28, 18),
       speed_mode: current.speed_mode === "fast" ? "fast" : "standard",
     };
@@ -995,22 +1029,29 @@ function probeVideoSize(attachment) {
     probe.src = attachment.previewUrl;
   });
 }
+// 与网关 fit_box_for_short_side 同一套算法：短边 = 档位，保持素材宽高比，取偶数。
+// （工作流里 ImageResizeKJv2 的 divisible_by=2，所以尺寸必须是偶数。）
+function fitBoxForShortSide(source, shortSide) {
+  if (!source || !shortSide || !source.width || !source.height) return null;
+  const k = shortSide / Math.min(source.width, source.height);
+  return {
+    width: Math.max(2, Math.round(source.width * k / 2) * 2),
+    height: Math.max(2, Math.round(source.height * k / 2) * 2),
+  };
+}
 // 超分参数面板的说明文字：把「素材 → 实际输出」算出来。
-// 目标框是「等比缩进 box」，所以 720x1280 选 1080p 会得到 608x1080（比源素材小）。
+// 口径 = 短边档位（与视频生成模块一致），所以竖屏 720x1280 选 1080p = 1080x1920。
 function upscaleFitHint(params) {
   const video = state.attachments.find((item) => item.kind === "video" && item.width);
   const base = "本地超分耗时约等于「素材时长 × 1 分钟」。快速模式约 2.4 倍速，但细节会下降。";
-  if (!video) return base;
-  const target = UPSCALE_TARGETS.find((item) => item.value === params.upscale_target) || UPSCALE_TARGETS[0];
-  const k = Math.min(target.width / video.width, target.height / video.height);
-  // 工作流里 ImageResizeKJv2 的 divisible_by=2，尺寸会取偶数
-  const outW = Math.max(2, Math.round(video.width * k / 2) * 2);
-  const outH = Math.max(2, Math.round(video.height * k / 2) * 2);
-  const head = `素材 ${video.width}×${video.height} → 输出 ${outW}×${outH}`;
-  if (k < 1) {
-    return `${head}（⚠️ 比素材还小，等于缩小。竖屏素材建议改选 2K 或 4K）`;
-  }
-  return `${head}（放大 ${k.toFixed(2)} 倍）。${base}`;
+  const target = UPSCALE_TARGETS.find((item) => item.value === params.upscale_target) || UPSCALE_TARGETS[1];
+  if (!video) return `分辨率档位按「短边」算（与视频生成模块一致）。${base}`;
+  const box = fitBoxForShortSide({ width: video.width, height: video.height }, target.shortSide);
+  if (!box) return base;
+  const k = target.shortSide / Math.min(video.width, video.height);
+  const head = `素材 ${video.width}×${video.height} → 输出 ${box.width}×${box.height}`;
+  if (k < 1) return `${head}（比素材小）。${base}`;
+  return `${head}（${target.label} = 短边 ${target.shortSide}，放大 ${k.toFixed(2)} 倍）。${base}`;
 }
 function renderAttachments() {
   els.attachments.innerHTML = "";
@@ -1197,15 +1238,20 @@ async function buildPayload() {
     // 网关 read_json_body 上限 200MB，而 base64 会把体积放大 4/3 —— 输入超过 120MB
     // 就会被网关判成 invalid content-length，这里提前拦下并给可操作的提示。
     if (videos[0].file.size > UPSCALE_MAX_INPUT_BYTES) throw new Error(`视频超分输入过大（${(videos[0].file.size / 1024 / 1024).toFixed(0)}MB，上限 120MB），请先剪短或压缩`);
-    const target = UPSCALE_TARGETS.find((item) => item.value === params.upscale_target) || UPSCALE_TARGETS[0];
+    const target = UPSCALE_TARGETS.find((item) => item.value === params.upscale_target) || UPSCALE_TARGETS[1];
+    // 档位按「短边」解释，输出框由网关用真实素材尺寸算（权威）。这里同时把前端
+    // 自己探到的尺寸算成框传过去，只作为网关读不到素材时的兜底。
+    const fallbackBox = videos[0].width
+      ? fitBoxForShortSide({ width: videos[0].width, height: videos[0].height }, target.shortSide)
+      : null;
     return {
       endpoint: `${localModuleBase("video_upscale")}/jobs/json`, app: "local-ai", base: LOCAL_AI_MOUNT, jobPath: "/api/video_upscale/jobs",
       payload: {
         values: {
           provider: "comfyui_local",
           upscale_model: model.defaults?.upscale_model || model.variants?.[0]?.id || "flashvsr_v1.1_full_3b",
-          target_width: target.width,
-          target_height: target.height,
+          target_short_side: target.shortSide,
+          ...(fallbackBox ? { target_width: fallbackBox.width, target_height: fallbackBox.height } : {}),
           crf: Number(params.crf),
           repeat_count: 1,
           concurrency: 1,
