@@ -283,6 +283,30 @@ def _legacy_config_scope(ws_id: str) -> str | None:
     return legacy if legacy.startswith("u_") and legacy != ws_id else None
 
 
+def _media_scope_candidates(primary_scope: str, raw_ws: str = "") -> list[str]:
+    """Scopes to search for legacy saved media.
+
+    Order: new isolated scope -> raw browser workspace -> legacy per-user scope.
+    The raw workspace fallback keeps pre-isolation reference images readable.
+    """
+    scopes: list[str] = []
+    for scope in (primary_scope, raw_ws, _legacy_config_scope(primary_scope)):
+        if scope and scope not in scopes:
+            scopes.append(scope)
+    return scopes
+
+
+def _resolve_media_path(stored: str, primary_scope: str, raw_ws: str = "") -> Path | None:
+    name = Path(str(stored or "")).name
+    if not name:
+        return None
+    for scope in _media_scope_candidates(primary_scope, raw_ws):
+        path = _ws_media_dir(scope) / name
+        if path.exists():
+            return path
+    return None
+
+
 APP_NAME = "nano-banana"
 PORTAL_INTERNAL_TOKEN = os.environ.get("PORTAL_INTERNAL_TOKEN", "")
 PORTAL_PORT_FOR_CALLBACK = int(os.environ.get("PORTAL_PORT", "9090"))
@@ -1018,27 +1042,29 @@ def read_preset(ws_id: str = "localhost") -> dict[str, Any]:
     return {"values": {}, "media": {}}
 
 
-def preset_to_client(data: dict[str, Any], ws_id: str = "localhost") -> dict[str, Any]:
+def preset_to_client(data: dict[str, Any], ws_id: str = "localhost", raw_ws: str = "") -> dict[str, Any]:
     media = {}
     media_dir = _ws_media_dir(ws_id)
     for field, item in data.get("media", {}).items():
-        path = media_dir / item.get("stored", "")
-        if path.exists():
-            stored = path.name
+        stored = Path(str(item.get("stored", ""))).name
+        path = media_dir / stored if stored else None
+        if path is not None and not path.exists():
+            path = _resolve_media_path(stored, ws_id, raw_ws)
+        if path is not None and path.exists():
             media[field] = {
                 "filename": item.get("filename", path.name),
                 "mime": item.get("mime", mimetypes.guess_type(path.name)[0] or "image/png"),
-                "stored": stored,
-                "url": f"/api/media/{urllib.parse.quote(stored)}?ws={ws_id}&v={int(path.stat().st_mtime)}",
+                "stored": path.name,
+                "url": f"/api/media/{urllib.parse.quote(path.name)}?ws={raw_ws or ws_id}&v={int(path.stat().st_mtime)}",
             }
     return {"values": data.get("values", {}), "media": media}
 
 
-def preset_for_client(ws_id: str = "localhost") -> dict[str, Any]:
-    return preset_to_client(read_preset(ws_id), ws_id)
+def preset_for_client(ws_id: str = "localhost", raw_ws: str = "") -> dict[str, Any]:
+    return preset_to_client(read_preset(ws_id), ws_id, raw_ws)
 
 
-def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, bytes]], prefix: str, ws_id: str = "localhost", source_media_scope: str = "") -> dict[str, Any]:
+def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, bytes]], prefix: str, ws_id: str = "localhost", source_media_scope: str = "", raw_ws: str = "") -> dict[str, Any]:
     safe_values = {
         key: value for key, value in values.items()
         if key not in {"saved_media", "_auto_seed_base", "api_key", "api_key_override"}
@@ -1046,7 +1072,7 @@ def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, by
     media: dict[str, Any] = {}
     media_dir = _ws_media_dir(ws_id)
     media_dir.mkdir(parents=True, exist_ok=True)
-    source_media_dir = _ws_media_dir(source_media_scope) if source_media_scope else media_dir
+    source_media_scope = source_media_scope or ws_id
     try:
         saved_media = json.loads(str(values.get("saved_media") or "{}"))
     except Exception:
@@ -1058,9 +1084,11 @@ def copy_files_to_restore(values: dict[str, Any], files: dict[str, tuple[str, by
             stored = Path(str(item.get("stored", ""))).name
             if not stored:
                 continue
-            source_path = source_media_dir / stored
+            source_path = _resolve_media_path(stored, source_media_scope, raw_ws)
             destination_path = media_dir / stored
-            if source_path.exists() and source_path.resolve() != destination_path.resolve():
+            if source_path is None:
+                continue
+            if source_path.resolve() != destination_path.resolve():
                 shutil.copyfile(source_path, destination_path)
             if not destination_path.exists():
                 continue
@@ -1126,19 +1154,18 @@ def _backlog_remove_locked(job_id: str) -> None:
         _backlog_save(backlog)
 
 
-def _files_from_restore(restore: dict[str, Any], ws_id: str) -> dict[str, tuple[str, bytes]]:
+def _files_from_restore(restore: dict[str, Any], ws_id: str, raw_ws: str = "") -> dict[str, tuple[str, bytes]]:
     """copy_files_to_restore 的逆操作：从落盘的素材文件重建 files 字典。"""
     files: dict[str, tuple[str, bytes]] = {}
     media = (restore or {}).get("media") or {}
     if not isinstance(media, dict):
         return files
-    media_dir = _ws_media_dir(ws_id)
     for key, item in media.items():
         if key not in FILE_FIELDS or not isinstance(item, dict):
             continue
         stored = Path(str(item.get("stored", ""))).name
-        path = media_dir / stored
-        if not stored or not path.exists():
+        path = _resolve_media_path(stored, ws_id, raw_ws)
+        if not stored or path is None:
             continue
         try:
             files[key] = (str(item.get("filename") or stored), path.read_bytes())
@@ -1164,10 +1191,11 @@ def retry_job(job_id: str) -> str:
     # restore 有意剥离 api_key：重放时回填服务端统一配置（与原提交逻辑一致）
     values.setdefault("api_key", resolve_provider_api_key(str(values.get("provider") or "")))
     ws_id = str((act or {}).get("workspace_id") or "localhost")
-    files = _files_from_restore(restore, ws_id)
     username = str((act or {}).get("username") or "")
+    media_scope = _config_scope_for(ws_id, username)
+    files = _files_from_restore(restore, media_scope, ws_id)
     return create_job(values, files, source="retry", request_kind="retry",
-                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username, media_scope=_config_scope_for(ws_id, username))
+                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username, media_scope=media_scope)
 
 
 def recover_backlog() -> tuple[int, int]:
@@ -1201,7 +1229,7 @@ def recover_backlog() -> tuple[int, int]:
             values.setdefault("api_key", resolve_provider_api_key(str(values.get("provider") or "")))
             ws_id = str(meta.get("ws_id") or "localhost")
             media_scope = _config_scope_for(ws_id, str(meta.get("username") or ""))
-            files = _files_from_restore(restore, ws_id)
+            files = _files_from_restore(restore, media_scope, ws_id)
             # 排队中/运行中统一语义（2026-09-09 用户确认）：
             # 重启后原 job_id 重新入队、自动继续跑，活动记录保持 running——
             # 重启前后用户无感。failed/succeeded 的任务由上方终态守卫保护。
@@ -1333,7 +1361,7 @@ def parse_saved_media(form: cgi.FieldStorage | dict[str, Any]) -> dict[str, Any]
         return {}
 
 
-def get_file_or_saved(form: cgi.FieldStorage | dict[str, Any], name: str, ws_id: str = "localhost") -> tuple[str, bytes] | None:
+def get_file_or_saved(form: cgi.FieldStorage | dict[str, Any], name: str, ws_id: str = "localhost", raw_ws: str = "") -> tuple[str, bytes] | None:
     uploaded = get_file(form, name)
     if uploaded:
         return uploaded
@@ -1341,18 +1369,17 @@ def get_file_or_saved(form: cgi.FieldStorage | dict[str, Any], name: str, ws_id:
     if not isinstance(saved, dict):
         return None
     stored = Path(str(saved.get("stored", ""))).name
-    if stored:
-        path = _ws_media_dir(ws_id) / stored
-        if path.exists():
-            return (saved.get("filename", path.name), path.read_bytes())
+    path = _resolve_media_path(stored, ws_id, raw_ws)
+    if path is not None:
+        return (saved.get("filename", path.name), path.read_bytes())
     item = read_preset(ws_id).get("media", {}).get(name)
     if not item:
         return None
-    path = _ws_media_dir(ws_id) / item.get("stored", "")
-    return (item.get("filename", path.name), path.read_bytes()) if path.exists() else None
+    path = _resolve_media_path(str(item.get("stored", "")), ws_id, raw_ws)
+    return (item.get("filename", path.name), path.read_bytes()) if path is not None else None
 
 
-def collect_media_from_form(form: cgi.FieldStorage, ws_id: str = "localhost") -> dict[str, Any]:
+def collect_media_from_form(form: cgi.FieldStorage, ws_id: str = "localhost", raw_ws: str = "") -> dict[str, Any]:
     preset = read_preset(ws_id)
     active_media = preset.get("media", {})
     saved_media = parse_saved_media(form)
@@ -1362,7 +1389,15 @@ def collect_media_from_form(form: cgi.FieldStorage, ws_id: str = "localhost") ->
         if not isinstance(item, dict):
             continue
         stored = Path(str(item.get("stored", ""))).name
-        if stored and (media_dir / stored).exists():
+        source_path = _resolve_media_path(stored, ws_id, raw_ws)
+        if source_path is not None:
+            media_dir.mkdir(parents=True, exist_ok=True)
+            destination_path = media_dir / stored
+            if source_path.resolve() != destination_path.resolve():
+                try:
+                    shutil.copyfile(source_path, destination_path)
+                except OSError:
+                    pass
             media[key] = {
                 "filename": item.get("filename", stored),
                 "stored": stored,
@@ -1387,13 +1422,13 @@ def collect_media_from_form(form: cgi.FieldStorage, ws_id: str = "localhost") ->
     return media
 
 
-def collect_workspace_snapshot_from_form(form: cgi.FieldStorage, ws_id: str = "localhost") -> dict[str, Any]:
+def collect_workspace_snapshot_from_form(form: cgi.FieldStorage, ws_id: str = "localhost", raw_ws: str = "") -> dict[str, Any]:
     values = {key: get_field(form, key) for key in VALUE_FIELDS if key in form and not getattr(form[key], "filename", None)}
-    return {"values": values, "media": collect_media_from_form(form, ws_id)}
+    return {"values": values, "media": collect_media_from_form(form, ws_id, raw_ws)}
 
 
-def collect_preset_from_form(form: cgi.FieldStorage, ws_id: str = "localhost") -> dict[str, Any]:
-    return collect_workspace_snapshot_from_form(form, ws_id)
+def collect_preset_from_form(form: cgi.FieldStorage, ws_id: str = "localhost", raw_ws: str = "") -> dict[str, Any]:
+    return collect_workspace_snapshot_from_form(form, ws_id, raw_ws)
 
 
 def write_active_preset(preset: dict[str, Any], ws_id: str) -> None:
@@ -1746,7 +1781,7 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
     # 会往 workspace 素材目录写盘）必须在作业入库之前做完。否则「已入库、线程
     # 未起」会留下永远 queued/total=0 的僵尸任务，前端只看到一次 400，
     # 队列里却挂着不动、取消也没用。
-    restore_payload = copy_files_to_restore(values, files, activity_id, ws_id, source_media_scope)
+    restore_payload = copy_files_to_restore(values, files, activity_id, ws_id, source_media_scope, ws_id)
     with LOCK:
         JOBS[job_id] = {
             "id": job_id, "status": "queued", "events": [], "results": [], "errors": [],
@@ -2929,7 +2964,7 @@ class Handler(SimpleHTTPRequestHandler):
             json_response(self, 200, request_template())
             return
         if self.path == "/api/preset":
-            json_response(self, 200, preset_for_client(_config_scope(self)))
+            json_response(self, 200, preset_for_client(_config_scope(self), _workspace_id(self)))
             return
         if self.path == "/api/archives":
             json_response(self, 200, {"archives": list_archives(self)})
@@ -2959,13 +2994,7 @@ class Handler(SimpleHTTPRequestHandler):
             ws = _config_scope(self)
             item = read_preset(ws).get("media", {}).get(field)
             stored_name = Path(item.get("stored", "")).name if item else ""
-            path = _ws_media_dir(ws) / stored_name if stored_name else None
-            if (path) and not path.exists():
-                legacy = _legacy_config_scope(ws)
-                if legacy:
-                    legacy_path = _ws_media_dir(legacy) / stored_name
-                    if legacy_path.exists():
-                        path = legacy_path
+            path = _resolve_media_path(stored_name, ws, _workspace_id(self))
             if not item or not path or not path.exists():
                 json_response(self, 404, {"error": "media not found"})
                 return
@@ -2984,14 +3013,8 @@ class Handler(SimpleHTTPRequestHandler):
             raw_name = urllib.parse.urlparse(self.path).path.rsplit("/", 1)[-1]
             stored = Path(urllib.parse.unquote(raw_name)).name
             ws = _config_scope(self)
-            path = _ws_media_dir(ws) / stored
-            if (path) and not path.exists():
-                legacy = _legacy_config_scope(ws)
-                if legacy:
-                    legacy_path = _ws_media_dir(legacy) / stored
-                    if legacy_path.exists():
-                        path = legacy_path
-            if not path.exists():
+            path = _resolve_media_path(stored, ws, _workspace_id(self))
+            if path is None:
                 json_response(self, 404, {"error": "media not found"})
                 return
             self.send_response(200)
@@ -3185,18 +3208,20 @@ class Handler(SimpleHTTPRequestHandler):
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
             try:
                 ws = _config_scope(self)
-                json_response(self, 200, preset_to_client(collect_workspace_snapshot_from_form(form, ws), ws))
+                raw_ws = _workspace_id(self)
+                json_response(self, 200, preset_to_client(collect_workspace_snapshot_from_form(form, ws, raw_ws), ws, raw_ws))
             except Exception as exc:
                 json_response(self, 500, {"error": str(exc)})
             return
         if self.path == "/api/preset":
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
             ws = _config_scope(self)
-            preset = collect_preset_from_form(form, ws)
+            raw_ws = _workspace_id(self)
+            preset = collect_preset_from_form(form, ws, raw_ws)
             write_active_preset(preset, ws)
             archive_name = get_field(form, "archive_name")
             archive = save_archive_file(archive_name, preset, ws).name if archive_name.strip() else None
-            data = preset_for_client(ws)
+            data = preset_for_client(ws, raw_ws)
             data["archive"] = archive
             data["archives"] = list_archives(self)
             json_response(self, 200, data)
@@ -3410,17 +3435,16 @@ class Handler(SimpleHTTPRequestHandler):
                 json_response(self, 400, api_error("invalid_request", "API key is required"))
                 return
             values["api_key"] = api_key
-        files = {}
-        for key in form.keys():
-            item = form[key]
-            if getattr(item, "filename", None):
-                blob = item.file.read()
-                if blob:
-                    files[key] = (Path(item.filename).name, blob)
-        request_data = summarize_values_files(values, files)
         ws = _workspace_id(self)
+        media_scope = _config_scope(self)
+        files = {}
+        for key in FILE_FIELDS:
+            file_data = get_file_or_saved(form, key, media_scope, ws)
+            if file_data:
+                files[key] = file_data
+        request_data = summarize_values_files(values, files)
         try:
-            job_id = create_job(values, files, "page", "multipart", request_data, ws, username=_decode_username(self), media_scope=_config_scope(self))
+            job_id = create_job(values, files, "page", "multipart", request_data, ws, username=_decode_username(self), media_scope=media_scope)
         except Exception as exc:
             json_response(self, 400, api_error("invalid_request", str(exc)))
             return
