@@ -1581,7 +1581,13 @@ function renderHistory() {
   const successes = (activeConversation()?.tasks || []).filter(
     (task) => task.resultUrl || RUNNING.has(String(task.status || "").toLowerCase()),
   );
-  const shown = successes.slice(-HISTORY_RENDER_LIMIT);
+  //: 历史条按【创建时间】升序排（左旧右新），不再依赖数组顺序 ——
+  //: 用户 2026-09-21：「另外一个任务的历史记录完全混乱了」。原来卡片显示的是
+  //: `updatedAt`（每次轮询/状态变化都会变），所以时间和顺序对不上，看着就乱。
+  const ordered = [...successes].sort(
+    (a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0),
+  );
+  const shown = ordered.slice(-HISTORY_RENDER_LIMIT);
   //: 渲染签名：内容没变就**不重建 DOM**。
   //:
   //: 用户 2026-09-21：「正在生成的时候历史记录下面一直在跳」。原因是生成期间
@@ -1633,7 +1639,8 @@ function renderHistory() {
     //: 标题只取前 10 个字就够（用户 2026-09-21：「我想的是标题展示大约十个字的长度就够了」）。
     //: 以前取 28 个字，配合 flex 子项默认的 min-width:auto，会把卡片顶宽、把缩略图挤没。
     node.querySelector("strong").textContent = task.prompt.slice(0, 10);
-    node.querySelector("small").textContent = formatTime(task.updatedAt);
+    //: 用【创建时间】而不是更新时间：更新时间每次轮询都会变，卡片上的时间会跳。
+    node.querySelector("small").textContent = formatTime(task.createdAt || task.updatedAt);
     // 历史卡片只负责"切到这一版"。**不在这里放「继续修改」**（用户 2026-09-21 要求去掉）；
     // 要改某一版：先点这条历史选中它，再点工具条的「继续修改」；或用视频模型里的
     // 「Seedance 2.5 · 视频编辑」自己上传原视频。
