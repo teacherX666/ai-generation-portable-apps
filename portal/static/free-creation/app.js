@@ -505,6 +505,11 @@ async function reconcileRunningTasks() {
         const urls = (Array.isArray(result.download_urls) ? result.download_urls : []).map((url) => absoluteMediaUrl(base, url)).filter(Boolean);
         task.resultUrls = urls.length ? urls : [task.resultUrl];
         task.resultName = result.filename || task.resultName;
+        //: 刷新页面后重新对齐任务状态时，也要把「模型没改」的标记捞回来
+        //: （否则历史卡片上的 ⚠ 未改动 会在刷新后消失）。
+        task.editNoopNote = result.edit_noop
+          ? (result.edit_noop_note || "模型没有对画面做出可见修改（产物与原片几乎一致）。")
+          : (task.editNoopNote || "");
       }
       task.updatedAt = Date.now();
     } catch {
@@ -1325,6 +1330,13 @@ async function buildPayload() {
         model: model.modelId || model.id,
         prompt,
         task_mode: hasEditVideo ? "edit" : "reference",
+        //: Seedance 2.5 的**任务类型引导**（auto / edit / extend），官方文档「配置方法」第一条。
+        //: 不下发它时方舟只能靠提示词猜任务类型：2026-09-22 实测 8 条编辑任务里 7 条被
+        //: 判成了「参考生视频」→ 产物与原片逐帧一致（241 帧全同、同帧差 3.9/255、饱和度
+        //: ±2），用户反馈「完全就是返回的原视频」。对照实验（同素材同提示词，只加这一个
+        //: 参数）：同帧差 mean 3.91 → 17.65、max 7.21 → 51.85，画面真的被改了。
+        //: 后端 seedance/app.py 也会按 task_mode=edit 兜底补上，这里显式发一次是双保险。
+        omni_reference_task_type: hasEditVideo ? "edit" : "auto",
         duration: hasEditVideo ? -1 : Number(params.duration),
         ratio: hasEditVideo ? "adaptive" : params.ratio,
         resolution: params.resolution,
@@ -1436,9 +1448,16 @@ async function pollTask(task) {
       const urls = (Array.isArray(result.download_urls) ? result.download_urls : []).map((url) => absoluteMediaUrl(base, url)).filter(Boolean);
       task.resultUrls = urls.length ? urls : [task.resultUrl];
       task.resultName = result.filename || `${task.mode === "video" ? "video" : "image"}-${task.id.slice(0, 8)}`;
+      //: 「视频编辑」最坑的失败模式是**静默返回原片**：任务成功、能播、用户看不出变化。
+      //: 后端会拿产物和原片做同帧抽样比对，差得太小就带 edit_noop 上来，这里必须说出来
+      //: （用户 2026-09-22：「完全就是返回的原视频，我说的内容他是一点没改」）。
+      task.editNoopNote = result.edit_noop
+        ? (result.edit_noop_note || "模型没有对画面做出可见修改（产物与原片几乎一致）。")
+        : "";
     }
     if (TERMINAL_SUCCESS.has(status) || (status === "partial" && task.resultUrl)) {
       task.status = "success"; task.updatedAt = Date.now();
+      if (task.editNoopNote) toast(task.editNoopNote, "error");
       if (task.editSourceTaskId && task.editSourceTaskId === state.editSourceTaskId) clearEditContext({ render: false });
       saveStore(); renderPreview(); renderConversations(); renderParamSummary(); renderHistory(); return;
     }
@@ -1614,7 +1633,7 @@ function renderHistory() {
   //: reconcileRunningTasks 每 5 秒一次，只要有任何进度变化就整块重建：`<video>`
   //: 被重新创建（重新拉流、闪一下），入场动画 `fc-strip` 也每 5 秒重播一次。
   const signature = shown
-    .map((task) => [task.id, task.status, task.resultUrl, task.id === state.activeTaskId].join("|"))
+    .map((task) => [task.id, task.status, task.resultUrl, task.editNoopNote ? "noop" : "", task.id === state.activeTaskId].join("|"))
     .join(";");
   if (renderSignature.history === signature && renderSignature.historyOpen === stripOpenNow()) return;
   const known = renderSignature.historyIds || new Set();
@@ -1665,6 +1684,16 @@ function renderHistory() {
     node.querySelector("strong").textContent = historyTitle(task);
     //: 用【创建时间】而不是更新时间：更新时间每次轮询都会变，卡片上的时间会跳。
     node.querySelector("small").textContent = formatTime(task.createdAt || task.updatedAt);
+    //: 「模型没改」的编辑任务要在历史里一眼认出来，否则用户点回去还是看不出差别
+    //: （2026-09-22 用户反馈）。完整原因放 title，卡片上只挂一个短标记。
+    if (task.editNoopNote) {
+      node.classList.add("is-noop");
+      node.title = task.editNoopNote;
+      const flag = document.createElement("span");
+      flag.className = "fc-noop-flag";
+      flag.textContent = "⚠ 未改动";
+      node.querySelector(".fc-history-copy").append(flag);
+    }
     // 历史卡片只负责"切到这一版"。**不在这里放「继续修改」**（用户 2026-09-21 要求去掉）；
     // 要改某一版：先点这条历史选中它，再点工具条的「继续修改」；或用视频模型里的
     // 「Seedance 2.5 · 视频编辑」自己上传原视频。

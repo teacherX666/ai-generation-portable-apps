@@ -1996,6 +1996,15 @@ body,
 /* 老条目重建时不再播入场动画（否则生成期间每 5 秒重播一次 = 看起来一直在跳） */
 .fc-history-card.fc-no-enter { animation: none; }
 
+/* 「视频编辑」静默返回原片时的标记（2026-09-22 用户反馈「完全就是返回的原视频」）。
+   后端用同帧像素差判定，产物与原片差 < 6/255（重编码噪声量级）就挂这个标记 —— 
+   否则用户点开历史只会看到两条一模一样的视频，完全不知道哪条是"白跑了"。 */
+.fc-history-copy .fc-noop-flag {
+  display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #d97706; font-size: 9px; font-weight: 600;
+}
+.fc-history-card.is-noop { border-color: color-mix(in srgb, #d97706 34%, transparent); }
+
 /* 历史条：滚动条要看得见（用户 2026-09-21：「历史记录没有滑动条，无法切到后面的视频」）。
    原来是 scrollbar-width: thin + 深色主题，Windows 上几乎不可见。 */
 .fc-history-strip { overflow-x: auto; overflow-y: hidden; scrollbar-color: rgba(154,158,170,.85) rgba(154,158,170,.16); }

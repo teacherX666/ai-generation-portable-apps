@@ -100,6 +100,10 @@ function buildContext() {
       if (!registry.has(sel)) registry.set(sel, sel.includes('template') ? makeTemplate() : new FakeElement());
       return registry.get(sel);
     },
+    // app.js 后面加了 getElementById 的调用（超分提示 #upscale-fit-hint、popover），
+    // 这个假 DOM 一直没跟上 → 本文件三条用例长期报 "document.getElementById is not a
+    // function"。补一个把 '#id' 归一成 querySelector 的写法，语义与真 DOM 一致。
+    getElementById(id) { return doc.querySelector(`#${id}`); },
     querySelectorAll() { return []; },
     createElement: (tag) => new FakeElement(tag),
     addEventListener(type, fn) { (doc.listeners[type] = doc.listeners[type] || []).push(fn); },
@@ -149,6 +153,10 @@ function buildContext() {
     return {
       ok: true,
       status: 200,
+      // 「继续修改」现在会读 content-length 决定要不要提示"大文件载入中"
+      // （2026-09-21 加），假响应缺 headers 会抛 TypeError → 被 catch 吞掉 →
+      // 永远进不了编辑态（本文件两条用例长期失败的真凶）。
+      headers: { get: () => null },
       blob: async () => ({ type: 'video/mp4', size: 1024 }),
       json: async () => ({}),
     };
@@ -303,11 +311,63 @@ export async function testSubmitAfterLostEditContextIsNotPlainGeneration() {
   );
 }
 
+// ── 编辑态提交必须把任务类型钉死成 edit（2026-09-22「返回原视频」事故）────────
+export async function testEditSubmitPinsOmniTaskType() {
+  const { context, calls } = buildContext();
+  await flush(); await flush();
+  seedSuccessfulVideoTask(context);
+
+  await enterEditMode(context);
+  assert.equal(read(context, 'state.editSourceTaskId'), 'src-task-1', '应进入编辑态');
+  vm.runInContext(`els.prompt.value += '\u628a\u732b\u6362\u6210\u72d7';`, context);
+
+  vm.runInContext(`els.generate.dispatch('click')`, context);
+  await flush(); await flush(); await flush();
+
+  const submit = calls.posts.filter((p) => p.url === '/seedance/api/jobs/json').pop();
+  assert.ok(submit, '应发出一次编辑提交');
+  // 方舟 Seedance 2.5 靠这个字段判定任务类型。不下发它时实测 8 条编辑任务里 7 条被
+  // 判成「参考生视频」，产物与原片逐帧一致（同帧差 3.9/255）—— 用户看到的就是
+  // 「完全就是返回的原视频」。同素材同提示词加上它之后：3.91 → 17.65，画面真的改了。
+  assert.equal(submit.body.omni_reference_task_type, 'edit',
+    '编辑提交必须显式下发 omni_reference_task_type=edit');
+  assert.equal(submit.body.task_mode, 'edit');
+  assert.equal(submit.body.duration, -1, '编辑任务时长必须 -1（跟随原视频）');
+  assert.equal(submit.body.ratio, 'adaptive', '编辑任务比例必须 adaptive');
+  assert.ok(submit.body.media && submit.body.media.ref_video_1, '原视频要作为参考视频带上');
+}
+
+// ── 「模型没改」的编辑任务要在历史里挂 ⚠ 标记（后端 edit_noop）────────────────
+export async function testNoopEditGetsHistoryFlag() {
+  const { context } = buildContext();
+  await flush(); await flush();
+  seedSuccessfulVideoTask(context);
+  vm.runInContext(`
+    activeConversation().tasks[0].editNoopNote =
+      '模型没有对画面做出可见修改（产物与原片同帧差仅 4.4/255，属于重编码噪声）。';
+    renderHistory();
+  `, context);
+
+  // 假 DOM 的 `innerHTML = ""` 不会真的清 children（真 DOM 会），所以这里取**最后**一张
+  // 卡片，也就是本次 renderHistory() 刚追加的那张。
+  const card = read(context, 'els.historyStrip.children[els.historyStrip.children.length - 1]');
+  assert.ok(card, '历史条应渲染出卡片');
+  assert.ok(card.classList.contains('is-noop'), '未改动的编辑任务卡片要带 is-noop');
+  assert.ok(String(card.title || '').includes('没有对画面做出可见修改'),
+    '卡片 title 要能解释原因');
+  const flag = card.querySelector('.fc-history-copy').children.find(
+    (child) => child.className === 'fc-noop-flag');
+  assert.ok(flag, '卡片上要挂 ⚠ 未改动 标记');
+  assert.equal(flag.textContent, '\u26a0 \u672a\u6539\u52a8');
+}
+
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('test_free_creation_edit_exit.mjs')) {
   const tests = [
     ['移除源素材不泄漏编辑残片', testSourceRemovalDoesNotLeakEditFragment],
     ['切换历史缩略图不泄漏编辑残片', testHistorySwitchDoesNotLeakEditFragment],
     ['编辑态丢失后提交的不是普通生成', testSubmitAfterLostEditContextIsNotPlainGeneration],
+    ['编辑提交钉死 omni_reference_task_type=edit', testEditSubmitPinsOmniTaskType],
+    ['未改动的编辑任务在历史里挂 ⚠ 标记', testNoopEditGetsHistoryFlag],
   ];
   let failed = 0;
   for (const [name, fn] of tests) {

@@ -16,6 +16,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -688,6 +689,10 @@ VALUE_FIELDS = {
     "vary_seed",
     "output_name",
     "task_mode",
+    #: Seedance 2.5 全模态参考任务的任务类型引导（auto / edit / extend）。
+    #: 2026-09-22 修「视频编辑返回原视频」：不下发它时方舟只能靠提示词猜任务类型，
+    #: 实测猜不出「视频编辑」→ 产物与原片逐帧一致（同帧差 3.9/255 ≈ 重编码噪声）。
+    "omni_reference_task_type",
     "prompt",
 }
 
@@ -2034,6 +2039,67 @@ def extract_video_url(data: dict[str, Any]) -> str | None:
     return None
 
 
+def edit_output_looks_unchanged(input_blob: bytes, out_path: Path, samples: int = 16) -> float | None:
+    """编辑任务的产物和输入原片到底差多少（同帧平均像素差，0~255）。
+
+    「视频编辑」最坑的失败模式不是报错，而是**静默返回原片**：任务 succeeded、
+    产物能播、用户却看不出任何变化（2026-09-22 用户原话「完全就是返回的原视频」）。
+    这里给产物和输入做同帧抽样比对，用来在结果里挂一句人话提示。
+
+    判据（实测标定）：重编码噪声约 3~5/255，真实局部编辑 ≥15/255（对照实验：
+    没改 mean 3.91、改了 mean 17.65）。返回 None 表示读不出来（不阻断任务）。
+    只用于 volcengine 的编辑任务，且失败一律静默——这只是"顺手提醒"。
+    """
+    try:
+        import cv2  # 延迟导入：只有编辑任务才付这个启动开销
+        import numpy as np
+    except Exception:
+        return None
+    try:
+        cv2.setLogLevel(0)  # 垃圾输入时别往服务日志里喷 ffmpeg 噪音
+    except Exception:
+        pass
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+            tmp.write(input_blob)
+            tmp_path = Path(tmp.name)
+        cap_in = cv2.VideoCapture(str(tmp_path))
+        cap_out = cv2.VideoCapture(str(out_path))
+        if not cap_in.isOpened() or not cap_out.isOpened():
+            return None
+        total = int(cap_in.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if total <= 0:
+            return None
+        step = max(1, total // max(1, samples))
+        diffs: list[float] = []
+        for index in range(0, total, step):
+            cap_in.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok_in, frame_in = cap_in.read()
+            cap_out.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok_out, frame_out = cap_out.read()
+            if not (ok_in and ok_out):
+                continue
+            small_in = cv2.resize(frame_in, (240, 135)).astype("float32")
+            small_out = cv2.resize(frame_out, (240, 135)).astype("float32")
+            diffs.append(float(np.abs(small_in - small_out).mean()))
+        cap_in.release()
+        cap_out.release()
+        return sum(diffs) / len(diffs) if diffs else None
+    except Exception:
+        return None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+#: 低于这个同帧差就认为"模型没有做出可见修改"（重编码噪声上限 ~6/255）。
+EDIT_NOOP_DIFF = 6.0
+
+
 def download_video(url: str, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(
@@ -2385,6 +2451,7 @@ def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index
     has_frame_input = False
     has_reference_input = False
     has_visual_reference = False
+    has_video_reference = False
 
     first = get_file_or_saved(form, "first_frame", ws_id)
     if first:
@@ -2432,6 +2499,7 @@ def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index
             continue
         has_reference_input = True
         has_visual_reference = True
+        has_video_reference = True
         filename, blob = file_data
         mime = mimetypes.guess_type(filename)[0] or "video/mp4"
         ref = media_reference(provider, base_url, api_key, blob, filename, mime, request_host=request_host)
@@ -2472,7 +2540,60 @@ def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index
             raise RuntimeError("豆包官方 API 不允许首尾帧与参考图/视频/音频混用，请二选一提交。")
         if has_reference_input and not has_visual_reference:
             raise RuntimeError("豆包官方 API 不允许单独输入参考音频，请至少加入 1 个参考图或参考视频。")
+        apply_omni_task_type(form, payload, has_video_reference, notes)
     return payload
+
+
+#: 方舟 Seedance 2.5 全模态参考任务的任务类型引导值（官方文档「配置方法」）。
+OMNI_TASK_TYPES = {"auto", "edit", "extend"}
+
+
+def apply_omni_task_type(form: "cgi.FieldStorage", payload: dict[str, Any],
+                         has_video_reference: bool, notes: list[str] | None = None) -> None:
+    """下发 omni_reference_task_type，把「视频编辑 / 视频延长」钉死。
+
+    **为什么必须下发**（2026-09-22 生产事故，用户反馈「视频编辑完全就是返回原视频」）：
+
+    官方文档《Doubao Seedance 2.5 教程》「任务类型与限制」写明：Seedance 2.5 会
+    *根据输入素材和提示词意图判断任务类型*；视频编辑的触发条件是「content 中至少
+    包含一个 role 为 reference_video 的参考视频，**并通过提示词表达编辑意图**」。
+    不下发 omni_reference_task_type 时只能靠提示词猜——实测 8 条编辑任务里 7 条
+    猜不出编辑意图，产物与原片逐帧一致（241 帧全同、同帧差 3.9/255 ≈ 重编码噪声、
+    饱和度 ±2 以内），只有「整段变黑白」那条猜中了。
+
+    对照实验（同一条素材 + 同一条提示词，唯一变量是这个参数）：
+        不下发 → 同帧差 mean 3.91 / max  7.21（等于没改）
+        下发 edit → 同帧差 mean 17.65 / max 51.85（局部真的改了，糖果球明显变多）
+
+    编辑/延长的参数硬约束（文档同页）也在这里兜住：edit 必须 ratio=adaptive +
+    duration=-1；extend 必须 ratio=adaptive。显式指定后接口会**前置校验**，参数不对
+    直接 400 —— 与其让方舟静默返回原片，不如就地改对或报错。
+    """
+    explicit = str(get_field(form, "omni_reference_task_type") or "").strip().lower()
+    if explicit and explicit not in OMNI_TASK_TYPES:
+        raise RuntimeError(
+            f"omni_reference_task_type 只能是 auto / edit / extend，收到 {explicit!r}。")
+    task_mode = str(get_field(form, "task_mode") or "").strip().lower()
+    kind = explicit or ("edit" if task_mode == "edit" else "extend" if task_mode == "extend" else "")
+    if not kind or kind == "auto":
+        return
+    if not has_video_reference:
+        # edit / extend 都要求至少一个 reference_video；没有就别硬塞（方舟会 400）。
+        return
+    if kind == "edit":
+        if payload.get("duration") != -1:
+            if notes is not None:
+                notes.append(f"视频编辑任务时长固定为 -1（由模型跟随原视频时长），已从 {payload.get('duration')} 改写。")
+            payload["duration"] = -1
+        if payload.get("ratio") != "adaptive":
+            if notes is not None:
+                notes.append(f"视频编辑任务比例固定为 adaptive，已从 {payload.get('ratio')} 改写。")
+            payload["ratio"] = "adaptive"
+    elif kind == "extend" and payload.get("ratio") != "adaptive":
+        if notes is not None:
+            notes.append(f"视频延长任务比例固定为 adaptive，已从 {payload.get('ratio')} 改写。")
+        payload["ratio"] = "adaptive"
+    payload["omni_reference_task_type"] = kind
 
 
 def content_counts(payload: dict[str, Any]) -> str:
@@ -3139,6 +3260,25 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
             FILES[file_token] = out_path
         save_files_map()
         add_event(job_id, f"Run {index}: downloaded {out_name}")
+        # 「视频编辑」静默返回原片是这套功能最坑的失败模式：任务 succeeded、能播、
+        # 但用户看不出任何变化。这里顺手比对一下产物与原片，差得太小就明说，
+        # 不要让它再以"成功"的样子糊弄用户（2026-09-22 用户反馈）。
+        edit_noop_note = ""
+        if str(form_values.get("task_mode") or "").strip().lower() == "edit":
+            try:
+                source = get_file_or_saved(form, "ref_video_1", ws_id)
+            except Exception:
+                source = None
+            if source:
+                diff = edit_output_looks_unchanged(source[1], out_path)
+                if diff is not None and diff < EDIT_NOOP_DIFF:
+                    edit_noop_note = (
+                        f"模型没有对画面做出可见修改（产物与原片同帧差仅 {diff:.1f}/255，"
+                        "属于重编码噪声）。Seedance 的视频编辑只做局部增删改（换主体/去物体/"
+                        "改颜色等）；改分镜、改剪辑结构、改运镜这类要求它做不到 —— 请改用"
+                        "「参考生视频」把原片当参考素材，或把要求改得更具体、更局部。"
+                    )
+                    add_event(job_id, f"Run {index}: 提示 —— {edit_noop_note}")
         # Ark reports the produced length back, which matters when the request
         # asked for duration=-1 (model picks the length). Portal's usage poller
         # bills seconds as done * job["duration"], so leaving -1 there would
@@ -3158,6 +3298,8 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
             "download_url": f"/api/download/{file_token}",
             "filename": out_name,
             "local_path": str(out_path),
+            "edit_noop": bool(edit_noop_note),
+            "edit_noop_note": edit_noop_note,
         }
 
 
