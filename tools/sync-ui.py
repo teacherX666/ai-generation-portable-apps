@@ -22,7 +22,7 @@ SRC = REPO / "shared-ui"
 #: 有人改进了本机副本却没回迁到共享源。正确做法是把那 4 行合并进 shared-ui 再同步，
 #: 而不是用旧源覆盖它（那会删掉一个已上线的能力）。见实施计划 Task 6。
 JS_TARGETS = {
-    "job-cards.js": ["seedance/static", "nano-banana/static"],
+    "job-cards.js": ["seedance/static", "nano-banana/static", "portal/static"],
 }
 
 #: 共享 CSS 的目标（与旧 sync-ui.sh 保持一致）

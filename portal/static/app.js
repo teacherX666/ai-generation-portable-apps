@@ -3197,6 +3197,19 @@ function VolcenginePortraitApp() {
         .filter(r => r.download_url);
       d.status = (live && live.status) || d.status;
       d.prompt = (live && live.prompt) || d.prompt || ((rec && rec.title) || '');
+      // 四格属性：字段定义取自共享库（与视频/图片生成同一份 —— 恒四格、空值显示 —）。
+      // live 优先、活动记录兜底，这样内存任务被剪枝后仍能显示。
+      const detailJob = Object.assign({}, rec || {}, live || {});
+      d.fields = window.JobCards.detailFields(detailJob, {
+        formatModel: () => params.model || '',
+        formatRuntime: (j) => {
+          const start = Number(j.started_at || j.submitted_at || 0);
+          if (!start) return '';
+          const end = Number(j.finished_at || 0);
+          const secs = Math.max(0, Math.round((end || Date.now() / 1000) - start));
+          return secs ? ('已运行 ' + secs + ' 秒') : '';
+        },
+      });
       d.loading = false;
     },
 

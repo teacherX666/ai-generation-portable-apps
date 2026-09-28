@@ -71,16 +71,17 @@
   }
 
   /**
-   * 详情弹窗的 meta 网格 HTML。
+   * 详情字段的**纯数据**形式。
    *
-   * **字段恒为四格、顺序固定**：Seed / 运行耗时 / 使用模型 / 用户。
-   * 空值一律显示 `—`，**绝不隐藏整格** —— 此前是 `if (user) push(用户)`，
-   * 于是 username 有值就 4 格、没值就 3 格，用户看到的是「每个任务都不一样」。
+   * 这是字段定义的唯一来源：命令式建 DOM 的 iframe 应用（seedance / nano-banana）
+   * 用 renderDetailHtml 把它拼成 HTML；而 Portal 用 petite-vue 声明式模板，
+   * 吃不了 HTML 串，就用 v-for 遍历这份数组。两边因此共用同一份字段定义，
+   * 不会各自演化。
    *
-   * 运行耗时由 `config.formatRuntime(job)` 提供（各应用的日期解析逻辑不同，
-   * 属"差异注入"范畴）；未注入时回退到 job 上的现成文本。
+   * 字段恒为四格、顺序固定：Seed / 运行耗时 / 使用模型 / 用户。
+   * 空值一律以 '—' 呈现，**绝不省略整格**。
    */
-  function renderDetailHtml(job, config) {
+  function detailFields(job, config) {
     var cfg = config || {};
     var values = jobRequestValues(job);
     var user = String((job && job.username) || '').trim();
@@ -93,13 +94,20 @@
     var modelText = typeof cfg.formatModel === 'function'
       ? cfg.formatModel(job)
       : String((job && job.model) || values.custom_model || values.model || '');
-    var items = [
-      { label: 'Seed', value: jobSeed(job) || '随机' },
+    return [
+      { label: 'Seed', value: jobSeed(job) || '随机', key: 'seed' },
       { label: '运行耗时', value: runtimeText || '未记录', key: 'runtime' },
-      { label: '使用模型', value: modelText || '未记录' },
-      { label: '用户', value: user || '—' }
+      { label: '使用模型', value: modelText || '未记录', key: 'model' },
+      { label: '用户', value: user || '—', key: 'user' }
     ];
-    return items.map(function (item) {
+  }
+
+  /**
+   * 详情弹窗的 meta 网格 HTML（命令式 DOM 的应用用这个）。
+   * 字段定义来自 detailFields，与 Portal 的模板渲染共用同一份。
+   */
+  function renderDetailHtml(job, config) {
+    return detailFields(job, config || {}).map(function (item) {
       return '<div class="job-detail-meta-item">'
         + '<span class="job-detail-meta-label">' + esc(item.label) + '</span>'
         + '<span class="job-detail-meta-value"' + (item.key === 'runtime' ? ' data-meta="runtime"' : '')
@@ -130,6 +138,7 @@
     isTerminal: isTerminal,
     isCancellableJob: isCancellableJob,
     jobDisplayStatus: jobDisplayStatus,
+    detailFields: detailFields,
     renderDetailHtml: renderDetailHtml,
     inferAppPath: inferAppPath,
     create: create

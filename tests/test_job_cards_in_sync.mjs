@@ -83,7 +83,7 @@ assert.match(injected, /已运行 55秒/, 'config.formatRuntime 注入应生效'
 
 // --- 契约 5：两份副本必须与共享源逐字相同 ---
 // 副本由 tools/sync-ui.py 生成；改了源忘记同步时，这里会立刻失败。
-for (const target of ['seedance/static/job-cards.js', 'nano-banana/static/job-cards.js']) {
+for (const target of ['seedance/static/job-cards.js', 'nano-banana/static/job-cards.js', 'portal/static/job-cards.js']) {
   assert.equal(
     read(target),
     src,
@@ -104,5 +104,14 @@ const withoutModel = JobCards.renderDetailHtml(
   {},
 );
 assert.match(withoutModel, /doubao-seedance-2-5-260628/, '未注入时回退到 job.model');
+
+// --- 契约 6：detailFields 是字段定义的唯一来源 ---
+// Portal 用 petite-vue 声明式模板，吃不了 HTML 串，只能 v-for 遍历这份数据。
+// 两边（HTML 渲染 / Vue 模板）必须同源，否则又回到"各写一份、各自演化"。
+const fields = JobCards.detailFields({ job_id: 'f', status: 'running' }, {});
+assert.deepEqual(fields.map((f) => f.label), EXPECTED_LABELS, 'detailFields 与 HTML 渲染必须同源');
+assert.equal(fields[3].value, '—', '无用户名时 value 是 —（该项仍在，不被省略）');
+assert.equal(fields[1].key, 'runtime', '运行耗时项带 key，供模板定位刷新');
+assert.equal(fields[0].value, '随机', 'Seed 缺失显示 随机');
 
 console.log('job cards: contract ok');

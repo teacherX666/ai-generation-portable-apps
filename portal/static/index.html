@@ -969,6 +969,15 @@
                 <span class="vp-job-tile-badge" :class="vpJobDetail.status || ''">{{ vpJobDetail.status || '?' }}</span>
                 <span class="vp-job-detail-prompt">{{ vpJobDetail.prompt || '' }}</span>
               </div>
+              <!-- 四格属性网格：与视频生成模块（seedance）的详情弹窗同款。
+                   字段由 JobCards.detailFields 定义 —— 恒四格、空值显示 —，
+                   不随 username 有无而增减。 -->
+              <div class="job-detail-meta-grid" v-if="vpJobDetail.fields && vpJobDetail.fields.length">
+                <div v-for="f in vpJobDetail.fields" :key="f.key" class="job-detail-meta-item">
+                  <span class="job-detail-meta-label">{{ f.label }}</span>
+                  <span class="job-detail-meta-value" :title="f.value">{{ f.value }}</span>
+                </div>
+              </div>
               <details class="vp-job-detail-sec" open>
                 <summary>请求参数</summary>
                 <pre class="vp-job-detail-pre">{{ vpJobDetail.reqText }}</pre>
@@ -1474,6 +1483,10 @@
   <script src="/js/portal-utils.js"></script>
   <script src="/js/portal-shell.js"></script>
   <script src="/js/model-capabilities.js"></script>
+  <!-- 共享卡片库（shared-ui/job-cards.js，由 tools/sync-ui.py 同步到本目录）。
+       人像详情的字段定义取自它的 detailFields —— 与视频/图片生成同一份，
+       这样三个模块的详情字段不会再各自演化。 -->
+  <script src="/job-cards.js"></script>
   <script src="/app.js?v=20260914-task-live-fix3"></script>
   <script src="/js/portal-enhancements.js?v=20260915-27"></script>
   <script src="/js/portal-module-registry.js"></script>
