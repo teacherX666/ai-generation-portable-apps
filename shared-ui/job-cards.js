@@ -45,10 +45,87 @@
     return raw;
   }
 
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function jobRequestValues(job) {
+    return (job && (job.params || job.form)) || ((job && job.request && job.request.values) || {});
+  }
+
+  /** 实际种子。nano-banana / seedance 目前都还没把 actual seed 回写进任务，
+   *  所以多数情况取不到 → 详情弹窗显示「随机」。等后端带上真值，这里自动生效。 */
+  function jobSeed(job) {
+    var p = jobRequestValues(job);
+    var result = (job && job.result) || {};
+    return String(p.seed || result.seed || (job && job.seed) || '').trim();
+  }
+
+  /** 从路径推断应用挂载前缀，兼容 Portal 代理与独立模式。 */
+  function inferAppPath(pathname) {
+    var p = String(pathname || (typeof location !== 'undefined' ? location.pathname : ''));
+    var m = p.match(/^\/(seedance|nano-banana|dreamina|volcengine-portrait|rag-assistant)\//);
+    return m ? '/' + m[1] : '';
+  }
+
+  /**
+   * 详情弹窗的 meta 网格 HTML。
+   *
+   * **字段恒为四格、顺序固定**：Seed / 运行耗时 / 使用模型 / 用户。
+   * 空值一律显示 `—`，**绝不隐藏整格** —— 此前是 `if (user) push(用户)`，
+   * 于是 username 有值就 4 格、没值就 3 格，用户看到的是「每个任务都不一样」。
+   *
+   * 运行耗时由 `config.formatRuntime(job)` 提供（各应用的日期解析逻辑不同，
+   * 属"差异注入"范畴）；未注入时回退到 job 上的现成文本。
+   */
+  function renderDetailHtml(job, config) {
+    var cfg = config || {};
+    var values = jobRequestValues(job);
+    var user = String((job && job.username) || '').trim();
+    var runtimeText = typeof cfg.formatRuntime === 'function'
+      ? cfg.formatRuntime(job)
+      : (job && job.runtime_text);
+    var items = [
+      { label: 'Seed', value: jobSeed(job) || '随机' },
+      { label: '运行耗时', value: runtimeText || '未记录', key: 'runtime' },
+      { label: '使用模型', value: String((job && job.model) || values.custom_model || values.model || '未记录') },
+      { label: '用户', value: user || '—' }
+    ];
+    return items.map(function (item) {
+      return '<div class="job-detail-meta-item">'
+        + '<span class="job-detail-meta-label">' + esc(item.label) + '</span>'
+        + '<span class="job-detail-meta-value"' + (item.key === 'runtime' ? ' data-meta="runtime"' : '')
+        + ' title="' + esc(item.value) + '">' + esc(item.value) + '</span>'
+        + '</div>';
+    }).join('');
+  }
+
+  /**
+   * 建一个绑定了 config 的卡片实例。
+   * 配置项全部可缺省：回调缺失时降级为 no-op，appPath 缺失时从路径推断 —— 
+   * 调用方不该因为少传一个字段就崩。
+   */
+  function create(config) {
+    var cfg = config || {};
+    if (!cfg.appPath) cfg.appPath = inferAppPath();
+    if (!cfg.thumbKind) cfg.thumbKind = 'image';
+    if (typeof cfg.openPreview !== 'function') cfg.openPreview = function () {};
+    if (typeof cfg.onCancel !== 'function') cfg.onCancel = function () {};
+    return {
+      config: cfg,
+      renderDetailHtml: function (job) { return renderDetailHtml(job, cfg); }
+    };
+  }
+
   global.JobCards = {
     TERMINAL_STATUSES: TERMINAL_STATUSES,
     isTerminal: isTerminal,
     isCancellableJob: isCancellableJob,
-    jobDisplayStatus: jobDisplayStatus
+    jobDisplayStatus: jobDisplayStatus,
+    renderDetailHtml: renderDetailHtml,
+    inferAppPath: inferAppPath,
+    create: create
   };
 })(typeof window !== 'undefined' ? window : this);

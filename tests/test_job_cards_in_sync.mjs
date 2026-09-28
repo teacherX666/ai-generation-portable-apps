@@ -44,4 +44,41 @@ assert.equal(JobCards.jobDisplayStatus({ status: 'SUCCEEDED' }), 'succeeded', '�
 assert.equal(JobCards.jobDisplayStatus({ status: 'failed', results: [{}] }), 'failed');
 assert.equal(JobCards.jobDisplayStatus(null), '', '空 job 不得抛错');
 
+// --- 契约 3：详情弹窗字段恒为四格 ---
+// 这是本次的核心修复：此前字段是 `if (user) items.push(用户)` 条件拼装的，
+// username 有值就 4 格、没值就 3 格 —— 用户看到的就是「每个任务属性个数都不一样」。
+const labelsOf = (html) => [...html.matchAll(/job-detail-meta-label">([^<]*)</g)].map((m) => m[1]);
+const EXPECTED_LABELS = ['Seed', '运行耗时', '使用模型', '用户'];
+
+const withUser = JobCards.renderDetailHtml(
+  { job_id: 'a', status: 'succeeded', username: 'alice', params: { seed: '42', model: 'm1' } },
+  { appPath: '' },
+);
+assert.deepEqual(labelsOf(withUser), EXPECTED_LABELS, '有用户名时四格');
+
+const noUser = JobCards.renderDetailHtml(
+  { job_id: 'b', status: 'succeeded', params: { model: 'm1' } },
+  { appPath: '' },
+);
+assert.deepEqual(labelsOf(noUser), EXPECTED_LABELS, 'username 为空时「用户」格仍须存在');
+assert.match(noUser, /job-detail-meta-item[\s\S]*?用户[\s\S]*?—/, '空值应显示 — 而不是隐藏整格');
+
+// Seed 取不到真实值时显示「随机」（后端尚未回写 actual seed）
+assert.match(noUser, /Seed[\s\S]*?随机/, 'Seed 缺失应显示 随机');
+
+// --- 契约 4：配置缺省不得抛错，appPath 可推断（规格 4.4 节）---
+const bare = JobCards.create({});
+assert.ok(bare, 'create({}) 应返回实例而不是抛错');
+assert.equal(typeof bare.renderDetailHtml, 'function', '实例应提供 renderDetailHtml');
+assert.equal(JobCards.inferAppPath('/seedance/index.html'), '/seedance', 'Portal 代理模式');
+assert.equal(JobCards.inferAppPath('/nano-banana/index.html'), '/nano-banana');
+assert.equal(JobCards.inferAppPath('/index.html'), '', '独立模式无前缀');
+
+// 注入的 formatRuntime 应被采用（各应用日期解析不同，属差异注入）
+const injected = JobCards.renderDetailHtml(
+  { job_id: 'c', status: 'running' },
+  { formatRuntime: () => '已运行 55秒' },
+);
+assert.match(injected, /已运行 55秒/, 'config.formatRuntime 注入应生效');
+
 console.log('job cards: contract ok');
