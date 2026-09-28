@@ -105,3 +105,24 @@ def test_chat_image_payload_and_response_extraction():
         }],
     }
     assert nano.extract_chat_completion_images(result) == [{"url": "https://example.com/result.png"}]
+
+
+def test_nano_save_files_map_merges_existing_tokens(tmp_path: Path, monkeypatch):
+    nano = _load_module("nano-banana/app.py", "nano_files_map_merge_regression")
+    map_path = tmp_path / "download_files.json"
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    monkeypatch.setattr(nano, "FILES_MAP_PATH", map_path)
+    monkeypatch.setattr(nano, "FILES", {})
+
+    nano.FILES["first"] = first
+    nano.save_files_map()
+    nano.FILES.clear()
+    nano.FILES["second"] = second
+    nano.save_files_map()
+
+    saved = json.loads(map_path.read_text(encoding="utf-8"))
+    assert saved["first"] == str(first)
+    assert saved["second"] == str(second)

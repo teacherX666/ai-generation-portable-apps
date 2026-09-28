@@ -916,8 +916,9 @@ def load_files_map() -> dict[str, Path]:
 def save_files_map() -> None:
     """Persist the current FILES mapping to disk atomically."""
     try:
+        data = {token: str(p) for token, p in load_files_map().items()}
         with FILES_LOCK:
-            data = {token: str(p) for token, p in FILES.items()}
+            data.update({token: str(p) for token, p in FILES.items()})
         tmp = FILES_MAP_PATH.with_suffix(FILES_MAP_PATH.suffix + ".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
         tmp.replace(FILES_MAP_PATH)

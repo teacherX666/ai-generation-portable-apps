@@ -622,8 +622,9 @@ def load_files_map() -> dict[str, Path]:
 def save_files_map() -> None:
     """Persist the current FILES mapping to disk atomically."""
     try:
+        data = {token: str(p) for token, p in load_files_map().items()}
         with JOBS_LOCK:
-            data = {token: str(p) for token, p in FILES.items()}
+            data.update({token: str(p) for token, p in FILES.items()})
         _atomic_write(FILES_MAP_PATH, json.dumps(data, ensure_ascii=False, indent=2))
     except Exception:
         pass

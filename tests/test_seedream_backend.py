@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -16,11 +17,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _load_nano():
     name = "nano_seedream_test"
-    spec = importlib.util.spec_from_file_location(name, ROOT / "nano-banana" / "app.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
+    # Keep tests away from the production state/download_files.json.
+    # run_one() saves FILES mappings, and loading app.py against the real
+    # DATA_DIR used to overwrite production preview tokens with pytest paths.
+    data_dir = tempfile.TemporaryDirectory(prefix="nano-seedream-test-")
+    old_data_dir = os.environ.get("DATA_DIR")
+    os.environ["DATA_DIR"] = data_dir.name
+    try:
+        spec = importlib.util.spec_from_file_location(name, ROOT / "nano-banana" / "app.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+    finally:
+        if old_data_dir is None:
+            os.environ.pop("DATA_DIR", None)
+        else:
+            os.environ["DATA_DIR"] = old_data_dir
+    module._test_data_dir = data_dir  # keep the TemporaryDirectory alive
     return module
 
 

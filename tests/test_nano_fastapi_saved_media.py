@@ -20,6 +20,7 @@ def _load_fastapi_module():
 
 
 def test_fastapi_resolves_saved_media_without_new_upload(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     module = _load_fastapi_module()
     ws_id = "ws-fastapi-test"
     stored = "saved-reference.png"
