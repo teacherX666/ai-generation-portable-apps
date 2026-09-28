@@ -81,4 +81,14 @@ const injected = JobCards.renderDetailHtml(
 );
 assert.match(injected, /已运行 55秒/, 'config.formatRuntime 注入应生效');
 
+// --- 契约 5：两份副本必须与共享源逐字相同 ---
+// 副本由 tools/sync-ui.py 生成；改了源忘记同步时，这里会立刻失败。
+for (const target of ['seedance/static/job-cards.js', 'nano-banana/static/job-cards.js']) {
+  assert.equal(
+    read(target),
+    src,
+    `${target} 必须与 shared-ui/job-cards.js 一致 —— 请跑 python tools/sync-ui.py`,
+  );
+}
+
 console.log('job cards: contract ok');
