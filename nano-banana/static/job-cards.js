@@ -87,10 +87,16 @@
     var runtimeText = typeof cfg.formatRuntime === 'function'
       ? cfg.formatRuntime(job)
       : (job && job.runtime_text);
+    // 模型名同理可注入：各应用会把接入点 id 翻成可读 label（例如
+    // ep-20260912121809-6wt62 → 「Seedream 5.0 Pro」，火山通道尤其需要），
+    // 这套映射依赖各应用自己的模型目录，共享库不重复实现。
+    var modelText = typeof cfg.formatModel === 'function'
+      ? cfg.formatModel(job)
+      : String((job && job.model) || values.custom_model || values.model || '');
     var items = [
       { label: 'Seed', value: jobSeed(job) || '随机' },
       { label: '运行耗时', value: runtimeText || '未记录', key: 'runtime' },
-      { label: '使用模型', value: String((job && job.model) || values.custom_model || values.model || '未记录') },
+      { label: '使用模型', value: modelText || '未记录' },
       { label: '用户', value: user || '—' }
     ];
     return items.map(function (item) {

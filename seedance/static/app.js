@@ -13,17 +13,16 @@ const TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'fa
 
 // The backend accepts cancellation for every non-terminal job state. Keep the
 // UI aligned with that contract in both the live card and history list.
+// 状态判定统一走共享库（shared-ui/job-cards.js，由 tools/sync-ui.py 同步到本目录）。
+// 此前两个应用各写一份、各自演化：nano-banana 的终态集合就漏了 'interrupted'，
+// 于是已中断的任务仍被判为「可取消」。收拢到一处后不会再出现这种漂移。
+// TERMINAL_STATUSES 常量保留 —— 本文件还有其它地方在用它。
 function isCancellableJob(jobOrStatus) {
-  const status = typeof jobOrStatus === 'string' ? jobOrStatus : jobOrStatus?.status;
-  const normalized = String(status || '').toLowerCase();
-  return Boolean(normalized) && !TERMINAL_STATUSES.has(normalized);
+  return window.JobCards.isCancellableJob(jobOrStatus);
 }
 
 function jobDisplayStatus(j) {
-  const raw = String((j && j.status) || '').toLowerCase();
-  const hasResult = !!(j && ((j.results && j.results.length) || (j.result && j.result.results && j.result.results.length) || j.first_url));
-  if (hasResult && raw && !TERMINAL_STATUSES.has(raw)) return 'succeeded';
-  return raw;
+  return window.JobCards.jobDisplayStatus(j);
 }
 
 function jobRequestValues(job, record) {
@@ -1918,22 +1917,15 @@ function SeedanceApp() {
         '<span class="job-detail-mono">' + escHtml(job.job_id || '') + '</span>' +
         '<span class="job-detail-mono">' + escHtml(job.created_at || '') + '</span>');
 
-      const seed = this._jobSeed(job);
-      const runtime = this.formatRuntime(job);
-      const model = this._jobModel(job);
-      const user = String(job?.username || '').trim();
-      const metaItems = [
-        { label: 'Seed', value: seed || '随机' },
-        { label: '运行耗时', value: runtime || '未记录', key: 'runtime' },
-        { label: '使用模型', value: model || '未记录' },
-      ];
-      if (user) metaItems.push({ label: '用户', value: user });
-      add('job-detail-meta-grid', metaItems.map(item =>
-        '<div class="job-detail-meta-item">' +
-        '<span class="job-detail-meta-label">' + escHtml(item.label) + '</span>' +
-        '<span class="job-detail-meta-value"' + (item.key === 'runtime' ? ' data-meta="runtime"' : '') + ' title="' + escHtml(item.value) + '">' + escHtml(item.value) + '</span>' +
-        '</div>'
-      ).join(''));
+      // 详情字段统一由共享库渲染（shared-ui/job-cards.js，经 tools/sync-ui.py 同步）：
+      // 恒为四格 Seed / 运行耗时 / 使用模型 / 用户，空值显示 —，不再「每个任务不一样」。
+      // 两处注入是为了保住既有显示质量：耗时算法、以及接入点 id → 可读 label 的映射
+      // （火山通道存的是 ep-xxx，直接显示 id 会退化）都依赖本应用自己的模型目录。
+      add('job-detail-meta-grid', window.JobCards.renderDetailHtml(job, {
+        appPath: APP_PATH,
+        formatRuntime: (j) => this.formatRuntime(j),
+        formatModel: (j) => this._jobModel(j),
+      }));
 
       const runtimeEl = body.querySelector('[data-meta="runtime"]');
       this._clearRuntimeTimer();

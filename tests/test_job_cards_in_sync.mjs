@@ -91,4 +91,18 @@ for (const target of ['seedance/static/job-cards.js', 'nano-banana/static/job-ca
   );
 }
 
+// 注入的 formatModel 也应被采用：接入点 id → 可读 label 的映射依赖各应用自己的
+// 模型目录（火山通道的 ep-xxx 尤其需要），共享库不得硬用 job.model 把它退化。
+const withModel = JobCards.renderDetailHtml(
+  { job_id: 'd', status: 'succeeded', model: 'ep-20260912121809-6wt62' },
+  { formatModel: () => 'Seedream 5.0 Pro' },
+);
+assert.match(withModel, /Seedream 5\.0 Pro/, 'config.formatModel 注入应生效');
+
+const withoutModel = JobCards.renderDetailHtml(
+  { job_id: 'e', status: 'succeeded', model: 'doubao-seedance-2-5-260628' },
+  {},
+);
+assert.match(withoutModel, /doubao-seedance-2-5-260628/, '未注入时回退到 job.model');
+
 console.log('job cards: contract ok');
