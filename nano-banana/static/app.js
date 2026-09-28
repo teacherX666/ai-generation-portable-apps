@@ -7,7 +7,18 @@ const IN_PORTAL = window.location.pathname.startsWith('/nano-banana/');
 const APP_PATH  = IN_PORTAL ? '/nano-banana' : '';
 
 // Lowercased job.status values considered terminal (used to gate poll loops and running-indicator recomputation).
-var TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'failure', 'cancelled', 'canceled']);
+var TERMINAL_STATUSES = new Set(['succeeded', 'success', 'failed', 'fail', 'failure', 'cancelled', 'canceled', 'interrupted']);
+
+//: 卡片/徽标上显示的状态。**已有产出、但状态还没走到终态时按 succeeded 显示** ——
+//: 否则会出现「图都已经出来了，卡片还写着运行中」。'interrupted' 也在终态集合里：
+//: 卡片本来就会画「已中断」样式，此前它却不在 TERMINAL_STATUSES 里，导致已中断的
+//: 任务仍被判为「可取消」（2026-09-28 与 seedance/static/app.js 对齐时修掉）。
+function jobDisplayStatus(j) {
+  var raw = String((j && j.status) || '').toLowerCase();
+  var hasResult = !!(j && ((j.results && j.results.length) || (j.result && j.result.results && j.result.results.length) || j.first_url));
+  if (hasResult && raw && !TERMINAL_STATUSES.has(raw)) return 'succeeded';
+  return raw;
+}
 
 // ============================================================
 // 任务完成系统通知（浏览器 Notification + 标题闪烁，按 jobId 去重）
@@ -1692,7 +1703,7 @@ function NanoBananaApp() {
         liveIds[item.job_id] = true;
         merged.push(item);
       });
-      var items = merged.slice(0, 20);
+      var items = merged.slice(0, self.jobsLimit);
       var emptyEl = document.getElementById('nb-jobsEmpty');
       if (emptyEl) emptyEl.style.display = items.length ? 'none' : '';
       var seen = {};
@@ -1711,11 +1722,12 @@ function NanoBananaApp() {
         }
 
         tile._jobSnapshot = j;
-        tile.dataset.status = j.status || '';
+        var displayStatus = jobDisplayStatus(j);
+        tile.dataset.status = displayStatus || '';
         var badge = tile.querySelector('.job-tile-badge');
-        if (badge && badge.textContent !== (j.status || '?')) {
-          badge.textContent = j.status || '?';
-          badge.className = 'job-tile-badge ' + (j.status || '');
+        if (badge && badge.textContent !== (displayStatus || '?')) {
+          badge.textContent = displayStatus || '?';
+          badge.className = 'job-tile-badge ' + (displayStatus || '');
         }
         var time = tile.querySelector('.job-tile-time');
         var timeText = formatJobTimestamp(j.created_at || j.started_at || j.submitted_at);
@@ -1761,7 +1773,7 @@ function NanoBananaApp() {
       var tile = document.createElement('div');
       tile.className = 'job-tile';
       tile.dataset.jid = j.job_id;
-      tile.dataset.status = j.status || '';
+      tile.dataset.status = jobDisplayStatus(j) || '';
       tile.dataset.preview = jobPreviewSignature(j);
       tile._jobSnapshot = j;
 
@@ -1811,7 +1823,7 @@ function NanoBananaApp() {
         media.appendChild(img);
       } else {
         var ph = document.createElement('span');
-        var statusLower = String(j.status || '').toLowerCase();
+        var statusLower = jobDisplayStatus(j).toLowerCase();
         if (statusLower === 'failed' || statusLower === 'failure') {
           ph.className = 'job-tile-ph';
           ph.textContent = '❌';
@@ -1830,8 +1842,8 @@ function NanoBananaApp() {
       var meta = document.createElement('div');
       meta.className = 'job-tile-meta';
       var badge = document.createElement('span');
-      badge.className = 'job-tile-badge ' + (j.status || '');
-      badge.textContent = j.status || '?';
+      badge.className = 'job-tile-badge ' + (jobDisplayStatus(j) || '');
+      badge.textContent = jobDisplayStatus(j) || '?';
       meta.appendChild(badge);
       var time = document.createElement('span');
       time.className = 'job-tile-time';
@@ -1848,7 +1860,9 @@ function NanoBananaApp() {
 
       var foot = document.createElement('div');
       foot.className = 'job-tile-foot';
-      if (self.isCancellableJob(j)) {
+      // 已有产出就不再给「取消」——与 seedance 一致（刀口朝上：产物都出来了，
+      // 这时最该看到的是下载而不是取消）。
+      if (self.isCancellableJob(jobDisplayStatus(j)) && !first) {
         var cancel = document.createElement('button');
         cancel.type = 'button';
         cancel.className = 'job-tile-btn job-tile-btn--cancel';
@@ -1997,19 +2011,44 @@ function NanoBananaApp() {
       var startedAt = self.formatJobTime(job.started_at || job.submitted_at || job.created_at);
       var runtime = self.formatRuntime(job);
       var model = self._jobModel(job);
-      var provider = self._jobProvider(job);
+      var seed = self._jobSeed(job);
+      var user = String((job && job.username) || '').trim();
+      // 字段集与 seedance 的详情弹窗对齐（2026-09-28）：Seed / 开始时间 / 运行耗时 /
+      // 使用模型 / 用户。唯一的差别是保留了「开始时间」——seedance 没这一格，但这里
+      // 留着信息更全，不丢东西。
+      // Seed 目前取不到真实值 → 显示「随机」；nano-banana 还没把实际种子回写进任务，
+      // 等后端带上 actual seed，这一格会自动显示真值（这也是用户要的「可复现」前提）。
       var metaItems = [
+        { label: 'Seed', value: seed || '随机' },
         { label: '开始时间', value: startedAt || '未记录' },
-        { label: '运行耗时', value: runtime || '未记录' },
+        { label: '运行耗时', value: runtime || '未记录', key: 'runtime' },
         { label: '使用模型', value: model || '未记录' },
       ];
-      if (provider) metaItems.push({ label: '供应商', value: provider });
+      if (user) metaItems.push({ label: '用户', value: user });
       add('job-detail-meta-grid', metaItems.map(function (item) {
         return '<div class="job-detail-meta-item">' +
           '<span class="job-detail-meta-label">' + escHtml(item.label) + '</span>' +
-          '<span class="job-detail-meta-value" title="' + escHtml(item.value) + '">' + escHtml(item.value) + '</span>' +
+          '<span class="job-detail-meta-value"' + (item.key === 'runtime' ? ' data-meta="runtime"' : '') + ' title="' + escHtml(item.value) + '">' + escHtml(item.value) + '</span>' +
           '</div>';
       }).join(''));
+
+      // 运行中的任务：每秒刷一次「运行耗时」。meta 网格是 innerHTML 一次性写入的，
+      // 不会跟着 runtimeTick 重渲染，所以必须自己起定时器（seedance 同款做法）。
+      var runtimeEl = body.querySelector('[data-meta="runtime"]');
+      self._clearRuntimeTimer();
+      var liveStates = ['queued', 'pending', 'running', 'querying'];
+      if (runtimeEl && liveStates.indexOf(String(job.status || '').toLowerCase()) >= 0) {
+        self._runtimeTimer = setInterval(function () {
+          var live = (self.jobs || []).find(function (j) { return (j.job_id || j.id) === (job.job_id || job.id); });
+          var current = live || job;
+          var text = self.formatRuntime(current) || '未记录';
+          runtimeEl.textContent = text;
+          runtimeEl.title = text;
+          if (liveStates.indexOf(String(current.status || '').toLowerCase()) < 0) {
+            self._clearRuntimeTimer();
+          }
+        }, 1000);
+      }
 
       const errText = (Array.isArray(job.errors) && job.errors.length)
   ? job.errors.join('\n')
@@ -2079,7 +2118,14 @@ function NanoBananaApp() {
       else sec.innerHTML += '<div class="job-detail-empty">暂无产出</div>';
       overlay.hidden = false;
     },
+    //: 清掉详情弹窗里「运行耗时」的每秒刷新（与 seedance 同款）。
+    _clearRuntimeTimer: function () {
+      if (this._runtimeTimer) { clearInterval(this._runtimeTimer); this._runtimeTimer = null; }
+    },
+
     closeJobDetail() {
+      // 弹窗一关就停掉耗时刷新，免得定时器继续去改已经隐藏的节点。
+      this._clearRuntimeTimer();
       var overlay = document.getElementById('nb-job-detail');
       if (overlay) overlay.hidden = true;
       this.selectedJobId = null;
@@ -2585,16 +2631,58 @@ function NanoBananaApp() {
       return Number.isFinite(parsed) && parsed > 0 ? parsed / 1000 : 0;
     },
 
+    //: 详情弹窗「Seed」格取的值。nano-banana 目前并没有把实际种子回写进任务记录，
+    //: 所以这里通常取不到 → 显示「随机」。等后端带上 actual seed，这格自动显示真值。
+    _jobSeed: function (job) {
+      var params = (job && (job.params || job.form)) || ((job && job.request && job.request.values) || {});
+      var result = (job && job.result) || {};
+      return String(params.seed || result.seed || (job && job.seed) || '').trim();
+    },
+
     _jobModel: function (job) {
       var params = (job && (job.params || job.form)) || ((job && job.request && job.request.values) || {});
       var result = (job && job.result) || {};
-      return String((job && job.model) || params.custom_model || params.model || result.model || '').trim();
+      var raw = String((job && job.model) || params.custom_model || params.model || result.model || '').trim();
+      // 任务记录里显示**模型名**而不是接入点 id。用户 2026-09-22：
+      // 「这个怎么显示的不是 seedream 模型」—— 火山通道存的是账号专属的接入点 id
+      // （ep-20260912121809-6wt62），它其实就是 Seedream 5.0 Pro，providers.json
+      // 里本来就写了 label，只是这里直接把 id 显示出来了。
+      return this._modelDisplayLabel(raw) || raw;
+    },
+
+    //: 把接入点 id / 模型 id 换成 providers.json 里的 label（找不到就原样返回）。
+    _modelDisplayLabel: function (modelId) {
+      var wanted = String(modelId || '').trim().toLowerCase();
+      if (!wanted) return '';
+      var providers = this.providers || {};
+      var found = '';
+      Object.keys(providers).forEach(function (key) {
+        if (found) return;
+        var cfg = providers[key] || {};
+        (cfg.models || []).forEach(function (model) {
+          if (found) return;
+          var id = String((model && model.id) || model || '');
+          if (id.toLowerCase() === wanted) {
+            found = String((model && model.label) || id);
+          }
+        });
+      });
+      return found;
+    },
+
+    //: 供应商同理：显示 providers.json 里的 label（如「火山引擎官方 (Seedream)」）。
+    _providerDisplayLabel: function (provider) {
+      var key = String(provider || '').trim();
+      if (!key) return '';
+      var cfg = (this.providers || {})[key];
+      return String((cfg && cfg.label) || key);
     },
 
     _jobProvider: function (job) {
       var params = (job && (job.params || job.form)) || ((job && job.request && job.request.values) || {});
       var result = (job && job.result) || {};
-      return String((job && job.provider) || params.provider || result.provider || '').trim();
+      var raw = String((job && job.provider) || params.provider || result.provider || '').trim();
+      return this._providerDisplayLabel(raw) || raw;
     },
 
     formatJobTime: function (value) {

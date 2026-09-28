@@ -249,6 +249,10 @@
             <div id="nb-jobsEmpty" v-if="jobs.length===0" class="hint" style="padding:12px 0">暂无生成记录，提交任务后自动显示。</div>
             <!-- 任务矩阵：一个任务一个格子（缩略图 / 状态 / 下载 / 详情） -->
             <div id="nb-jobsGrid" class="job-grid" style="margin-top:10px"></div>
+            <button v-if="jobs.length > jobsLimit" @click="jobsLimit += 20; renderJobsGrid()"
+                    style="width:100%;padding:8px;margin-top:4px;font-size:12px;cursor:pointer;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px">
+              加载更多（还有 {{ jobs.length - jobsLimit }} 条）
+            </button>
           </div>
           <div v-show="wsTab==='activity'" class="activity-panel-inner">
             <div v-show="!activityDetail">
