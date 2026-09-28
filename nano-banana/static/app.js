@@ -2012,22 +2012,16 @@ function NanoBananaApp() {
       var model = self._jobModel(job);
       var seed = self._jobSeed(job);
       var user = String((job && job.username) || '').trim();
-      // 字段集**严格照搬** seedance 的详情弹窗（2026-09-28）：Seed / 运行耗时 /
-      // 使用模型 / 用户。之前我自作主张多留了一格「开始时间」，那就不叫照搬了 —— 删掉。
-      // Seed 目前取不到真实值 → 显示「随机」；等后端把 actual seed 回写进任务，这格
-      // 会自动显示真值。
-      var metaItems = [
-        { label: 'Seed', value: seed || '随机' },
-        { label: '运行耗时', value: runtime || '未记录', key: 'runtime' },
-        { label: '使用模型', value: model || '未记录' },
-      ];
-      if (user) metaItems.push({ label: '用户', value: user });
-      add('job-detail-meta-grid', metaItems.map(function (item) {
-        return '<div class="job-detail-meta-item">' +
-          '<span class="job-detail-meta-label">' + escHtml(item.label) + '</span>' +
-          '<span class="job-detail-meta-value"' + (item.key === 'runtime' ? ' data-meta="runtime"' : '') + ' title="' + escHtml(item.value) + '">' + escHtml(item.value) + '</span>' +
-          '</div>';
-      }).join(''));
+      // 详情字段统一由共享库渲染（shared-ui/job-cards.js，经 tools/sync-ui.py 同步）：
+      // 恒为四格 Seed / 运行耗时 / 使用模型 / 用户，空值显示 —，不再「每个任务不一样」。
+      // 与 seedance 走同一份实现，两边显示必然一致。
+      // 注入 formatModel 是必须的：本应用会把接入点 id 翻成 providers.json 里的 label，
+      // 共享库直接用 job.model 会退化成显示原始 id。
+      add('job-detail-meta-grid', window.JobCards.renderDetailHtml(job, {
+        appPath: APP_PATH,
+        formatRuntime: function (j) { return self.formatRuntime(j); },
+        formatModel: function (j) { return self._jobModel(j); },
+      }));
 
       // 运行中的任务：每秒刷一次「运行耗时」。meta 网格是 innerHTML 一次性写入的，
       // 不会跟着 runtimeTick 重渲染，所以必须自己起定时器（seedance 同款做法）。
@@ -2195,10 +2189,11 @@ function NanoBananaApp() {
       return out;
     },
 
+    // 状态判定统一走共享库（shared-ui/job-cards.js）：此前两个应用各写一份，
+    // nano-banana 这份的终态集合还漏了 'interrupted' —— 卡片会画「已中断」样式，
+    // 判定却不认它，于是已中断的任务仍被判为「可取消」。
     isCancellableJob: function (jobOrStatus) {
-      var status = typeof jobOrStatus === 'string' ? jobOrStatus : (jobOrStatus && jobOrStatus.status);
-      var normalized = String(status || '').toLowerCase();
-      return Boolean(normalized) && !TERMINAL_STATUSES.has(normalized);
+      return window.JobCards.isCancellableJob(jobOrStatus);
     },
 
     selectJob(jobId) {
