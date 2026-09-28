@@ -2008,19 +2008,16 @@ function NanoBananaApp() {
         '<span class="job-detail-mono">' + escHtml(job.job_id || '') + '</span>' +
         '<span class="job-detail-mono">' + escHtml(job.created_at || '') + '</span>');
 
-      var startedAt = self.formatJobTime(job.started_at || job.submitted_at || job.created_at);
       var runtime = self.formatRuntime(job);
       var model = self._jobModel(job);
       var seed = self._jobSeed(job);
       var user = String((job && job.username) || '').trim();
-      // 字段集与 seedance 的详情弹窗对齐（2026-09-28）：Seed / 开始时间 / 运行耗时 /
-      // 使用模型 / 用户。唯一的差别是保留了「开始时间」——seedance 没这一格，但这里
-      // 留着信息更全，不丢东西。
-      // Seed 目前取不到真实值 → 显示「随机」；nano-banana 还没把实际种子回写进任务，
-      // 等后端带上 actual seed，这一格会自动显示真值（这也是用户要的「可复现」前提）。
+      // 字段集**严格照搬** seedance 的详情弹窗（2026-09-28）：Seed / 运行耗时 /
+      // 使用模型 / 用户。之前我自作主张多留了一格「开始时间」，那就不叫照搬了 —— 删掉。
+      // Seed 目前取不到真实值 → 显示「随机」；等后端把 actual seed 回写进任务，这格
+      // 会自动显示真值。
       var metaItems = [
         { label: 'Seed', value: seed || '随机' },
-        { label: '开始时间', value: startedAt || '未记录' },
         { label: '运行耗时', value: runtime || '未记录', key: 'runtime' },
         { label: '使用模型', value: model || '未记录' },
       ];
