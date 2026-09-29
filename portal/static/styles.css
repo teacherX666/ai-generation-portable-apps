@@ -2414,6 +2414,53 @@ body.portal-home-active .portal-mobile-switcher { display: none !important; }
 /* ── 人像模块：任务矩阵（对齐 seedance/nano job-grid，2026-09-09） ── */
 .vp-job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
 
+/* ── 任务卡片：与视频生成模块同款（2026-09-28 统一）──
+   逐行取自 seedance/static/styles.css 的 .job-tile-*。人像原先用的是
+   vp-job-tile-* 那套复制品，差异只有几处微差（提示词单行 vs 两行、按钮尺寸、
+   缩略图底色 #edf2f8 vs #f1f5f9、badge 字重），现统一到视频生成的口径。
+   唯一的增补是 .job-tile-foot 的 margin-top:auto：视频生成那边提示词固定单行、
+   卡片等高所以不需要，人像这里留着它让按钮贴底。 */
+.job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.job-tile {
+  border: 1px solid var(--border, #e2e8f0); border-radius: 10px; overflow: hidden;
+  background: var(--surface, #fff); cursor: pointer; display: flex; flex-direction: column;
+  transition: border-color .15s, box-shadow .15s;
+}
+.job-tile:hover { border-color: var(--accent, #2563eb); box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,.08)); }
+.job-tile-media { position: relative; height: 96px; background: #edf2f8; display: grid; place-items: center; overflow: hidden; }
+.job-tile-media video, .job-tile-media img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+.job-tile-ph { font-size: 26px; color: #94a3b8; }
+/* 「已取消 / 已中断」的占位：图标沿用 vp-cancel-stop，文字样式与视频生成一致。
+   注意 Portal 这边比 seedance 多这层文字说明（那边只用图标）。 */
+.job-tile-cancelled {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 5px; color: #64748b; font-size: 10px; font-weight: 700; letter-spacing: .02em;
+}
+.job-tile-meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px 0; flex-wrap: wrap; }
+.job-tile-badge {
+  font-size: 10px; font-weight: 700; border-radius: 999px; padding: 1px 8px; color: #fff; background: #64748b;
+}
+.job-tile-badge.succeeded, .job-tile-badge.success, .job-tile-badge.completed { background: #16a34a; }
+.job-tile-badge.failed, .job-tile-badge.failure { background: #dc2626; }
+.job-tile-badge.queued, .job-tile-badge.pending, .job-tile-badge.running, .job-tile-badge.querying { background: #2563eb; }
+.job-tile-badge.interrupted { background: #d97706; }
+.job-tile-badge.cancelled, .job-tile-badge.canceled { background: #94a3b8; }
+.job-tile-time { font-size: 10.5px; color: var(--muted, #687386); margin-left: auto; }
+.job-tile-prompt {
+  font-size: 11.5px; color: var(--text, #172033); padding: 4px 8px; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.job-tile-foot { display: flex; gap: 6px; padding: 6px 8px 8px; flex-wrap: wrap; margin-top: auto; }
+.job-tile-btn {
+  flex: 1; border: 1px solid var(--border-strong, #c3ccd9); background: var(--surface, #fff);
+  color: var(--text-secondary, #475569); font-size: 11px; font-weight: 600;
+  border-radius: 6px; padding: 4px 8px; cursor: pointer; white-space: nowrap;
+}
+.job-tile-btn:hover { color: var(--accent, #2563eb); background: var(--accent-soft, #eef5ff); border-color: var(--accent, #2563eb); }
+.job-tile-btn--dl { color: #1d4ed8; border-color: #bfd4f8; background: #eaf1fe; }
+.job-tile-btn--retry { color: #15803d; border-color: #bbf7d0; background: #e8f7ee; }
+.job-tile-btn--cancel { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
+
 /* 四格属性网格：与视频生成模块的详情弹窗同款。
    样式取自 seedance/static/styles.css —— 人像详情原先没有这一块，
    2026-09-28 按要求与视频生成对齐（字段定义本身来自 shared-ui/job-cards.js）。 */

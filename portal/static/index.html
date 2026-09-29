@@ -924,27 +924,27 @@
         <div v-if="vpHistory.length===0" style="color:#64748b;font-size:12px">暂无生成记录</div>
         <!-- 任务矩阵（2026-09-09 对齐 seedance/nano）：一格一任务，整格点开详情，缩略图点开放大。
              分页渲染 vpPageItems（每页 20 个），防止大量 video 缩略图同时挂载卡顿。 -->
-        <div class="vp-job-grid">
-          <div v-for="j in vpPageItems" :key="j.job_id" class="vp-job-tile" :data-status="j.status || ''" @click="openVpJobDetail(j)">
-            <div class="vp-job-tile-media">
+        <div class="job-grid">
+          <div v-for="j in vpPageItems" :key="j.job_id" class="job-tile" :data-status="j.status || ''" @click="openVpJobDetail(j)">
+            <div class="job-tile-media">
               <video v-if="j.first && !j.first.broken && j.first.isVideo" :src="appPath + j.first.url" preload="metadata" muted playsinline title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)"></video>
               <img v-else-if="j.first && !j.first.broken" :src="appPath + j.first.url" alt="产出预览" title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)">
-              <span v-else-if="j.expired" class="vp-job-tile-ph" title="产出文件已过期（保留 14 天后自动清理）">🗑</span>
-               <span v-else-if="j.status==='failed' || j.status==='failure'" class="vp-job-tile-ph">❌</span>
-               <span v-else-if="['cancelled','canceled','interrupted'].includes(j.status)" class="vp-job-tile-cancelled"><span class="vp-cancel-stop"></span><span>{{ j.status==='interrupted' ? '已中断' : '已取消' }}</span></span>
-               <span v-else class="vp-job-tile-ph">⏳</span>
+              <span v-else-if="j.expired" class="job-tile-ph" title="产出文件已过期（保留 14 天后自动清理）">🗑</span>
+               <span v-else-if="j.status==='failed' || j.status==='failure'" class="job-tile-ph">❌</span>
+               <span v-else-if="['cancelled','canceled','interrupted'].includes(j.status)" class="job-tile-cancelled"><span class="vp-cancel-stop"></span><span>{{ j.status==='interrupted' ? '已中断' : '已取消' }}</span></span>
+               <span v-else class="job-tile-ph">⏳</span>
             </div>
-            <div class="vp-job-tile-meta">
-              <span class="vp-job-tile-badge" :class="j.status || ''">{{ j.status || '?' }}</span>
-              <span class="vp-job-tile-time">{{ (j.created_at || '').slice(5, 16) }}</span>
+            <div class="job-tile-meta">
+              <span class="job-tile-badge" :class="j.status || ''">{{ j.status || '?' }}</span>
+              <span class="job-tile-time">{{ (j.created_at || '').slice(5, 16) }}</span>
             </div>
-            <div class="vp-job-tile-prompt" :title="j.prompt || ''">{{ j.prompt || '' }}</div>
-            <div class="vp-job-tile-foot">
-              <button v-if="j.isLive && j.cancellable" type="button" class="vp-job-tile-btn vp-job-tile-btn--cancel" @click.stop="cancelJob(j.job_id)">取消</button>
-              <button v-if="j.first && !j.first.broken" type="button" class="vp-job-tile-btn vp-job-tile-btn--dl" @click.stop="blobDownload(appPath + j.first.url, j.first.filename || 'video')">⬇ 下载</button>
-              <button v-if="j.isLive && (j.retryable || j.status==='failed')" type="button" class="vp-job-tile-btn vp-job-tile-btn--retry" @click.stop="retryVpJob(j.job_id)">重试</button>
-              <button v-else-if="!j.isLive && j.status==='failed'" type="button" class="vp-job-tile-btn vp-job-tile-btn--retry" @click.stop="retryActivity(j.activity_id)">重试</button>
-              <button type="button" class="vp-job-tile-btn vp-job-tile-btn--detail" @click.stop="openVpJobDetail(j)">详情</button>
+            <div class="job-tile-prompt" :title="j.prompt || ''">{{ j.prompt || '' }}</div>
+            <div class="job-tile-foot">
+              <button v-if="j.isLive && j.cancellable" type="button" class="job-tile-btn job-tile-btn--cancel" @click.stop="cancelJob(j.job_id)">取消</button>
+              <button v-if="j.first && !j.first.broken" type="button" class="job-tile-btn job-tile-btn--dl" @click.stop="blobDownload(appPath + j.first.url, j.first.filename || 'video')">⬇ 下载</button>
+              <button v-if="j.isLive && (j.retryable || j.status==='failed')" type="button" class="job-tile-btn job-tile-btn--retry" @click.stop="retryVpJob(j.job_id)">重试</button>
+              <button v-else-if="!j.isLive && j.status==='failed'" type="button" class="job-tile-btn job-tile-btn--retry" @click.stop="retryActivity(j.activity_id)">重试</button>
+              <button type="button" class="job-tile-btn job-tile-btn--detail" @click.stop="openVpJobDetail(j)">详情</button>
             </div>
           </div>
         </div>
@@ -966,7 +966,7 @@
             <div v-if="vpJobDetail.loading" class="vp-zoom-empty">加载中…</div>
             <div v-else>
               <div class="vp-job-detail-status">
-                <span class="vp-job-tile-badge" :class="vpJobDetail.status || ''">{{ vpJobDetail.status || '?' }}</span>
+                <span class="job-tile-badge" :class="vpJobDetail.status || ''">{{ vpJobDetail.status || '?' }}</span>
                 <span class="vp-job-detail-prompt">{{ vpJobDetail.prompt || '' }}</span>
               </div>
               <!-- 四格属性网格：与视频生成模块（seedance）的详情弹窗同款。
@@ -991,7 +991,7 @@
                 <div v-if="vpJobDetail.results && vpJobDetail.results.length">
                   <div v-for="r in vpJobDetail.results" class="vp-job-detail-result">
                     <span class="vp-job-detail-file">{{ r.filename || 'video' }}</span>
-                    <button type="button" class="vp-job-tile-btn vp-job-tile-btn--dl" @click.stop="blobDownload(appPath + r.download_url, r.filename || 'video')">⬇ 下载</button>
+                    <button type="button" class="job-tile-btn job-tile-btn--dl" @click.stop="blobDownload(appPath + r.download_url, r.filename || 'video')">⬇ 下载</button>
                   </div>
                 </div>
                 <div v-else class="vp-zoom-empty" style="padding:6px 0">无产出</div>

@@ -3134,7 +3134,7 @@ function VolcenginePortraitApp() {
       this.vpHistoryPage = Math.min(Math.max(1, n), max);
       this._applyVpPage();
       // 翻页后滚回历史区顶部（长页里翻页控件在底部）
-      const sec = document.querySelector('.vp-job-grid');
+      const sec = document.querySelector('.job-grid');
       if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     },
     _applyVpPage() {
