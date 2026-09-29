@@ -34,6 +34,8 @@
       aspect_ratio: cap.aspect_ratio || (Array.isArray(model.aspect_ratios) ? model.aspect_ratios : null),
       max_reference_images: cap.max_reference_images != null ? cap.max_reference_images : (model.max_reference_images != null ? model.max_reference_images : null),
       supports_seed: cap.supports_seed != null ? cap.supports_seed : (model.supports_seed != null ? model.supports_seed : true),
+      modes: cap.modes || (Array.isArray(model.modes) ? model.modes : null),
+      response_formats: cap.response_formats || (Array.isArray(model.response_formats) ? model.response_formats : null),
     };
   }
 
@@ -73,6 +75,8 @@
     else if (field === 'ratio') opts = cap.ratio;
     else if (field === 'image_size') opts = cap.image_size;
     else if (field === 'aspect_ratio') opts = cap.aspect_ratio;
+    else if (field === 'mode') opts = cap.modes;
+    else if (field === 'response_format') opts = cap.response_formats;
     if (!opts) return { ok: true, value: value };
     if (value === 'auto' || value === 'adaptive') return { ok: true, value: value };
     if (inList(opts, value)) return { ok: true, value: value };

@@ -3200,14 +3200,28 @@ function VolcenginePortraitApp() {
       // 四格属性：字段定义取自共享库（与视频/图片生成同一份 —— 恒四格、空值显示 —）。
       // live 优先、活动记录兜底，这样内存任务被剪枝后仍能显示。
       const detailJob = Object.assign({}, rec || {}, live || {});
+      // 耗时口径与视频生成模块一致（照 seedance/static/app.js 的 formatRuntime）：
+      //   运行中 → 「已运行 X分Y秒」    已完成 → 「耗时 X分Y秒」（≥60 秒折算分钟）
+      // 之前我统一写成「已运行 N 秒」，既不区分状态也不折算分钟 —— 就是这里"没适配"。
+      const fmtDur = (sec) => (sec >= 60
+        ? Math.floor(sec / 60) + '分' + (sec % 60) + '秒'
+        : sec + '秒');
       d.fields = window.JobCards.detailFields(detailJob, {
         formatModel: () => params.model || '',
         formatRuntime: (j) => {
           const start = Number(j.started_at || j.submitted_at || 0);
           if (!start) return '';
-          const end = Number(j.finished_at || 0);
-          const secs = Math.max(0, Math.round((end || Date.now() / 1000) - start));
-          return secs ? ('已运行 ' + secs + ' 秒') : '';
+          const done = Number(j.finished_at || j.updated_at || 0);
+          const st = String(j.status || '').toLowerCase();
+          const running = !done && !['succeeded', 'success', 'failed', 'fail', 'failure',
+                                     'cancelled', 'canceled', 'interrupted'].includes(st);
+          if (running) {
+            return '已运行 ' + fmtDur(Math.max(0, Math.floor(Date.now() / 1000 - start)));
+          }
+          if (done && done >= start) {
+            return '耗时 ' + fmtDur(Math.max(0, Math.floor(done - start)));
+          }
+          return '';
         },
       });
       d.loading = false;

@@ -114,4 +114,13 @@ assert.equal(fields[3].value, '—', '无用户名时 value 是 —（该项仍�
 assert.equal(fields[1].key, 'runtime', '运行耗时项带 key，供模板定位刷新');
 assert.equal(fields[0].value, '随机', 'Seed 缺失显示 随机');
 
+// --- 一致性：model-capabilities.js 也必须与共享源一致 ---
+// 它长期躺在 shared-ui/ 里却没人同步 —— nano-banana 的副本悄悄比共享源多了 4 行
+// 能力校验（modes / response_formats），谁也没发现。2026-09-28 把那 4 行回迁进
+// 共享源后三方统一，这条断言防止再次漂移。
+const capSrc = read('shared-ui/model-capabilities.js');
+for (const target of ['seedance/static/model-capabilities.js', 'nano-banana/static/model-capabilities.js']) {
+  assert.equal(read(target), capSrc, `${target} 必须与 shared-ui/model-capabilities.js 一致`);
+}
+
 console.log('job cards: contract ok');

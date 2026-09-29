@@ -17,12 +17,15 @@ SRC = REPO / "shared-ui"
 
 #: 共享 JS：文件名 -> 目标目录（相对仓库根）。
 #:
-#: 注意 model-capabilities.js **故意还没纳入**：nano-banana 那份比共享源多 4 行功能
-#: （modes / response_formats 的能力校验），也就是说它不是"落后"而是"领先"——
-#: 有人改进了本机副本却没回迁到共享源。正确做法是把那 4 行合并进 shared-ui 再同步，
-#: 而不是用旧源覆盖它（那会删掉一个已上线的能力）。见实施计划 Task 6。
+#: model-capabilities.js 于 2026-09-28 纳入同步。此前它躺在共享目录里却没人同步，
+#: nano-banana 的本机副本悄悄比共享源多了 4 行能力校验（modes / response_formats）
+#: 谁也没发现 —— 这正是「共享机制只覆盖 CSS」留下的洞。那 4 行现已回迁进共享源，
+#: 三方统一。
+#: 注：seedance 的 providers.json 不声明这两个字段，而校验逻辑遇到未声明的能力会
+#: 自动跳过，所以回迁**不会改变 seedance 的行为**。
 JS_TARGETS = {
     "job-cards.js": ["seedance/static", "nano-banana/static", "portal/static"],
+    "model-capabilities.js": ["seedance/static", "nano-banana/static"],
 }
 
 #: 共享 CSS 的目标（与旧 sync-ui.sh 保持一致）
