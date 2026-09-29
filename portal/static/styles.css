@@ -2411,8 +2411,9 @@ body.portal-home-active .portal-mobile-switcher { display: none !important; }
 .vp-zoom-meta { display: flex; gap: 14px; padding: 8px 14px; font-size: 11.5px; color: #64748b; border-top: 1px solid #e2e8f0; }
 .vp-zoom-id { font-family: monospace; }
 
-/* ── 人像模块：任务矩阵（对齐 seedance/nano job-grid，2026-09-09） ── */
-.vp-job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+/* ── 人像模块：任务卡片（2026-09-28 已统一到下面的 .job-tile-*） ──
+   这里只保留「已取消 / 已中断」用的图标 .vp-cancel-stop —— 它夹在原先那套
+   vp-job-tile-* 里，但模板仍在引用，不能跟着一起删。 */
 
 /* ── 任务卡片：与视频生成模块同款（2026-09-28 统一）──
    逐行取自 seedance/static/styles.css 的 .job-tile-*。人像原先用的是
@@ -2469,25 +2470,6 @@ body.portal-home-active .portal-mobile-switcher { display: none !important; }
 .job-detail-meta-label { display: block; font-size: 10px; color: #64748b; margin-bottom: 2px; }
 .job-detail-meta-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 600; color: #1e293b; }
 
-.vp-job-tile {
-  border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; overflow: hidden;
-  display: flex; flex-direction: column; cursor: pointer; transition: border-color .15s, box-shadow .15s;
-}
-.vp-job-tile:hover { border-color: #2563eb; box-shadow: 0 4px 12px rgba(0,0,0,.08); }
-.vp-job-tile-media { position: relative; height: 96px; background: #f1f5f9; display: grid; place-items: center; overflow: hidden; }
-.vp-job-tile-media video, .vp-job-tile-media img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
-.vp-job-tile-ph { font-size: 26px; color: #94a3b8; }
-.vp-job-tile-cancelled {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  color: #64748b;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .02em;
-}
 .vp-cancel-stop {
   position: relative;
   width: 20px;
@@ -2507,32 +2489,6 @@ body.portal-home-active .portal-mobile-switcher { display: none !important; }
   border-radius: 2px;
   transform: translateY(-50%);
 }
-.vp-job-tile-meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px 0; flex-wrap: wrap; }
-.vp-job-tile-badge {
-  font-size: 10px; font-weight: 600; color: #fff; background: #64748b;
-  padding: 1px 7px; border-radius: 999px; letter-spacing: .2px; text-transform: capitalize;
-}
-.vp-job-tile-badge.succeeded, .vp-job-tile-badge.success, .vp-job-tile-badge.completed { background: #16a34a; }
-.vp-job-tile-badge.failed, .vp-job-tile-badge.failure { background: #dc2626; }
-.vp-job-tile-badge.queued, .vp-job-tile-badge.pending, .vp-job-tile-badge.running, .vp-job-tile-badge.querying { background: #2563eb; }
-.vp-job-tile-badge.interrupted { background: #d97706; }
-.vp-job-tile-badge.cancelled, .vp-job-tile-badge.canceled { background: #94a3b8; }
-.vp-job-tile-time { font-size: 10.5px; color: #687386; margin-left: auto; }
-.vp-job-tile-prompt {
-  font-size: 11.5px; color: #334155; line-height: 1.45; padding: 4px 8px;
-  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  min-height: 37px;
-}
-.vp-job-tile-foot { display: flex; gap: 6px; padding: 6px 8px 8px; flex-wrap: wrap; margin-top: auto; }
-.vp-job-tile-btn {
-  font-size: 10.5px; color: #475569; background: #fff; border: 1px solid #e2e8f0;
-  border-radius: 6px; padding: 3px 9px; cursor: pointer; line-height: 1.4;
-}
-.vp-job-tile-btn:hover { color: #2563eb; background: #eef5ff; border-color: #2563eb; }
-.vp-job-tile-btn--dl { color: #1d4ed8; border-color: #bfd4f8; background: #eaf1fe; }
-.vp-job-tile-btn--retry { color: #15803d; border-color: #bbf7d0; background: #e8f7ee; }
-.vp-job-tile-btn--cancel { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
-
 /* 详情弹窗内容区 */
 .vp-job-detail-body { max-height: 66vh; overflow-y: auto; padding: 12px 14px; font-size: 12.5px; color: #334155; }
 .vp-job-detail-status { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
