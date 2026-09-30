@@ -99,6 +99,8 @@ infinite-canvas/web/tsconfig.tsbuildinfo
 .firecrawl/
 .codex/
 CLAUDE.local.md
+# 归档的 CLAUDE.local 历史教训（同样是本机专属，不进仓库）
+CLAUDE.local-archive/
 config/local_ai.env
 
 # Secrets: .env backups carry live API keys (LARK/DEEPSEEK/CLAUDE/ARK/VOLCENGINE).
