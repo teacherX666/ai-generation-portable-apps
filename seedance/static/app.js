@@ -373,6 +373,93 @@ function friendlyJobErrorHint(job) {
 // ============================================================
 // FILE DROP / PREVIEW HELPERS
 // ============================================================
+// ============================================================
+// 首帧 / 首尾帧 → 锁定「比例」为 adaptive
+// ============================================================
+// 方舟的硬约束（InvalidParameter.TaskTypeConstraint）：
+//   "For first-frame or first-last-frame generation, the output ratio
+//    follows the first-frame image."
+// 即：用了首帧/首尾帧就不能另行指定 ratio，否则直接 400。
+//
+// 后端已经会就地改成 adaptive 兜底（build_payload，2026-10-08），
+// 这里再往前一步：上传首尾帧后就把「比例」锁成 adaptive 并置灰，
+// 让用户不会选中一个注定被改写的值；移除首尾帧后自动解锁并还原原来的选择。
+//
+// 注意：判断依据是「有没有首帧/尾帧」（上传槽），**不是 task_mode** ——
+// 首尾帧是独立的上传槽，reference 模式下也能用。
+//
+// 另一个坑：`<select disabled>` 的值**不会进 FormData**，
+// 而提交走的是 `new FormData(document.getElementById('sd-form'))`。
+// 所以提交处必须显式 data.set('ratio', ...) —— 见 submit 里的处理。
+function frameInputsPresent(app) {
+  const picked = (sel) => {
+    const el = document.querySelector(sel);
+    return !!(el && el.files && el.files.length);
+  };
+  const saved = (n) => {
+    const a = app || window._app_sd;
+    if (a && a.savedMedia && a.savedMedia[n]) return true;
+    const c = window._currentSavedMedia;
+    return !!(c && c[n]);
+  };
+  return picked('input[name="first_frame"]') || picked('input[name="last_frame"]')
+      || saved('first_frame') || saved('last_frame');
+}
+
+function syncFrameRatioLock() {
+  const ratioEl = document.querySelector('select[name="ratio"]');
+  if (!ratioEl) return;
+  const locked = frameInputsPresent();
+  const hintId = 'sd-ratio-lock-hint';
+  if (locked) {
+    // 记住锁定前的选择，解锁时还原
+    if (ratioEl.dataset.preLockValue === undefined) {
+      ratioEl.dataset.preLockValue = ratioEl.value || '';
+    }
+    // applyModelLimits 会按模型能力裁剪 ratio 选项；若当前模型没列出 adaptive，
+    // 直接赋值会落空（实测 ratio 变成 ""）。首尾帧下 adaptive 是方舟强制的，
+    // 所以这里临时补一个选项占位，解锁时再摘掉。
+    if (![...ratioEl.options].some(o => o.value === 'adaptive')) {
+      ratioEl.appendChild(new Option('adaptive', 'adaptive'));
+      ratioEl.dataset.addedAdaptive = '1';
+    }
+    if (ratioEl.value !== 'adaptive') ratioEl.value = 'adaptive';
+    ratioEl.disabled = true;
+    ratioEl.title = '首帧/首尾帧生成时，输出比例由首帧图决定，已锁定为 adaptive';
+    let hint = document.getElementById(hintId);
+    if (!hint) {
+      hint = document.createElement('p');
+      hint.id = hintId;
+      hint.className = 'hint';
+      hint.style.cssText = 'color:#b45309;margin:4px 0 0;font-size:11.5px';
+      const label = ratioEl.closest('label');
+      if (label) label.appendChild(hint); else ratioEl.parentNode?.appendChild(hint);
+    }
+    hint.textContent = '比例由首帧图决定，已锁定为 adaptive';
+  } else {
+    const wasLocked = ratioEl.disabled;
+    ratioEl.disabled = false;
+    ratioEl.title = '';
+    document.getElementById(hintId)?.remove();
+    if (wasLocked) {
+      const prev = ratioEl.dataset.preLockValue;
+      if (prev && [...ratioEl.options].some(o => o.value === prev)) ratioEl.value = prev;
+    }
+    // 摘掉锁定时临时补的 adaptive 选项，恢复模型能力原本的可选范围
+    if (ratioEl.dataset.addedAdaptive === '1') {
+      const added = [...ratioEl.options].find(o => o.value === 'adaptive');
+      if (added) added.remove();
+      delete ratioEl.dataset.addedAdaptive;
+    }
+    delete ratioEl.dataset.preLockValue;
+  }
+}
+
+// 供提交处判断：当前是否处于「首尾帧锁定」状态
+function frameRatioLocked() {
+  return frameInputsPresent();
+}
+
 function clearDropMedia(drop, input, name) {
   input.value = '';
   drop.classList.remove('hasPreview');
@@ -383,6 +470,8 @@ function clearDropMedia(drop, input, name) {
   if (app && app.savedMedia) delete app.savedMedia[name];
   if (window._currentSavedMedia) delete window._currentSavedMedia[name];
   if (app && typeof app.saveWorkspaceDraft === 'function') app.saveWorkspaceDraft();
+  // 移除了首帧/尾帧 → 解锁「比例」（若有变化）
+  syncFrameRatioLock();
 }
 
 function ensureRemoveBtn(drop, input, name) {
@@ -442,6 +531,8 @@ function wireFileDrop(drop, input, name) {
         showPreview(drop, name, serverUrl, res.filename);
         try { URL.revokeObjectURL(localUrl); } catch (e) {}
         if (app && typeof app.saveWorkspaceDraft === 'function') app.saveWorkspaceDraft();
+        // 上传了首帧/尾帧 → 立刻锁定「比例」
+        syncFrameRatioLock();
       } else {
         // The upload did not land. Roll back the local preview — otherwise the
         // user believes the reference material is saved and submits a job
@@ -1270,6 +1361,8 @@ function SeedanceApp() {
         durationEl.value = String(wanted);
       }
       this._prevTaskMode = to;
+      // 切模式可能改写 ratio；若当前有首尾帧，重新锁回 adaptive
+      syncFrameRatioLock();
       // Save the entering mode's values too, so a later switch reads current
       // state (in case the user typed something before switching again).
       if (mem[to]) {
@@ -1334,6 +1427,8 @@ function SeedanceApp() {
         }
       }
       const data = new FormData(document.getElementById('sd-form'));
+      // 同上：存档也要记下正确的 ratio（首尾帧时被置灰不会自动带上）
+      if (frameRatioLocked()) data.set('ratio', 'adaptive');
       data.set('provider', this.provider || '');
       data.set('base_url', this.baseUrl || '');
       if (this.model) data.set('model', this.model);
@@ -2405,6 +2500,9 @@ function SeedanceApp() {
       }
 
       const data = new FormData(document.getElementById('sd-form'));
+      // 首尾帧模式下「比例」被置灰，而 disabled 控件不进 FormData —— 显式补上，
+      // 否则这个字段会整个缺失（后端虽会兜成 adaptive，但前端不该依赖它兜底）。
+      if (frameRatioLocked()) data.set('ratio', 'adaptive');
       const selectedEntry = (this.models || []).find((item) => item.key === this.model);
       const resolutionEl = field('resolution');
       const route = routeForUnifiedVideoModel(selectedEntry, resolutionEl ? resolutionEl.value : '') || this.activeRoute;
@@ -3257,6 +3355,10 @@ function SeedanceApp() {
         delete cache._latestJob;
         this._clearTopicResultDom();
       }
+      // 恢复完这个 tab 的表单/草稿后，重新同步「首尾帧 → 比例锁定」。
+      // 必须放在这里（form.reset() 和 loadPreset() 之后），且延到下一拍，
+      // 因为 petite-vue 写 DOM 是异步的。
+      setTimeout(syncFrameRatioLock, 0);
     },
 
     _scrollActiveTabIntoView() {

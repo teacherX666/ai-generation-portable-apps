@@ -30,6 +30,32 @@ from pathlib import Path
 from typing import Any
 
 
+# ---------------------------------------------------------------------------
+# Upstream API traffic must bypass the desktop's system proxy.
+#
+# Windows keeps the interactive proxy in the registry and urllib picks it up
+# via getproxies(). On this host that setting is `socks=127.0.0.1:1080`
+# (Jamjams), and urllib has no SOCKS support: it opens an HTTP CONNECT / TLS
+# session *to the SOCKS port*, so the connection dies mid-handshake. Symptom
+# (2026-09-28, first seen on nano-banana's Chiyun path):
+#     URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] ...>
+# while the same endpoints answer normally with the proxy disabled. Ark direct
+# access works fine from this host, so upstream calls use a no-proxy opener.
+# Set SEEDANCE_UPSTREAM_PROXY to a proxy URL to opt back in for a provider
+# that genuinely needs one.
+# ---------------------------------------------------------------------------
+def _build_upstream_opener() -> urllib.request.OpenerDirector:
+    override = os.environ.get("SEEDANCE_UPSTREAM_PROXY", "").strip()
+    if override:
+        return urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": override, "https": override})
+        )
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+UPSTREAM = _build_upstream_opener()
+
+
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
 if str(REPO_ROOT) not in sys.path:
@@ -589,7 +615,7 @@ JOBS_LOCK = threading.Lock()
 MAX_JOBS = 500
 JOB_PRUNE_GRACE_SECONDS = 600
 _TERMINAL_JOB_STATUSES = ("succeeded", "failed", "completed")
-STATE_LOCK = threading.Lock()
+STATE_LOCK = threading.RLock()
 ACTIVITY_LIMIT = 100
 
 # Reference media for volcengine Ark generation tasks. Ark requires video/audio
@@ -631,11 +657,32 @@ def save_files_map() -> None:
 
 
 def _atomic_write(path: Path, content: str):
-    """Thread-safe atomic write: tmp → rename."""
+    """Thread-safe atomic write: tmp → rename.
+
+    Windows 上 `os.replace` 会被「读方仍持有目标文件句柄」拒绝（WinError 5）：
+    UI 每几秒轮询一次 activity（读），runner 同时在更新（写）——只锁写是不够的，
+    所以 read_activity_log 也要在同一把锁里（见那里）。
+
+    这里另加两点兜底（照 drama-pipeline/pipeline/store.py 的实测修法）：
+      1. tmp 名带上 pid+线程 id —— 固定名在多线程下会互相覆盖；
+      2. 有限重试 —— 杀软/索引服务偶尔也会短暂持有句柄，重试几次即可过去。
+    """
     with STATE_LOCK:
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(content, encoding="utf-8")
-        tmp.replace(path)
+        last_exc = None
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError as exc:   # WinError 5：读方或杀软持有句柄
+                last_exc = exc
+                time.sleep(0.05 * (attempt + 1))
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise last_exc
 
 # ---- Client IP helpers ----
 
@@ -890,10 +937,18 @@ def now_text() -> str:
 
 
 def read_activity_log() -> list[dict[str, Any]]:
+    """读活动记录。
+
+    **必须与写共用 STATE_LOCK**：UI 每几秒轮询一次，读的时候持有文件句柄，
+    此时写方的 os.replace 会被 Windows 拒绝（WinError 5 拒绝访问）。
+    这是本机实测复现过的稳定故障，不是理论风险。
+    锁是可重入的（RLock），所以 record_activity 的「读→写」不会自锁。
+    """
     if not ACTIVITY_PATH.exists():
         return []
     try:
-        data = json.loads(ACTIVITY_PATH.read_text(encoding="utf-8"))
+        with STATE_LOCK:
+            data = json.loads(ACTIVITY_PATH.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
     except Exception:
         return []
@@ -1087,7 +1142,7 @@ def media_item_to_file(field: str, item: Any) -> tuple[str, bytes] | None:
         attempts = 3
         for attempt in range(1, attempts + 1):
             try:
-                with urllib.request.urlopen(req, timeout=300) as resp:
+                with UPSTREAM.open(req, timeout=300) as resp:
                     blob = resp.read()
                     mime = resp.headers.get_content_type() or mimetypes.guess_type(url)[0] or "application/octet-stream"
                 break
@@ -1832,7 +1887,7 @@ def request_json(method: str, url: str, api_key: str, body: dict[str, Any] | Non
     for attempt in range(max_retries):
         try:
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with UPSTREAM.open(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 return json.loads(raw) if raw else {}
 
@@ -1953,7 +2008,7 @@ def upload_file(upload_url: str, api_key: str, blob: bytes, filename: str, conte
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with UPSTREAM.open(req, timeout=300) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as exc:
         try:
@@ -2114,7 +2169,7 @@ def download_video(url: str, out_path: Path) -> None:
     attempts = 3
     for attempt in range(1, attempts + 1):
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            with UPSTREAM.open(req, timeout=300) as resp:
                 out_path.write_bytes(resp.read())
             return
         except urllib.error.HTTPError as exc:
@@ -2541,6 +2596,20 @@ def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index
         if has_reference_input and not has_visual_reference:
             raise RuntimeError("豆包官方 API 不允许单独输入参考音频，请至少加入 1 个参考图或参考视频。")
         apply_omni_task_type(form, payload, has_video_reference, notes)
+        # 首帧 / 首尾帧生成：方舟要求输出比例**跟随首帧图**，不能另行指定 ratio。
+        # 官方原文（InvalidParameter.TaskTypeConstraint）：
+        #   "For first-frame or first-last-frame generation, the output ratio
+        #    follows the first-frame image."
+        # 前端默认会带一个具体比例，直接下发必然 400 —— 与其让用户看到报错，
+        # 不如就地改成 adaptive（方舟的「跟随素材」语义）并写一条事件说明。
+        # 注意：必须在 apply_omni_task_type 之后做，否则 edit/extend 的改写会被这里覆盖。
+        if has_frame_input and payload.get("ratio") not in (None, "", "adaptive"):
+            original_ratio = payload.get("ratio")
+            payload["ratio"] = "adaptive"
+            if notes is not None:
+                notes.append(
+                    f"首帧/首尾帧生成的比例由首帧图决定，已把 ratio 从 {original_ratio} 改为 adaptive。"
+                )
     return payload
 
 

@@ -29,6 +29,36 @@ from pathlib import Path
 from typing import Any
 
 
+# ---------------------------------------------------------------------------
+# Upstream API traffic must bypass the desktop's system proxy.
+#
+# Windows keeps the interactive proxy in the registry and urllib picks it up
+# via getproxies(). On this host that setting is `socks=127.0.0.1:1080`
+# (Jamjams), and urllib has no SOCKS support: it opens an HTTP CONNECT / TLS
+# session *to the SOCKS port*, so the connection dies mid-handshake. Symptom
+# (2026-09-28): every Chiyun (gemini) run failed with
+#     URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] ...>
+# after 6 retries (~670 s), while the very same endpoint answered HTTP 401 in
+# 0.7 s with the proxy disabled. Reference-image runs are simply the most
+# visible, because request_json retries six times before surfacing the error.
+#
+# Every configured provider is reachable directly on this host (chiyun.work
+# 200, ai.t8star.org reachable, ark.cn-beijing 401, local gateway on the LAN),
+# so upstream calls use a no-proxy opener. Set NANO_BANANA_UPSTREAM_PROXY to a
+# proxy URL to opt back in for a provider that genuinely needs one.
+# ---------------------------------------------------------------------------
+def _build_upstream_opener() -> urllib.request.OpenerDirector:
+    override = os.environ.get("NANO_BANANA_UPSTREAM_PROXY", "").strip()
+    if override:
+        return urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": override, "https": override})
+        )
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+UPSTREAM = _build_upstream_opener()
+
+
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
 if str(REPO_ROOT) not in sys.path:
@@ -350,7 +380,7 @@ JOBS: dict[str, dict[str, Any]] = {}
 FILES: dict[str, Path] = {}
 FILES_MAP_PATH = STATE_DIR / "download_files.json"
 LOCK = threading.Lock()
-STATE_LOCK = threading.Lock()
+STATE_LOCK = threading.RLock()
 
 
 def load_files_map() -> dict[str, Path]:
@@ -391,11 +421,32 @@ ACTIVITY_LIMIT = 100
 
 
 def _atomic_write(path: Path, content: str):
-    """Thread-safe atomic write: tmp → rename."""
+    """Thread-safe atomic write: tmp → rename.
+
+    Windows 上 `os.replace` 会被「读方仍持有目标文件句柄」拒绝（WinError 5）：
+    UI 每几秒轮询一次 activity（读），runner 同时在更新（写）——只锁写是不够的，
+    所以 read_activity_log 也要在同一把锁里（见那里）。
+
+    这里另加两点兜底（照 drama-pipeline/pipeline/store.py 的实测修法）：
+      1. tmp 名带上 pid+线程 id —— 固定名在多线程下会互相覆盖；
+      2. 有限重试 —— 杀软/索引服务偶尔也会短暂持有句柄，重试几次即可过去。
+    """
     with STATE_LOCK:
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(content, encoding="utf-8")
-        tmp.replace(path)
+        last_exc = None
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError as exc:   # WinError 5：读方或杀软持有句柄
+                last_exc = exc
+                time.sleep(0.05 * (attempt + 1))
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise last_exc
 
 # ---- Client IP helpers ----
 
@@ -597,10 +648,18 @@ def now_text() -> str:
 
 
 def read_activity_log() -> list[dict[str, Any]]:
+    """读活动记录。
+
+    **必须与写共用 STATE_LOCK**：UI 每几秒轮询一次，读的时候持有文件句柄，
+    此时写方的 os.replace 会被 Windows 拒绝（WinError 5 拒绝访问）。
+    这是本机实测复现过的稳定故障，不是理论风险。
+    锁是可重入的（RLock），所以 record_activity 的「读→写」不会自锁。
+    """
     if not ACTIVITY_PATH.exists():
         return []
     try:
-        data = json.loads(ACTIVITY_PATH.read_text(encoding="utf-8"))
+        with STATE_LOCK:
+            data = json.loads(ACTIVITY_PATH.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
     except Exception:
         return []
@@ -767,7 +826,7 @@ def media_item_to_file(field: str, item: Any) -> tuple[str, bytes] | None:
         attempts = 3
         for attempt in range(1, attempts + 1):
             try:
-                with urllib.request.urlopen(req, timeout=300) as resp:
+                with UPSTREAM.open(req, timeout=300) as resp:
                     blob = resp.read()
                     mime = resp.headers.get_content_type() or mimetypes.guess_type(url)[0] or "image/png"
                 break
@@ -917,7 +976,7 @@ def request_json(method: str, url: str, api_key: str, body: dict[str, Any] | Non
     for attempt in range(max_retries):
         try:
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with UPSTREAM.open(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 return json.loads(raw) if raw else {}
 
@@ -958,7 +1017,13 @@ def request_chat_completion(url: str, api_key: str, payload: dict[str, Any], tim
     return request_json("POST", url, api_key, payload, timeout=timeout)
 
 
-def multipart_post(url: str, api_key: str, fields: dict[str, str], files: list[tuple[str, str, bytes, str]], timeout: int = 300) -> dict[str, Any]:
+def multipart_post(url: str, api_key: str, fields: dict[str, str], files: list[tuple[str, str, bytes, str]], timeout: int = 300, max_retries: int = 1) -> dict[str, Any]:
+    """POST multipart，可选重试。
+
+    max_retries 默认 1 = 单发，与历史行为完全一致（banana 异步提交那条路径走的就是
+    默认值）。只有 gpt-image 分支显式传 2，因为「读超时」是实测到的唯一瞬态失败形态。
+    4xx（除 408/429）是确定性拒绝，重试只会白烧一次生成，直接抛。
+    """
     boundary = f"----nanobanana{uuid.uuid4().hex}"
     body = bytearray()
     for name, value in fields.items():
@@ -973,20 +1038,35 @@ def multipart_post(url: str, api_key: str, fields: dict[str, str], files: list[t
         body.extend(blob)
         body.extend(b"\r\n")
     body.extend(f"--{boundary}--\r\n".encode())
-    req = urllib.request.Request(
-        url,
-        data=bytes(body),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": f"multipart/form-data; boundary={boundary}"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8", errors="replace"))
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"API 请求失败 (HTTP {exc.code}): {raw}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise RuntimeError(f"API 请求超时或连接失败: {exc}") from exc
+    payload = bytes(body)
+    attempts = max(1, max_retries)
+    last_error: Exception | None = None
+    last_cause: BaseException | None = None
+    for attempt in range(attempts):
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with UPSTREAM.open(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            last_error = RuntimeError(f"API 请求失败 (HTTP {exc.code}): {raw}")
+            last_cause = exc
+            # 确定性拒绝（非 408/429 的 4xx）不重试
+            if exc.code < 500 and exc.code not in (408, 429):
+                raise last_error from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = RuntimeError(f"API 请求超时或连接失败: {exc}")
+            last_cause = exc
+        if attempt < attempts - 1:
+            time.sleep(min(2 ** attempt, 8))
+    if last_error is None:
+        raise RuntimeError("API 请求失败：未知错误")
+    raise last_error from last_cause
 
 
 def get_field(form: cgi.FieldStorage | dict[str, Any], name: str, default: str = "") -> str:
@@ -1821,7 +1901,7 @@ def download_url(url: str, out_path: Path, *, attempts: int = 3) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     for attempt in range(1, attempts + 1):
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            with UPSTREAM.open(req, timeout=300) as resp:
                 out_path.write_bytes(resp.read())
             return
         except urllib.error.HTTPError as exc:
@@ -2451,13 +2531,21 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                 "n": 1,
                 "size": size,
             }
+            # 这条路径的等待上限以前写死 300s，而实测 chiyun 的 gpt-image-2 图生图
+            # 响应时间在 50s~320s+ 之间漂移：超过 300s 的请求会被 urllib 掐断并报
+            # "The read operation timed out"（线上三次失败分别停在 324/336/315s）。
+            # 改成读任务自己的 timeout 设置（界面默认 900），下限 300 以免被设得过小。
+            # 文生图那条 request_json 自带 6 次重试，900s 会把它放大到最坏 ~91 分钟，
+            # 所以这里显式把重试收到 2 次（最坏 ~31 分钟，与改前持平）。
+            gpt_timeout = max(300, int(values.get("timeout") or 900))
             if mode == "text2img" and not reference_files:
                 result = request_json(
                     "POST",
                     f"{base_url}/v1/images/generations",
                     api_key,
                     fields,
-                    timeout=300,
+                    timeout=gpt_timeout,
+                    max_retries=2,
                 )
             else:
                 if not reference_files:
@@ -2471,7 +2559,8 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                     api_key,
                     fields,
                     files_payload,
-                    timeout=300,
+                    timeout=gpt_timeout,
+                    max_retries=2,
                 )
 
             task_id = f"gptimg_{uuid.uuid4().hex[:12]}"
