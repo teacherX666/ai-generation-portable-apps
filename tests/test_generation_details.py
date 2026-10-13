@@ -10,6 +10,7 @@
 任务 usage.completion_tokens = 40594，按 23 元/百万 token 应为 0.9337 元。
 """
 
+import csv
 import io
 import json
 import sys
@@ -1017,12 +1018,46 @@ class GenerationApiTests(unittest.TestCase):
         self.assertEqual(h.status, 200)
         text = h.wfile.getvalue().decode("utf-8-sig")
         header = text.splitlines()[0].split(",")
-        for col in ("username", "model", "tokens", "unit_price", "amount", "task_ids"):
+        # 2026-10-13 起导出表头改中文（用户反馈表头是英文看不懂）
+        for col in ("用户", "模型", "用量(tokens)", "单价", "金额", "上游任务号", "提示词"):
             self.assertIn(col, header)
+        self.assertNotIn("username", header)
         body = dict(zip(header, text.splitlines()[1].split(",")))
-        self.assertEqual(body["username"], "bob")
-        self.assertEqual(body["tokens"], "1000")
-        self.assertEqual(body["amount"], "0.023")
+        self.assertEqual(body["用户"], "bob")
+        self.assertEqual(body["用量(tokens)"], "1000")
+        self.assertEqual(body["金额"], "0.023")
+
+    def test_export_cell_collapses_newlines_and_translates(self):
+        """导出单元格：换行折成空格 + 状态/类型/有无输入视频走中文口径。"""
+        self.assertEqual(self.mod.export_cell("title", "第一行\n第二行   第三行"), "第一行 第二行 第三行")
+        self.assertEqual(self.mod.export_cell("title", None), "")
+        self.assertEqual(self.mod.export_cell("status", "succeeded"), "成功")
+        self.assertEqual(self.mod.export_cell("status", "waiting_review"), "待确认")
+        self.assertEqual(self.mod.export_cell("kind", "video"), "视频")
+        self.assertEqual(self.mod.export_cell("has_input_video", True), "是")
+        self.assertEqual(self.mod.export_cell("has_input_video", None), "")
+        self.assertEqual(self.mod.export_cell("task_ids", ["cgt-1", "cgt-2"]), "cgt-1|cgt-2")
+
+    def test_csv_export_has_exactly_one_line_per_record(self):
+        """一条记录恰好一行：提示词里的换行必须已折成空格，否则 Excel 里会错位。"""
+        h = self._handler("/api/platform/stats/generations/export?start=2026-10-12&end=2026-10-12")
+        self.mod.Handler._platform_stats_generations_export(h, {"username": "admin", "role": "admin"})
+        text = h.wfile.getvalue().decode("utf-8-sig")
+        physical = [ln for ln in text.splitlines() if ln.strip()]
+        records = list(csv.reader(io.StringIO(text)))
+        self.assertGreater(len(records), 1)
+        self.assertEqual(len(physical), len(records))
+        header = records[0]
+        for row in records[1:]:
+            self.assertEqual(len(row), len(header))
+
+    def test_csv_export_uses_chinese_status(self):
+        h = self._handler("/api/platform/stats/generations/export?start=2026-10-12&end=2026-10-12")
+        self.mod.Handler._platform_stats_generations_export(h, {"username": "admin", "role": "admin"})
+        text = h.wfile.getvalue().decode("utf-8-sig")
+        header, row = text.splitlines()[0].split(","), text.splitlines()[1].split(",")
+        body = dict(zip(header, row))
+        self.assertIn(body["状态"], ("成功", "失败", "待确认", "待审批", "生成中", "已提交", "排队中"))
 
 
 if __name__ == "__main__":

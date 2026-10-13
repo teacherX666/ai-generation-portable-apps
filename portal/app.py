@@ -1783,6 +1783,60 @@ _BILLING_SEEDREAM_SIZE = {
 }
 
 
+# ── 明细/汇总导出的列与取值口径（2026-10-13）─────────────────────────────────
+# 用户反馈两件事：① 表头是英文看不懂；② 提示词里带换行，在 Excel 里一条记录折成多行、表格错位。
+# 所以表头统一中文、**所有文本值把换行折成空格**（保证一条记录一行）。
+GENERATION_EXPORT_COLUMNS: list[tuple[str, str]] = [
+    ("time", "生成时间"),
+    ("date", "日期"),
+    ("username", "用户"),
+    ("app", "应用模块"),
+    ("model", "模型"),
+    ("provider_label", "供应商"),
+    ("status", "状态"),
+    ("tokens", "用量(tokens)"),
+    ("unit_price", "单价"),
+    ("unit", "计价单位"),
+    ("amount", "金额"),
+    ("currency", "币种"),
+    ("resolution", "分辨率"),
+    ("has_input_video", "含输入视频"),
+    ("price_family", "计费族"),
+    ("runs", "生成次数"),
+    ("images", "图片数"),
+    ("seconds", "时长(秒)"),
+    ("title", "提示词"),
+    ("job_id", "任务编号"),
+    ("task_ids", "上游任务号"),
+    ("kind", "产物类型"),
+    ("price_source", "价格来源"),
+    ("provider", "供应商代码"),
+]
+_EXPORT_STATUS_CN = {
+    "succeeded": "成功", "failed": "失败", "running": "生成中", "submitted": "已提交",
+    "cancelled": "已取消", "pending": "排队中", "interrupted": "被打断",
+    "partial": "部分成功", "waiting_approval": "待审批", "waiting_review": "待确认",
+}
+_EXPORT_KIND_CN = {"image": "图片", "video": "视频", "agent": "飞书任务"}
+
+
+def export_cell(field: str, value) -> str:
+    """一个导出单元格：中文口径 + 换行折成空格（一个记录一行，Excel 里不折行）。"""
+    if field == "task_ids":
+        return "|".join(value or []) if not isinstance(value, str) else value
+    if field == "status":
+        return _EXPORT_STATUS_CN.get(str(value or ""), str(value or ""))
+    if field == "kind":
+        return _EXPORT_KIND_CN.get(str(value or ""), str(value or ""))
+    if field == "has_input_video":
+        if value is None or value == "":
+            return ""
+        return "是" if value in (True, "True", "true", 1, "1") else "否"
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
 def billing_item_label(price_family: str, resolution: str = "", image_size: str = "",
                        has_input_video: bool = False) -> str:
     """把「我们这边的档位」翻译成账单里的计费项名。
@@ -4255,22 +4309,16 @@ class Handler(SimpleHTTPRequestHandler):
         is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
         rows = self._generation_rows_merged(start, end, user, is_admin, self._generation_filters())
         buf = io.StringIO()
-        fieldnames = ["time", "date", "username", "app", "model", "provider", "provider_label",
-                      "kind", "task_ids",
-                      "runs", "images", "seconds", "tokens", "unit_price", "unit",
-                      "amount", "currency", "price_source", "price_family",
-                      "resolution", "has_input_video", "status", "job_id", "title"]
-        writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
+        cols = GENERATION_EXPORT_COLUMNS
+        writer = csv.writer(buf)
+        writer.writerow([label for _, label in cols])
         for row in rows:
-            out = dict(row)
-            out["task_ids"] = "|".join(row.get("task_ids") or [])
-            writer.writerow(out)
+            writer.writerow([export_cell(field, row.get(field)) for field, _ in cols])
         body = ("﻿" + buf.getvalue()).encode("utf-8")
-        filename = f"generations-{start}-{end}.csv"
+        filename = f"生成明细-{start}_{end}.csv"
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(filename)}")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self._cors_headers()
@@ -4330,12 +4378,13 @@ class Handler(SimpleHTTPRequestHandler):
         writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in summary:
-            writer.writerow(row)
+            # 与明细导出同一口径：值里不留下换行/多余空白
+            writer.writerow({k: export_cell(k, v) for k, v in row.items()})
         body = ("﻿" + buf.getvalue()).encode("utf-8")
-        filename = f"usage-summary-{start}-{end}.csv"
+        filename = f"用量汇总-{start}_{end}.csv"
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(filename)}")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self._cors_headers()
