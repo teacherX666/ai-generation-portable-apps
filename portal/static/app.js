@@ -4032,7 +4032,13 @@ PetiteVue.createApp({
 // === User info & session ===
 (async () => {
   const res = await api('/api/auth/me');
-  if (!res?.ok) { location.replace('/login?next=' + encodeURIComponent(location.pathname + location.search)); return; }
+  // 服务端不认这个会话时**先清掉本地存的 token**再跳登录页：否则登录页会拿这个失效
+  // token 再问一次、与外壳判断相反 → / ↔ /login 无限刷新（2026-10-13 实测）
+  if (!res?.ok) {
+    try { localStorage.removeItem('portal_session'); } catch(_) {}
+    location.replace('/login?next=' + encodeURIComponent(location.pathname + location.search));
+    return;
+  }
   const label = document.getElementById('userLabel');
   const btn = document.getElementById('logoutBtn');
   if (label) label.textContent = res.username + (res.role === 'admin' ? ' ★' : '');

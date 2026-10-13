@@ -110,12 +110,15 @@ button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-defa
   }
 
   // Already logged in?
+  // ⚠️ 这个探测**必须只用 cookie**（不带 X-Session）。原因：`/` 是浏览器导航，
+  // 只能带 cookie、带不了 X-Session；若这里凭 localStorage token 判「已登录」，
+  // 就会「登录页 → 跳 / → / 因 cookie 失效又弹回 /login → 无限刷新」。
+  // 两边都以 cookie 为准，判断就不可能相反（2026-10-13 实测修复）。
   try {
-    const headers = {};
-    const sess = localStorage.getItem('portal_session');
-    if (sess) headers['X-Session'] = sess;
-    const r = await fetch('/api/auth/me', {credentials: 'include', headers});
-    if (r.ok) { location.replace(next); return; }
+    const r = await fetch('/api/auth/me', {credentials: 'include'});
+    const me = r.ok ? await r.json().catch(() => null) : null;
+    if (me && me.ok && me.username) { location.replace(next); return; }
+    if (r.status === 401) { try { localStorage.removeItem('portal_session'); } catch(_) {} }
   } catch(_) {}
 
   try {
