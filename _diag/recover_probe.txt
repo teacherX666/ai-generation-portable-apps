@@ -1,0 +1,34 @@
+目标用户: 吴雨蔓
+======================================================================
+[1] history.json 总 257 条；属于该用户 0 条
+
+[2] seedance             日志 100 条（2026-10-12 09:24 .. 2026-10-12 15:56）；属于该用户 0 条
+[2] nano-banana          日志 100 条（2026-10-10 16:34 .. 2026-10-12 15:30）；属于该用户 0 条
+[2] volcengine-portrait  日志 57 条（2026-09-11 17:35 .. 2026-09-22 10:41）；属于该用户 0 条
+
+[3] 请求日志里该用户的「创建任务」请求：242 次，覆盖 4 天
+      2026-09-21   22 次   nano-bananax14, seedancex8
+      2026-09-22   62 次   nano-bananax44, seedancex18
+      2026-09-23   67 次   nano-bananax59, seedancex8
+      2026-09-24   91 次   nano-bananax76, seedancex15
+
+[4] seedance             输出 106 个文件，覆盖 5 天
+      2026-09-11   10 个  {'.mp4': 10}
+      2026-09-21   16 个  {'.mp4': 16}
+      2026-09-22   36 个  {'.mp4': 36}
+      2026-09-23   14 个  {'.mp4': 14}
+      2026-09-24   30 个  {'.mp4': 30}
+[4] nano-banana          输出 382 个文件，覆盖 4 天
+      2026-09-21   28 个  {'.png': 28}
+      2026-09-22   86 个  {'.png': 86}
+      2026-09-23  121 个  {'.jpg': 3, '.png': 118}
+      2026-09-24  147 个  {'.png': 146, '.jpg': 1}
+[4] volcengine-portrait  无该用户输出目录
+[4] dreamina             无该用户输出目录
+
+[5] by_user 里该用户出现在 5 天：
+      2026-09-11  {"seedance": {"images": 0, "seconds": 50}}
+      2026-09-21  {"nano-banana": {"images": 28, "seconds": 0}, "seedance": {"images": 0, "seconds": 100}}
+      2026-09-22  {"seedance": {"images": 0, "seconds": 214}, "nano-banana": {"images": 86, "seconds": 0}}
+      2026-09-23  {"nano-banana": {"images": 121, "seconds": 0}, "seedance": {"images": 0, "seconds": 92}}
+      2026-09-24  {"nano-banana": {"images": 146, "seconds": 0}, "seedance": {"images": 0, "seconds": 126}}

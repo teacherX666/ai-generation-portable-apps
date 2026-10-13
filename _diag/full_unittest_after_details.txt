@@ -1,0 +1,283 @@
+﻿  [daily_report] insight fallback: Expecting value: line 1 column 1 (char 0)
+  [daily_report] insight fallback: boom
+  [daily_report] insight fallback: DeepSeek V4.1 Flash����ɽ���ۣ� δ���� API Key
+  [daily_report] insight fallback: DeepSeek V4.1 Flash����ɽ���ۣ� δ���� API Key
+  [daily_report] insight fallback: DeepSeek V4.1 Flash����ɽ���ۣ� δ���� API Key
+  [daily_report] insight fallback: DeepSeek V4.1 Flash����ɽ���ۣ� δ���� API Key
+  [daily_report] insight fallback: DeepSeek V4.1 Flash����ɽ���ۣ� δ���� API Key
+python : ..FF...........................E................................FFF...............................C:\Users\123
+\Documents\LTX\ai-generation-portable-apps\seedance\app.py:5: DeprecationWarning: 'cgi' is deprecated and slated for re
+moval in Python 3.13
+At line:1 char:275
++ ... ct { "tests." + $_.BaseName }); python -m unittest $mods 2>&1 | Out-F ...
++                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (..FF.............. in Python 3.13:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  import cgi
+  [pricing] ��ȡʧ�ܣ��������ñ�: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+..............................................................C:\Users\123\Documents\LTX\ai-generation-portable-apps\te
+sts\test_hello_world_smoke.py:72: ResourceWarning: unclosed <socket.socket fd=3676, family=2, type=1, proto=0, laddr=('
+127.0.0.1', 54223), raddr=('127.0.0.1', 54222)>
+  s = socket.socket()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.......E127.0.0.1 - - [12/Oct/2026 13:35:08] "GET /api/jobs HTTP/1.1" 200 -
+.127.0.0.1 - - [12/Oct/2026 13:35:09] "GET /api/jobs HTTP/1.1" 200 -
+.127.0.0.1 - - [12/Oct/2026 13:35:10] "GET /api/jobs HTTP/1.1" 200 -
+..........................................................F...E..F.............<frozen importlib._bootstrap_external>:7
+52: ResourceWarning: unclosed file <_io.FileIO name='C:\\Users\\123\\Documents\\LTX\\ai-generation-portable-apps\\porta
+l\\state\\logs\\demo.log' mode='ab' closefd=True>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.........F...........semantic route failed; continue KB but block source scan
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\rag-assistant\rag_agent\query\semantic_gate.py", line 18
+8, in decide
+    self._ensure_loaded()
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\rag-assistant\rag_agent\query\semantic_gate.py", line 16
+7, in _ensure_loaded
+    self._embeddings.embed_documents(all_examples),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_rag_assistant_gate.py", line 199, in embed_do
+cuments
+    raise RuntimeError("service down")
+RuntimeError: service down
+.semantic route failed; continue KB but block source scan
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\rag-assistant\rag_agent\query\semantic_gate.py", line 18
+9, in decide
+    query_emb = _as_valid_vector(self._embeddings.embed_query(text), "query embedding")
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\rag-assistant\rag_agent\query\semantic_gate.py", line 87
+, in _as_valid_vector
+    raise ValueError(f"{name} must be a non-empty list")
+ValueError: query embedding must be a non-empty list
+.........s.......................E..................................E......
+======================================================================
+ERROR: test_canvas_library_groups (unittest.loader._FailedTest.test_canvas_library_groups)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_canvas_library_groups
+Traceback (most recent call last):
+  File "C:\Users\123\AppData\Local\Programs\Python\Python312\Lib\unittest\loader.py", line 129, in loadTestsFromName
+    module = __import__(module_name)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_canvas_library_groups.py", line 17, in <modul
+e>
+    import pytest
+ModuleNotFoundError: No module named 'pytest'
+
+
+======================================================================
+ERROR: test_incomplete_read_retry (unittest.loader._FailedTest.test_incomplete_read_retry)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_incomplete_read_retry
+Traceback (most recent call last):
+  File "C:\Users\123\AppData\Local\Programs\Python\Python312\Lib\unittest\loader.py", line 129, in loadTestsFromName
+    module = __import__(module_name)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_incomplete_read_retry.py", line 15, in <modul
+e>
+    import pytest
+ModuleNotFoundError: No module named 'pytest'
+
+
+======================================================================
+ERROR: test_shutdown_never_registers_or_signals_an_external_app (tests.test_portal_startup.PortalStartupTests.test_shut
+down_never_registers_or_signals_an_external_app)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_portal_startup.py", line 96, in test_shutdown
+_never_registers_or_signals_an_external_app
+    with mock.patch.object(module.os, "getpgid", return_value=managed_proc.pid) as getpgid, \
+  File "C:\Users\123\AppData\Local\Programs\Python\Python312\Lib\unittest\mock.py", line 1455, in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Local\Programs\Python\Python312\Lib\unittest\mock.py", line 1428, in get_original
+    raise AttributeError(
+AttributeError: <module 'os' (frozen)> does not have the attribute 'getpgid'
+
+======================================================================
+ERROR: test_seedream_backend (unittest.loader._FailedTest.test_seedream_backend)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_seedream_backend
+Traceback (most recent call last):
+  File "C:\Users\123\AppData\Local\Programs\Python\Python312\Lib\unittest\loader.py", line 129, in loadTestsFromName
+    module = __import__(module_name)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_seedream_backend.py", line 11, in <module>
+    import pytest
+ModuleNotFoundError: No module named 'pytest'
+
+
+======================================================================
+ERROR: test_nano_copies_user_scoped_saved_media_into_job_workspace (tests.test_workspace_media.WorkspaceMediaTests.test
+_nano_copies_user_scoped_saved_media_into_job_workspace)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_workspace_media.py", line 107, in test_nano_c
+opies_user_scoped_saved_media_into_job_workspace
+    self.assertEqual(destination.read_bytes(), b"user-scope-bytes")
+                     ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Local\Programs\Python\Python312\Lib\pathlib.py", line 1020, in read_bytes
+    with self.open(mode='rb') as f:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Local\Programs\Python\Python312\Lib\pathlib.py", line 1014, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\123\\AppData\\Local\\Temp\\tmp2azt5_2n\\workspaces\
+\ws-topic-a\\media\\sample.png'
+
+======================================================================
+FAIL: test_feishu_generation_agent_is_externally_managed (tests.test_app_spec_loader.AppSpecLoaderTests.test_feishu_gen
+eration_agent_is_externally_managed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_app_spec_loader.py", line 61, in test_feishu_
+generation_agent_is_externally_managed
+    self.assertFalse(agent.managed)
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_golden_set_includes_externally_managed_agent (tests.test_app_spec_loader.AppSpecLoaderTests.test_golden_set_
+includes_externally_managed_agent)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_app_spec_loader.py", line 44, in test_golden_
+set_includes_externally_managed_agent
+    self.assertEqual(
+AssertionError: Lists differ: ['see[109 chars]ctor', 'previz', 'rag-assistant', 'drama-pipeline', 'local-ai'] != ['see[
+109 chars]ctor', 'previz', 'rag-assistant']
+
+First list contains 2 additional elements.
+First extra element 9:
+'drama-pipeline'
+
+  ['seedance',
+   'nano-banana',
+   'dreamina',
+   'volcengine-portrait',
+   'infinite-canvas',
+   'feishu-generation-agent',
+   'director',
+   'previz',
+-  'rag-assistant',
+?                 ^
+
++  'rag-assistant']
+?                 ^
+
+-  'drama-pipeline',
+-  'local-ai']
+
+======================================================================
+FAIL: test_send_webhook_no_sign_when_secret_empty (tests.test_daily_report.WebhookSendTests.test_send_webhook_no_sign_w
+hen_secret_empty)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_daily_report.py", line 312, in test_send_webh
+ook_no_sign_when_secret_empty
+    self.assertTrue(ok)
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_send_webhook_reports_feishu_error (tests.test_daily_report.WebhookSendTests.test_send_webhook_reports_feishu
+_error)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_daily_report.py", line 324, in test_send_webh
+ook_reports_feishu_error
+    self.assertIn("19024", info)
+AssertionError: '19024' not found in 'transport error: <urlopen error [Errno 11001] getaddrinfo failed>'
+
+======================================================================
+FAIL: test_send_webhook_signs_when_secret_present (tests.test_daily_report.WebhookSendTests.test_send_webhook_signs_whe
+n_secret_present)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_daily_report.py", line 296, in test_send_webh
+ook_signs_when_secret_present
+    self.assertTrue(ok)
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_nav_matches_apps_registry (tests.test_portal_nav_structure.PortalNavStructureTests.test_nav_matches_apps_reg
+istry)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_portal_nav_structure.py", line 52, in test_na
+v_matches_apps_registry
+    self.assertEqual(sorted(nav_tabs), sorted(expected))
+AssertionError: Lists differ: ['dra[112 chars]s', 'nb', 'previz', 'rag-assistant', 'seedance[29 chars]ait'] != ['dra[11
+2 chars]s', 'local-ai', 'nb', 'previz', 'rag-assistant[41 chars]ait']
+
+First differing element 8:
+'nb'
+'local-ai'
+
+Second list contains 1 additional elements.
+First extra element 14:
+'volcengine-portrait'
+
+  ['drama-pipeline',
+   'dreamina',
+   'feishu-generation-agent',
+   'free-creation',
+   'history',
+   'home',
+   'infinite-canvas',
+   'keys',
++  'local-ai',
+   'nb',
+   'previz',
+   'rag-assistant',
+   'seedance',
+   'stats',
+   'volcengine-portrait']
+
+======================================================================
+FAIL: test_start_app_uses_fastapi_entrypoint_when_engine_is_enabled (tests.test_portal_startup.PortalStartupTests.test_
+start_app_uses_fastapi_entrypoint_when_engine_is_enabled)
+The RAG assistant and the other production apps must not fall back
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_portal_startup.py", line 230, in test_start_a
+pp_uses_fastapi_entrypoint_when_engine_is_enabled
+    self.assertEqual(
+AssertionError: Lists differ: ['C:\\Users\\123\\AppData\\Local\\Programs\\Python\\Python3[114 chars]ing'] != ['C:\\User
+s\\123\\Documents\\LTX\\ai-generation-portable-ap[106 chars]ing']
+
+First differing element 0:
+'C:\\Users\\123\\AppData\\Local\\Programs\\Python\\Python312\\python.exe'
+'C:\\Users\\123\\Documents\\LTX\\ai-generation-portable-ap[19 chars]corn'
+
+First list contains 2 additional elements.
+First extra element 8:
+'--log-level'
+
++ ['C:\\Users\\123\\Documents\\LTX\\ai-generation-portable-apps\\.venv\\bin\\uvicorn',
+- ['C:\\Users\\123\\AppData\\Local\\Programs\\Python\\Python312\\python.exe',
+-  '-m',
+-  'uvicorn',
+   'app_fastapi:app',
+   '--host',
+   '127.0.0.1',
+   '--port',
+   '9900',
+   '--log-level',
+   'warning']
+
+======================================================================
+FAIL: test_server_side_job_validation_matches_portal_options (tests.test_portrait_task_error_surfaced.PortraitFailedTas
+kErrorTests.test_server_side_job_validation_matches_portal_options)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\123\Documents\LTX\ai-generation-portable-apps\tests\test_portrait_task_error_surfaced.py", line 147, i
+n test_server_side_job_validation_matches_portal_options
+    with self.assertRaisesRegex(ValueError, "��ʧЧ"):
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 346 tests in 320.603s
+
+FAILED (failures=8, errors=5, skipped=1)
+sys:1: ResourceWarning: unclosed file <_io.BufferedReader name=3>
+[mov,mp4,m4a,3gp,3g2,mj2 @ 000001cea1da42c0] moov atom not found

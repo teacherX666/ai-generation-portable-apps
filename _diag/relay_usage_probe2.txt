@@ -1,0 +1,25 @@
+===== gemini(chiyun.work)  密钥已读到 =====
+  [额度-区间] https://chiyun.work/v1/dashboard/billing/usage -> HTTP 200
+      {"object":"list","total_usage":1289226.12}
+  [额度-订阅] https://chiyun.work/v1/dashboard/billing/subscription -> HTTP 200
+      {"object":"billing_subscription","has_payment_method":true,"soft_limit_usd":100000000,"hard_limit_usd":100000000,"system_hard_limit_usd":100000000,"access_until":0}
+  [令牌日志(new-api)] https://chiyun.work/api/log/token -> HTTP 200
+      {"data":[{"id":1,"user_id":2,"created_at":1791854058,"type":2,"content":"","username":"red12345679","token_name":"ai组3","model_name":"banana2-ssvip","quota":189000,"prompt_tokens":516,"completion_tokens":26174,"use_time":29,"is_stream":false,"channel":117,"channel_name":"","token_id":86,"group":"XJB","ip":"","request_id":"20261013011349910380401AzkEkgAc","other":"{\"billing_source\":\"wallet\",\"c
+  [用量汇总(new-api)] https://chiyun.work/api/log/self -> HTTP 200
+      {"message":"无权进行此操作，access token 无效","success":false}
+  [模型列表] https://chiyun.work/v1/models -> HTTP 200
+      {"data":[{"id":"banana2-ssvip","object":"model","created":1626777600,"owned_by":"custom","supported_endpoint_types":["gemini","openai"]},{"id":"gemini-3.1-pro-preview","object":"model","created":1626777600,"owned_by":"custom","supported_endpoint_types":["gemini","openai"]},{"id":"gemini-3.5-flash","object":"model","created":1626777600,"owned_by":"custom","supported_endpoint_types":["gemini","opena
+      条数=9 首条字段=['created', 'id', 'object', 'owned_by', 'supported_endpoint_types']
+
+===== t8star  密钥已读到 =====
+  [额度-区间] https://ai.t8star.org/v1/dashboard/billing/usage -> HTTP 200
+      {"object":"list","total_usage":11286.1608}
+  [额度-订阅] https://ai.t8star.org/v1/dashboard/billing/subscription -> HTTP 200
+      {"object":"billing_subscription","has_payment_method":true,"soft_limit_usd":1000,"hard_limit_usd":1000,"system_hard_limit_usd":1000,"access_until":0}
+  [令牌日志(new-api)] https://ai.t8star.org/api/log/token -> HTTP 200
+      {"data":[{"user_id":44767,"created_at":1788942995,"type":2,"content":"n 1.000000, 模型价格 0.15","username":"110723Lj","token_name":"洪粲然","model_name":"gpt-image-2.5-sunburst","quota":75000,"prompt_tokens":8,"completion_tokens":1756,"use_time":26,"is_stream":false,"channel_id":1236,"channel_name":"","token_id":336420,"group":"default","ip":"113.206.109.211","other":{"billing_source":"wallet","cache_ra
+  [用量汇总(new-api)] https://ai.t8star.org/api/log/self -> HTTP 200
+      {"message":"Unauthorized, invalid access token","success":false}
+  [模型列表] https://ai.t8star.org/v1/models -> HTTP 200
+      {"data":[{"id":"chatgpt-4o-latest","object":"model","created":1626777600,"owned_by":"openai","supported_endpoint_types":["openai"]},{"id":"dall-e-3","object":"model","created":1626777600,"owned_by":"openai","supported_endpoint_types":["image-generation","openai"]},{"id":"gpt-3.5-turbo","object":"model","created":1626777600,"owned_by":"openai","supported_endpoint_types":["openai"]},{"id":"gpt-3.5-t
+

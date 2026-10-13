@@ -1,0 +1,18 @@
+== 实验 1：单独查历史任务号 ==
+  [最老 6 个] cgt-20260908154708-x2tlt -> HTTP 404  status=None  tokens=0  {"error":{"code":"ResourceNotFound","message":"The specified resource `cgt-20260
+  [最老 6 个] cgt-20260908154710-jh2lf -> HTTP 404  status=None  tokens=0  {"error":{"code":"ResourceNotFound","message":"The specified resource `cgt-20260
+  [最老 6 个] cgt-20260908154709-7lfwd -> HTTP 404  status=None  tokens=0  {"error":{"code":"ResourceNotFound","message":"The specified resource `cgt-20260
+  [最老 6 个] cgt-20260908154711-ww88f -> HTTP 404  status=None  tokens=0  {"error":{"code":"ResourceNotFound","message":"The specified resource `cgt-20260
+  [最老 6 个] cgt-20260908170418-7456t -> HTTP 404  status=None  tokens=0  {"error":{"code":"ResourceNotFound","message":"The specified resource `cgt-20260
+  [最老 6 个] cgt-20260908170417-jtbvj -> HTTP 404  status=None  tokens=0  {"error":{"code":"ResourceNotFound","message":"The specified resource `cgt-20260
+  [最新 3 个] cgt-20261013093758-c7fzf -> HTTP 200  status=running  tokens=0
+  [最新 3 个] cgt-20261013092037-bao5s -> HTTP 200  status=succeeded  tokens=303300
+  [最新 3 个] cgt-20261013091617-7rs1x -> HTTP 200  status=succeeded  tokens=389700
+
+== 实验 2：一个作业的子应用 token 合计 vs 它各任务之和 ==
+  2026-10-12 14:06:36 MM 2 个任务：子应用合计=649,800 方舟合计=649,800 一致
+  2026-10-12 14:24:59 MM 2 个任务：子应用合计=518,400 方舟合计=518,400 一致
+  2026-10-12 14:27:10 MM 2 个任务：子应用合计=649,800 方舟合计=649,800 一致
+  2026-10-12 14:33:06 MM 2 个任务：子应用合计=475,200 方舟合计=475,200 一致
+  2026-10-12 14:56:39 MM 2 个任务：子应用合计=475,200 方舟合计=475,200 一致
+  2026-10-12 14:59:37 MM 2 个任务：子应用合计=1,339,200 方舟合计=1,339,200 一致

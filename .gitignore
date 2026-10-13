@@ -112,3 +112,25 @@ config/local_ai.env
 _codex_chrome_verify/
 _codex_provider_fix_backup_*/
 
+# ---- 一次性备份与测试快照（2026-10-13 提交整理时补）----
+# 诊断/搬运脚本产生的临时备份：看一眼就丢，不该入库（目录里会越攒越多）
+*.bak-*
+*.pre-*.bak
+*.pre-layout.*.bak
+*.pre-merge.*.bak
+*.pre-summary-move.*.bak
+*.pre-rebuild.*.bak
+*.pre-reqlog.*.bak
+*.pre-dupfix.*.bak
+*.pre-artifacts.*.bak
+CLAUDE.local.md.bak-*
+# e2e 脚本落下的状态快照（体积大、且是某次跑测的中间产物）
+feishu-generation-agent/_e2e_*_state.json
+feishu-generation-agent/_e2e_p0_bitable_snapshot*.json
+feishu-generation-agent/_e2e_repair_state_*.json
+# 诊断脚本落下的图片产物
+feishu-generation-agent/_diag_probe/
+# 短剧模块：运行时产物与技能压缩包（解包后的内容在 skills/extracted/ 里）
+drama-pipeline/state/
+drama-pipeline/skills/free/*.zip
+

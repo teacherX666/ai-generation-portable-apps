@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Token 区块渲染验证</title>
+<style>
+  body { background:#f3f6fa; font-family: system-ui, sans-serif; padding:20px; }
+  table { border-collapse: collapse; background:#fff; }
+  th, td { border:1px solid #d8e0ec; padding:6px 10px; font-size:13px; text-align:left; }
+  .note { font-size:12px; color:#555; margin-bottom:10px; }
+</style>
+</head>
+<body>
+<p class="note">用真实 index.html 模板片段 + 真实 app.js 方法渲染（数据为构造的样例）。</p>
+<div id="app">
+<section class="stats-panel ui-panel ui-admin-page__section">
+        <h2>Token 消耗（火山方舟）</h2>
+        <p style="font-size:11px;color:#697386;margin:6px 0 0">
+          统计区间与上方「按日期段查询」相同（{{ rangeStart }} → {{ rangeEnd }}）。只有走火山方舟通道的生成任务按 token 计费；
+          Chiyun / T8Star / 本地 ComfyUI / Dreamina 上游不返回用量，记 0。{{ isAdmin ? '管理员可见全部用户' : '仅可见自己' }}。
+        </p>
+        <div class="ui-table-wrap" style="margin-top:10px" v-if="tokenAppList().length">
+          <table class="ip-stats-table ui-data-table">
+            <thead>
+              <tr>
+                <th>用户</th>
+                <th v-for="app in tokenAppList()">{{ appLabel(app) }}<br><small style="font-weight:400;color:#94a3b8">token</small></th>
+                <th>合计<br><small style="font-weight:400;color:#94a3b8">token</small></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(apps, uname) in (rangeData.users || {})" v-show="rangeTokenTotals(uname).total > 0">
+                <td>{{ uname }}</td>
+                <td v-for="app in tokenAppList()">{{ fmtTokens(rangeTokenTotals(uname).perApp[app] || 0) }}</td>
+                <td><strong>{{ fmtTokens(rangeTokenTotals(uname).total) }}</strong></td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr>
+                <th>合计</th>
+                <th v-for="app in tokenAppList()">—</th>
+                <th>{{ fmtTokens(rangeTokenGrandTotal()) }}</th>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <p v-else-if="rangeLoading" style="color:#697386;font-size:12px">正在加载…</p>
+        <p v-else style="color:#697386;font-size:12px">该区间没有 token 记录（只有火山方舟通道按 token 计费）</p>
+      </section>
+</div>
+<script src="../portal/static/vendor/petite-vue.iife.js"></script>
+<script>
+const appLabelStub = (app) => ({ seedance: 'Seedance', 'nano-banana': '图像生成模块',
+  'volcengine-portrait': '人像生成' }[app] || app);
+
+// app.js 里这些是**对象字面量的简写方法**，必须原样放进对象里，不能当语句粘。
+const tokenMethods = {
+  rangeTokenTotals(user) {
+      const apps = this.rangeData?.users?.[user] || {};
+      const perApp = {};
+      let total = 0;
+      for (const a in apps) {
+        const n = (apps[a]?.tokens || []).reduce((x, y) => x + (y || 0), 0);
+        perApp[a] = n;
+        total += n;
+      }
+      return { total, perApp };
+    },
+  fmtTokens(n) {
+      const v = Math.round(Number(n) || 0);
+      return v.toLocaleString('en-US');
+    },
+  tokenAppList() {
+      const seen = new Set();
+      const users = this.rangeData?.users || {};
+      for (const u in users) {
+        const apps = users[u] || {};
+        for (const a in apps) {
+          if (((apps[a] || {}).tokens || []).some((v) => v)) seen.add(a);
+        }
+      }
+      const order = ['seedance', 'nano-banana', 'volcengine-portrait', 'dreamina'];
+      const rest = [...seen].filter((a) => !order.includes(a)).sort();
+      return order.filter((a) => seen.has(a)).concat(rest);
+    },
+  rangeTokenGrandTotal() {
+      const users = this.rangeData?.users || {};
+      let total = 0;
+      for (const u in users) total += this.rangeTokenTotals(u).total;
+      return total;
+    },
+};
+
+const state = {
+  "isAdmin": true,
+  "rangeStart": "2026-10-06",
+  "rangeEnd": "2026-10-12",
+  "rangeLoading": false,
+  "appsMeta": {
+    "seedance": {
+      "display_name": "Seedance",
+      "color": "#2563eb"
+    },
+    "nano-banana": {
+      "display_name": "图像生成模块",
+      "color": "#10b981"
+    },
+    "volcengine-portrait": {
+      "display_name": "人像生成",
+      "color": "#f59e0b"
+    }
+  },
+  "rangeData": {
+    "dates": [
+      "2026-10-11",
+      "2026-10-12"
+    ],
+    "users": {
+      "cfy": {
+        "seedance": {
+          "images": [
+            0,
+            0
+          ],
+          "seconds": [
+            0,
+            140
+          ],
+          "tokens": [
+            0,
+            326947
+          ]
+        }
+      },
+      "MM": {
+        "seedance": {
+          "images": [
+            0,
+            0
+          ],
+          "seconds": [
+            12,
+            15
+          ],
+          "tokens": [
+            260100,
+            540900
+          ]
+        }
+      },
+      "左籽悦": {
+        "nano-banana": {
+          "images": [
+            2,
+            0
+          ],
+          "seconds": [
+            0,
+            0
+          ],
+          "tokens": [
+            23107,
+            0
+          ]
+        }
+      },
+      "高大王": {
+        "seedance": {
+          "images": [
+            0,
+            0
+          ],
+          "seconds": [
+            0,
+            253
+          ],
+          "tokens": [
+            0,
+            0
+          ]
+        },
+        "nano-banana": {
+          "images": [
+            25,
+            0
+          ],
+          "seconds": [
+            0,
+            0
+          ],
+          "tokens": [
+            0,
+            0
+          ]
+        }
+      }
+    }
+  }
+};
+Object.assign(state, tokenMethods);
+state.appLabel = appLabelStub;
+PetiteVue.createApp(state).mount('#app');
+window.__harnessReady = true;
+</script>
+</body>
+</html>

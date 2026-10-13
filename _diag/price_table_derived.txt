@@ -1,0 +1,131 @@
+source rows = 16874
+columns = ['账期', '消费日期', '项目', '项目显示名', 'API Key ID', '分账类型', '产品编码', '产品名称', '模型', '计费项', '实例ID', '用量', '单位', '原价', '优惠金额', '折后价', '应付金额', '已付金额', '未付金额', '代金券抵扣', '币种', '账单类型', '计费模式', '消费时间', '分账明细ID']
+
+==================================================================================================================================
+按 模型 / 计费项 / 账期 的单价（元每单位；单位=千tokens 时另给 元/百万token）
+==================================================================================================================================
+Doubao-Seed-Evolving   | 2026-08 | Doubao-Seed-Evolving-推理（输入）                          | 用量=        40.2 千tokens  原价=      0.00 |    0.00 元/百万token | 行=6
+Doubao-Seed-Evolving   | 2026-08 | Doubao-Seed-Evolving推理（输出）                           | 用量=        58.5 千tokens  原价=      0.00 |    0.00 元/百万token | 行=6
+Doubao-Seedance-2.0    | 2026-06 | Doubao-Seedance-2.0在线推理1080P（无输入视频）                  | 用量=     93502.5 千tokens  原价=   4731.10 |   50.60 元/百万token | 行=216
+Doubao-Seedance-2.0    | 2026-07 | Doubao-Seedance-2.0在线推理1080P（无输入视频）                  | 用量=    949718.3 千tokens  原价=  48373.11 |   50.93 元/百万token | 行=2017
+Doubao-Seedance-2.0    | 2026-08 | Doubao-Seedance-2.0在线推理1080P（无输入视频）                  | 用量=   1215768.0 千tokens  原价=  61035.45 |   50.20 元/百万token | 行=2062
+Doubao-Seedance-2.0    | 2026-09 | Doubao-Seedance-2.0在线推理1080P（无输入视频）                  | 用量=    412518.8 千tokens  原价=  20769.33 |   50.35 元/百万token | 行=599
+Doubao-Seedance-2.0    | 2026-06 | Doubao-Seedance-2.0在线推理1080P（有输入视频）                  | 用量=     16507.8 千tokens  原价=    511.74 |   31.00 元/百万token | 行=16
+Doubao-Seedance-2.0    | 2026-07 | Doubao-Seedance-2.0在线推理1080P（有输入视频）                  | 用量=    153607.1 千tokens  原价=   4761.82 |   31.00 元/百万token | 行=156
+Doubao-Seedance-2.0    | 2026-08 | Doubao-Seedance-2.0在线推理1080P（有输入视频）                  | 用量=    141898.8 千tokens  原价=   4398.86 |   31.00 元/百万token | 行=130
+Doubao-Seedance-2.0    | 2026-09 | Doubao-Seedance-2.0在线推理1080P（有输入视频）                  | 用量=     48101.9 千tokens  原价=   1491.16 |   31.00 元/百万token | 行=42
+Doubao-Seedance-2.0    | 2026-07 | Doubao-Seedance-2.0在线推理4k（无输入视频）                     | 用量=     19318.5 千tokens  原价=    502.28 |   26.00 元/百万token | 行=9
+Doubao-Seedance-2.0    | 2026-08 | Doubao-Seedance-2.0在线推理4k（无输入视频）                     | 用量=      1960.2 千tokens  原价=     50.97 |   26.00 元/百万token | 行=2
+Doubao-Seedance-2.0    | 2026-08 | Doubao-Seedance-2.0在线推理4k（有输入视频）                     | 用量=      6245.1 千tokens  原价=     99.92 |   16.00 元/百万token | 行=3
+Doubao-Seedance-2.0    | 2026-04 | Doubao-Seedance-2.0在线推理（无输入视频）                       | 用量=     60408.0 千tokens  原价=   2740.85 |   45.37 元/百万token | 行=204
+Doubao-Seedance-2.0    | 2026-05 | Doubao-Seedance-2.0在线推理（无输入视频）                       | 用量=      1175.4 千tokens  原价=     54.07 |   46.00 元/百万token | 行=9
+Doubao-Seedance-2.0    | 2026-06 | Doubao-Seedance-2.0在线推理（无输入视频）                       | 用量=     43875.7 千tokens  原价=   1285.09 |   29.29 元/百万token | 行=133
+Doubao-Seedance-2.0    | 2026-07 | Doubao-Seedance-2.0在线推理（无输入视频）                       | 用量=    670435.1 千tokens  原价=  30565.54 |   45.59 元/百万token | 行=2861
+Doubao-Seedance-2.0    | 2026-08 | Doubao-Seedance-2.0在线推理（无输入视频）                       | 用量=    413418.5 千tokens  原价=  18767.46 |   45.40 元/百万token | 行=1713
+Doubao-Seedance-2.0    | 2026-09 | Doubao-Seedance-2.0在线推理（无输入视频）                       | 用量=     94542.2 千tokens  原价=   4205.08 |   44.48 元/百万token | 行=346
+Doubao-Seedance-2.0    | 2026-04 | Doubao-Seedance-2.0在线推理（有输入视频）                       | 用量=      1082.7 千tokens  原价=     30.32 |   28.00 元/百万token | 行=3
+Doubao-Seedance-2.0    | 2026-05 | Doubao-Seedance-2.0在线推理（有输入视频）                       | 用量=       650.7 千tokens  原价=     18.22 |   28.00 元/百万token | 行=3
+Doubao-Seedance-2.0    | 2026-06 | Doubao-Seedance-2.0在线推理（有输入视频）                       | 用量=      7590.6 千tokens  原价=    212.54 |   28.00 元/百万token | 行=29
+Doubao-Seedance-2.0    | 2026-07 | Doubao-Seedance-2.0在线推理（有输入视频）                       | 用量=     76012.1 千tokens  原价=   2128.34 |   28.00 元/百万token | 行=229
+Doubao-Seedance-2.0    | 2026-08 | Doubao-Seedance-2.0在线推理（有输入视频）                       | 用量=     94414.3 千tokens  原价=   2643.60 |   28.00 元/百万token | 行=214
+Doubao-Seedance-2.0    | 2026-09 | Doubao-Seedance-2.0在线推理（有输入视频）                       | 用量=     15557.8 千tokens  原价=    435.62 |   28.00 元/百万token | 行=39
+Doubao-Seedance-2.0-fast | 2026-08 | Doubao-Seedance-2.0-fast在线推理（无输入视频）                  | 用量=     13463.7 千tokens  原价=    498.16 |   37.00 元/百万token | 行=60
+Doubao-Seedance-2.0-fast | 2026-08 | Doubao-Seedance-2.0-fast在线推理（有输入视频）                  | 用量=      7794.0 千tokens  原价=    171.47 |   22.00 元/百万token | 行=18
+Doubao-Seedance-2.0-mini | 2026-08 | Doubao-Seedance-2.0-mini在线推理（无输入视频）                  | 用量=    120201.5 千tokens  原价=   2764.63 |   23.00 元/百万token | 行=466
+Doubao-Seedance-2.0-mini | 2026-09 | Doubao-Seedance-2.0-mini在线推理（无输入视频）                  | 用量=     39304.8 千tokens  原价=    904.01 |   23.00 元/百万token | 行=128
+Doubao-Seedance-2.0-mini | 2026-08 | Doubao-Seedance-2.0-mini在线推理（有输入视频）                  | 用量=     18719.1 千tokens  原价=    262.07 |   14.00 元/百万token | 行=33
+Doubao-Seedance-2.0-mini | 2026-09 | Doubao-Seedance-2.0-mini在线推理（有输入视频）                  | 用量=      9954.9 千tokens  原价=    139.37 |   14.00 元/百万token | 行=16
+Doubao-Seedance-2.5    | 2026-08 | Doubao-Seedance-2.5在线推理480P/720P（无输入视频）              | 用量=    819445.2 千tokens  原价=  54890.24 |   66.98 元/百万token | 行=2211
+Doubao-Seedance-2.5    | 2026-09 | Doubao-Seedance-2.5在线推理480P/720P（无输入视频）              | 用量=    651895.5 千tokens  原价=  43938.08 |   67.40 元/百万token | 行=1535
+Doubao-Seedance-2.5    | 2026-08 | Doubao-Seedance-2.5在线推理480P/720P（有输入视频）              | 用量=    340619.1 千tokens  原价=  13928.00 |   40.89 元/百万token | 行=633
+Doubao-Seedance-2.5    | 2026-09 | Doubao-Seedance-2.5在线推理480P/720P（有输入视频）              | 用量=    245036.5 千tokens  原价=   9669.97 |   39.46 元/百万token | 行=466
+Doubao-Seedream-5.0-Lite | 2026-08 | Doubao-Seedream-5.0-文生图张数                            | 用量=         7.0 张        原价=      1.54 |   0.2200 元/张 | 行=2
+Doubao-Seedream-5.0-Pro | 2026-08 | Doubao-Seedream-5.0-Pro-input-image-多于1张的输入图张数       | 用量=       473.0 张        原价=      9.14 |   0.0193 元/张 | 行=60
+Doubao-Seedream-5.0-Pro | 2026-09 | Doubao-Seedream-5.0-Pro-input-image-多于1张的输入图张数       | 用量=        44.0 张        原价=      0.88 |   0.0200 元/张 | 行=14
+Doubao-Seedream-5.0-Pro | 2026-08 | Doubao-Seedream-5.0-pro-不超过1.5K输出图                   | 用量=        39.0 张        原价=     10.50 |   0.2692 元/张 | 行=10
+Doubao-Seedream-5.0-Pro | 2026-09 | Doubao-Seedream-5.0-pro-不超过1.5K输出图                   | 用量=        20.0 张        原价=      5.40 |   0.2700 元/张 | 行=12
+Doubao-Seedream-5.0-Pro | 2026-08 | Doubao-Seedream-5.0-pro-超过1.5K不超过2K输出图               | 用量=       501.0 张        原价=    282.60 |   0.5641 元/张 | 行=121
+Doubao-Seedream-5.0-Pro | 2026-09 | Doubao-Seedream-5.0-pro-超过1.5K不超过2K输出图               | 用量=        71.0 张        原价=     26.40 |   0.3718 元/张 | 行=32
+Doubao-Seedream4.0     | 2026-08 | Doubao-Seedream-4.0-文生图张数                            | 用量=         6.0 张        原价=      0.00 |   0.0000 元/张 | 行=6
+Doubao-Seedream4.0     | 2026-08 | Doubao-Seedream4.0-图像编辑张数                            | 用量=         4.0 张        原价=      0.00 |   0.0000 元/张 | 行=4
+
+==================================================================================================================================
+只看视频类：模型 × 计费项（跨账期汇总，单价取加权平均，并列出各账期单价以便发现调价）
+==================================================================================================================================
+
+Doubao-Seed-Evolving — Doubao-Seed-Evolving-推理（输入）
+    加权平均单价 = 0.00 元/百万token（总用量 40 千tokens，总原价 0.00 元）
+      2026-08:    0.00 元/百万token   (用量       40.2, 原价      0.00)
+
+Doubao-Seed-Evolving — Doubao-Seed-Evolving推理（输出）
+    加权平均单价 = 0.00 元/百万token（总用量 58 千tokens，总原价 0.00 元）
+      2026-08:    0.00 元/百万token   (用量       58.5, 原价      0.00)
+
+Doubao-Seedance-2.0 — Doubao-Seedance-2.0在线推理1080P（无输入视频）
+    加权平均单价 = 50.50 元/百万token（总用量 2671508 千tokens，总原价 134908.99 元）
+      2026-06:   50.60 元/百万token   (用量    93502.5, 原价   4731.10)
+      2026-07:   50.93 元/百万token   (用量   949718.3, 原价  48373.11)
+      2026-08:   50.20 元/百万token   (用量  1215768.0, 原价  61035.45)
+      2026-09:   50.35 元/百万token   (用量   412518.8, 原价  20769.33)
+
+Doubao-Seedance-2.0 — Doubao-Seedance-2.0在线推理1080P（有输入视频）
+    加权平均单价 = 31.00 元/百万token（总用量 360116 千tokens，总原价 11163.58 元）
+      2026-06:   31.00 元/百万token   (用量    16507.8, 原价    511.74)
+      2026-07:   31.00 元/百万token   (用量   153607.1, 原价   4761.82)
+      2026-08:   31.00 元/百万token   (用量   141898.8, 原价   4398.86)
+      2026-09:   31.00 元/百万token   (用量    48101.9, 原价   1491.16)
+
+Doubao-Seedance-2.0 — Doubao-Seedance-2.0在线推理4k（无输入视频）
+    加权平均单价 = 26.00 元/百万token（总用量 21279 千tokens，总原价 553.25 元）
+      2026-07:   26.00 元/百万token   (用量    19318.5, 原价    502.28)
+      2026-08:   26.00 元/百万token   (用量     1960.2, 原价     50.97)
+
+Doubao-Seedance-2.0 — Doubao-Seedance-2.0在线推理4k（有输入视频）
+    加权平均单价 = 16.00 元/百万token（总用量 6245 千tokens，总原价 99.92 元）
+      2026-08:   16.00 元/百万token   (用量     6245.1, 原价     99.92)
+
+Doubao-Seedance-2.0 — Doubao-Seedance-2.0在线推理（无输入视频）
+    加权平均单价 = 44.88 元/百万token（总用量 1283855 千tokens，总原价 57618.08 元）
+      2026-04:   45.37 元/百万token   (用量    60408.0, 原价   2740.85)
+      2026-05:   46.00 元/百万token   (用量     1175.4, 原价     54.07)
+      2026-06:   29.29 元/百万token   (用量    43875.7, 原价   1285.09)
+      2026-07:   45.59 元/百万token   (用量   670435.1, 原价  30565.54)
+      2026-08:   45.40 元/百万token   (用量   413418.5, 原价  18767.46)
+      2026-09:   44.48 元/百万token   (用量    94542.2, 原价   4205.08)
+
+Doubao-Seedance-2.0 — Doubao-Seedance-2.0在线推理（有输入视频）
+    加权平均单价 = 28.00 元/百万token（总用量 195308 千tokens，总原价 5468.63 元）
+      2026-04:   28.00 元/百万token   (用量     1082.7, 原价     30.32)
+      2026-05:   28.00 元/百万token   (用量      650.7, 原价     18.22)
+      2026-06:   28.00 元/百万token   (用量     7590.6, 原价    212.54)
+      2026-07:   28.00 元/百万token   (用量    76012.1, 原价   2128.34)
+      2026-08:   28.00 元/百万token   (用量    94414.3, 原价   2643.60)
+      2026-09:   28.00 元/百万token   (用量    15557.8, 原价    435.62)
+
+Doubao-Seedance-2.0-fast — Doubao-Seedance-2.0-fast在线推理（无输入视频）
+    加权平均单价 = 37.00 元/百万token（总用量 13464 千tokens，总原价 498.16 元）
+      2026-08:   37.00 元/百万token   (用量    13463.7, 原价    498.16)
+
+Doubao-Seedance-2.0-fast — Doubao-Seedance-2.0-fast在线推理（有输入视频）
+    加权平均单价 = 22.00 元/百万token（总用量 7794 千tokens，总原价 171.47 元）
+      2026-08:   22.00 元/百万token   (用量     7794.0, 原价    171.47)
+
+Doubao-Seedance-2.0-mini — Doubao-Seedance-2.0-mini在线推理（无输入视频）
+    加权平均单价 = 23.00 元/百万token（总用量 159506 千tokens，总原价 3668.64 元）
+      2026-08:   23.00 元/百万token   (用量   120201.5, 原价   2764.63)
+      2026-09:   23.00 元/百万token   (用量    39304.8, 原价    904.01)
+
+Doubao-Seedance-2.0-mini — Doubao-Seedance-2.0-mini在线推理（有输入视频）
+    加权平均单价 = 14.00 元/百万token（总用量 28674 千tokens，总原价 401.44 元）
+      2026-08:   14.00 元/百万token   (用量    18719.1, 原价    262.07)
+      2026-09:   14.00 元/百万token   (用量     9954.9, 原价    139.37)
+
+Doubao-Seedance-2.5 — Doubao-Seedance-2.5在线推理480P/720P（无输入视频）
+    加权平均单价 = 67.17 元/百万token（总用量 1471341 千tokens，总原价 98828.32 元）
+      2026-08:   66.98 元/百万token   (用量   819445.2, 原价  54890.24)
+      2026-09:   67.40 元/百万token   (用量   651895.5, 原价  43938.08)
+
+Doubao-Seedance-2.5 — Doubao-Seedance-2.5在线推理480P/720P（有输入视频）
+    加权平均单价 = 40.29 元/百万token（总用量 585656 千tokens，总原价 23597.97 元）
+      2026-08:   40.89 元/百万token   (用量   340619.1, 原价  13928.00)
+      2026-09:   39.46 元/百万token   (用量   245036.5, 原价   9669.97)

@@ -1,0 +1,17 @@
+secrets.json 里的 provider 键：['provider_keys']
+（密钥值不打印）
+
+== chiyun（https://chiyun.work）密钥是否读到：否 ==
+  GET /v1/dashboard/billing/usage?start_date=2026-10-01&end_date=2026-10-13 -> 401  {"error":{"code":"","message":"未提供令牌 (request id: 2026101301164063862128JCQL6ppY)","type":"new_api_error"}}
+  GET /v1/dashboard/billing/subscription                             -> 401  {"error":{"code":"","message":"未提供令牌 (request id: 202610130116407760845045KNQS3DE)","type":"new_api_error"}}
+  GET /api/user/self                                                 -> 401  {"message":"无权进行此操作，未登录且未提供 access token","success":false}
+  GET /api/status                                                    -> 200  {"data":{"HeaderNavModules":"","SidebarModulesAdmin":"","_qn":"new-api","announcements":[],"announcements_enabled":true,"api_info":[],"api_info_enable
+  GET /v1/models                                                     -> 401  {"error":{"code":"","message":"未提供令牌 (request id: 2026101301164320870829EXBIoiCT)","type":"new_api_error"}}
+
+== t8star（https://ai.t8star.org）密钥是否读到：否 ==
+  GET /v1/dashboard/billing/usage?start_date=2026-10-01&end_date=2026-10-13 -> 401  {"error":{"code":"invalid_request","message":"Token not provided (request id: EMaster202610130116438291379018268d9d6ZKcTzrsC)","type":"new_api_error"}
+  GET /v1/dashboard/billing/subscription                             -> 401  {"error":{"code":"invalid_request","message":"Token not provided (request id: EMaster202610130116444994275738268d9d66rT9cX2u)","type":"new_api_error"}
+  GET /api/user/self                                                 -> 401  {"message":"Unauthorized, not logged in and no access token provided","success":false}
+  GET /api/status                                                    -> 200  {"data":{"agent_transfer_quota_enabled":true,"announcements":[{"content":"香蕉系列default分组恢复，成本大幅度下降，支持2K,4K，可以试下","extra":"","id":1784879620145,"publish
+  GET /v1/models                                                     -> 401  {"error":{"code":"invalid_request","message":"Token not provided (request id: EMaster202610130116467700485618268d9d6k9CeSM3j)","type":"new_api_error"}
+
