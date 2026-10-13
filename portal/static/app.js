@@ -22,7 +22,7 @@ async function api(url, method, body) {
 function escHtml(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''; }
 
 function jobStatusLabel(status) {
-const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '已中断' , waiting_approval: '待审批', waiting_review: '待确认'};
+const map = { queued: '排队中', pending: '等待中', running: '处理中', querying: '查询中', succeeded: '已完成', success: '已完成', completed: '已完成', failed: '失败', failure: '失败', cancelled: '已取消', canceled: '已取消', interrupted: '已中断' };
   return map[String(status || '').toLowerCase()] || String(status || '未知');
 }
 
@@ -3711,7 +3711,10 @@ function HistoryApp() {
       return "/api/platform/thumb?app=" + encodeURIComponent(it.app) + "&url=" + encodeURIComponent(it.thumb_url);
     },
     statusText(s) {
-      return { done: "已成功", failed: "已失败", running: "生成中", queued: "排队中", pending: "排队中", waiting_approval: "待审批", waiting_review: "待确认" }[s] || s;
+      // 创作记录：飞书的「等人在飞书里确认」= 片子已生成 → 成功；不在 Portal 里显示「待确认」
+      // （2026-10-13 用户反馈：状态里不应该有待确认这一项）
+      return { done: "已成功", failed: "已失败", running: "生成中", queued: "排队中",
+               pending: "排队中", waiting_approval: "已提交", waiting_review: "已成功" }[s] || s;
     },
     shortTime(ts) {
       if (!ts) return "—";
