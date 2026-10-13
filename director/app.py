@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared import local_gateway  # noqa: E402
 from shared import model_gateway  # noqa: E402
+from shared.net import UPSTREAM  # noqa: E402
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 OUTPUT_DIR = _DATA_BASE / "outputs"
 STATE_DIR = _DATA_BASE / "state"
@@ -195,7 +196,7 @@ def request_json(method: str, url: str, api_key: str, body: dict | None = None,
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with UPSTREAM.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:
@@ -218,7 +219,7 @@ def _download_image(url: str, dest: Path) -> None:
     """下载生成结果到本地文件；失败抛 APIError。"""
     req = urllib.request.Request(url, headers={"User-Agent": "director/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
+        with UPSTREAM.open(req, timeout=180) as resp:
             with dest.open("wb") as fh:
                 shutil.copyfileobj(resp, fh)
     except Exception as exc:

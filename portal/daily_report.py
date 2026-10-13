@@ -30,6 +30,11 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+try:  # 仓库根已在上方补进 sys.path
+    from shared.net import UPSTREAM
+except ImportError:  # pragma: no cover
+    UPSTREAM = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 from shared import model_gateway  # noqa: E402
 from typing import Any
 
@@ -306,7 +311,7 @@ def send_webhook(webhook_url: str, card_body: dict, sign_secret: str = "", timeo
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(webhook_url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with UPSTREAM.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except Exception as exc:
         return False, f"transport error: {exc}"

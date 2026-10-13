@@ -24,6 +24,15 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:  # 仓库根已在上方补进 sys.path
+    from shared.net import UPSTREAM  # noqa: E402
+except ImportError:  # pragma: no cover
+    UPSTREAM = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 STATIC_DIR = ROOT / "static"
 
@@ -2495,7 +2504,7 @@ class Handler(SimpleHTTPRequestHandler):
             # `curl | bash`, which becomes RCE the day upstream is
             # compromised or MITM'd. See DREAMINA_CLI_TRUSTED_SHA256 below.
             send_event(json.dumps({"type": "log", "text": f"Downloading {DREAMINA_CLI_URL}..."}))
-            with urllib.request.urlopen(DREAMINA_CLI_URL, timeout=30) as resp:
+            with UPSTREAM.open(DREAMINA_CLI_URL, timeout=30) as resp:
                 script_bytes = resp.read()
             actual = hashlib.sha256(script_bytes).hexdigest()
             trusted = _trusted_cli_hashes()

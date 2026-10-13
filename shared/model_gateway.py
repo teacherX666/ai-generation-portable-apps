@@ -25,6 +25,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+try:  # 仓库根通常已在 sys.path；直接导入本模块时兜底
+    from shared.net import UPSTREAM
+except ImportError:  # pragma: no cover
+    UPSTREAM = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 _HERE = Path(__file__).resolve().parent
 REGISTRY_PATH = _HERE / "model_registry.json"
 
@@ -138,7 +143,7 @@ def request_json(
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with UPSTREAM.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:
@@ -171,7 +176,7 @@ def provider_ready(name: str, timeout: float = 1.5) -> bool:
     if not base:
         return False
     try:
-        with urllib.request.urlopen(base + health, timeout=timeout) as resp:
+        with UPSTREAM.open(base + health, timeout=timeout) as resp:
             return 200 <= int(resp.status) < 400
     except Exception:
         return False

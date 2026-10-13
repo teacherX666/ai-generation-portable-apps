@@ -141,6 +141,23 @@
     "stats_combine": "images_or_seconds"
   },
   {
+    "name": "drama-pipeline",
+    "display_name": "AI短剧全流程",
+    "port_env": "DRAMA_PIPELINE_PORT",
+    "port_default": 8903,
+    "mount": "iframe",
+    "iframe_url": "/drama-pipeline/index.html",
+    "color": "#8b5cf6",
+    "credential_scheme": "none",
+    "job_type": "dynamic",
+    "job_type_rules": [
+      {"keywords": ["/api/jobs"], "type": "image"}
+    ],
+    "metrics": ["images"],
+    "unit_label": "次",
+    "stats_combine": "images_or_seconds"
+  },
+  {
     "_comment": "本地 AI Port 网关（模型机 8801）。它不是 Portal 拉起的子应用，只是借 Portal 的反代把 /local-ai/* 暴露给已登录浏览器（自由创作里的智能抠图 / 视频超分要用）。managed=false 很关键：否则看门狗会把它当成需要自己拉起的子应用去重启。",
     "name": "local-ai",
     "display_name": "本地 AI Port",

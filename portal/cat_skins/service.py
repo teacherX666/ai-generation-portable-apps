@@ -16,6 +16,11 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+try:  # 仓库根通常已在 sys.path；直接导入本模块时兜底
+    from shared.net import UPSTREAM
+except ImportError:  # pragma: no cover
+    UPSTREAM = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 from .validate_skin import validate_data
 
 RARITY_TABLE = (("common", 60), ("rare", 28), ("epic", 10), ("legendary", 2))
@@ -286,7 +291,7 @@ class CatSkinGenerator:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as response:
+                with UPSTREAM.open(req, timeout=timeout) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 print(f"  [cat-skin] {provider}/{model} responded in {time.monotonic() - started:.1f}s", flush=True)
                 return payload["choices"][0]["message"]["content"]

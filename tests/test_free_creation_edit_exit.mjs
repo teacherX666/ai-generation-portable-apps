@@ -361,6 +361,41 @@ export async function testNoopEditGetsHistoryFlag() {
   assert.equal(flag.textContent, '\u26a0 \u672a\u6539\u52a8');
 }
 
+// 用户 2026-09-29：「我的分辨率里怎么多了个奇怪的选项」—— 编辑入口以前写死
+// `["720p","1080p","2K"]`，而它下发的模型是 `doubao-seedance-2-5-260628`，**真实只支持
+// 480p/720p**（seedance/providers.json）：选 1080p/2K 提交会被 `validate_model_capabilities`
+// 直接拒掉（「分辨率 2K 不支持，可用：480p / 720p」），而真正能用的 480p 反而没列出来。
+// 不变量：编辑入口的分辨率必须**等于**真实模型的配置（以后上游改能力，UI 自动跟随）。
+async function testEditResolutionsFollowTheRealModel() {
+  const { context } = buildContext();
+  const payload = read(context, `
+    (() => {
+      normalizeModels({
+        seedance: { providers: { volcengine: { label: 'volcengine', models: [
+          { id: 'doubao-seedance-2-5-260628', resolutions: ['480p', '720p'] },
+        ] } } },
+        nano: { providers: {} }, portrait: {}, segment: null, upscale: null,
+      });
+      const edit = state.models.video.find((model) => model.id === 'seedance-2.5-edit');
+      const real = state.models.video.find((model) => model.id === 'doubao-seedance-2-5-260628');
+      return JSON.stringify({ edit: edit.resolutions, real: real.resolutions });
+    })()
+  `);
+  const { edit, real } = JSON.parse(payload);
+  assert.deepEqual(edit, real, '编辑入口的分辨率必须跟随真实模型');
+  assert.ok(!edit.includes('2K'), '不得出现模型不支持的 2K');
+  assert.ok(!edit.includes('1080p'), '不得出现模型不支持的 1080p');
+}
+
+// `4k` 是 Ark 的真实枚举值（改值会让后端判「不支持」），但显示要和别处的 2K/4K 一致，
+// 否则用户会以为多了个奇怪的选项。
+function testResolutionLabelsAreNormalizedWithoutChangingValues() {
+  const { context } = buildContext();
+  assert.equal(read(context, `paramOptionLabel('4k')`), '4K');
+  assert.equal(read(context, `paramOptionLabel('480p')`), '480p');
+  assert.equal(read(context, `paramOptionLabel('2K')`), '2K');
+}
+
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('test_free_creation_edit_exit.mjs')) {
   const tests = [
     ['移除源素材不泄漏编辑残片', testSourceRemovalDoesNotLeakEditFragment],
@@ -368,6 +403,8 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
     ['编辑态丢失后提交的不是普通生成', testSubmitAfterLostEditContextIsNotPlainGeneration],
     ['编辑提交钉死 omni_reference_task_type=edit', testEditSubmitPinsOmniTaskType],
     ['未改动的编辑任务在历史里挂 ⚠ 标记', testNoopEditGetsHistoryFlag],
+    ['编辑入口的分辨率跟随真实模型（不再有 1080p/2K）', testEditResolutionsFollowTheRealModel],
+    ['4k 只改显示不改取值', testResolutionLabelsAreNormalizedWithoutChangingValues],
   ];
   let failed = 0;
   for (const [name, fn] of tests) {

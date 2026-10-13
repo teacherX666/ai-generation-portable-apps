@@ -13,6 +13,11 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+try:  # 仓库根通常已在 sys.path；直接导入本模块时兜底
+    from shared.net import UPSTREAM
+except ImportError:  # pragma: no cover
+    UPSTREAM = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -173,7 +178,7 @@ class CatConceptStore:
     def __init__(self, seed_path: Path, state_path: Path, opener: Callable | None = None, topic_filter: Callable | None = None):
         self.seed_path = seed_path
         self.state_path = state_path
-        self.opener = opener or urllib.request.urlopen
+        self.opener = opener or UPSTREAM.open
         self.topic_filter = topic_filter
         self._lock = threading.RLock()
         self._stop = threading.Event()

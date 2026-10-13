@@ -663,6 +663,8 @@ function setMode(mode) {
   //: 选它即进入编辑态：原视频由用户**自己上传**或从历史里选，不再绑死"最新一条"
   //: （那正是「不能上传修改历史视频」的根源）。提交时固定 task_mode=edit、
   //: duration=-1、ratio=adaptive —— 由后端 seedance 按编辑任务处理。
+  //: 编辑入口的分辨率跟随真实模型（见下面 resolutions 的说明）。放在 unshift 之前取。
+  const editSourceModel = video.find((model) => model.id === "doubao-seedance-2-5-260628");
   video.unshift({
     id: "seedance-2.5-edit",
     //: 下发给 Ark 的**真实模型 id** —— 上面那个 id 只是界面用的伪 id（下拉框需要一个唯一值），
@@ -678,7 +680,13 @@ function setMode(mode) {
     badge: "2.5 专属",
     editOnly: true,
     duration: [-1, -1],
-    resolutions: ["720p", "1080p", "2K"],
+    //: 2026-09-29：这里以前写死 ["720p","1080p","2K"]，而它下发的模型是
+    //: doubao-seedance-2-5-260628 —— **真实只支持 480p/720p**（providers.json）。
+    //: 于是编辑态的下拉里多出 1080p / 2K 两个"奇怪的选项"：选中提交会被 seedance 的
+    //: `validate_model_capabilities` 直接拒掉（「分辨率 2K 不支持，可用：480p / 720p」），
+    //: 而真正能用的 480p 反而没列出来。改为**跟随真实模型的配置**：上游能力变了这里
+    //: 自动跟着变；取不到时退回该模型的真实下限。
+    resolutions: editSourceModel ? [...editSourceModel.resolutions] : ["480p", "720p"],
     ratios: ["adaptive"],
     defaults: {},
   });
@@ -784,6 +792,14 @@ function applyModelDefaults(model) {
   params.image_size = clampOption(params.image_size, model.sizes, d.image_size || "2K");
   params.repeat_count = clampNumber(params.repeat_count, 1, 8, d.repeat_count || 1);
 }
+//: 上游枚举值**保持原样**（`4k` 就是 Ark 的真实取值，改成 `4K` 后端会判「分辨率不支持」，
+//: 因为校验是拿 providers.json 的列表比的）；只把**显示**统一成 4K —— 它混在小写的
+//: 480p/720p 旁边、而别处又写 2K/4K，用户会以为多了个奇怪的新选项
+//: （2026-09-29 用户原话：「我的分辨率里怎么多了个奇怪的选项」）。
+const PARAM_OPTION_LABELS = { "4k": "4K" };
+function paramOptionLabel(option) {
+  return PARAM_OPTION_LABELS[String(option)] || option;
+}
 function paramField(label, options, key, value) {
   const wrap = document.createElement("div");
   wrap.className = "fc-param-field";
@@ -794,7 +810,7 @@ function paramField(label, options, key, value) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `fc-param-option${String(option) === String(value) ? " is-active" : ""}`;
-    button.textContent = option;
+    button.textContent = paramOptionLabel(option);
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       state.params[state.mode][key] = option;
@@ -1887,22 +1903,54 @@ function bindEvents() {
   //: 表现就是"素材拖进来的时候页面一直闪"（用户 2026-09-21）。
   let dragDepth = 0;
   const dropOverlay = $("#drop-overlay");
+  const carriesFiles = (event) => Array.from(event.dataTransfer?.types || []).includes("Files");
+  //: 2026-09-29（用户：「另一台 Mac 能拖进去，这一台 Windows 拖不进去」）——
+  //: 两个平台相关的坑，都在这一段：
+  //: ① 浮层闪烁：`dragover` 每几毫秒一次、移动到**子元素**也会触发 `dragleave`，
+  //:    旧代码靠计数在 `dragleave` 里把 `dropOverlay.hidden` 切回 true → 浮层在光标下
+  //:    反复显隐。**释放瞬间光标下的元素刚好被隐藏时，Chromium 直接取消这次 drop
+  //:    （连 drop 事件都不给）** —— 表现就是"拖进去毫无反应"，且是否踩中与平台/时序
+  //:    有关（Mac 上侥幸没踩到）。现在：离开与否用 `relatedTarget` 判断，不再抖动。
+  //: ② 浮层本身会接住拖放：`.fc-drop-overlay` 盖在输入框上又没 `pointer-events`，
+  //:    光标下的落点会从输入框变成浮层。已给浮层加 `pointer-events: none`（styles.css），
+  //:    落点始终是输入框。
   ["dragenter", "dragover"].forEach((name) => composer.addEventListener(name, (event) => {
+    if (!carriesFiles(event)) return;
     event.preventDefault();
     if (name === "dragenter") dragDepth += 1;
     dropOverlay.hidden = false;
   }));
   ["dragleave", "drop"].forEach((name) => composer.addEventListener(name, (event) => {
+    if (!carriesFiles(event)) return;
     event.preventDefault();
     if (name === "dragleave") {
-      dragDepth = Math.max(0, dragDepth - 1);
-      if (dragDepth > 0) return;   // 还在内部移动，不收高亮
+      //: 移动到自己的子元素也会触发 dragleave —— 只有 relatedTarget 真在 composer
+      //: 之外才算离开（否则浮层会闪，见上面的 ①）。
+      if (event.relatedTarget && composer.contains(event.relatedTarget)) return;
+      dragDepth = 0;
     } else {
       dragDepth = 0;
     }
     dropOverlay.hidden = true;
   }));
-  composer.addEventListener("drop", (event) => addFiles(event.dataTransfer.files));
+  composer.addEventListener("drop", (event) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    addFiles(event.dataTransfer.files);
+  });
+  //: ③ 拖到 composer 以外（差几像素就会发生）时，浏览器默认行为是**导航到那个本地
+  //:    文件** —— 页面被视频顶掉，用户的体感是"拖坏了/页面没了"。这里兜住：文件拖放
+  //:    一律不进导航，并且顺手当素材收下（拖到页面任何地方都能加素材）。
+  document.addEventListener("dragover", (event) => {
+    if (carriesFiles(event)) event.preventDefault();
+  });
+  document.addEventListener("drop", (event) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    const target = event.target instanceof Element ? event.target : null;
+    if (target && target.closest(".fc-composer")) return; // composer 已经收过了
+    addFiles(event.dataTransfer.files);
+  });
   els.previewPanel.addEventListener("animationend", (event) => { if (event.animationName === "fc-history-switch") els.previewPanel.classList.remove("is-switching"); });
   //: 秒级刷新「已用时长」。以前这行只在 5 秒一次的 reconcileRunningTasks 里重算，
   //: 看起来就是"每 5 秒才跳一次"（用户 2026-09-21）。这里**只改那行文本**，不重建

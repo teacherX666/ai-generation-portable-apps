@@ -24,6 +24,11 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+try:  # 仓库根通常已在 sys.path；直接导入本模块时兜底
+    from shared.net import UPSTREAM
+except ImportError:  # pragma: no cover
+    UPSTREAM = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 _ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 
 _SYSTEM_INSTRUCTION = (
@@ -81,7 +86,7 @@ def explain_error(job_id: str, code: str, detail: str, api_key: str,
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
             )
             try:
-                with urllib.request.urlopen(request, timeout=timeout) as response:
+                with UPSTREAM.open(request, timeout=timeout) as response:
                     body = response.read(16384)
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
                 _NEGATIVE_UNTIL[cache_key] = time.time() + _NEGATIVE_CACHE_TTL

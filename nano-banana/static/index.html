@@ -57,9 +57,10 @@
           <section>
             <h2>参数</h2>
             <label>模式
-              <select name="mode" @change="applyModelCapabilities()">
+              <select name="mode" v-model="mode" @change="applyModelCapabilities()">
                 <option value="img2img">img2img</option>
                 <option value="text2img">text2img</option>
+                <option value="outpaint">扩图 outpaint</option>
               </select>
             </label>
             <label>模型
@@ -95,6 +96,39 @@
               <label>Seed
                 <input name="seed" type="number" min="0" max="2147483647" placeholder="随机" :disabled="!supportsSeed">
               </label>
+            </div>
+            <!-- 扩图参数：仅本地模型用得上（真·像素级扩图）；云端走提示词，画幅由上面的「比例」决定 -->
+            <div v-if="mode === 'outpaint'" class="outpaintBox">
+              <p class="hint" style="margin:4px 0 6px;color:#0f766e">
+                <strong>扩图</strong>：必须上传 1 张原图。
+                <template v-if="activeRoute && activeRoute.local">
+                  本地模型是像素级扩图，画幅 = 原图 + 下面填的扩展像素，此时「比例」字段不生效。
+                </template>
+                <template v-else>
+                  云端模型用提示词扩图，画幅由上面的「比例」决定（选 auto 时按画面内容自然延展，不写死 16:9）。
+                </template>
+              </p>
+              <div class="grid2" v-if="activeRoute && activeRoute.local">
+                <label>左扩展 px
+                  <input name="outpaint_left" type="number" min="0" max="4096" value="256">
+                </label>
+                <label>右扩展 px
+                  <input name="outpaint_right" type="number" min="0" max="4096" value="256">
+                </label>
+              </div>
+              <div class="grid2" v-if="activeRoute && activeRoute.local">
+                <label>上扩展 px
+                  <input name="outpaint_top" type="number" min="0" max="4096" value="0">
+                </label>
+                <label>下扩展 px
+                  <input name="outpaint_bottom" type="number" min="0" max="4096" value="0">
+                </label>
+              </div>
+              <div class="grid2" v-if="activeRoute && activeRoute.local">
+                <label>羽化 px
+                  <input name="outpaint_feather" type="number" min="0" max="1024" value="50">
+                </label>
+              </div>
             </div>
             <p class="hint" v-if="!supportsSeed">Seedream 5.0 Pro 官方接口不支持 seed，已自动停用。</p>
             <label>生成后 seed

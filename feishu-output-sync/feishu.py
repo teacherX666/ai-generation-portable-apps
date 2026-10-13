@@ -23,6 +23,11 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+try:  # 仓库根通常已在 sys.path；直接导入本模块时兜底
+    from shared.net import UPSTREAM
+except ImportError:  # pragma: no cover
+    UPSTREAM = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 BASE_URL = "https://open.feishu.cn"
 TOKEN_PATH = "/open-apis/auth/v3/tenant_access_token/internal"
 TOKEN_INVALID_CODE = 99991663
@@ -65,7 +70,7 @@ class FeishuClient:
         self._token: str | None = None
         self._token_expiry = 0.0
         # opener injectable for tests (a callable(req)->file-like with .read()).
-        self._opener = opener or urllib.request.urlopen
+        self._opener = opener or UPSTREAM.open
 
     # ---------------- low-level HTTP ----------------
 

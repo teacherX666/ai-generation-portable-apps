@@ -13,6 +13,7 @@ for target in \
   "$ROOT/dreamina/static/ui" \
   "$ROOT/rag-assistant/static/ui" \
   "$ROOT/volcengine-portrait/static/ui" \
+  "$ROOT/drama-pipeline/static/ui" \
   "$ROOT/feishu-generation-agent/src/feishu_generation_agent/web/static/ui"
 do
   mkdir -p "$target"

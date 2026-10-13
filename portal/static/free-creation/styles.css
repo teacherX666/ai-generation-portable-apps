@@ -171,7 +171,11 @@ svg { width: 1.15em; height: 1.15em; fill: none; stroke: currentColor; stroke-wi
 .fc-param-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-height: 24px; padding: 0 20px 15px; color: var(--muted); font-size: 10px; }
 .fc-param-chip { padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.03); }
 .fc-param-chip strong { color: var(--muted-strong); font-weight: 560; }
-.fc-drop-overlay { position: absolute; inset: 0; z-index: 30; display: grid; place-items: center; border: 1px dashed color-mix(in srgb, var(--accent) 60%, white); border-radius: var(--radius-xl); background: rgba(10,11,17,.91); backdrop-filter: blur(18px); }
+.fc-drop-overlay { position: absolute; inset: 0; z-index: 30; display: grid; place-items: center; border: 1px dashed color-mix(in srgb, var(--accent) 60%, white); border-radius: var(--radius-xl); background: rgba(10,11,17,.91); backdrop-filter: blur(18px); pointer-events: none; }
+/* pointer-events:none 是关键：这个浮层盖在输入框上，若接住拖放，光标下的落点会从
+   输入框变成浮层；配合浮层在 dragover/dragleave 里反复显隐，释放瞬间落点被隐藏时
+   Chromium 会取消整次 drop（连事件都不给）—— 用户 2026-09-29 报的
+   「Windows 拖不进去、Mac 可以」就是这条。浮层只负责好看，永远不参与命中。 */
 .fc-drop-overlay > div { display: grid; justify-items: center; gap: 7px; color: var(--muted-strong); }
 .fc-drop-overlay svg { width: 34px; height: 34px; color: var(--accent); }
 .fc-drop-overlay strong { color: var(--text); font-size: 15px; }

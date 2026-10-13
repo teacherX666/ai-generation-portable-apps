@@ -769,6 +769,7 @@ function NanoBananaApp() {
     keyHint: '',
     imageSizeOptions: ['1K', '2K', '4K'],
     model: '',
+    mode: 'img2img',
     imageSize: '',
     supportsSeed: true,
     maxReferenceImages: 14,
@@ -1376,6 +1377,11 @@ function NanoBananaApp() {
       }
       if (selectedProvider === 'comfyui_local' && selectedModel === 'qwen2511' && !hasReference) {
         setOwnerState('statusText', 'Qwen 2511 \u662F\u56FE\u7247\u7F16\u8F91\u6A21\u578B\uFF0C\u8BF7\u5148\u4E0A\u4F20\u81F3\u5C11\u4E00\u5F20\u53C2\u8003\u56FE\uFF1B\u5982\u9700\u6587\u751F\u56FE\u8BF7\u5207\u6362 Krea T2I\u3002');
+        return;
+      }
+      // 扩图必须有原图：本地是像素级扩图的输入，云端是提示词扩图的底图。
+      if (self.mode === 'outpaint' && !hasReference) {
+        setOwnerState('statusText', '扩图模式需要一张原图作为输入，请先上传参考图');
         return;
       }
       var caps = self.modelCaps;

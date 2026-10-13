@@ -49,7 +49,8 @@
         },
         {
           "id": "anime2real_auto",
-          "label": "动漫转真人（免费）"
+          "label": "动漫转真人（免费）",
+          "capabilities": { "modes": ["img2img"] }
         },
         {
           "id": "zimage_multifunction",
@@ -57,11 +58,13 @@
         },
         {
           "id": "klein_true_v3_assets",
-          "label": "Klein 三视图（免费）"
+          "label": "Klein 三视图（免费）",
+          "capabilities": { "modes": ["img2img"] }
         },
         {
           "id": "krea2_style_transfer",
-          "label": "Krea 风格迁移（免费）"
+          "label": "Krea 风格迁移（免费）",
+          "capabilities": { "modes": ["img2img"] }
         }
       ],
       "image_size_options": [
