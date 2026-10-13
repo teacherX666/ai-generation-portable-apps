@@ -1208,6 +1208,11 @@
           <span class="pager-info">导出会带上当前筛选条件</span>
         </div>
         <div class="ui-toolbar ui-toolbar--wrap" style="margin-top:10px">
+          <button type="button" @click="exportGenerationsXlsx()" :disabled="genXlsxExporting || !genData.rows.length"
+                  class="admin-secondary-action ui-btn ui-btn--primary ui-btn--sm"
+                  title="导出 Excel（.xlsx）：列宽已排好、表头冻结、可直接筛选；用量与金额是真数字，能直接求和">
+            {{ genXlsxExporting ? '导出中…' : '导出 Excel（推荐）' }}
+          </button>
           <button type="button" @click="exportGenerations()" :disabled="genExporting || !genData.rows.length"
                   class="admin-secondary-action ui-btn ui-btn--strong ui-btn--sm"
                   title="导出当前筛选条件下的每一条记录（UTF-8 BOM，Excel/WPS 可直接打开）">

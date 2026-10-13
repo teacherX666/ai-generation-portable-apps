@@ -52,6 +52,7 @@ STATIC_DIR = ROOT / "static"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import daily_report as _daily_report_module
+import xlsx_export
 from cat_skins.experiment import CatExperimentService
 from cat_skins.concepts import CatConceptStore
 from cat_skins.service import (
@@ -1844,6 +1845,21 @@ _EXPORT_STATUS_CN = {
 _EXPORT_KIND_CN = {"image": "图片", "video": "视频", "agent": "飞书任务"}
 
 
+# xlsx 导出的列宽（单位=字符数，Excel/WPS 的列宽口径）。
+# 用户 2026-10-13 反馈「间距太宽、很多信息看起来不方便」——CSV 没有列宽信息，
+# 打开后要么全按默认窄列截断、要么「最适合列宽」把 200 字的提示词列拉成一条。
+# xlsx 由我们把宽度定死：常用的窄、模型与任务号中等、提示词给 60 字宽（一行能看个大概）。
+GENERATION_EXPORT_WIDTHS: dict[str, float] = {
+    "time": 20, "date": 12, "username": 10, "app": 16, "model": 30, "provider_label": 12,
+    "status": 9, "tokens": 13, "unit_price": 10, "unit": 15, "amount": 10, "currency": 8,
+    "resolution": 10, "has_input_video": 12, "price_family": 18, "runs": 9, "images": 8,
+    "seconds": 10, "kind": 10, "price_source": 13, "provider": 14, "job_id": 34,
+    "task_ids": 38, "title": 60,
+}
+# 这些列在 xlsx 里写成**真数字**（可以直接求和/排序），CSV 里只能当文本
+GENERATION_EXPORT_NUMERIC = {"tokens", "unit_price", "amount", "runs", "images", "seconds"}
+
+
 def export_cell(field: str, value) -> str:
     """一个导出单元格：中文口径 + 换行折成空格（一个记录一行，Excel 里不折行）。"""
     if field == "task_ids":
@@ -3500,6 +3516,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._platform_stats_generations(user)
         elif path == "/api/platform/stats/generations/export":
             self._platform_stats_generations_export(user)
+        elif path == "/api/platform/stats/generations/export.xlsx":
+            self._platform_stats_generations_export_xlsx(user)
         elif path == "/api/platform/stats/generations/summary.csv":
             self._platform_stats_generations_summary_export(user)
         elif path == "/api/platform/queue":
@@ -4345,6 +4363,46 @@ class Handler(SimpleHTTPRequestHandler):
         filename = f"生成明细-{start}_{end}.csv"
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(filename)}")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _platform_stats_generations_export_xlsx(self, user: dict):
+        """同一份明细导出成 **xlsx**：列宽由我们定死（CSV 做不到），表头加粗冻结 + 自动筛选。
+
+        用户 2026-10-13：「很多信息看起来不方便」——CSV 在 WPS/Excel 里要么窄列截断、
+        要么一键最适合列宽把提示词列拉成一条。xlsx 打开即是排好的样子。
+        """
+        rng = self._generation_query()
+        if not rng:
+            return
+        start, end = rng
+        is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
+        rows = self._generation_rows_merged(start, end, user, is_admin, self._generation_filters())
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        want_slim = str(qs.get("slim", ["0"])[0]).lower() in ("1", "true", "yes")
+        cols = GENERATION_EXPORT_COLUMNS_SLIM if want_slim else GENERATION_EXPORT_COLUMNS
+        headers = [label for _, label in cols]
+        widths = [GENERATION_EXPORT_WIDTHS.get(field, 14) for field, _ in cols]
+        data: list[list] = []
+        for row in rows:
+            line: list = []
+            for field, _ in cols:
+                value = row.get(field)
+                if field in GENERATION_EXPORT_NUMERIC and isinstance(value, (int, float)) \
+                        and not isinstance(value, bool):
+                    line.append(value)          # 真数字：Excel 里能直接求和
+                else:
+                    line.append(export_cell(field, value))
+            data.append(line)
+        body = xlsx_export.build_xlsx(headers, data, widths, sheet_name="生成明细")
+        filename = f"生成明细-{start}_{end}.xlsx"
+        self.send_response(200)
+        self.send_header("Content-Type",
+                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(filename)}")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")

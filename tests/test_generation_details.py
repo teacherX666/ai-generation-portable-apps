@@ -11,6 +11,7 @@
 """
 
 import csv
+import zipfile
 import io
 import json
 import sys
@@ -1054,6 +1055,30 @@ class GenerationApiTests(unittest.TestCase):
         slim = h2.wfile.getvalue().decode("utf-8-sig").splitlines()[0].split(",")
         self.assertLess(len(slim), 24)
         self.assertNotIn("计费族", slim)
+
+    def test_xlsx_export_is_valid_workbook_with_widths(self):
+        """xlsx 导出：合法 zip 结构 + 我们自己定的列宽 + 冻结表头 + 自动筛选 + 数字列是真数字。
+
+        为什么要有 xlsx：CSV 没有列宽信息，WPS/Excel 打开后要么窄列截断、要么一键
+        「最适合列宽」把提示词列拉成一条 —— 用户 2026-10-13 反馈的「间距太宽」就是这个。
+        """
+        h = self._handler("/api/platform/stats/generations/export.xlsx?start=2026-10-12&end=2026-10-12")
+        self.mod.Handler._platform_stats_generations_export_xlsx(h, {"username": "admin", "role": "admin"})
+        self.assertEqual(h.status, 200)
+        raw = h.wfile.getvalue()
+        self.assertTrue(raw.startswith(b"PK"), "xlsx 必须是 zip 容器")
+        z = zipfile.ZipFile(io.BytesIO(raw))
+        for need in ("[Content_Types].xml", "_rels/.rels", "xl/workbook.xml",
+                     "xl/_rels/workbook.xml.rels", "xl/styles.xml", "xl/worksheets/sheet1.xml"):
+            self.assertIn(need, z.namelist())
+        sheet = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        self.assertIn('customWidth="1"', sheet)      # 列宽由我们写死
+        self.assertIn("autoFilter", sheet)           # 自动筛选
+        self.assertIn("frozen", sheet)               # 表头冻结
+        self.assertIn("生成时间", sheet)              # 中文表头
+        self.assertIn("<v>1000</v>", sheet)          # 用量是真数字，Excel 里能直接求和
+        # 提示词列宽度必须是收敛的（60 字），否则又会变成一条拉宽的大列
+        self.assertIn('<col min="24" max="24" width="60" customWidth="1"/>', sheet)
 
     def test_csv_export_has_exactly_one_line_per_record(self):
         """一条记录恰好一行：提示词里的换行必须已折成空格，否则 Excel 里会错位。"""

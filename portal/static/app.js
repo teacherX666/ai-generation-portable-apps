@@ -1599,6 +1599,7 @@ function StatsApp() {
     genLoading: false,
     genError: '',
     genExporting: false,
+    genXlsxExporting: false,
     genSummaryExporting: false,
     genNote: '',
     // Admin-only: company-wide volcengine-portrait key (no plaintext returned)
@@ -2009,6 +2010,34 @@ function StatsApp() {
         window.portalToast('导出失败: ' + (e?.message || e), 'danger');
       } finally {
         this.genExporting = false;
+      }
+    },
+
+    // 导出 Excel（.xlsx）：列宽由后端定死（CSV 没有列宽信息，WPS/Excel 打开后要么窄列截断、
+    // 要么「最适合列宽」把提示词列拉成一条），表头冻结 + 自动筛选，用量/金额是真数字可求和。
+    async exportGenerationsXlsx() {
+      if (!this.genStart || !this.genEnd) return;
+      this.genXlsxExporting = true;
+      try {
+        const url = '/api/platform/stats/generations/export.xlsx?' + this.genFilterParams().toString();
+        const r = await fetch(url, { credentials: 'same-origin' });
+        if (!r.ok) {
+          window.portalToast('导出失败 HTTP ' + r.status, 'danger');
+          return;
+        }
+        const blob = await r.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objUrl;
+        a.download = `生成明细-${this.genStart}_${this.genEnd}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+      } catch (e) {
+        window.portalToast('导出失败: ' + (e?.message || e), 'danger');
+      } finally {
+        this.genXlsxExporting = false;
       }
     },
 
