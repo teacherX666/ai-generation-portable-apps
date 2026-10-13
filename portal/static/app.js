@@ -1592,7 +1592,7 @@ function StatsApp() {
     genStatus: '',
     genQuery: '',
     genPage: 1,
-    genPageSize: 30,
+    genPageSize: 20,
     genJump: 1,
     genIncludeHistory: false,
     genData: { rows: [], total: 0, summary: {}, billSummary: [] },
