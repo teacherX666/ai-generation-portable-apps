@@ -45,7 +45,16 @@ _VIDEO_SYSTEM_PROMPT = """你是严格的视频参考语义分析工具。
 4. representative_frame_index 选择最能代表该语义的帧序号（从 1 开始）。
 5. 不确定的内容只能写入 uncertainties，不得混入 summary。
 6. 严格按给定结构返回结果，不要附加解释或原始响应。
-7. camera_movement 必须结合帧间主体位移、画面边界变化和透视变化判断，summary 中写明具体运镜方式（如缓慢推近、手持跟随、从左向右摇镜），不得只写“有运镜”。
+7. **无论 kind 判成哪一类，camera_movement 与 editing_style 这两个字段都必须写满**，
+   不得留空、不得写「无」「未知」「不适用」：
+   - camera_movement：结合帧间主体位移、画面边界变化和透视变化判断，写明具体运镜
+     （如「缓慢推近」「手持跟随」「从左向右摇镜」）；机位全程不动时写
+     「固定机位、全片无位移」。
+   - editing_style：写明剪辑节奏与转场方式（如「4 秒处一次硬切」「全片无剪辑、
+     单镜头连续」「快速跳切」）；单镜头无剪辑时写「无剪辑、单镜头连续」。
+   理由是：单镜头任务没有分镜可依据，运镜与剪辑节奏是唯一能约束成片节奏的语义，
+   留空会让后续规划只能靠猜。
+8. 不得只写「有运镜」这类空话；camera_movement 必须给出方向 + 速度（或明确静止）。
 """
 
 
@@ -224,7 +233,20 @@ class ClaudeVisionAnalyzer:
                     isinstance(result, dict) and result.get("refusal")
                 ):
                     raise _ModelRefusal
-                description = VideoReferenceAnalysis.model_validate(result)
+                candidate = VideoReferenceAnalysis.model_validate(result)
+                # 2026-10-10（P1）：运镜与剪辑节奏必须无条件给出 —— 空值当校验失败
+                # 处理，走同一套重试（`_VISION_STRUCTURE_ATTEMPTS`），不能静默放过。
+                # ⚠️ 必须先校验再赋值给 `description`：直接赋值再抛，循环外
+                # `if description is None` 就不成立，会带着空字段"成功"返回。
+                if not candidate.camera_movement.strip():
+                    raise ValueError(
+                        "camera_movement 不得为空：必须写明具体运镜或「固定机位、全片无位移」"
+                    )
+                if not candidate.editing_style.strip():
+                    raise ValueError(
+                        "editing_style 不得为空：必须写明剪辑节奏或「无剪辑、单镜头连续」"
+                    )
+                description = candidate
                 break
             except (ValidationError, ValueError, TypeError) as exc:
                 validation_error = exc

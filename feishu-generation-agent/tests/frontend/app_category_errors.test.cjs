@@ -108,6 +108,12 @@ async function loadApp(fetch) {
     createElement: (tagName) => new FakeNode(tagName),
     getElementById: getNode,
     querySelector: () => new FakeNode("main"),
+    // app.js 会在 document 上装「拖放防误伤」的全局监听（2026-09-29）—— 假 DOM 也得有
+    // 这个方法，否则 app.js 一加载就 TypeError，整个文件 50+ 条用例一起红。
+    listeners: {},
+    addEventListener(name, listener) {
+      (this.listeners[name] ||= []).push(listener);
+    },
   };
   const context = {
     BitableState,
@@ -379,6 +385,168 @@ test("approval view distinguishes blocking document and nonblocking asset issues
   assert.equal(app.getNode("vision-issues").hidden, false);
 });
 
+test("approval view surfaces every reviewer risk note", async () => {
+  const notes = [
+    "计划将镜头1、镜头2、镜头3合并为单个8秒视频任务，合并后单镜头时长被压缩，可能影响三组事件的完整呈现。",
+    "计划 duration 设为8秒，文档未明确各镜头时长与总时长，该时长属推断，需人工确认。",
+  ];
+  const runView = {
+    run_id: "run-audit-notes",
+    thread_id: "thread-audit-notes",
+    source_url: "https://acme.feishu.cn/docx/audit",
+    status: "waiting_approval",
+    events: [],
+    privacy: {},
+    approval: {
+      document_title: "审查员风险提示",
+      revision: 3,
+      document_summary: "",
+      tasks: [],
+      media_assets: [],
+      excluded_assets: [],
+      selected_task_ids: [],
+      coverage: {},
+      validation_issues: [],
+      ingest_issue_records: [],
+      blocking_ingest_issues: [],
+      asset_ingest_issues: [],
+      vision_issues: [],
+      audit_issues: notes,
+    },
+  };
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [{
+        run_id: runView.run_id,
+        display_text: "审查员风险提示",
+      }]);
+    }
+    if (url === `/api/runs/${runView.run_id}`) {
+      return jsonResponse(200, runView);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  // 默认展开：藏在折叠里等于没提示（用户 2026-09-21 巨型南瓜就是这么踩的）。
+  assert.equal(app.getNode("audit-issues").hidden, false);
+  assert.equal(app.getNode("audit-issues").open, true);
+  assert.equal(app.getNode("audit-issues-count").textContent, "（2 条）");
+  assert.deepEqual(
+    app.getNode("audit-issues-list").children.map((item) => item.textContent),
+    notes,
+  );
+});
+
+test("审查员风险提示条数很多时只铺前几条，其余可展开", async () => {
+  // 用户 2026-09-22：「为什么审查员风险提示有时候能显示 50 多条」。
+  // 审查员是逐条列举遗漏、没有条数上限（实测 11~53 条），全铺出来会把审批页
+  // 刷成一堵墙 —— 默认只铺前 5 条，其余折在「展开全部」后面。
+  const notes = Array.from({ length: 53 }, (_, index) => `第 ${index + 1} 条风险提示`);
+  const runView = {
+    run_id: "run-audit-many",
+    thread_id: "thread-audit-many",
+    source_url: "https://acme.feishu.cn/docx/audit-many",
+    status: "waiting_approval",
+    events: [],
+    privacy: {},
+    approval: {
+      document_title: "风险提示很多",
+      revision: 2,
+      document_summary: "",
+      tasks: [],
+      media_assets: [],
+      excluded_assets: [],
+      selected_task_ids: [],
+      coverage: {},
+      validation_issues: [],
+      ingest_issue_records: [],
+      blocking_ingest_issues: [],
+      asset_ingest_issues: [],
+      vision_issues: [],
+      audit_issues: notes,
+    },
+  };
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [{ run_id: runView.run_id, display_text: "风险提示很多" }]);
+    }
+    if (url === `/api/runs/${runView.run_id}`) return jsonResponse(200, runView);
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  const list = app.getNode("audit-issues-list");
+  const more = app.getNode("audit-issues-more");
+  assert.equal(app.getNode("audit-issues-count").textContent, "（53 条）");
+  assert.equal(list.children.length, 5, "默认只铺前 5 条");
+  assert.equal(list.children[0].textContent, "第 1 条风险提示");
+  assert.equal(more.hidden, false);
+  assert.equal(more.textContent, "展开全部 53 条");
+
+  await more.dispatch("click");
+  assert.equal(list.children.length, 53, "展开后要能看到全部");
+  assert.equal(more.textContent, "只看前 5 条");
+
+  await more.dispatch("click");
+  assert.equal(list.children.length, 5, "可以再收起来");
+});
+
+test("approval view hides the reviewer block when the audit found nothing", async () => {
+  const runView = {
+    run_id: "run-audit-clean",
+    thread_id: "thread-audit-clean",
+    source_url: "https://acme.feishu.cn/docx/audit-clean",
+    status: "waiting_approval",
+    events: [],
+    privacy: {},
+    approval: {
+      document_title: "无风险提示",
+      revision: 1,
+      document_summary: "",
+      tasks: [],
+      media_assets: [],
+      excluded_assets: [],
+      selected_task_ids: [],
+      coverage: {},
+      validation_issues: [],
+      ingest_issue_records: [],
+      blocking_ingest_issues: [],
+      asset_ingest_issues: [],
+      vision_issues: [],
+      audit_issues: [],
+    },
+  };
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [{
+        run_id: runView.run_id,
+        display_text: "无风险提示",
+      }]);
+    }
+    if (url === `/api/runs/${runView.run_id}`) {
+      return jsonResponse(200, runView);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  assert.equal(app.getNode("audit-issues").hidden, true);
+  assert.equal(app.getNode("audit-issues-list").children.length, 0);
+});
+
 test("approval view keeps the recovered asset result visible after retry", async () => {
   const runView = {
     run_id: "run-assets-recovered",
@@ -629,6 +797,76 @@ test("trash supports paging, search, status filters, and filtered empty states",
   assert.equal(
     app.getNode("trash-result-summary").textContent,
     "找到 0 条，共 10 条已删除任务",
+  );
+});
+
+
+test("trash marks automatically archived records without claiming the user deleted them", async () => {
+  // 用户 2026-09-24：「我不是只保留十个任务记录吗，多余的进回收站」。自动归档的
+  // 记录必须出现在回收站里，而且要说清**不是**用户自己删的 —— 时间戳也只能叫
+  // 「最后更新」（归档刻意不改 updated_at）。
+  const archivedRuns = [
+    {
+      run_id: "run-auto-1",
+      record_id: "rec-auto-1",
+      display_text: "自动归档的任务",
+      status: "succeeded",
+      updated_at: "2026-08-01T10:00:00+08:00",
+      auto_archived: true,
+    },
+    {
+      run_id: "run-manual-1",
+      record_id: "rec-manual-1",
+      display_text: "手动删除的任务",
+      status: "failed",
+      updated_at: "2026-08-02T10:00:00+08:00",
+      auto_archived: false,
+    },
+  ];
+  const app = await loadApp(async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/recent-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/active-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/archived-runs") {
+      return jsonResponse(200, archivedRuns);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  await app.getNode("trash-button").dispatch("click");
+  await settle();
+
+  const trashList = app.getNode("trash-list");
+  assert.equal(trashList.children.length, 2);
+  const rows = trashList.children.map((row) => row.children[0]);
+  const autoDetails = rows.find(
+    (details) => details.children[0].textContent === "自动归档的任务",
+  );
+  const manualDetails = rows.find(
+    (details) => details.children[0].textContent === "手动删除的任务",
+  );
+  assert.ok(autoDetails, "自动归档的记录要能在回收站里找到");
+  assert.ok(manualDetails);
+
+  // 记录名仍是第一个子节点（既有回收站测试依赖这个结构）。
+  const autoNote = autoDetails.children[autoDetails.children.length - 1];
+  assert.equal(autoNote.className, "trash-auto-note");
+  assert.match(autoNote.textContent, /自动归档/);
+  assert.match(autoNote.textContent, /最近 10 条/);
+  assert.match(autoDetails.children[1].textContent, /最后更新/);
+  assert.doesNotMatch(autoDetails.children[1].textContent, /删除时间/);
+
+  // 用户自己删的那条照旧：两行元信息，写「删除时间」。
+  assert.equal(manualDetails.children.length, 2);
+  assert.match(manualDetails.children[1].textContent, /删除时间/);
+
+  // 恢复按钮对两种来源都在。
+  assert.equal(
+    trashList.children[0].children[1].children[0].textContent,
+    "恢复",
   );
 });
 
@@ -888,15 +1126,24 @@ test("completed run keeps the shared result table link visible", async () => {
 });
 
 
-test("artifact rerun creates a new run and preserves source record", async () => {
+test("artifact rerun goes back to approval instead of re-running in place", async () => {
+  // 2026-09-24 用户口径：「我的返工要求重跑选中任务应该是优化我的提示词然后让我
+  // 确认啊」——以前走 `/api/runs/{id}/artifact-review`（**原地**重跑），提示词改完
+  // 立刻开始生成，用户没有确认机会。现在与「重新运行」同一条逻辑：新建一条运行，
+  // 复用已批准计划 + 融合返工要求，**停在待审批**等用户点「批准并开始生成」。
   const sourceRunId = "run-artifact-source";
-  const rerunRunId = "run-artifact-rerun-new";
+  const newRunId = "run-artifact-rerun";
   const artifact = {
     artifact_id: "artifact-1",
     task_id: "task-1",
     kind: "video",
     size: 1024,
     preview_url: "/api/artifacts/artifact-1",
+    shot_index: 1,
+    shot_total: 2,
+    slot_index: 1,
+    slot_total: 1,
+    task_title: "第一个镜头",
   };
   const approval = {
     document_title: "成品重跑测试",
@@ -922,39 +1169,41 @@ test("artifact rerun creates a new run and preserves source record", async () =>
     artifacts: [artifact],
     approval,
   };
-  const newRunning = {
+  const rerunView = {
     ...sourceView,
-    run_id: rerunRunId,
-    thread_id: "thread-artifact-rerun-new",
-    status: "running",
+    run_id: newRunId,
+    thread_id: "thread-artifact-rerun",
+    status: "waiting_approval",
     artifacts: [],
   };
+  let currentRunId = sourceRunId;
   let rerunRequests = 0;
   let artifactReviewRequests = 0;
-  let newRunReads = 0;
+  let rerunBody = null;
   const app = await loadApp(async (url, options = {}) => {
     if (url === "/api/health") {
       return jsonResponse(200, { modes: { bitable: true } });
     }
-    if (url === "/api/bitable/active-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [{
+        run_id: currentRunId,
+        display_text: "成品重跑测试",
+        status: "待确认",
+      }]);
+    }
     if (url === "/api/bitable/recent-runs") return jsonResponse(200, [{
-      run_id: sourceRunId,
+      run_id: currentRunId,
       display_text: "成品重跑测试",
       status: "待确认",
       rerunnable: false,
     }]);
     if (url === `/api/runs/${sourceRunId}`) return jsonResponse(200, sourceView);
-    if (url === `/api/runs/${rerunRunId}`) {
-      newRunReads += 1;
-      return jsonResponse(200, newRunning);
-    }
+    if (url === `/api/runs/${newRunId}`) return jsonResponse(200, rerunView);
     if (url === `/api/bitable/runs/${sourceRunId}/rerun-selected`) {
       rerunRequests += 1;
-      const body = JSON.parse(options.body);
-      assert.equal(body.action, "adjust");
-      assert.deepEqual(body.task_ids, ["task-1"]);
-      assert.equal(body.feedback, "继续调整动作衔接");
-      return jsonResponse(202, { run_id: rerunRunId });
+      rerunBody = JSON.parse(options.body);
+      currentRunId = newRunId;
+      return jsonResponse(202, { run_id: newRunId });
     }
     if (url === `/api/runs/${sourceRunId}/artifact-review`) {
       artifactReviewRequests += 1;
@@ -969,6 +1218,16 @@ test("artifact rerun creates a new run and preserves source record", async () =>
   await switcher.dispatch("change");
   await settle();
 
+  // 卡片要标出「镜头 1/2」，否则多条成片长得一样、不知道该勾哪一条。
+  const cardLabels = app
+    .getNode("artifact-list")
+    .querySelectorAll("span")
+    .map((node) => node.textContent);
+  assert.ok(
+    cardLabels.some((text) => /镜头 1\/2/.test(text) && /第一个镜头/.test(text)),
+    `成片卡片必须标出镜头号与标题，实际：${JSON.stringify(cardLabels)}`,
+  );
+
   const checkbox = app.getNode("artifact-list").querySelectorAll("input")[0];
   checkbox.checked = true;
   await checkbox.dispatch("change");
@@ -979,13 +1238,20 @@ test("artifact rerun creates a new run and preserves source record", async () =>
   await app.getNode("adjust-artifacts-button").dispatch("click");
   await settle();
 
-  assert.equal(rerunRequests, 1);
-  assert.equal(artifactReviewRequests, 0);
-  assert.equal(newRunReads, 1);
-  assert.equal(sourceView.artifacts.length, 1);
-  // 2026-09-17 用户明确要求：重跑也要能看到预览（新版还在审批、没有成片时，
-  // 面板不能整块消失）。旧行为是 hidden=true，这里按新口径断言。
-  assert.equal(app.getNode("artifact-review").hidden, false);
+  assert.equal(rerunRequests, 1, "必须新建一条运行并进审批页");
+  assert.equal(artifactReviewRequests, 0, "不能再原地重跑（会直接开始生成）");
+  assert.deepEqual(rerunBody, {
+    action: "adjust",
+    feedback: "继续调整动作衔接",
+    task_ids: ["task-1"],
+  });
+  // ③ 停在新运行的审批页：状态条换成「等待你审核」，批准按钮出现。
+  assert.equal(app.getNode("status-badge").textContent, "等待你审核");
+  assert.equal(app.getNode("approve-button").hidden, false);
+  assert.equal(
+    app.getNode("action-toast-text").textContent,
+    "已按返工要求优化提示词，请审核后批准",
+  );
 });
 
 test("completed runs keep generated artifacts visible without review controls", async () => {

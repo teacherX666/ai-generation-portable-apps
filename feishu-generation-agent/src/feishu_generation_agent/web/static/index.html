@@ -161,10 +161,27 @@
         <div class="panel-heading review-heading">
           <div>
             <p class="eyebrow">REVIEW</p>
-            <h2 id="document-title">等待提交飞书文档</h2>
-            <button id="copy-document-title" type="button" class="quiet-button" title="复制文档名">
-              复制文档名
-            </button>
+            <div class="review-title-row">
+              <h2 id="document-title">等待提交飞书文档</h2>
+              <button
+                id="copy-document-title"
+                type="button"
+                class="copy-title-button"
+                title="复制文档名"
+                aria-label="复制文档名"
+              >
+                <svg class="copy-page-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M7.75 2.75h6.1l4.4 4.4v13.1a1 1 0 0 1-1 1H7.75a1 1 0 0 1-1-1V3.75a1 1 0 0 1 1-1Z" />
+                  <path d="M13.6 3v4.4h4.35" />
+                </svg>
+              </button>
+              <span
+                id="copy-document-title-feedback"
+                class="copy-title-feedback"
+                role="status"
+                aria-live="polite"
+              ></span>
+            </div>
           </div>
           <div class="review-heading-actions">
             <label class="run-switcher-label" for="current-run-switcher">切换任务</label>
@@ -180,6 +197,19 @@
         <p class="document-meta">可编辑提示词、负面约束、生成参数与参考图片。</p>
         <div id="execution-errors" class="execution-errors" role="alert" hidden></div>
         <div id="validation-issues" class="validation-issues" hidden></div>
+        <!-- 审查员（audit_plan）的风险提示。以前只把「技术阻断/人工处理」两类并进
+             validation-issues，其余建议性风险（例如「3 个分镜合并成 8 秒」）在
+             审批页完全看不到，用户批准了一份注定出废片的计划。
+             审查员是「逐条列举遗漏」，没有条数上限（实测 11~53 条），所以默认只
+             铺前几条，其余折叠在「展开全部」后面。 -->
+        <details id="audit-issues" class="audit-issues" hidden>
+          <summary>
+            审查员风险提示
+            <span id="audit-issues-count" class="audit-issues-count"></span>
+          </summary>
+          <ul id="audit-issues-list" class="audit-issues-list"></ul>
+          <button id="audit-issues-more" type="button" class="quiet-button audit-issues-more" hidden></button>
+        </details>
         <div id="permission-guide" class="permission-guide" hidden>
           <p class="permission-guide-intro" id="permission-guide-intro"></p>
         </div>
@@ -208,7 +238,7 @@
           <p id="coverage-detail" class="mode-message"></p>
           <div class="excluded-assets">
             <h3>未使用素材（未覆盖就不能批准）</h3>
-            <div id="uncovered-asset-list" class="excluded-asset-list"></div>
+            <div id="uncovered-asset-list" class="excluded-asset-list excluded-asset-list--uncovered"></div>
           </div>
           <div class="excluded-assets">
             <h3>排除素材</h3>
@@ -216,6 +246,21 @@
           </div>
         </section>
         <div id="task-list" class="task-list"></div>
+
+        <!-- 审批页的**原地**提示词优化：勾选任务 + 一句要求 → AI 只重写这几条的
+             提示词，仍停在审批页给用户过目。与「退回修改计划」（整份计划重新规划）
+             分工不同：这里不动分镜结构、不新建运行、不覆盖手改的其它字段。 -->
+        <div id="prompt-optimize-box" class="feedback-box" hidden>
+          <label for="prompt-optimize-feedback">用 AI 优化所选任务的提示词</label>
+          <textarea id="prompt-optimize-feedback" rows="3"
+            placeholder="说明这几条提示词要怎么改（例：动作再慢一点，结尾保持稳定）"></textarea>
+          <div class="prompt-optimize-actions">
+            <button id="optimize-prompts-button" type="button" class="secondary">
+              优化所选提示词
+            </button>
+            <span id="optimize-prompts-hint" class="action-hint" role="status" aria-live="polite"></span>
+          </div>
+        </div>
 
         <section id="artifact-review" class="artifact-review" aria-label="成片预览" hidden>
           <div class="panel-heading">
@@ -235,11 +280,11 @@
             <ul id="take-findings-list" class="take-findings-list"></ul>
           </div>
           <div id="artifact-review-feedback-box" class="feedback-box">
-            <label for="artifact-review-feedback">返工要求（仅用于选中任务）</label>
+            <label for="artifact-review-feedback">返工要求（重跑时用来改写提示词）</label>
             <textarea
               id="artifact-review-feedback"
               rows="3"
-              placeholder="说明哪里不满意、希望如何调整"
+              placeholder="说明哪里不满意、希望如何调整；留空则提示词原样保留，直接进审批页复核"
             ></textarea>
           </div>
           <div id="artifact-review-actions" class="artifact-review-actions">
@@ -253,6 +298,11 @@
             <button id="rerun-artifacts-button" type="button" class="secondary" hidden>
               重跑这一版
             </button>
+            <!-- 「重跑选中任务」与底部「重新运行」是同一条逻辑：复用已批准计划 →
+                 （填了返工要求就融合改写提示词）→ 停在审批页等用户点「批准并开始生成」。
+                 唯一的前置条件是「勾选至少一条成片」；返工要求可以留空（= 提示词原样保留）。
+                 以前缺哪个都不说，用户看到的就是灰按钮 →「点不动」。 -->
+            <span id="adjust-artifacts-hint" class="action-hint" role="status" aria-live="polite"></span>
           </div>
         </section>
 
@@ -308,9 +358,18 @@
             <option value="text">逐张看图描述后规划（现有）</option>
             <option value="multimodal">原图/视频一起交给模型规划（更快更准）</option>
           </select>
+          <label for="advanced-storyboard-candidates">分镜候选图</label>
+          <select id="advanced-storyboard-candidates">
+            <option value="0">关闭（不生成分镜图）</option>
+            <option value="1">每个时间段 1 张</option>
+            <option value="2">每个时间段 2 张</option>
+            <option value="3">每个时间段 3 张</option>
+            <option value="4">每个时间段 4 张</option>
+          </select>
         </div>
         <p class="planner-prompt-note">这里设置新任务默认模型；每个任务下方的视频模型 / 出图模型才是该任务实际使用的模型。</p>
-        <p class="planner-prompt-note">规划方式：默认「逐张看图描述后规划」；切到「原图/视频一起交给模型规划」后，规划只调一次模型、直接看原图，失败会自动回退到现有方式。</p>
+        <p class="planner-prompt-note">规划方式：默认「逐张看图描述后规划」—— 先用 Claude 逐张分析图片，再拿描述去规划。<b>切到「原图/视频一起交给模型规划」后，原图和文档一次性交给规划模型（ds4.1）自己看，不再单独跑一遍图片分析</b>：少一次模型调用，也少一层「别人转述这张图有什么」的信息损耗。失败会自动回退到现有方式。</p>
+        <p class="planner-prompt-note">分镜候选图：规划阶段就为每个时间段并发生成这么多张关键帧，审批页每段挑一张（默认第一张）。选中的图会作为关键帧参考一起提交，画面严格对齐它 —— 比只给文字稳定得多。数量越多越费额度、规划等待越久。</p>
         <p id="advanced-settings-feedback" class="planner-prompt-feedback" aria-live="polite"></p>
         <div class="planner-prompt-actions">
           <button id="advanced-settings-save" type="button" class="primary">保存模型偏好</button>
@@ -348,6 +407,24 @@
           <button id="trash-next" type="button" class="secondary">下一页</button>
         </nav>
       </section>
+    </div>
+
+    <!-- 底部操作栏的按钮离页面顶部的 #error-message 很远，失败信息在那里等于没提示，
+         所以这里再浮一个贴近按钮的提示条。 -->
+    <div id="action-toast" class="action-toast" role="alert" aria-live="assertive" hidden>
+      <span id="action-toast-text" class="action-toast-text"></span>
+      <button id="action-toast-close" type="button" class="action-toast-close" aria-label="关闭提示">×</button>
+    </div>
+
+    <!-- 图片放大预览（2026-10-10 补上）。app.js 的 openImageLightbox 一直在找
+         #image-lightbox / #image-lightbox-img，但这两个元素**从来没有被写进 HTML** ——
+         所以「双击任意图片放大」在生产里是静默失效的（byId 返回 null 就 return）。
+         参考素材的单击预览（用户 2026-10-10：「新增参考素材也能点击预览的功能」）
+         复用这一个 overlay，不再另造一套。Esc / 点空白关闭。 -->
+    <div id="image-lightbox" class="image-lightbox" role="dialog" aria-modal="true"
+         aria-label="图片放大预览" hidden>
+      <img id="image-lightbox-img" alt="放大预览">
+      <p class="image-lightbox-hint">单击空白处或按 Esc 关闭</p>
     </div>
 
     <script src="static/reference-mutation-state.js" defer></script>

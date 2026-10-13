@@ -89,6 +89,12 @@ async function loadApp(fetch) {
     createElement: (tagName) => new FakeNode(tagName),
     getElementById: getNode,
     querySelector: () => new FakeNode("main"),
+    // app.js 会在 document 上装「拖放防误伤」的全局监听（2026-09-29）—— 假 DOM 也得有
+    // 这个方法，否则 app.js 一加载就 TypeError。
+    listeners: {},
+    addEventListener(name, listener) {
+      (this.listeners[name] ||= []).push(listener);
+    },
   };
   const context = {
     BitableState,

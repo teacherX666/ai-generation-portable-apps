@@ -79,11 +79,13 @@ from feishu_generation_agent.web.schemas import (
     AssetLibraryUpdateRequest,
     ArtifactReviewRequest,
     BitableClaimResponse,
+    BitableRerunRequest,
     BitableRetryResponse,
     CreateRunRequest,
     DecisionRequest,
     PlannerPromptResponse,
     ExcludedAssetRequest,
+    OptimizePromptsRequest,
     PlannerPromptUpdate,
     ProviderPreferencesResponse,
     ProviderPreferencesUpdate,
@@ -242,6 +244,27 @@ def _iso_utc_string(value: str) -> str:
     return parsed.isoformat()
 
 
+_PORTAL_PROMPT_TTL_SECONDS = 600.0
+# run_id -> (取到的时间, 正文)。正文在 LangGraph 的 checkpoint 库里，一次历史列表可能
+# 列 200 条 —— 不能每条都去读一遍 1.1GB 的库，所以带 TTL 缓存。
+_PORTAL_PROMPT_CACHE: dict[str, tuple[float, str]] = {}
+
+
+async def _portal_prompt_text(active: Any, run_id: str, thread_id: str) -> str:
+    """给 Portal 的「创作记录」取这条运行的**原始需求正文**（带缓存，取不到返回空串）。"""
+    now = time.time()
+    cached = _PORTAL_PROMPT_CACHE.get(run_id)
+    if cached is not None and now - cached[0] < _PORTAL_PROMPT_TTL_SECONDS:
+        return cached[1]
+    text = ""
+    try:
+        text = await active.plan_prompt_text(thread_id)
+    except Exception:  # noqa: BLE001 - 历史列表不该因取正文失败而报错
+        text = ""
+    _PORTAL_PROMPT_CACHE[run_id] = (now, text)
+    return text
+
+
 def _feishu_run_model_label(settings: Settings, kind: str, providers: list[str]) -> str:
     image_models = {
         "banana": settings.banana_model,
@@ -283,6 +306,31 @@ def _feishu_run_model_label(settings: Settings, kind: str, providers: list[str])
     return ", ".join(labels)
 
 
+def _storyboard_frame_regenerator(services: Any) -> Any:
+    """把「只重生成某一段分镜图」包成运行时能调的回调（方案 A）。
+
+    运行时（GraphRuntime）手里只有 graph/repository/file_store/settings，没有图片
+    生成器；生成逻辑在 graph/nodes.py 里，所以在这里闭包注入。
+    """
+
+    async def regenerate(*, run_id: str, task: Any, frame: Any, assets: Any):
+        from feishu_generation_agent.graph.nodes import (
+            _storyboard_config,
+            regenerate_storyboard_frame,
+        )
+
+        return await regenerate_storyboard_frame(
+            services=services,
+            run_id=run_id,
+            task=task,
+            frame=frame,
+            assets=list(assets),
+            config=_storyboard_config(services),
+        )
+
+    return regenerate
+
+
 def _effective_provider_preferences(
     settings: Settings,
     preferences: ProviderPreferences,
@@ -306,6 +354,10 @@ def _effective_provider_preferences(
         video_provider=video_provider,
         image_provider=image_provider,
         planning_pipeline=preferences.planning_pipeline,
+        # 必须原样带出来：漏了这个字段，响应就会回落到 dataclass 默认值，界面永远
+        # 显示 2 —— 用户把 K 设成 0（关闭）后界面还显示 2，而规划阶段按 0 跳过
+        # 分镜图，看起来就是「分镜图莫名其妙没了」（2026-09-22 实跑踩到）。
+        storyboard_candidates=preferences.storyboard_candidates,
     )
 
 
@@ -397,6 +449,16 @@ def create_app(
                 # 返工时把上一版成片直接送能看视频的模型（不抽帧）。
                 video_analyzer=getattr(
                     active_services, "video_analyzer", None
+                ),
+                # 2026-09-28：成片要作为 video_url 附进**同一次**融合请求
+                # （一次多模态调用），需要公开图床把视频传成 https 链接。
+                public_media_host=getattr(
+                    active_services, "public_media_host", None
+                ),
+                # 只重生成某一段分镜图（方案 A：同一提示词重新采样）——运行时没有
+                # 图片生成器，所以在这里把回调注入进去。
+                storyboard_regenerator=_storyboard_frame_regenerator(
+                    active_services
                 ),
             )
             try:
@@ -922,6 +984,7 @@ def create_app(
             video_provider=preferences.video_provider,
             image_provider=preferences.image_provider,
             planning_pipeline=preferences.planning_pipeline,
+            storyboard_candidates=preferences.storyboard_candidates,
         )
 
     @app.put("/api/provider-preferences", response_model=ProviderPreferencesResponse)
@@ -948,6 +1011,7 @@ def create_app(
                 video_provider=video_provider,
                 image_provider=image_provider,
                 planning_pipeline=payload.planning_pipeline,
+                storyboard_candidates=payload.storyboard_candidates,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -959,13 +1023,15 @@ def create_app(
             current.video_provider = preferences.video_provider
             current.image_provider = preferences.image_provider
             current.planning_pipeline = preferences.planning_pipeline
+            current.storyboard_candidates = preferences.storyboard_candidates
         return ProviderPreferencesResponse(
             video_provider=preferences.video_provider,
             image_provider=preferences.image_provider,
             planning_pipeline=preferences.planning_pipeline,
+            storyboard_candidates=preferences.storyboard_candidates,
         )
 
-    def raise_bitable_error(exc: Exception) -> None:
+    def raise_bitable_error(exc: Exception, *, expose_conflict: bool = False) -> None:
         if (
             isinstance(exc, AgentError)
             and exc.detail.category is ErrorCategory.TRANSIENT
@@ -986,7 +1052,15 @@ def create_app(
                 status_code=409,
                 detail="结果列已有附件，已停止回写",
             ) from None
-        if isinstance(exc, RunConflict) and str(exc).endswith("任务暂未启用"):
+        if isinstance(exc, RunConflict) and (
+            expose_conflict or str(exc).endswith("任务暂未启用")
+        ):
+            # RunConflict 的文案多数是业务层写给用户看的（「只有已经结束的多维表格
+            # 任务可以重跑」「该记录上还有一条「生成中」的任务，请先处理…」），但
+            # 领取类入口的冲突文案可能带内部标识，所以只有显式声明 expose_conflict
+            # 的重跑 / 重试入口才原样透出。
+            # 背景（用户 2026-09-21）：「重新运行」返回 409 时被压成「该任务已被领取
+            # 或当前不可处理」，用户连点 6 次都看不出发生了什么、也不知道该做什么。
             raise HTTPException(status_code=409, detail=str(exc)) from None
         if isinstance(exc, (TaskAlreadyClaimed, ProductionTaskAlreadyClaimed, RunConflict)):
             raise HTTPException(
@@ -1085,36 +1159,7 @@ def create_app(
             )
         except Exception as exc:
             raise_bitable_error(exc)
-        payload: list[dict] = []
-        counts = await artifact_counts(request, bindings)
-        for binding in bindings:
-            try:
-                result_table_url = await active.result_table_url(
-                    binding.run_id,
-                    **owner_argument(
-                        active.result_table_url,
-                        identity.owner_user_id,
-                    ),
-                )
-            except AttributeError:
-                result_table_url = None
-            payload.append(
-                {
-                    "run_id": binding.run_id,
-                    # 同一条多维表格记录的历次尝试共用一个 record_id：
-                    # 前端据此把它们叠在同一条任务记录下（重跑不新开一条）。
-                    "record_id": binding.record_id,
-                    "display_text": binding.display_text,
-                    "status": binding.status.value,
-                    "updated_at": _iso_utc_string(getattr(binding, "updated_at", "")),
-                    "artifact_count": counts.get(binding.run_id, 0),
-                    "result_table_url": result_table_url,
-                    "rerunnable": binding.status in {
-                        TableTaskStatus.COMPLETED,
-                        TableTaskStatus.FAILED,
-                    },
-                }
-            )
+        payload = await _run_payloads(request, active, identity, bindings)
         # 按时间倒序（最新的在最上面）—— 以前直接透传多维表格返回的顺序，
         # 界面上的历史记录看起来就是乱序的。
         payload.sort(
@@ -1122,6 +1167,107 @@ def create_app(
             reverse=True,
         )
         return payload
+
+    async def _run_payload(
+        request: Request,
+        active: Any,
+        identity: RequestIdentity,
+        binding: Any,
+        counts: dict[str, int],
+    ) -> dict:
+        """把**一条**绑定转成前端用的运行 payload。"""
+        try:
+            result_table_url = await active.result_table_url(
+                binding.run_id,
+                **owner_argument(
+                    active.result_table_url,
+                    identity.owner_user_id,
+                ),
+            )
+        except AttributeError:
+            result_table_url = None
+        return {
+            "run_id": binding.run_id,
+            # 同一条多维表格记录的历次尝试共用一个 record_id：
+            # 前端据此把它们叠在同一条任务记录下（重跑不新开一条）。
+            "record_id": binding.record_id,
+            "display_text": binding.display_text,
+            "status": binding.status.value,
+            "updated_at": _iso_utc_string(getattr(binding, "updated_at", "")),
+            "artifact_count": counts.get(binding.run_id, 0),
+            "result_table_url": result_table_url,
+            # 失败尝试的落库原因（可能为 None —— 同步失败路径只写状态不写
+            # 原因）。前端优先用它，拿不到再去那次运行里找失败事件/执行记录。
+            "last_error": getattr(binding, "last_error", None),
+            # **运行时**状态，和上面的 `status` 不是一回事：`status` 是多维
+            # 表格任务状态（已完成 / 失败 / 生成中…），运行时的 cancelled 与
+            # failed 在那边都压成「失败」，前端分不出「这次是被取消的」。
+            # 所以单独给一个字段，而不是往 `status` 里塞第二种语义。
+            "runtime_status": getattr(binding, "runtime_status", None),
+            "rerunnable": binding.status in {
+                TableTaskStatus.COMPLETED,
+                TableTaskStatus.FAILED,
+            },
+        }
+
+    async def _run_payloads(
+        request: Request,
+        active: Any,
+        identity: RequestIdentity,
+        bindings: Any,
+    ) -> list[dict]:
+        """把绑定列表转成前端用的运行 payload（recent-runs 与按记录取历史共用）。
+
+        每条**历次尝试**各占一条 payload —— 前端按 `record_id` 把它们叠成同一条
+        任务记录（`BitableState.latestRunsByRecord`），点开某条记录时看到的历次
+        成片预览滑条就靠这个结构。
+        """
+        counts = await artifact_counts(request, bindings)
+        return [
+            await _run_payload(request, active, identity, binding, counts)
+            for binding in bindings
+        ]
+
+    @app.get("/api/bitable/record-runs")
+    async def list_record_bitable_runs(
+        request: Request,
+        record_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict:
+        """**某一条记录**的全部历次尝试（不受「最近任务」窗口限制）。
+
+        `recent-runs` 是给全局列表用的：最多 10 条**任务**、扫描窗口 800 条 run。
+        更老记录的历次尝试因此永远进不来（2026-09-24 实测：89 条失败尝试里 45 条
+        属于窗口外的老记录）。用户点开某条记录时改用它，按 record_id（或 run_id）
+        直接取那条记录的**完整**历史；全局列表的窗口与 payload 一个字都不动。
+        """
+        active = get_bitable_service(request)
+        identity = current_identity(request)
+        record_runs = getattr(active, "record_runs", None)
+        if record_runs is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="当前模式不支持按记录读取历史",
+            )
+        if not record_id and not run_id:
+            raise HTTPException(
+                status_code=422,
+                detail="需要 record_id 或 run_id",
+            )
+        try:
+            resolved_record_id, bindings = await record_runs(
+                record_id=record_id,
+                run_id=run_id,
+                **owner_argument(record_runs, identity.owner_user_id),
+            )
+        except Exception as exc:
+            raise_bitable_error(exc)
+        payload = await _run_payloads(request, active, identity, bindings)
+        payload.sort(
+            key=lambda item: _iso_timestamp(item.get("updated_at") or ""),
+            reverse=True,
+        )
+        return {"record_id": resolved_record_id, "runs": payload}
 
     @app.get("/api/runs/{run_id}/take-findings")
     async def get_take_findings(run_id: str, request: Request) -> dict:
@@ -1218,9 +1364,18 @@ def create_app(
             payload.append(
                 {
                     "run_id": binding.run_id,
+                    # 回收站是按**记录**去重列出的（一条记录一行）；带上 record_id
+                    # 让前端/排障能对上「这是哪条记录的哪一次尝试」。
+                    "record_id": getattr(binding, "record_id", None),
                     "display_text": binding.display_text,
                     "status": binding.status.value,
                     "updated_at": _iso_utc_string(getattr(binding, "updated_at", "")),
+                    # 自动归档（超出「最近 10 条任务」窗口）vs 用户自己删的。回收站
+                    # 靠它换文案：自动归档的行显示「最后更新」，不能写成「删除时间」
+                    # —— 用户没删过，写「删除」会让他以为是自己误删的。
+                    "auto_archived": bool(
+                        getattr(binding, "auto_archived", False)
+                    ),
                 }
             )
         payload.sort(
@@ -1324,14 +1479,25 @@ def create_app(
                     ),
                 )
         except Exception as exc:
-            raise_bitable_error(exc)
+            raise_bitable_error(exc, expose_conflict=True)
         return BitableRetryResponse(run_id=run_id)
 
     @app.post(
         "/api/bitable/runs/{run_id}/rerun",
         status_code=status.HTTP_202_ACCEPTED,
     )
-    async def rerun_bitable_run(run_id: str, request: Request) -> BitableClaimResponse:
+    async def rerun_bitable_run(
+        run_id: str,
+        request: Request,
+        payload: BitableRerunRequest | None = None,
+    ) -> BitableClaimResponse:
+        """「重新运行」：复用上一版**已批准的计划**，有返工要求就融合改写提示词，
+        然后**停在待审批**等用户确认（用户口径 2026-09-24）。
+
+        body 可选：不带 body = 原样重跑（一个字都不改，也不调模型、不产生费用）；
+        带 `feedback` = 先按返工要求融合提示词再进审批页。带 `task_ids` 时只改这几条
+        （不传 = 整份计划）。
+        """
         active = get_bitable_service(request)
         identity = current_identity(request)
         try:
@@ -1339,15 +1505,24 @@ def create_app(
             await ensure_owned_run(
                 runtime_for_owner, run_id, identity.owner_user_id
             )
+            rerun_kwargs: dict[str, Any] = owner_argument(
+                active.rerun, identity.owner_user_id
+            )
+            if payload is not None:
+                if payload.task_ids:
+                    rerun_kwargs["task_ids"] = list(payload.task_ids)
+                feedback = (payload.feedback or "").strip()
+                if feedback:
+                    rerun_kwargs["feedback"] = feedback
+                if payload.duration is not None:
+                    # ②-b：本次时长与上一版不同时，不允许提示词原样保留。
+                    rerun_kwargs["duration"] = payload.duration
             with runtime_owner_scope(
                 runtime_for_owner, identity.owner_user_id
             ):
-                new_run_id = await active.rerun(
-                    run_id,
-                    **owner_argument(active.rerun, identity.owner_user_id),
-                )
+                new_run_id = await active.rerun(run_id, **rerun_kwargs)
         except Exception as exc:
-            raise_bitable_error(exc)
+            raise_bitable_error(exc, expose_conflict=True)
         return BitableClaimResponse(run_id=new_run_id)
 
     @app.post(
@@ -1356,15 +1531,14 @@ def create_app(
     )
     async def rerun_selected_bitable_run(
         run_id: str,
-        payload: ArtifactReviewRequest,
+        payload: BitableRerunRequest,
         request: Request,
     ) -> BitableClaimResponse:
-        if payload.action != "adjust":
-            raise HTTPException(status_code=422, detail="\u53ea\u652f\u6301\u8fd4\u5de5\u91cd\u8dd1")
-        if not payload.feedback or not payload.feedback.strip():
-            raise HTTPException(status_code=422, detail="\u8bf7\u586b\u5199\u8fd4\u5de5\u8981\u6c42")
-        if not payload.task_ids:
-            raise HTTPException(status_code=422, detail="\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u6761\u4efb\u52a1")
+        """「重跑选中任务」：与「重新运行」**同一条逻辑**，只是带上勾选的任务 id。
+
+        返工要求为空是合法的（原样保留提示词进审批页复核）；有内容才走融合改写。
+        两种情形都必须停在待审批 —— 批准之后才真正提交生成。
+        """
         active = get_bitable_service(request)
         identity = current_identity(request)
         try:
@@ -1377,14 +1551,16 @@ def create_app(
             ):
                 new_run_id = await active.rerun(
                     run_id,
-                    task_ids=payload.task_ids,
-                    feedback=payload.feedback.strip(),
+                    task_ids=list(payload.task_ids),
+                    feedback=(payload.feedback or "").strip(),
+                    # ②-b：带上了新时长就必须在校验时对齐（提示词原样保留会被拦）。
+                    duration=payload.duration,
                     # 刻意不传 auto_approve：重跑只负责把提示词重写好，
                     # 必须停在审批页让用户过目、改参数/换模型后再放行。
                     **owner_argument(active.rerun, identity.owner_user_id),
                 )
         except Exception as exc:
-            raise_bitable_error(exc)
+            raise_bitable_error(exc, expose_conflict=True)
         return BitableClaimResponse(run_id=new_run_id)
     @app.post("/api/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(payload: CreateRunRequest, request: Request) -> dict[str, str]:
@@ -1426,12 +1602,15 @@ def create_app(
             else:
                 portal_status = "running"
             # 读取成片，供 Portal 历史记录展示产出预览（缩略图 + 下载清单）。
+            # 刻意不按 portal_status 设闸门：这套任务有成片时的正常终态是
+            # waiting_review（成片已生成、等用户确认），只认 "done" 会让 96% 的
+            # 成片永远读不到。成片有没有与状态标签无关，直接读 artifacts，
+            # 没有就是空数组（list_artifacts 是只读查询，不写库）。
             artifacts: list[Any] = []
-            if portal_status == "done":
-                try:
-                    artifacts = await active.repository.list_artifacts(run_id)
-                except Exception:
-                    artifacts = []
+            try:
+                artifacts = await active.repository.list_artifacts(run_id)
+            except Exception:
+                artifacts = []
             ready_artifacts = [
                 artifact
                 for artifact in artifacts
@@ -1453,6 +1632,7 @@ def create_app(
             else:
                 item_kind = "agent"
             providers = []
+            ark_task_ids: list[str] = []
             try:
                 operations = await active.repository.list_operations(run_id)
                 providers = [
@@ -1460,20 +1640,33 @@ def create_app(
                     for operation in operations
                     if operation.get("provider")
                 ]
+                # 方舟任务号（cgt-…）：Portal 拿它去方舟换这次生成的**真实 usage**
+                # （token 数 + 分辨率 + 有无参考视频 → 金额）。飞书自己不上报 usage，
+                # 这是把飞书任务的 token 补进「使用统计」的唯一可靠途径。
+                for operation in operations:
+                    official_id = str(operation.get("official_id") or "").strip()
+                    if official_id.startswith("cgt-") and official_id not in ark_task_ids:
+                        ark_task_ids.append(official_id)
             except Exception:
                 providers = []
             model_label = _feishu_run_model_label(active.settings, item_kind, providers)
+            # 正文：过去这里硬编码占位串，Portal 上所有飞书任务都显示同一句话。
+            # 真实需求正文只在 LangGraph 的 checkpoint 里，这里取出来（带 TTL 缓存）；
+            # 取不到才回落占位串 —— 绝不假装有内容。
+            prompt_text = await _portal_prompt_text(
+                active, run_id, str(row.get("thread_id") or "")
+            )
             items.append({
                 "app": "feishu-generation-agent",
                 "job_id": run_id,
                 "username": identity.username,
                 "kind": item_kind,
-                "prompt": "飞书任务 Agent 生成任务",
+                "prompt": prompt_text or "飞书任务 Agent 生成任务",
                 "model": model_label,
                 "params": {"source_url": str(row.get("source_url") or "")},
+                "provider_task_ids": ark_task_ids,
                 "status": portal_status,
-                "submitted_at": _iso_timestamp(created_at),
-                "completed_at": (
+                "submitted_at": _iso_timestamp(created_at),                "completed_at": (
                     _iso_timestamp(updated_at)
                     if status_value in GraphRuntime._TERMINAL_STATUSES else None
                 ),
@@ -1773,6 +1966,52 @@ def create_app(
         except (RunNotFound, RunConflict, RunValidationError) as exc:
             raise_runtime_error(exc)
         return {"status": "updated"}
+
+    @app.post("/api/runs/{run_id}/optimize-prompts")
+    async def optimize_prompts(
+        run_id: str,
+        payload: OptimizePromptsRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        """审批页原地用 AI 重写选中任务的提示词。
+
+        以前审批页只有两条路：手工逐条改，或「退回修改计划」把整份计划重新规划
+        （分镜结构可能变、手改内容可能被覆盖）。这里补上中间那条：勾选任务 +
+        一句话要求 → 只重写这几条的提示词 → 仍停在审批页给你过目。
+        """
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                result = await active.optimize_prompts(
+                    run_id,
+                    task_ids=payload.task_ids,
+                    feedback=payload.feedback.strip(),
+                )
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return {"run_id": run_id, **result}
+
+    @app.post("/api/runs/{run_id}/tasks/{task_id}/storyboard/{index}/regenerate")
+    async def regenerate_storyboard(
+        run_id: str,
+        task_id: str,
+        index: int,
+        request: Request,
+    ) -> dict[str, Any]:
+        """只重跑某一段的分镜图（方案 A：同一提示词重新采样 K 张，不重新规划）。"""
+        active = get_runtime(request)
+        identity = current_identity(request)
+        try:
+            await ensure_owned_run(active, run_id, identity.owner_user_id)
+            with runtime_owner_scope(active, identity.owner_user_id):
+                result = await active.regenerate_storyboard_frame(
+                    run_id, task_id=task_id, index=index
+                )
+        except (RunNotFound, RunConflict, RunValidationError) as exc:
+            raise_runtime_error(exc)
+        return result
 
     @app.delete("/api/runs/{run_id}/tasks/{task_id}/references/{asset_id}")
     async def unlink_reference(

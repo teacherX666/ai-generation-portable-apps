@@ -423,7 +423,9 @@ async def test_direct_graph_run_snapshots_exact_prime_prompt(
     assert planning_prompt.source == "prime"
     assert planning_prompt.version == 0
     assert planning_prompt.prompt_sha256 == (
-        "db77e6e4a995de911ca75a4013a25a4382e088578f15a3c8258b0599c6ba992f"
+        # 2026-10-12：视频契约按「原图保真」口径改过（水印不再触发 usable=false），
+        # 哈希随之更新 —— 有意改动，见 tests/unit/test_reference_fidelity_rules.py。
+        "65fb914f8005792653c2ec688ad0c704dae50769dc90893d265db7fb88ed2f8b"
     )
     assert fake_services.planner.system_prompts == [planning_prompt.prompt_text]
 

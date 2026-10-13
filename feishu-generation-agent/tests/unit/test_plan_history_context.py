@@ -50,3 +50,45 @@ async def test_caps_the_history_length() -> None:
     assert context is not None
     assert len(context.splitlines()) == 5
     assert "要求29" in context
+
+
+async def test_includes_requirements_carried_over_from_the_previous_run() -> None:
+    """整篇重新规划（新 run）历史上拿不到任何东西 —— 现在靠 `carried_rework_requirements`。
+
+    2026-10-10「铲」任务实测：点「重新生成计划」后新 run 的 state 里
+    `draft_plan` / `approved_plan` 都是空的，于是 `_history_context_for_plan`
+    返回 None，上一轮攒下的「蜡是比较硬化状态的」被彻底丢掉，用户只能重说一遍。
+    """
+    state = {"carried_rework_requirements": ["蜡是比较硬化状态的", "只铲最右侧的红色"]}
+
+    context = await _history_context_for_plan(state)
+
+    assert context is not None
+    assert "蜡是比较硬化状态的" in context
+    assert "只铲最右侧的红色" in context
+    assert context.startswith("- ")
+
+
+async def test_carried_requirements_are_deduped_against_the_plan() -> None:
+    """同一份计划里已有的要求不能再重复一份。"""
+    state = {
+        "draft_plan": {"tasks": [{"rework_requirements": ["蜡要硬化"]}]},
+        "carried_rework_requirements": ["蜡要硬化", "别铲橙色"],
+    }
+
+    context = await _history_context_for_plan(state)
+
+    assert context is not None
+    assert context.count("蜡要硬化") == 1
+    assert "别铲橙色" in context
+
+
+async def test_carried_requirements_are_capped_too() -> None:
+    """继承回来的可能是几十条，同样要限量，别把规划提示词撑爆。"""
+    state = {"carried_rework_requirements": [f"继承{i}" for i in range(30)]}
+
+    context = await _history_context_for_plan(state, limit=3)
+
+    assert context is not None
+    assert len(context.splitlines()) == 3
+    assert "继承29" in context

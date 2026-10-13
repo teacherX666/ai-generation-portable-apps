@@ -60,7 +60,10 @@ test("video tasks expose capability-driven model controls", () => {
 test("artifact review exposes single-task rerun selection", () => {
   assert.match(appSource, /artifactRetryTaskIds/);
   assert.match(appSource, /artifact-retry-choice/);
-  assert.match(appSource, /body\.task_ids = \[\.\.\.state\.artifactRetryTaskIds\]/);
+  // 勾中的成片 id 必须真的进重跑请求体 —— 且请求是**新建运行 → 待审批**那条路
+  //（2026-09-24：重跑不再原地执行，必须先让用户确认改写后的提示词）。
+  assert.match(appSource, /task_ids: taskIds/);
+  assert.match(appSource, /\[\.\.\.state\.artifactRetryTaskIds\]/);
 });
 test("video-only controls stay out of the image branch", () => {
   const branchStart = appSource.indexOf('task.task_type === "image_to_image"');

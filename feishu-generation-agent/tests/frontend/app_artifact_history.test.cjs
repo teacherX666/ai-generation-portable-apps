@@ -124,6 +124,12 @@ async function loadApp(fetch) {
     createElement: (tagName) => new FakeNode(tagName),
     getElementById: getNode,
     querySelector: () => new FakeNode("main"),
+    // app.js 会在 document 上装「拖放防误伤」的全局监听（2026-09-29）—— 假 DOM 也得有
+    // 这个方法，否则 app.js 一加载就 TypeError，整个文件 50+ 条用例一起红。
+    listeners: {},
+    addEventListener(name, listener) {
+      (this.listeners[name] ||= []).push(listener);
+    },
   };
   const context = {
     BitableState,
@@ -296,6 +302,109 @@ test("切换下拉也按记录去重（重跑不再多出一项）", async () =>
   );
 });
 
+test("记录里「生成中」的那版要当代表：下拉跳得到，且不给删除", async () => {
+  // 用户 2026-09-22：「不能跳到正在生成的任务里」「只要有正在进行的任务，
+  // 删除键就不应该在」。两个接口都**不下发 active 字段**（recent-runs 的 SQL
+  // 本身就只取 active=0），所以「生成中」在 recent-runs 里是 active=null；
+  // 只看 active 的话，latestRunsByRecord 的「有成片的优先」会把上一版已完成
+  // 的行挑成代表 —— 那一行是已完成状态，删除键照样出现。
+  const calls = [];
+  const app = await loadApp(async (url) => {
+    calls.push(url);
+    if (url === "/api/health") return jsonResponse(200, { modes: { bitable: true } });
+    if (url === "/api/bitable/active-runs") return jsonResponse(200, []);
+    if (url === "/api/bitable/recent-runs") {
+      return jsonResponse(200, [
+        {
+          run_id: "run-done", record_id: "rec-x", display_text: "巨型南瓜",
+          status: "已完成", artifact_count: 1, updated_at: "2026-09-22T01:00:00+00:00",
+        },
+        {
+          run_id: "run-busy", record_id: "rec-x", display_text: "巨型南瓜",
+          status: "生成中", artifact_count: 0, updated_at: "2026-09-22T02:00:00+00:00",
+        },
+      ]);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    if (url.startsWith("/api/runs/")) {
+      return jsonResponse(200, {
+        run_id: url.split("/").at(-1),
+        status: "running",
+        events: [],
+        privacy: {},
+        approval: { tasks: [] },
+        artifacts: [],
+      });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  const rows = app.getNode("recent-run-list").children.filter(
+    (node) => node.dataset && node.dataset.runId,
+  );
+  assert.equal(rows.length, 1, "一条记录一行");
+  assert.equal(rows[0].dataset.runId, "run-busy", "代表必须是正在跑的那版");
+  assert.match(
+    findNodes(rows[0], (node) => node.tagName === "P")[0].textContent,
+    /^进行中/,
+  );
+  assert.deepEqual(
+    findNodes(rows[0], (node) => node.tagName === "BUTTON").map((b) => b.textContent),
+    ["查看"],
+    "记录上有进行中的任务时不能给删除",
+  );
+  assert.ok(
+    findNodes(app.getNode("current-run-switcher"), (node) => node.tagName === "OPTION")
+      .some((option) => option.value === "run-busy"),
+    "下拉里要能选到正在生成的那条",
+  );
+});
+
+test("历史版本拉取失败时不能谎报「这一版没有成片」", async () => {
+  // 服务重启期间的一次失败，以前会被当成「空成片」永久缓存 —— 卡片永远写
+  // 「这一版没有成片。」且不再重试（用户 2026-09-22「有些卡片没有预览」）。
+  const calls = [];
+  const app = await loadApp(async (url) => {
+    calls.push(url);
+    if (url === "/api/health") return jsonResponse(200, { modes: { bitable: true } });
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [
+        { run_id: "run-cur", record_id: "rec-z", display_text: "蛋糕", status: "待确认成片", artifact_count: 1 },
+      ]);
+    }
+    if (url === "/api/bitable/recent-runs") {
+      return jsonResponse(200, [
+        {
+          run_id: "run-old", record_id: "rec-z", display_text: "蛋糕",
+          status: "已完成", artifact_count: 1, updated_at: "2026-09-22T01:00:00+00:00",
+        },
+      ]);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    if (url === "/api/runs/run-old") throw new Error("boom");
+    if (url.startsWith("/api/runs/")) {
+      return jsonResponse(200, {
+        run_id: url.split("/").at(-1),
+        status: "waiting_review",
+        events: [],
+        privacy: {},
+        approval: { tasks: [] },
+        artifacts: [VIDEO_ARTIFACT("task-1")],
+      });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  const strip = app.getNode("artifact-list");
+  const text = allText(strip);
+  assert.ok(text.includes("预览暂时没取到"), "失败要说清是没取到，实际：" + text);
+  assert.equal(
+    text.includes("这一版没有成片"),
+    false,
+    "拉失败不能谎报没有成片",
+  );
+});
+
 test("重跑后（审批/生成中）预览与历史仍然留着", async () => {
   const calls = [];
   const app = await loadApp(
@@ -415,4 +524,400 @@ test("空闲时降到 15 秒心跳，不再每 5 秒刷", async () => {
   // 任务本页看不到「自行推进」，没有心跳就永远刷不出来（2026-09-17 实测）。
   assert.equal(calls.length, before, "空闲 tick 不该立刻发请求");
   assert.equal(app.intervalCount(), 1, "要留一个慢速心跳");
+});
+
+test("「重跑选中任务」置灰时必须说明缺什么", async () => {
+  // 用户 2026-09-21：「重跑选中任务现在又点不动了」——按钮要求「勾选成片」，
+  // 以前缺什么都不说，用户只看到一个灰按钮。
+  //
+  // 2026-09-24 起**返工要求不再是前置条件**：留空 = 提示词原样保留、进审批页复核
+  //（用户口径：「如果返工要求里没内容则是直接不改提示词原封不动让我重新审核」）。
+  const calls = [];
+  const app = await loadApp(stubFetch(calls));
+  const button = app.getNode("adjust-artifacts-button");
+  const hint = app.getNode("adjust-artifacts-hint");
+
+  assert.equal(button.hidden, false, "成片可审核时按钮要出现");
+  assert.equal(button.disabled, true);
+  assert.equal(hint.hidden, false);
+  assert.equal(hint.textContent, "请先在上方成片卡片里勾选「选择此条重跑」");
+
+  const checkbox = findNodes(
+    app.getNode("artifact-list"),
+    (node) => node.tagName === "INPUT",
+  )[0];
+  assert.ok(checkbox, "成片卡片上应当有「选择此条重跑」复选框");
+  checkbox.checked = true;
+  await checkbox.dispatch("change");
+
+  assert.equal(button.disabled, false, "勾选就够了 —— 返工要求可以留空");
+  assert.equal(hint.hidden, true);
+  assert.equal(hint.textContent, "");
+
+  // 填了返工要求也不会变回「不可点」，只是这次会先融合改写提示词。
+  const feedback = app.getNode("artifact-review-feedback");
+  feedback.value = "南瓜滚落的位置不对，请重写这一段动作";
+  await feedback.dispatch("input");
+
+  assert.equal(button.disabled, false);
+  assert.equal(hint.hidden, true);
+});
+
+/** 历史滑条里某一条 run 的格子。 */
+function historyCard(app, runId) {
+  return findNodes(
+    app.getNode("artifact-list"),
+    (node) => String(node.className || "").includes("artifact-history-card")
+      && node.dataset
+      && node.dataset.runId === runId,
+  )[0];
+}
+
+/** 一条记录：当前版 + 一个成功的往次版 + 一个失败的往次版。 */
+function failedAttemptFetch(extra = {}) {
+  return async (url) => {
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [
+        {
+          run_id: "run-cur", record_id: "rec-h", display_text: "切割汽车",
+          status: "待确认成片", artifact_count: 1,
+        },
+      ]);
+    }
+    if (url === "/api/bitable/recent-runs") {
+      return jsonResponse(200, [
+        {
+          run_id: "run-cur", record_id: "rec-h", display_text: "切割汽车",
+          status: "待确认成片", updated_at: "2026-09-24T04:00:00+00:00", artifact_count: 1,
+        },
+        {
+          run_id: "run-good", record_id: "rec-h", display_text: "切割汽车",
+          status: "已完成", updated_at: "2026-09-24T03:00:00+00:00", artifact_count: 1,
+        },
+        {
+          run_id: "run-bad", record_id: "rec-h", display_text: "切割汽车",
+          status: "失败", updated_at: "2026-09-24T02:00:00+00:00", artifact_count: 0,
+          last_error: extra.payloadLastError ?? null,
+        },
+      ]);
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    if (url.startsWith("/api/bitable/record-runs?")) {
+      // 后端按记录返回**完整**历次尝试（窗口内这几条本来就有，合并后不该重复）。
+      return jsonResponse(200, {
+        record_id: "rec-h",
+        runs: [
+          {
+            run_id: "run-cur", record_id: "rec-h", display_text: "切割汽车",
+            status: "待确认成片", updated_at: "2026-09-24T04:00:00+00:00", artifact_count: 1,
+          },
+          {
+            run_id: "run-good", record_id: "rec-h", display_text: "切割汽车",
+            status: "已完成", updated_at: "2026-09-24T03:00:00+00:00", artifact_count: 1,
+          },
+          {
+            run_id: "run-bad", record_id: "rec-h", display_text: "切割汽车",
+            status: "失败", updated_at: "2026-09-24T02:00:00+00:00", artifact_count: 0,
+            last_error: extra.payloadLastError ?? null,
+            runtime_status: extra.payloadRuntimeStatus ?? null,
+          },
+        ],
+      });
+    }
+    if (url === "/api/runs/run-bad" && extra.detailThrows) {
+      throw new Error("boom");
+    }
+    if (url.startsWith("/api/runs/")) {
+      const runId = url.split("/").at(-1);
+      if (runId === "run-bad") {
+        return jsonResponse(200, {
+          run_id: "run-bad",
+          status: extra.detailStatus || "failed",
+          events: extra.events || [],
+          privacy: {},
+          approval: { tasks: [] },
+          artifacts: [],
+          last_error: extra.detailLastError || null,
+          execution_records: extra.executionRecords || [],
+        });
+      }
+      return jsonResponse(200, {
+        run_id: runId,
+        status: runId === "run-cur" ? "waiting_review" : "succeeded",
+        events: [],
+        privacy: {},
+        approval: { tasks: [] },
+        artifacts: [VIDEO_ARTIFACT("task-1")],
+      });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+}
+
+test("失败的尝试也进历史滑条：失败徽标 + 灰化 + 失败原因，且不给下载", async () => {
+  // 用户 2026-09-24：「『成品与结果』区少了某些记录」—— 失败的尝试以前在
+  // recent-runs 的 SQL 里就被 hidden=1 挡掉，滑条上一条都没有，用户看不到
+  // 「我失败过几次、为什么失败」。
+  const app = await loadApp(failedAttemptFetch({
+    executionRecords: [
+      {
+        provider: "seedance2.5",
+        status: "failed",
+        error: {
+          category: "validation_error",
+          message: "生成参数不符合供应商要求",
+          code: "generation_asset_mapping_mismatch",
+        },
+      },
+    ],
+  }));
+
+  const bad = historyCard(app, "run-bad");
+  assert.ok(bad, "失败的尝试必须有格子（以前整条被吞掉）");
+  assert.ok(
+    String(bad.className).includes("is-failed"),
+    "失败格子要灰化，别和成功版混淆：" + String(bad.className),
+  );
+  assert.equal(bad.dataset.failed, "1");
+  assert.ok(
+    findNodes(bad, (node) => node.textContent === "失败").length >= 1,
+    "要有「失败」徽标",
+  );
+  // 原因优先级：last_error.message → 失败事件摘要 → 执行记录里的错误。
+  // 生产上大多数失败只有最后这一条（last_error 是 null、事件里也没有 failed）。
+  assert.ok(
+    allText(bad).includes("失败原因：seedance2.5：生成参数不符合供应商要求"),
+    "要点开就能看到失败原因，实际：" + allText(bad),
+  );
+  assert.equal(
+    bad.title,
+    "失败原因：seedance2.5：生成参数不符合供应商要求",
+    "悬停也要能看到",
+  );
+  // 失败版**不提供**下载 / 送结果表入口（它没有可交付的成片）。
+  assert.equal(/下载/.test(allText(bad)), false, "失败格子不能有下载入口");
+  assert.equal(
+    findNodes(
+      bad,
+      (node) => String(node.className || "").includes("artifact-download-button"),
+    ).length,
+    0,
+  );
+  assert.equal(
+    findNodes(bad, (node) => node.tagName === "A").length,
+    0,
+    "失败格子不能有结果表链接",
+  );
+
+  // 成功版本一点没变：还能预览。
+  const good = historyCard(app, "run-good");
+  assert.ok(good, "成功版仍在滑条里");
+  assert.equal(String(good.className).includes("is-failed"), false);
+  assert.ok(findNodes(good, (node) => node.tagName === "VIDEO").length >= 1);
+});
+
+test("失败原因拿不到就如实说「未记录失败原因」，不编", async () => {
+  const app = await loadApp(failedAttemptFetch());
+
+  const bad = historyCard(app, "run-bad");
+  assert.ok(bad, "失败的尝试必须有格子");
+  assert.ok(
+    allText(bad).includes("失败原因：未记录失败原因"),
+    "没有原因就如实说没有，实际：" + allText(bad),
+  );
+});
+
+test("那次运行的详情拉不到时，用 recent-runs 下发的 last_error 当原因", async () => {
+  // 落库的 last_error 是服务端记的（例如「本地运行已删除」），详情接口挂了也不该
+  // 把已知的原因丢掉。
+  const app = await loadApp(failedAttemptFetch({
+    detailThrows: true,
+    payloadLastError: "本地运行已删除",
+  }));
+
+  const bad = historyCard(app, "run-bad");
+  assert.ok(bad, "失败的尝试必须有格子");
+  assert.ok(
+    allText(bad).includes("失败原因：本地运行已删除"),
+    "要用落库的原因，实际：" + allText(bad),
+  );
+});
+
+test("last_error.message 优先于失败事件与执行记录", async () => {
+  const app = await loadApp(failedAttemptFetch({
+    detailLastError: { category: "provider_terminal_error", message: "生成服务返回错误" },
+    events: [{ node: "generate", status: "failed", summary: "节点失败摘要" }],
+    executionRecords: [
+      { provider: "seedance2.5", status: "failed", error: { message: "执行记录里的原因" } },
+    ],
+  }));
+
+  const bad = historyCard(app, "run-bad");
+  assert.ok(
+    allText(bad).includes("失败原因：生成服务返回错误"),
+    "优先 last_error.message，实际：" + allText(bad),
+  );
+});
+
+test("运行时状态是 cancelled 的尝试：写「这次被取消了」，不编具体错误", async () => {
+  // 用户 2026-09-24：「有 2 条运行时状态是 cancelled、没有任何错误记录」，界面
+  // 只显示「未记录失败原因」，看不出这次是被取消的。运行时状态带出来后要能说清，
+  // 但**绝不**编一个具体错误出来。
+  const app = await loadApp(failedAttemptFetch({
+    detailStatus: "cancelled",
+    payloadRuntimeStatus: "cancelled",
+  }));
+
+  const bad = historyCard(app, "run-bad");
+  assert.ok(bad, "失败的尝试必须有格子");
+  assert.ok(
+    allText(bad).includes("失败原因：这次被取消了"),
+    "要说清是被取消的，实际：" + allText(bad),
+  );
+  assert.equal(bad.title, "失败原因：这次被取消了", "悬停也要一致");
+});
+
+test("详情拉不到时，payload 里的 runtime_status=cancelled 也能说明是被取消", async () => {
+  // 运行详情接口挂了（服务重启中）时，手上还有 recent-runs 下发的运行时状态，
+  // 不该退化成「暂时没取到」。
+  const app = await loadApp(failedAttemptFetch({
+    detailThrows: true,
+    payloadRuntimeStatus: "cancelled",
+  }));
+
+  const bad = historyCard(app, "run-bad");
+  assert.ok(bad, "失败的尝试必须有格子");
+  assert.ok(
+    allText(bad).includes("失败原因：这次被取消了"),
+    "实际：" + allText(bad),
+  );
+});
+
+test("运行时状态是 failed 且没有原因：照旧说「未记录失败原因」，不冒充取消", async () => {
+  const app = await loadApp(failedAttemptFetch({
+    detailStatus: "failed",
+    payloadRuntimeStatus: "failed",
+  }));
+
+  const bad = historyCard(app, "run-bad");
+  assert.ok(bad, "失败的尝试必须有格子");
+  assert.ok(
+    allText(bad).includes("失败原因：未记录失败原因"),
+    "实际：" + allText(bad),
+  );
+  assert.equal(allText(bad).includes("这次被取消了"), false);
+});
+
+/** 窗口里只有当前这条记录；老记录的历次尝试只在 record-runs 里。 */
+function outOfWindowFetch(calls) {
+  const runsForRecord = [
+    {
+      run_id: "run-cur", record_id: "rec-old", display_text: "老需求",
+      status: "失败", updated_at: "2026-09-20T02:00:00+00:00", artifact_count: 0,
+      runtime_status: "failed",
+    },
+    {
+      run_id: "run-old-good", record_id: "rec-old", display_text: "老需求",
+      status: "已完成", updated_at: "2026-09-18T02:00:00+00:00", artifact_count: 1,
+    },
+    {
+      run_id: "run-old-cancelled", record_id: "rec-old", display_text: "老需求",
+      status: "失败", updated_at: "2026-09-15T02:00:00+00:00", artifact_count: 0,
+      last_error: null, runtime_status: "cancelled",
+    },
+    {
+      run_id: "run-old-failed", record_id: "rec-old", display_text: "老需求",
+      status: "失败", updated_at: "2026-09-12T02:00:00+00:00", artifact_count: 0,
+      last_error: "生成参数不符合供应商要求", runtime_status: "failed",
+    },
+  ];
+  return async (url) => {
+    calls.push(url);
+    if (url === "/api/health") {
+      return jsonResponse(200, { modes: { bitable: true } });
+    }
+    if (url === "/api/bitable/active-runs") {
+      return jsonResponse(200, [runsForRecord[0]]);
+    }
+    if (url === "/api/bitable/recent-runs") {
+      // 窗口切片：这条记录只露了当前这一条（老尝试全被窗口挡在外面）。
+      return jsonResponse(200, [runsForRecord[0]]);
+    }
+    if (url.startsWith("/api/bitable/record-runs?")) {
+      return jsonResponse(200, { record_id: "rec-old", runs: runsForRecord });
+    }
+    if (url.startsWith("/api/bitable/tasks?")) return jsonResponse(200, []);
+    if (url.startsWith("/api/runs/")) {
+      const runId = url.split("/").at(-1);
+      const known = runsForRecord.find((run) => run.run_id === runId);
+      return jsonResponse(200, {
+        run_id: runId,
+        status: runId === "run-old-cancelled"
+          ? "cancelled"
+          : (runId === "run-cur" ? "failed" : "succeeded"),
+        events: [],
+        privacy: {},
+        approval: { tasks: [] },
+        artifacts: runId === "run-old-good" ? [VIDEO_ARTIFACT("task-1")] : [],
+        last_error: null,
+        execution_records: [],
+        record_id: known ? known.record_id : null,
+      });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+}
+
+test("打开某条记录时按 record_id 取完整历次尝试：窗口外的老失败也看得到", async () => {
+  // 用户 2026-09-24：「窗口外老记录的失败尝试看不到」——实测 89 条失败尝试里
+  // 45 条属于「最近 10 条任务」窗口外的老记录。全局列表保持窗口不变，前端打开
+  // 某条记录时另拉一份**完整**历史喂给「往次成片」滑条。
+  const calls = [];
+  const app = await loadApp(outOfWindowFetch(calls));
+
+  assert.ok(
+    calls.some((url) => url.startsWith("/api/bitable/record-runs?run_id=run-cur")),
+    "要按当前运行去取它所属记录的完整历史，实际：" + calls.join(" | "),
+  );
+  // 窗口外的那两次失败尝试现在都在滑条上。
+  const cancelled = historyCard(app, "run-old-cancelled");
+  const failed = historyCard(app, "run-old-failed");
+  assert.ok(cancelled, "窗口外被取消的尝试要出现在滑条上");
+  assert.ok(failed, "窗口外失败的尝试要出现在滑条上");
+  assert.ok(
+    allText(cancelled).includes("失败原因：这次被取消了"),
+    "实际：" + allText(cancelled),
+  );
+  assert.ok(
+    allText(failed).includes("失败原因：生成参数不符合供应商要求"),
+    "实际：" + allText(failed),
+  );
+  // 窗口内那条成功的往次版照样在，没被完整历史挤掉。
+  assert.ok(historyCard(app, "run-old-good"), "成功的往次版仍要在");
+  // 全局「最近任务」列表**不变**：这条记录仍只占一行（payload 没被撑大）。
+  assert.equal(app.getNode("recent-run-list").children.length, 1);
+  assert.ok(
+    app.getNode("run-history-summary").textContent.includes("共 1 条"),
+    "实际：" + app.getNode("run-history-summary").textContent,
+  );
+});
+
+test("record-runs 拉不到时不影响滑条：退回窗口里的数据，且不弹全局错误", async () => {
+  const inner = failedAttemptFetch({ payloadLastError: "本地运行已删除" });
+  const app = await loadApp(async (url) => {
+    if (url.startsWith("/api/bitable/record-runs?")) throw new Error("boom");
+    return inner(url);
+  });
+
+  // 窗口里那条失败尝试仍能正常渲染（原因用 payload 里的）。
+  const bad = historyCard(app, "run-bad");
+  assert.ok(bad, "完整历史拉不到不该把窗口里的版本也弄丢");
+  assert.ok(
+    allText(bad).includes("失败原因：本地运行已删除"),
+    "实际：" + allText(bad),
+  );
+  assert.equal(app.getNode("recent-run-list").children.length, 1);
 });

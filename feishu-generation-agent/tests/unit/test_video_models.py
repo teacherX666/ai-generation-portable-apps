@@ -32,8 +32,11 @@ def test_video_model_catalog_exposes_expected_hard_boundaries() -> None:
     assert seedance_20.duration_max == 15
     assert "4k" in seedance_20.resolutions
     assert seedance_25.duration_max == 30
+    # 2.5 支持 1080p（官方文档：输出分辨率 480p / 720p / 1080p(10bit)）——
+    # 以前这里断言的是「2.5 没有 1080p」，把 2.5 永久压在 720p。
+    assert "1080p" in seedance_25.resolutions
+    # 4k 没在 2.5 的规格表里出现过，保持不给。
     assert "4k" not in seedance_25.resolutions
-    assert "1080p" not in seedance_25.resolutions
 
 
 def test_model_key_accepts_aliases_and_model_ids() -> None:
@@ -56,7 +59,8 @@ def test_normalization_clamps_parameters_for_seedance_25() -> None:
     )
 
     assert normalized["duration"] == 30
-    assert normalized["resolution"] == "720p"
+    # 要 4k 时按「支持的最高档」收敛到 1080p（以前是 720p）。
+    assert normalized["resolution"] == "1080p"
     assert normalized["aspect_ratio"] == "9:16"
     assert normalized["output_count"] == 4
     assert warnings

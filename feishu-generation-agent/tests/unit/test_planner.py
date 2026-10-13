@@ -2,6 +2,7 @@ import copy
 import asyncio
 import hashlib
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -21,12 +22,15 @@ from feishu_generation_agent.domain.document import (
 )
 from feishu_generation_agent.domain.errors import AgentError, ErrorCategory
 from feishu_generation_agent.domain.plan import AuditReport, TaskPlan
+from feishu_generation_agent.domain.reference_contract import (
+    dangling_reference_mentions,
+)
 from feishu_generation_agent.integrations.planner import (
     DeepSeekPlanner,
     _exclude_unused_references,
-    _exclude_video_references,
     _fill_storyboard_source_block_ids,
     _normalize_generated_plan_payload,
+    _retain_video_references,
     planner_system_prompt,
     reconcile_negative_constraints,
     reconcile_storyboard_sources,
@@ -37,8 +41,16 @@ from feishu_generation_agent.integrations.planner import (
 def test_planner_system_prompt_prime_hash_is_frozen() -> None:
     prime = planner_system_prompt()
 
+    # 2026-09-22 更新：契约从「禁止绝对秒数」改成「必须带整数秒时间范围」——
+    # Seedance 2.5 认整数秒时间戳（官方提示词指南），旧规则把时间轴删干净了。
+    # 2026-10-10 更新（P1 ③）：新增「文档分镜表只有 1 行时全片 1 个镜头、禁止
+    # 分镜/剪辑指令」一条，哈希随之变化。
+    # 2026-10-12 更新（原图保真口径）：`usable` 判据不再把「水印/平台标识」当作
+    # 不可用理由；「不要出现水印与 Logo」收窄到第三方平台；并点名「游戏画面
+    # （游戏界面 / 关卡 / 计数框 / 横条 UI / 道具图标）就是产品内容，不许排除」。
+    # 见 `tests/unit/test_reference_fidelity_rules.py`。
     assert hashlib.sha256(prime.encode("utf-8")).hexdigest() == (
-        "db77e6e4a995de911ca75a4013a25a4382e088578f15a3c8258b0599c6ba992f"
+        "65fb914f8005792653c2ec688ad0c704dae50769dc90893d265db7fb88ed2f8b"
     )
 
 
@@ -415,12 +427,17 @@ def _video_task(
         block_id for block_id in sources if block_id.startswith("shot-")
     ]
     if len(storyboard_sources) >= 2:
+        # 多分镜必须带整数秒时间轴（2026-09-22 起：Seedance 2.5 认时间戳，
+        # 旧契约「禁止绝对秒数」已废除）。时长 10s，按镜头数切整数边界。
+        count = len(storyboard_sources)
+        bounds = [round(index * 10 / count) for index in range(count + 1)]
         prompt = "\n".join(
             [
                 "参考 @图片1 中的蓝色纸船。",
                 *[
-                    f"镜头 {index}：固定镜头展示 @图片1 中的蓝色纸船。"
-                    for index, _ in enumerate(storyboard_sources, start=1)
+                    f"镜头 {index}（{bounds[index - 1]}-{bounds[index]}s）："
+                    "固定镜头展示 @图片1 中的蓝色纸船。"
+                    for index in range(1, count + 1)
                 ],
                 (
                     "高清，纸船稳定不变形、运动连贯，"
@@ -647,7 +664,8 @@ async def test_planning_input_contains_stable_document_and_rules(
         "每个镜头",
         "不得机械平均分配",
         "镜头 1",
-        "禁止绝对秒数",
+        # 2026-09-22：契约从「禁止绝对秒数」改成「每个镜头必须带整数秒时间范围」。
+        "整数秒时间范围",
         "画质",
         "水印",
         "Logo",
@@ -678,8 +696,9 @@ async def test_planner_repairs_hotpot_reference_bindings(
     assert model.calls == 2
     repair_prompt = model.requests[1][-1]["content"]
     assert "@图片1" in repair_prompt
-    assert "镜头 1" in repair_prompt
-    assert "绝对秒数" in repair_prompt
+    # 2026-09-22：不再报「绝对秒数」——时间轴是必须项了；这条 invalid 提示词
+    # 的问题是没有镜头编号 + 末段 12s 不覆盖 duration 10s。
+    assert "时间轴" in repair_prompt
     assert plan.tasks[0].prompt == repaired["prompt"]
 
 
@@ -718,6 +737,53 @@ def test_generated_video_plan_cannot_override_runtime_provider_or_default_count(
     normalized = payload["tasks"][0]
     assert normalized["video_provider"] is None
     assert normalized["output_count"] == 1
+
+
+def test_generated_video_plan_defaults_audio_on(
+    narrative_document: NormalizedDocument,
+) -> None:
+    """声音默认开启：模型没写(None)或写了 false，都要被纠正成 true。
+
+    用户 2026-09-21：「为什么有的文档不会开启声音？现在所有文档默认把声音
+    打开」。旧行为是文档没提声音就留空，提交时 bool(None) → False 变成静音。
+    """
+    task = _video_task()
+    task["generate_audio"] = None
+    payload = json.loads(_plan_json(task))
+
+    issues = _normalize_generated_plan_payload(payload, narrative_document)
+
+    assert issues == []
+    assert payload["tasks"][0]["generate_audio"] is True
+
+
+def test_generated_video_plan_keeps_explicit_global_silence(
+    narrative_document: NormalizedDocument,
+) -> None:
+    """唯一例外：文档自己写明「视频保持静音」时，声音保持关闭。"""
+    blocks = [
+        block.model_copy(update={"text": "第一条视频保持静音。"})
+        if block.block_id == "story-1"
+        else block
+        for block in narrative_document.blocks
+    ]
+    document = narrative_document.model_copy(
+        update={
+            "blocks": blocks,
+            "text_view": (
+                "[block:story-1] 第一条视频保持静音。\n"
+                "[block:image-1] [image:asset-1]"
+            ),
+        }
+    )
+    task = _video_task()
+    task["generate_audio"] = False
+    payload = json.loads(_plan_json(task))
+
+    issues = _normalize_generated_plan_payload(payload, document)
+
+    assert issues == []
+    assert payload["tasks"][0]["generate_audio"] is False
 
 
 def test_generated_plan_normalization_filters_unknown_sources_and_remaps_asset_tokens(
@@ -1691,8 +1757,12 @@ def test_validator_rejects_hotpot_storyboard_without_understood_references(
     )
 
     assert any("@图片1" in issue for issue in issues)
-    assert any("镜头 1" in issue for issue in issues)
-    assert any("绝对秒数" in issue for issue in issues)
+    # 2026-09-22：不再要求「素材出现在某个镜头段里」（技能格式里素材说明
+    # 是单独一段）。这里缺的是素材本身完全没出现。
+    assert not any("镜头 1" in issue and "素材" in issue for issue in issues)
+    # 时间轴能解析出来，不再被禁。
+    # 参考素材绑定与镜头编号（末段 12s ≠ duration 10s 由覆盖检查负责）。
+    assert not any("必须按整数秒时间轴分段" in issue for issue in issues)
 
 
 def test_validator_accepts_video_frame_reference_as_the_video(
@@ -1778,6 +1848,192 @@ def test_unused_references_are_excluded_deterministically(
     assert "@图片2" not in payload["tasks"][0]["prompt"]
 
 
+def test_missing_reference_tokens_are_labelled_instead_of_excluded(
+    storyboard_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """规划器**描述了素材却漏写 `@图片N`** → 补标记，不许把参考图删掉（2026-10-13 小猫钓鱼）。
+
+    生产实锤（run `eb572545`，2026-10-13T01:11，用户原话「为什么居然排除了两张重要的参考图」）：
+    提示词【素材说明】里**三段描述都在**（垂钓画面 / 水中缠斗 / 角色三视图），但只有第一段写了
+    `@图片1`；第 2、3 段漏了标记 → `unused_reference_assets` 按「token 不在 prompt 里」判未使用
+    → `_exclude_unused_references` 把两张重要参考图摘掉，并在审批页给出与事实不符的理由
+    （「未绑定到镜头或描述笼统」）。
+
+    对照：同晚的鸭子任务（`753a894f`）标记写全了 → 三张全保留。所以这是**模型偶发漏标记**，
+    正确做法是补齐标记让计划自洽，而不是删掉用户真正想要的图。
+    """
+    from feishu_generation_agent.domain.plan import ImageReference
+    from feishu_generation_agent.domain.reference_contract import (
+        reference_tokens,
+        tokens_used_in_shots,
+    )
+
+    second = _asset(tmp_path, "asset-2", "image-2")
+    third = _asset(tmp_path, "asset-3", "image-3")
+    document = storyboard_document.model_copy(
+        update={"media_assets": [*storyboard_document.media_assets, second, third]}
+    )
+    task = _video_task(source_block_ids=["shot-1", "shot-2", "shot-3", "shot-4"])
+    task["reference_images"] = [
+        {"asset_id": "asset-1", "role": "reference_image", "order": 1},
+        {"asset_id": "asset-2", "role": "reference_image", "order": 2},
+        {"asset_id": "asset-3", "role": "reference_image", "order": 3},
+    ]
+    # 完全复刻生产形态：素材说明三段都在，只有第一段带 `@图片1` 标记。
+    task["prompt"] = (
+        "【素材说明】\n"
+        "@图片1：参考蓝色纸船与湖面场景、白色羽毛小鸭的绒毛质感；不参考原图静止姿势。\n"
+        "参考小鸭与纸船的造型比例、湿羽成绺质感与暖色柔光；不参考原图机位。\n"
+        "只参考小鸭角色的三视图造型与配色（白色绒毛、橙色喙）；不参考米白背景。\n"
+        "\n"
+        "【详细情节】\n"
+        "镜头 1（0-3s）：固定机位，@图片1 中的蓝色纸船停在水面。\n"
+        "镜头 2（3-6s）：跟随镜头，纸船继续漂向远处。\n"
+        "镜头 3（6-8s）：小鸭跳上纸船，纸船轻轻晃动。\n"
+        "镜头 4（8-10s）：远景，纸船与小鸭一起漂向湖心。\n"
+    )
+    payload = json.loads(_plan_json(task))
+
+    _exclude_unused_references(payload, document)
+
+    kept = [
+        reference["asset_id"]
+        for reference in payload["tasks"][0]["reference_images"]
+    ]
+    assert kept == ["asset-1", "asset-2", "asset-3"], "漏标记的参考图被删掉了"
+    assert not payload.get("excluded_assets"), payload.get("excluded_assets")
+    labelled_prompt = payload["tasks"][0]["prompt"]
+    references = [
+        ImageReference.model_validate(item)
+        for item in payload["tasks"][0]["reference_images"]
+    ]
+    tokens = reference_tokens(references, {"asset-1": "image/png", "asset-2": "image/png", "asset-3": "image/png"})
+    # 补齐后必须**同时**满足「token 在 prompt 里」与「落在某个镜头段里」——
+    # 只补素材说明段是过不了 `require_storyboard` 的（实测多分镜会被判「没用于实际镜头」）。
+    assert tokens_used_in_shots(labelled_prompt, tokens) == set(tokens.values())
+    after = validate_plan(
+        payload, document, 4, enforce_seedance_prompt_contract=True
+    )
+    assert not [issue for issue in after if "@图片" in issue], after
+
+
+def test_missing_reference_tokens_not_guessed_when_layout_is_ambiguous(
+    storyboard_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """素材说明的条目数与素材数对不上时**不许猜** —— 维持旧行为（摘掉），绝不把标记贴错图。
+
+    把 A 的 `@图片N` 贴到 B 的描述上是更坏的错误：模型会照着错的图生成。
+    """
+    second = _asset(tmp_path, "asset-2", "image-2")
+    document = storyboard_document.model_copy(
+        update={"media_assets": [*storyboard_document.media_assets, second]}
+    )
+    task = _video_task(source_block_ids=["shot-1", "shot-2", "shot-3", "shot-4"])
+    task["reference_images"] = [
+        {"asset_id": "asset-1", "role": "reference_image", "order": 1},
+        {"asset_id": "asset-2", "role": "reference_image", "order": 2},
+    ]
+    # 素材说明只有一段（两段挤在一行、无法按位置对应两张图）。
+    task["prompt"] = (
+        "【素材说明】\n"
+        "@图片1：参考蓝色纸船与湖面场景；另外一张图是别的参考。\n"
+        "\n"
+        "【详细情节】\n"
+        "镜头 1（0-3s）：固定机位，@图片1 中的蓝色纸船停在水面。\n"
+        "镜头 2（3-6s）：跟随镜头，纸船继续漂向远处。\n"
+        "镜头 3（6-8s）：小船靠岸。\n"
+        "镜头 4（8-10s）：远景。\n"
+    )
+    payload = json.loads(_plan_json(task))
+
+    _exclude_unused_references(payload, document)
+
+    assert [
+        reference["asset_id"]
+        for reference in payload["tasks"][0]["reference_images"]
+    ] == ["asset-1"]
+    assert [item["asset_id"] for item in payload["excluded_assets"]] == ["asset-2"]
+
+
+def test_shifted_material_labels_are_matched_by_count_not_position(
+    storyboard_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """标签**错位**（漏标一条、后面整体前移）时也要救回那张图（2026-10-13 水晶鞋 `8ea6c11a`）。
+
+    生产形态：规划器写了 5 条素材说明却只打 4 个标记 —— 漏掉「镜头2 宫殿分镜图」那条，
+    于是游戏界面成了 `@图片2`、公主 `@图片3`、女仆 `@图片4`；而那张分镜图在参考列表里
+    **排第 5**（token = `@图片5`），提示词里从头到尾没有 `@图片5` → 被「未使用」规则摘掉，
+    用户看到的是「我的分镜图又没被参考，效果特别差」（审计报告也报了这条自相矛盾）。
+
+    按**数量**配对（无标记条目 ↔ 缺失 token）两种形态都对；按位置则会把 `@图片5` 贴到
+    女仆那条描述上、而真正描述它的宫殿那条仍然没标记。
+    """
+    from feishu_generation_agent.domain.plan import ImageReference
+
+    assets = [_asset(tmp_path, f"asset-{index}", f"image-{index}") for index in range(2, 6)]
+    document = storyboard_document.model_copy(
+        update={"media_assets": [*storyboard_document.media_assets, *assets]}
+    )
+    task = _video_task(source_block_ids=["shot-1", "shot-2", "shot-3", "shot-4"])
+    # 参考列表顺序 = 生产形态：分镜图（asset-2）排最后 → 它的 token 是 @图片5。
+    task["reference_images"] = [
+        {"asset_id": "asset-1", "role": "reference_image", "order": 1},
+        {"asset_id": "asset-3", "role": "reference_image", "order": 2},
+        {"asset_id": "asset-4", "role": "reference_image", "order": 3},
+        {"asset_id": "asset-5", "role": "reference_image", "order": 4},
+        {"asset_id": "asset-2", "role": "reference_image", "order": 5},
+    ]
+    task["prompt"] = (
+        "【素材说明】\n"
+        "@图片1：参考透明棱面水晶鞋的造型与质感、鞋头宝石蝴蝶结；不参考原图背景。\n"
+        "参考宫殿大厅的空间布局（水晶吊灯、暖金墙面与红金帷幔、米色沙发）与人物配色关系。\n"
+        "@图片2：参考该游戏界面并照原样保留——浅紫底、居中鞋形图案与底部横条UI。\n"
+        "@图片3：参考公主的身份、金色波浪长发、红宝石皇冠与红色礼服；不参考原图姿势。\n"
+        "@图片4：参考女仆的身份、深棕盘发、白色荷叶边发箍与黑白制服；不参考原图姿势。\n"
+        "\n"
+        "【详细情节】\n"
+        "镜头 1（0-6s）：昏暗宫殿角落，@图片4 的女仆背对镜头握着 @图片1 的水晶鞋。\n"
+        "镜头 2（6-13s）：宫殿大厅，@图片3 的公主坐在沙发上。\n"
+        "镜头 3（13-15s）：特写，鞋内接触处的光效。\n"
+        "镜头 4（15-22s）：转场到 @图片2 的游戏画面。\n"
+    )
+    payload = json.loads(_plan_json(task))
+
+    _exclude_unused_references(payload, document)
+
+    kept = [
+        reference["asset_id"]
+        for reference in payload["tasks"][0]["reference_images"]
+    ]
+    assert kept == ["asset-1", "asset-3", "asset-4", "asset-5", "asset-2"], (
+        "分镜图（asset-2）被摘掉了 —— 这正是用户报的「分镜图没被参考」"
+    )
+    assert not payload.get("excluded_assets"), payload.get("excluded_assets")
+    prompt = payload["tasks"][0]["prompt"]
+    # 标记要贴在**内容对得上**的那条描述上（宫殿那条 = asset-2 = @图片5），不是按位置乱贴
+    assert "@图片5：参考宫殿大厅的空间布局" in prompt, prompt[:400]
+    assert not re.search(r"@图片5：@图片\d", prompt), "出现了双层标记"
+    # 多分镜：token 还必须落进镜头段（asset-2 绑的是第 2 镜）
+    references = [
+        ImageReference.model_validate(item)
+        for item in payload["tasks"][0]["reference_images"]
+    ]
+    from feishu_generation_agent.domain.reference_contract import (
+        reference_tokens,
+        tokens_used_in_shots,
+    )
+
+    tokens = reference_tokens(
+        references, {f"asset-{i}": "image/png" for i in range(1, 6)}
+    )
+    assert tokens_used_in_shots(prompt, tokens) == set(tokens.values())
+    after = validate_plan(payload, document, 4, enforce_seedance_prompt_contract=True)
+    assert not [issue for issue in after if "@图片" in issue], after
+
+
 def test_reconcile_negative_constraints_clears_legacy_duplicates() -> None:
     """存量计划里的重复写法要能清掉（去重上线前的残留会被复制一直带下去）。
 
@@ -1812,16 +2068,58 @@ def test_reconcile_negative_constraints_clears_legacy_duplicates() -> None:
     ]
 
 
-def test_video_references_are_excluded_not_mounted(
+def test_video_references_are_retained_as_reference_video(
     storyboard_document: NormalizedDocument,
     tmp_path: Path,
 ):
-    """视频素材不作为参考图（只作分镜参考）。
+    """视频素材**默认保留**为 `reference_video`，不再被摘掉。
 
-    用户口径（2026-09-17）：「视频基本上都没有能作为参考图的，只能作为分镜参考」。
-    抽帧那条路已删，所以视频不再有对应图片素材；覆盖门要求每个素材被引用或被排除，
-    这里必须确定性地把视频摘掉并写进 excluded_assets，否则批准按钮永远是灰的。
+    2026-10-08 P0（用户原话「首先是规划阶段直接排除了参考视频，导致很多版都没有好的
+    效果」）：旧实现 `_exclude_video_references` 在规划后**无条件**把视频从
+    reference_images 摘掉、写进 excluded_assets、并用 remap 把 prompt 里的 `@视频1`
+    删成空洞（`参考  中连续动作…`）。规划器其实判了 `usable=true`，是应用自己抹掉的。
+    现在：保留引用、role 规范成 `reference_video`、**prompt 一个字都不动**。
     """
+    video = _asset(tmp_path, "video-1", "video-1", mime_type="video/mp4")
+    document = storyboard_document.model_copy(
+        update={"media_assets": [*storyboard_document.media_assets, video]}
+    )
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)],
+    )
+    task["reference_images"] = [
+        {"asset_id": "asset-1", "order": 1, "role": "reference_image"},
+        {"asset_id": "video-1", "order": 2, "role": "reference_image"},
+    ]
+    task["prompt"] = (
+        "镜头 1（0-5s）：@图片1 中的立方体，参考 @视频1 中匀速顺滑的刮削节奏与"
+        "固定平视机位。不要硬切，不要水印，不要 logo，画面稳定不变形。"
+    )
+    payload = json.loads(_plan_json(task))
+    payload["excluded_assets"] = [
+        {"asset_id": "video-1", "reason": "旧逻辑把视频写进了排除表"}
+    ]
+    original_prompt = payload["tasks"][0]["prompt"]
+
+    _retain_video_references(payload, document)
+
+    assert [
+        (reference["asset_id"], reference["role"])
+        for reference in payload["tasks"][0]["reference_images"]
+    ] == [("asset-1", "reference_image"), ("video-1", "reference_video")]
+    # 被引用的视频不能同时出现在排除表里（覆盖门会判自相矛盾）。
+    assert payload["excluded_assets"] == []
+    # 关键：prompt 必须原样保留 —— 删 token 会留下没有主语的空洞。
+    assert payload["tasks"][0]["prompt"] == original_prompt
+    assert "@视频1" in payload["tasks"][0]["prompt"]
+    assert dangling_reference_mentions(payload["tasks"][0]["prompt"]) == []
+
+
+def test_retaining_video_keeps_the_plan_valid(
+    storyboard_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """保留视频后计划仍然自洽：视频被引用 → 覆盖门不会再报 uncovered。"""
     video = _asset(tmp_path, "video-1", "video-1", mime_type="video/mp4")
     document = storyboard_document.model_copy(
         update={"media_assets": [*storyboard_document.media_assets, video]}
@@ -1833,28 +2131,64 @@ def test_video_references_are_excluded_not_mounted(
         {"asset_id": "asset-1", "order": 1, "role": "reference_image"},
         {"asset_id": "video-1", "order": 2, "role": "reference_video"},
     ]
+    task["prompt"] = (
+        "镜头 1（0-5s）：@图片1 中的立方体，参考 @视频1 中匀速顺滑的刮削节奏与"
+        "固定平视机位。不要硬切，不要水印，不要 logo，画面稳定不变形。"
+    )
     payload = json.loads(_plan_json(task))
 
-    _exclude_video_references(payload, document)
+    _retain_video_references(payload, document)
 
-    assert [
+    issues = validate_plan(
+        payload, document, max_output_count=8
+    )
+    assert not [
+        issue for issue in issues if "uncovered" in issue or "asset_coverage" in issue
+    ]
+
+
+def test_excluding_unused_references_never_orphans_the_video(
+    storyboard_document: NormalizedDocument,
+    tmp_path: Path,
+):
+    """`_exclude_unused_references` 不得摘视频，也不得留下没有主语的空洞。"""
+    video = _asset(tmp_path, "video-1", "video-1", mime_type="video/mp4")
+    document = storyboard_document.model_copy(
+        update={"media_assets": [*storyboard_document.media_assets, video]}
+    )
+    task = _video_task(
+        source_block_ids=[f"shot-{index}" for index in range(1, 5)],
+    )
+    task["reference_images"] = [
+        {"asset_id": "asset-1", "order": 1, "role": "reference_image"},
+        {"asset_id": "video-1", "order": 2, "role": "reference_video"},
+    ]
+    # 视频 token 是「笼统绑定」：旧实现会把它摘掉 → `参考  中…` 空洞。
+    task["prompt"] = (
+        "镜头 1（0-5s）：@图片1 中的立方体，参考 @视频1 中连续动作加速浓缩的"
+        "连贯节奏。不要硬切，不要水印，不要 logo，画面稳定不变形。"
+    )
+    payload = json.loads(_plan_json(task))
+
+    _exclude_unused_references(payload, document)
+
+    reference_ids = [
         reference["asset_id"]
         for reference in payload["tasks"][0]["reference_images"]
-    ] == ["asset-1"]
-    reasons = {
-        item["asset_id"]: item["reason"] for item in payload["excluded_assets"]
-    }
-    assert "video-1" in reasons
-    assert "分镜参考" in reasons["video-1"]
+    ]
+    assert "video-1" in reference_ids
+    assert "@视频1" in payload["tasks"][0]["prompt"]
+    assert dangling_reference_mentions(payload["tasks"][0]["prompt"]) == []
 
 
-def test_validator_rejects_latin_s_absolute_seconds(
+def test_validator_parses_latin_s_timeline_and_checks_coverage(
     storyboard_document: NormalizedDocument,
 ):
-    """`0~2s` 也算绝对秒数 —— 以前只认中文「秒」，拉丁 s 漏过去了。
+    """拉丁 s 写的时间轴要能解析，而且必须覆盖整个任务时长。
 
-    2026-09-17 生产：用户在返工反馈里贴了分镜时间，融合把「镜头 1（0~2s）」写进
-    提示词，校验器没拦（正则只认 秒），禁用规则形同虚设。
+    2026-09-22 规则反转：以前 `0~2s` 被当作「绝对秒数」拦下；现在时间轴是**必须项**
+    （Seedance 2.5 认整数秒时间戳，官方提示词指南）。这里同时验证：末段不等于
+    duration 会被拦，改对之后时间轴这一项就通过。
     """
     task = _video_task(
         source_block_ids=[f"shot-{index}" for index in range(1, 5)]
@@ -1871,7 +2205,17 @@ def test_validator_rejects_latin_s_absolute_seconds(
         enforce_seedance_prompt_contract=True,
     )
 
-    assert any("绝对秒数" in issue for issue in issues)
+    assert any("时间轴" in issue and "15" in issue for issue in issues)
+
+    task["prompt"] = task["prompt"].replace("5~15s", "5~10s")
+    issues = validate_plan(
+        json.loads(_plan_json(task)),
+        storyboard_document,
+        4,
+        enforce_seedance_prompt_contract=True,
+    )
+
+    assert not any("时间轴" in issue for issue in issues)
 
 
 def test_validator_rejects_noncontinuous_reference_order(
@@ -1941,8 +2285,8 @@ def test_strict_validator_enforces_shot_bindings_for_narrative_multishot(
         enforce_seedance_prompt_contract=True,
     )
 
-    assert any("镜头 1" in issue and "素材" in issue for issue in issues)
-    assert any("镜头 2" in issue and "素材" in issue for issue in issues)
+    # 素材说明在镜头前单独成段（技能格式）→ 合法；素材 token 确实出现过。
+    assert not any("素材" in issue for issue in issues)
 
 
 def test_strict_validator_detects_parenthesized_narrative_shots(
@@ -1963,8 +2307,7 @@ def test_strict_validator_detects_parenthesized_narrative_shots(
         enforce_seedance_prompt_contract=True,
     )
 
-    assert any("镜头 1" in issue and "素材" in issue for issue in issues)
-    assert any("镜头 2" in issue and "素材" in issue for issue in issues)
+    assert not any("素材" in issue for issue in issues)
 
 
 def test_validator_rejects_one_video_missing_storyboard_rows(

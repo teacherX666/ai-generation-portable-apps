@@ -69,6 +69,39 @@ class DecisionRequest(BaseModel):
         return ApprovalDecision.model_validate(self.model_dump(mode="json"))
 
 
+class BitableRerunRequest(BaseModel):
+    """重跑请求（「重新运行」/「重跑选中任务」共用一套）。
+
+    与 `ArtifactReviewRequest` 的关键差别：**返工要求可以为空**。用户口径
+    （2026-09-24）：「如果返工要求里没内容则是直接不改提示词原封不动让我重新审核」
+    —— 空要求是一次合法的「原样重跑」，不是错误，所以这里不能像成片审核那样
+    强制 `feedback` 非空。
+
+    `action` 保留可选：老前端/老脚本发的是成片审核那套 body（带
+    `action="adjust"`），不能因为多了一个字段就 422。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["adjust"] = "adjust"
+    feedback: str | None = None
+    task_ids: list[str] = Field(default_factory=list)
+    #: 2026-10-10（②-b）：本次重跑要用的时长。
+    #:
+    #: 给了它且与被复用计划的时长不同时，`clone_run_for_approval` 会**拒绝**把上一版
+    #: 提示词原样保留（置 blocking_issues + 人话提示），因为提示词里的时间轴与
+    #: 「预计 N 秒」全是按旧时长写的（实测后果：成片前 4.08 秒画面完全冻结）。
+    #: 审批页改时长走的是任务 PATCH + 提交前的 `duration_consistency_issues`（②-a），
+    #: 这个字段是给 API / 脚本调用方的对称入口；不传 = 沿用上一版时长。
+    duration: int | None = Field(default=None, ge=4, le=60)
+
+    @model_validator(mode="after")
+    def validate_task_ids(self) -> "BitableRerunRequest":
+        if len(self.task_ids) != len(set(self.task_ids)):
+            raise ValueError("不能重复选择同一任务")
+        return self
+
+
 class ArtifactReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -120,6 +153,26 @@ class TaskPatchRequest(BaseModel):
     patch: dict[str, Any] = Field(min_length=1)
 
 
+class OptimizePromptsRequest(BaseModel):
+    """审批页原地用 AI 重写选中任务的提示词（不重新规划、不新建运行）。
+
+    勾选复用审批页已有的任务勾选框 —— 勾哪几条就优化哪几条。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_ids: list[str] = Field(min_length=1)
+    feedback: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "OptimizePromptsRequest":
+        if len(self.task_ids) != len(set(self.task_ids)):
+            raise ValueError("不能重复选择同一任务")
+        if not self.feedback.strip():
+            raise ValueError("请填写优化要求")
+        return self
+
+
 class PlannerPromptUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -148,12 +201,16 @@ class ProviderPreferencesUpdate(BaseModel):
     image_provider: str = Field(min_length=1)
     #: 规划流水线：text（现状）或 multimodal（一次调用把原图/视频交给 ds4.1）。
     planning_pipeline: Literal["text", "multimodal"] = "text"
+    #: 每个时间段生成几张分镜关键帧候选（0 = 关闭）。用户 2026-09-22：
+    #: 「把 K 的选择放在高级设置里供用户选择」。
+    storyboard_candidates: int = Field(default=0, ge=0, le=4)
 
 
 class ProviderPreferencesResponse(BaseModel):
     video_provider: str
     image_provider: str
     planning_pipeline: Literal["text", "multimodal"] = "text"
+    storyboard_candidates: int = 0
 
 
 class BitableClaimResponse(BaseModel):

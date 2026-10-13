@@ -90,6 +90,24 @@ class Settings(BaseSettings):
     # 统一写模型名（doubao-…）而不是账号相关的 endpoint id（ep-…），
     # 让配置可移植；ep-… 由 VIDEO_MODEL_BY_ID / 别名表兼容。
     seedream_model: str = "doubao-seedream-5-0-pro-260628"
+    # 规划阶段为每个时间段生成几张分镜关键帧候选。**默认 0 = 关闭**（用户
+    # 2026-09-22：「不用分镜图模式，默认改成不启用吧，现在很多 bug，而且时间还是很长」）。
+    # 想在高级设置里开启时再调，见 provider_preferences.storyboard_candidates。
+    storyboard_candidates: int = 0
+    # 候选图的并发度（生图是同步接口、一次请求占满整个生成过程，并发太高会让
+    # 每个请求都变慢；实测 4 个并发就容易顶到超时）。
+    storyboard_concurrency: int = 3
+    storyboard_image_size: str = "2K"
+    #: 导演技能（Deepwhite 导演拍摄技能）：把技能包的规则注入规划器，决定**提示词
+    #: 怎么写**。用户 2026-09-22：「直接把这个 skill 接上」。默认开启。
+    planner_skill_enabled: bool = True
+    #: `all` = 注入技能全部参考规则（约 17k token）；`core` = 只注入核心四篇（约 7k）。
+    planner_skill_scope: str = "all"
+    #: 注入内容的字符上限（截断用，不是技能的「不设上限」）。
+    planner_skill_max_chars: int = 60000
+    # 参考图去水印**已整条删除**（用户 2026-10-10：「把这个功能删了，自动第一轮一定
+    # 保证原本的参考图」）—— 不再有任何「按水印重画参考图」的配置或链路，自动第一轮
+    # 一律用文档里那张原图。见 tests/unit/test_watermark.py（删除守卫）。
     ark_api_key: SecretStr | None = None
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     seedance_model: str = "doubao-seedance-2-5-260628"

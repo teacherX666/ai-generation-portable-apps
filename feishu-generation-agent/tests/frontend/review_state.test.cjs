@@ -5,6 +5,56 @@ const test = require("node:test");
 
 const ReviewState = require("../../src/feishu_generation_agent/web/static/review-state.js");
 
+// 用户 2026-09-30：「前端图片、视频这种类型不同的素材，可以分别 123 的顺序来，
+// 图片1 和 视频1 自然区分开了」。后端契约也是**按类型各从 1 起**编号（提示词里写
+// @图片N / @视频N / @音频N），而 `order` 只是全局提交顺序 —— 界面必须显示同一套号。
+test("reference labels number each media type from 1", () => {
+  const labels = ReviewState.referenceLabels([
+    { asset_id: "a", role: "reference_image", order: 1 },
+    { asset_id: "b", role: "reference_image", order: 2 },
+    { asset_id: "c", role: "reference_video", order: 3 },
+    { asset_id: "d", role: "reference_audio", order: 4 },
+  ]);
+
+  assert.equal(labels.get("a"), "图片1");
+  assert.equal(labels.get("b"), "图片2");
+  assert.equal(labels.get("c"), "视频1"); // ← 以前界面上显示的是"参考视频 3"
+  assert.equal(labels.get("d"), "音频1");
+});
+
+test("first/last frame references keep their role labels", () => {
+  const labels = ReviewState.referenceLabels([
+    { asset_id: "f", role: "first_frame", order: 1 },
+    { asset_id: "l", role: "last_frame", order: 2 },
+  ]);
+
+  assert.equal(labels.get("f"), "首帧");
+  assert.equal(labels.get("l"), "尾帧");
+});
+
+test("reorder stays inside one media type and keeps the global order contiguous", () => {
+  const references = [
+    { asset_id: "a", role: "reference_image", order: 1 },
+    { asset_id: "v", role: "reference_video", order: 2 },
+    { asset_id: "b", role: "reference_image", order: 3 },
+  ];
+
+  assert.equal(ReviewState.referenceTypeIndex(references, "a"), 1);
+  assert.equal(ReviewState.referenceTypeIndex(references, "b"), 2);
+  assert.equal(ReviewState.referenceTypeIndex(references, "v"), 1);
+
+  // 把图片 b 提到图片第 1 位：只在"图片"这个类型内部换槽位（槽位是 1 和 3），
+  // 全局 order 仍是 1..N 连续 —— 后端那条 order_mismatch 校验不会再被踩到。
+  const next = ReviewState.reorderReferenceType(references, "b", 1);
+
+  assert.deepEqual(next.map((item) => item.asset_id), ["b", "v", "a"]);
+  assert.deepEqual(next.map((item) => item.order), [1, 2, 3]);
+  const labels = ReviewState.referenceLabels(next);
+  assert.equal(labels.get("b"), "图片1");
+  assert.equal(labels.get("a"), "图片2");
+  assert.equal(labels.get("v"), "视频1");
+});
+
 function task(taskId, taskType = "image_to_video") {
   return {
     task_id: taskId,
@@ -44,6 +94,41 @@ function view({
     },
   };
 }
+
+test("批准 payload 里的分镜帧只回传标量字段（candidates 是视图对象，不能原样回传）", () => {
+  // 2026-09-22 实跑：视图里的 candidates 是 {asset_id, preview_url, selected} 对象，
+  // 而任务模型里 candidates 是 asset_id 字符串数组 —— 原样回传会让批准请求校验失败
+  // （用户看到「Field required；Field required…」+「图片引用无效」，视频生成不了）。
+  const serverView = view({ selectedTaskIds: ["task-1"] });
+  serverView.approval.tasks[0].storyboard_frames = [
+    {
+      index: 1,
+      start: 0,
+      end: 3,
+      prompt: "卡车行驶",
+      selected: null,
+      candidates: [
+        { asset_id: "sb-1", preview_url: "/sb-1", selected: true },
+        { asset_id: "sb-2", preview_url: "/sb-2", selected: false },
+      ],
+    },
+  ];
+  let state = ReviewState.mergeServerView(ReviewState.createReviewState(), serverView);
+
+  const payload = ReviewState.buildApprovalPayload(state);
+  const frame = payload.tasks[0].storyboard_frames[0];
+
+  assert.deepEqual(frame, {
+    index: 1,
+    start: 0,
+    end: 3,
+    prompt: "卡车行驶",
+    selected: "sb-1",
+  });
+  assert.equal("candidates" in frame, false);
+  // 没有分镜帧的任务原样带过去，别多出空字段
+  assert.equal("storyboard_frames" in payload.tasks[1], false);
+});
 
 test("task editor refreshes only when the effective server plan changes", () => {
   const empty = ReviewState.createReviewState();

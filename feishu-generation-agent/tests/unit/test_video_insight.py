@@ -214,3 +214,168 @@ async def test_analyze_video_rejects_failed_download(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError):
         await insight.analyze_video(asset)
+
+
+# --- 2026-09-28：返工自动看片"只能描述画面、不能当改词依据" ---
+
+
+class _TakeRecorder:
+    """只实现审片模式的替身，记录它拿到的「当初的提示词」。"""
+
+    def __init__(self, findings: dict | None = None) -> None:
+        self.prompts: list[str] = []
+        self._findings = findings or {
+            "summary": "画面",
+            "problems": [],
+            "uncertainties": [],
+        }
+
+    async def analyze_take(self, asset, prompt: str = "") -> dict:
+        self.prompts.append(prompt)
+        return self._findings
+
+
+async def test_describe_output_videos_compares_against_the_previous_prompt(
+    tmp_path: Path,
+) -> None:
+    """返工看片必须带上「当初的提示词」，否则抓不到「要求了但没做到」。
+
+    2026-09-28 实测三条生产记录，看片模型自己写道「缺少原始提示词，无法逐条核对」
+    —— 系统提示词叫它逐条核对提示词，我们却一个字都没给。于是它只能描述画面，
+    融合模型拿不到差距，就只能自己发明问题（重注旧要求 / 把画面里的杂物写成
+    禁令 / 干脆什么都不改）。
+    """
+    analyzer = _TakeRecorder()
+    artifact = _artifact(tmp_path)  # task_id = "task-1"
+
+    context = await describe_output_videos(
+        analyzer,
+        [artifact],
+        prompts={"task-1": "汽车是刚体，不许压扁。"},
+    )
+
+    assert analyzer.prompts == ["汽车是刚体，不许压扁。"]
+    assert "画面" in context
+
+
+async def test_describe_output_videos_without_prompts_still_describes(
+    tmp_path: Path,
+) -> None:
+    """拿不到上一版正文时照旧可用（老调用点 / 产物缺 task_id）。"""
+    analyzer = _TakeRecorder()
+
+    context = await describe_output_videos(analyzer, [_artifact(tmp_path)])
+
+    assert analyzer.prompts == [""]
+    assert "画面" in context
+
+
+async def test_describe_output_videos_puts_violations_before_the_summary(
+    tmp_path: Path,
+) -> None:
+    """「要求 X 而画面是 Y」必须排在画面描述**前面**。
+
+    这条路的结果写进运行事件时会被截断（`text[:300]`），排在后面的问题清单会被
+    整段截掉 —— 用户就没法核对模型到底识别对没有。
+    """
+    analyzer = _TakeRecorder(
+        {
+            "summary": "巴士被压扁成一堆红色方块。",
+            "problems": [
+                {
+                    "at": "0:03",
+                    "issue": "要求刚体不变形，实际车顶被压塌",
+                    "why": "形变",
+                    "kind": "违背要求",
+                }
+            ],
+            "uncertainties": [],
+        }
+    )
+
+    context = await describe_output_videos(
+        analyzer, [_artifact(tmp_path)], prompts={"task-1": "汽车是刚体"}
+    )
+
+    assert context.index("要求刚体不变形") < context.index("巴士被压扁")
+
+
+# --- 2026-09-28：把成片直接变成多模态 content part（一次调用，不转文字） ---
+
+
+async def test_build_take_media_parts_uploads_the_previous_take(
+    tmp_path: Path,
+) -> None:
+    """成片传到公开图床 → 返回可直接塞进多模态消息的 video_url part。
+
+    2026-09-28 用户要求：「把调用改成一次多模态调用就行了，不要纯文本」。
+    """
+    from feishu_generation_agent.integrations.planning_media import (
+        MediaUploadCache,
+    )
+    from feishu_generation_agent.integrations.video_insight import (
+        build_take_media_parts,
+    )
+
+    host = _Host("https://example.invalid/take.mp4")
+    artifact = _artifact(tmp_path)
+
+    parts = await build_take_media_parts(
+        [artifact],
+        public_media_host=host,
+        cache=MediaUploadCache(tmp_path / "media-links.json"),
+    )
+
+    assert parts == [
+        {"type": "video_url", "video_url": {"url": "https://example.invalid/take.mp4"}}
+    ]
+    assert host.uploads and host.uploads[0][1].endswith(".mp4")
+
+
+async def test_build_take_media_parts_skips_images_and_missing_files(
+    tmp_path: Path,
+) -> None:
+    """图片产物、文件已不在的产物都不该变成 part（融合照常走文字兜底）。"""
+    from feishu_generation_agent.integrations.planning_media import (
+        MediaUploadCache,
+    )
+    from feishu_generation_agent.integrations.video_insight import (
+        build_take_media_parts,
+    )
+
+    host = _Host()
+    missing = {**_artifact(tmp_path, "art-9"), "local_path": str(tmp_path / "nope.mp4")}
+
+    parts = await build_take_media_parts(
+        [_artifact(tmp_path, "art-img", kind="image"), missing],
+        public_media_host=host,
+        cache=MediaUploadCache(tmp_path / "media-links.json"),
+    )
+
+    assert parts == []
+    assert host.uploads == []
+
+
+async def test_build_take_media_parts_survives_upload_failure(
+    tmp_path: Path,
+) -> None:
+    """上传失败不能让返工失败 —— 返回空 parts，调用方回落到文字看片。"""
+    from feishu_generation_agent.integrations.planning_media import (
+        MediaUploadCache,
+    )
+    from feishu_generation_agent.integrations.video_insight import (
+        build_take_media_parts,
+    )
+
+    class _BrokenHost:
+        async def upload(self, content, filename, mime_type):
+            raise RuntimeError("上传炸了")
+
+    parts = await build_take_media_parts(
+        [_artifact(tmp_path)],
+        public_media_host=_BrokenHost(),
+        cache=MediaUploadCache(tmp_path / "media-links.json"),
+    )
+
+    assert parts == []
+

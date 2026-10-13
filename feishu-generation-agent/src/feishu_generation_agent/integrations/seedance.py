@@ -80,6 +80,8 @@ _REFERENCE_ROLES = frozenset(
         "reference_audio",
     }
 )
+#: 用了这两个角色中的任意一个，输出比例就**由首帧图决定**，不能再指定具体比例。
+_FRAME_ROLES = frozenset({"first_frame", "last_frame"})
 _ASPECT_RATIOS = frozenset(
     {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21", "adaptive"}
 )
@@ -181,34 +183,156 @@ class SeedanceVideoGenerator:
         self._provider_name = provider_name
         self._image_url_resolver = image_url_resolver
 
-    def _strip_non_image_references(
+    @property
+    def supports_video_references(self) -> bool:
+        """这条通道能不能收 `video_url + role=reference_video`。
+
+        2026-10-08：把「视频能不能直传」这件事收敛成**一个判据**，供 `graph/nodes.py`
+        的降级决策使用（以前有两处互相矛盾的逻辑：这里的
+        `_strip_non_image_references` 会**静默摘掉**视频，`graph/nodes.py` 的
+        `_replace_video_references_with_frames` 又会**默认把视频换成抽帧** ——
+        两处都与上游能力冲突，而且都不留可见痕迹）。
+
+        - 方舟多参考模式（`_image_url_resolver is None`）：**支持**，视频会被发成
+          `{"type": "video_url", "role": "reference_video"}`；
+        - 真人类通道（`_image_url_resolver` 只认 `asset://` 图片）：**不支持**，
+          `submit` 会明确报错，由执行层降级成抽帧并写事件。
+        """
+        return self._image_url_resolver is None
+
+    @property
+    def reference_video_max_seconds(self) -> float | None:
+        """这条通道能接受的**参考视频时长上限**（秒）；不知道就返回 None。
+
+        上游对参考视频时长有硬上限，实测错误原文（2026-10-08，「刮太空沙」run
+        `a632f45f`，参考视频 43.7s）：
+
+            The parameter `content[2]` specified in the request is not valid: the
+            parameter video duration (seconds) specified in the request must be
+            less than or equal to 30.2 for model doubao-seedance-2-5 in r2
+
+        该上限与模型的生成时长上限同量级（`duration_max`，2.5 为 30s / 2.0 为 15s），
+        所以取能力表里的 `duration_max`；拿不到能力信息就返回 None（**不猜**），
+        执行层会因此跳过「裁短」这一级、直接走抽帧兜底。
+        """
+        capability = self._capability
+        if capability is None:
+            return None
+        return float(capability.duration_max)
+
+    @property
+    def reference_video_max_bytes(self) -> int | None:
+        """这条通道能接受的**参考视频单文件体积上限**（字节）；不知道返回 None。
+
+        ⚠️ 这个数**不是上游的限制**，是本机适配层自己的闸门
+        （`_validate_submission` 里 `file_stat.st_size > self._max_input_bytes`
+        → `cause=input_too_large`）。2026-10-10 生产实测（run
+        `13268f86-1522-43f4-ada4-35cdfc72b9e6`，参考视频 35,710,093 B = 34.06 MiB）：
+
+        - 用户看到的是 `参考素材无法用于生成（generation_input_too_large）`；
+        - 复现脚本 `_diag_repro_input_too_large.py` 证明该错误**在上游请求之前**
+          抛出（httpx transport 记录到 0 次请求），所以它量的是**单个参考素材文件
+          的字节数**，与分辨率/码率/时长都无关（那个 run 的 operation 停在
+          `failed` 且 `official_id` 为空、execute 节点 26ms 完成）；
+        - 上游方舟文档（创建视频生成任务，video_url 字段）写的是
+          「大小：单个视频不超过 200 MB」—— 比本机闸门**宽 6 倍**，所以 34 MB
+          视频在上游本来是合法的，撞的是我们自己的闸门。
+
+        本机闸门比上游严，是因为它同时还要守住 base64 内联（图片走 data URL）与
+        `max_total_input_bytes` 那条 64 MiB 的请求体约束；**不放松闸门**，改成
+        超限时自动压缩到闸门以内（`graph/nodes.py` 的修复梯子第一级）。
+        返回的就是闸门本身，保证「压缩目标」与「实际拦截点」是同一个数，
+        不会出现两处各写一个魔数、改了闸门却忘了压缩阈值的情况。
+        """
+        return self._max_input_bytes
+
+    @property
+    def reference_video_accepted_codecs(self) -> frozenset[str] | None:
+        """这条通道能接受的**参考视频编码**（ffprobe `codec_name` 口径）。
+
+        2026-10-10 生产实测：**上游只认 H.264**，HEVC/H.265 会以
+        `input media detect failed: invalid_media` 被拒（`code=invalidparameter`，
+        发生在 poll 阶段）。证据：
+
+        - 两条 `invalid_media` 失败的参考视频都是 `hevc/Main`（2160x3840 4K，
+          2.5s / 7.0s）；用户原话「怎么又失败了」；
+        - 历史上所有成功的参考视频都是 `h264`；
+        - 同一批 HEVC 视频里**时长超 30s 的两条反而成功** —— 既有的「裁短」档位
+          （`trim_video`）本来就用 libx264 重编码，等于顺手把它们转成了 H.264；
+          没超时长的那两条原样直传，才撞上 invalid_media；
+        - 公开图床那条路**已排除**：生产用 TOS 预签名 URL，实测匿名 GET 200、
+          `Content-Type: video/mp4`、字节数与源文件一致、`Range: bytes=0-1023` → 206
+          （`_diag_public_url_probe.py`），所以不是"上游取不到有效字节"。
+
+        因此这条通道声明只收 `h264`；`graph/nodes.py` 会在**提交前**把别的编码
+        （HEVC/AV1/MPEG-4…）转成 H.264/mp4（保留分辨率、帧率、时长）。拿不到探测
+        结果时（`codec is None`）**不判死**，交给上游如实报错。
+        """
+        if self._capability is None:
+            return None
+        return frozenset({"h264"})
+
+    def _reject_video_references(
+        self,
+        task: GenerationTask,
+    ) -> None:
+        """只收图片的通道遇到视频引用时**明确拒绝**（不再静默摘掉）。
+
+        以前这里直接 `task, assets = self._strip_non_image_references(...)`：用户挂了
+        参考视频，适配层悄悄把它摘掉、还顺手重写提示词 token，事件里什么都没有 ——
+        与「上游本来就支持视频」的能力冲突。现在改成报一个可判定的错误，执行层据此
+        走唯一的降级路径（抽帧 + 可见事件）。
+
+        音频是**例外**：音频没有「抽帧」这种等价替代，且真人类通道确实收不了，保持
+        原来的摘除行为（见 `_strip_audio_references`，记 warning），否则会把本来能
+        跑通的任务直接判死。
+        """
+        video_ids = [
+            reference.asset_id
+            for reference in task.reference_images
+            if reference.role == "reference_video"
+        ]
+        if video_ids:
+            raise self._validation_error(
+                task.task_id,
+                "该通道不支持参考视频（只接受图片素材）",
+                "cause=video_reference_not_supported; "
+                f"asset_ids={','.join(sorted(video_ids))}",
+            )
+
+    def _strip_audio_references(
         self,
         task: GenerationTask,
         assets: list[MediaAsset],
     ) -> tuple[GenerationTask, list[MediaAsset]]:
-        """Image-only mode: drop non-image references (portrait provider).
+        """Image-only mode: drop **audio** references (portrait provider).
 
-        Reference videos/audio only inform the prompt (their semantics are
-        already folded into task.prompt by the planner); they must not be
-        submitted to the generation API. Drop those references and rewrite the
-        prompt's @videoN / @audioN tokens so the upstream service does not
-        reject unsupported video_url / audio_url references (HTTP 400).
+        音频语义已经被规划器折进 `task.prompt`，这里摘掉引用并重写 @音频N token，
+        避免上游因为不支持的 `audio_url` 拒单（HTTP 400）。视频**不在这里摘**
+        （见 `_reject_video_references`：会明确报错并让执行层走抽帧降级）。
         """
         references = task.reference_images
-        image_references: list[ImageReference] = [
+        audio_references = [
             reference
             for reference in references
-            if reference.role in {"reference_image", "first_frame", "last_frame"}
+            if reference.role == "reference_audio"
         ]
-        if len(image_references) == len(references):
+        if not audio_references:
             return task, assets
-
-        keep_ids = {reference.asset_id for reference in image_references}
-        kept_assets = [
-            asset for asset in assets if asset.asset_id in keep_ids
+        _LOGGER.warning(
+            "真人类通道不支持参考音频，已摘掉 task=%s asset_ids=%s",
+            task.task_id,
+            [reference.asset_id for reference in audio_references],
+        )
+        kept_references = [
+            reference
+            for reference in references
+            if reference.role != "reference_audio"
         ]
+        keep_ids = {reference.asset_id for reference in kept_references}
+        kept_assets = [asset for asset in assets if asset.asset_id in keep_ids]
         mime_types = {asset.asset_id: asset.mime_type for asset in assets}
-        canonical_references = canonicalize_references(image_references)
+        canonical_references = canonicalize_references(kept_references)
         try:
             prompt = remap_prompt_references(
                 task.prompt,
@@ -219,7 +343,7 @@ class SeedanceVideoGenerator:
         except Exception:
             _LOGGER.warning(
                 "Failed to rewrite prompt tokens while dropping portrait "
-                "video/audio refs; keeping original prompt. task=%s",
+                "audio refs; keeping original prompt. task=%s",
                 task.task_id,
                 exc_info=True,
             )
@@ -232,6 +356,43 @@ class SeedanceVideoGenerator:
         )
         return updated, kept_assets
 
+    def _apply_frame_ratio_constraint(
+        self,
+        task: GenerationTask,
+        references: list[Any],
+    ) -> GenerationTask:
+        """首帧 / 首尾帧任务的 ratio **只能**是 `adaptive`，下发前就地改写。
+
+        2026-10-09 生产事故（飞书 Agent 第一次真正走到「首尾帧」这条分支）：审批通过的
+        任务带着 `reference_mode=first_last_frame` + `first_frame/last_frame`，而
+        `aspect_ratio` 还是规划器给的 `9:16`，payload 原样下发 → 方舟前置校验直接 400：
+
+            The parameter ratio specified in the request is not valid. For first-frame
+            or first-last-frame generation, the output ratio follows the first-frame
+            image. Request id: 021791525053115795aa3a4ba36fe8857
+            (code: submit_invalidparameter.tasktypeconstraint)
+
+        方舟文档（Seedance 2.5 输出参数）原文：视频编辑、视频延长、**首帧/首尾帧生视频**
+        这几类任务下 `ratio` 仅支持 `adaptive`，不支持自行设置具体宽高比。
+        Portal 的视频生成模块 2026-10-08 已在 `seedance/app.py` 的 `build_payload` 里
+        做过同样的归一（commit 10071e7）；这里是同一条约束在飞书 Agent 这条独立客户端
+        上的补齐 —— 能力表本来就允许 `adaptive`（`VIDEO_MODELS[].aspect_ratios`），
+        缺的只是「按引用角色改写下发值」这一步。
+
+        只改**下发用**的副本，不动审批通过的 task 本身（计划/审批记录保持用户确认的
+        原样）；没有首尾帧时原值原样保留，多参考图与文生视频不受影响。
+        """
+        if not any(reference.role in _FRAME_ROLES for reference in references):
+            return task
+        if task.aspect_ratio == "adaptive":
+            return task
+        _LOGGER.info(
+            "Seedance frame mode forces ratio=adaptive (was %s); task=%s",
+            task.aspect_ratio,
+            task.task_id,
+        )
+        return task.model_copy(update={"aspect_ratio": "adaptive"})
+
     async def submit(
         self,
         task: GenerationTask,
@@ -243,8 +404,12 @@ class SeedanceVideoGenerator:
         # Ark does not support client-assigned task IDs, so it must not cross the API.
         del submission_id
         if self._image_url_resolver is not None:
-            task, assets = self._strip_non_image_references(task, assets)
+            # 单一判据：视频要么直传上游，要么由执行层降级成抽帧 —— 适配层不再
+            # 静默改写引用（2026-10-08 合并两处互相矛盾的摘除逻辑）。
+            self._reject_video_references(task)
+            task, assets = self._strip_audio_references(task, assets)
         references, ordered_assets, contents = self._validate_submission(task, assets)
+        task = self._apply_frame_ratio_constraint(task, references)
         request_content: list[dict[str, Any]] = [
             {"type": "text", "text": self._prompt(task, references)}
         ]
@@ -295,7 +460,11 @@ class SeedanceVideoGenerator:
             "duration": task.duration,
             "ratio": task.aspect_ratio,
             "resolution": task.resolution,
-            "generate_audio": bool(task.generate_audio),
+            # 声音默认开启（用户 2026-09-21：「所有文档默认把声音打开」）：
+            # 以前是 bool(task.generate_audio)，未填写(None) 会静默变成静音，
+            # 于是「有的文档没有声音」。现在只有**显式 false**（文档要求静音，
+            # 或用户在审批页手动关掉）才不出声。
+            "generate_audio": task.generate_audio is not False,
             "watermark": False,
         }
         body = await self._request_json(

@@ -52,6 +52,17 @@ def test_seedance_25_rejects_4k() -> None:
         )
 
 
+def test_seedance_25_accepts_1080p() -> None:
+    """2.5 支持 1080p（官方文档：480p / 720p / 1080p(10bit 位深)）。
+
+    以前 2.5 的分辨率表里只有 480p/720p，1080p 会被判「视频分辨率无效」，
+    于是永远出不了 1080p。
+    """
+    _generator("seedance2.5")._validate_video_parameters(
+        _task(duration=30, resolution="1080p")
+    )
+
+
 def test_seedance_25_accepts_30_seconds_and_720p() -> None:
     _generator("seedance2.5")._validate_video_parameters(
         _task(duration=30, resolution="720p")

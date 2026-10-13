@@ -405,6 +405,243 @@ async def test_portal_history_exposes_artifact_preview(tmp_path: Path) -> None:
     ]
 
 
+async def test_portal_history_exposes_ark_task_ids_for_usage_lookup(
+    tmp_path: Path,
+) -> None:
+    """飞书记录要带方舟任务号，Portal 才能换回这次生成的**真实 usage**。
+
+    飞书自己不上报 token；唯一可靠途径是 operations 表里的 `official_id`（方舟任务号
+    cgt-…）。实测生产库里 seedance2.5 的 560 条 submit 有 540 条存了这个号。
+    """
+    from feishu_generation_agent.web import app as web_app
+
+    web_app._PORTAL_PROMPT_CACHE.clear()
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph
+        await repository.create_run(
+            "run-ark", "thread-ark", "https://acme.feishu.cn/docx/ark", owner_user_id="user-a",
+        )
+        await repository.update_run_status("run-ark", "waiting_review", owner_user_id="user-a")
+
+        async def fake_operations(run_id: str):
+            if run_id != "run-ark":
+                return []
+            return [
+                {"provider": "seedance2.5", "official_id": "cgt-20261013091207-bia0t"},
+                {"provider": "seedance2.5", "official_id": "cgt-20261013091207-73z3r"},
+                {"provider": "aiport", "official_id": "2e04df14c67746daaa2d4432667206f9"},
+                {"provider": "seedance2.5", "official_id": ""},
+            ]
+
+        repository.list_operations = fake_operations      # type: ignore[assignment]
+        response = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+
+    assert response.status_code == 200
+    item = next(i for i in response.json()["items"] if i["job_id"] == "run-ark")
+    assert item["provider_task_ids"] == [
+        "cgt-20261013091207-bia0t", "cgt-20261013091207-73z3r",
+    ], "只带方舟任务号（cgt-），本地 AI Port 的号不要"
+
+
+async def test_portal_history_shows_real_prompt_instead_of_placeholder(
+    tmp_path: Path,
+) -> None:
+    """飞书任务的「创作记录」要显示**真实需求正文**，而不是硬编码占位串。
+
+    改动前 `/api/portal/history` 里写死 `"prompt": "飞书任务 Agent 生成任务"`，Portal 上
+    所有飞书任务长得一模一样。正文只存在于 LangGraph 的 checkpoint 里（运行库没有提示词列），
+    所以这条测试用带 `planning_prompt` 的状态来驱动，并断言正文原样透出。
+    """
+    from feishu_generation_agent.web import app as web_app
+
+    web_app._PORTAL_PROMPT_CACHE.clear()
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime
+        await repository.create_run(
+            "run-prompt", "thread-prompt", "https://acme.feishu.cn/docx/prompt",
+            owner_user_id="user-a",
+        )
+        await repository.update_run_status(
+            "run-prompt", "waiting_review", owner_user_id="user-a",
+        )
+        real_prompt = "把这只橘猫的胡须改成金色，其他都不要动"
+        await graph.aupdate_state(
+            {"configurable": {"thread_id": "thread-prompt"}},
+            {
+                # 正文来自「已批准/草稿计划」的 tasks[].prompt。
+                # 注意别用 planning_prompt —— 那是规划器的系统提示词模板，不是用户需求
+                # （第一版取错了它，Portal 上每条飞书任务都显示「你是…需求规划器」）。
+                "draft_plan": {
+                    "tasks": [
+                        {"task_id": "task-1", "prompt": real_prompt},
+                        {"task_id": "task-2", "prompt": "第二个镜头：橘猫转头看向窗外"},
+                    ]
+                },
+                "planning_prompt": build_planning_prompt_snapshot(
+                    owner_user_id="user-a",
+                    source="personal",
+                    version=1,
+                    prompt_text="你是 AI 图片与视频生成需求规划器（系统提示词，不该被当成正文）",
+                ).model_dump(),
+            },
+        )
+        response = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+
+    assert response.status_code == 200
+    item = next(i for i in response.json()["items"] if i["job_id"] == "run-prompt")
+    assert item["prompt"].startswith(real_prompt), item["prompt"]
+    assert "需求规划器" not in item["prompt"], "不能把规划器系统提示词当成正文"
+
+
+async def test_portal_history_falls_back_when_prompt_unavailable(
+    tmp_path: Path,
+) -> None:
+    """读不到正文时回落占位串 —— 不假装有内容，也不能让历史列表报错。"""
+    from feishu_generation_agent.web import app as web_app
+
+    web_app._PORTAL_PROMPT_CACHE.clear()
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph
+        await repository.create_run(
+            "run-noprompt", "thread-noprompt", "https://acme.feishu.cn/docx/noprompt",
+            owner_user_id="user-a",
+        )
+        await repository.update_run_status(
+            "run-noprompt", "waiting_review", owner_user_id="user-a",
+        )
+        response = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+
+    assert response.status_code == 200
+    item = next(i for i in response.json()["items"] if i["job_id"] == "run-noprompt")
+    assert item["prompt"] == "飞书任务 Agent 生成任务"
+
+
+async def test_portal_history_exposes_waiting_review_artifact_preview(
+    tmp_path: Path,
+) -> None:
+    """成片已生成、等用户确认（waiting_review）是这套任务有产出时的正常终态。
+
+    成片预览以前只在 portal_status == "done" 时读，waiting_review 永远读不到 ——
+    Portal 历史里 96% 的成片看不到产出（2026-09-24 实测：200 条窗口 0 条有
+    results，而库里本该有 166 条）。
+    """
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph
+        await repository.create_run(
+            "run-review", "thread-review", "https://acme.feishu.cn/docx/review",
+            owner_user_id="user-a",
+        )
+        await repository.update_run_status(
+            "run-review", "waiting_review", owner_user_id="user-a",
+        )
+        await repository.save_artifact(
+            "run-review",
+            Artifact(
+                artifact_id="artifact-review-1",
+                task_id="task-1",
+                kind="video",
+                local_path=tmp_path / "outputs" / "runs" / "run-review" / "a.mp4",
+                mime_type="video/mp4",
+                size=123,
+                sha256="sha-review",
+                status="ready",
+            ),
+        )
+
+        response = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    # 状态标签一个字没变（侧栏「运行中」徽标靠它），只解开了成片闸门。
+    assert item["status"] == "waiting_review"
+    assert item["kind"] == "video"
+    assert item["thumb_url"] == "/api/runs/run-review/artifacts/artifact-review-1/content"
+    assert item["results"] == [
+        {
+            "url": "/api/runs/run-review/artifacts/artifact-review-1/content",
+            "kind": "video",
+        },
+    ]
+
+
+async def test_portal_history_waiting_review_without_artifacts_is_empty(
+    tmp_path: Path,
+) -> None:
+    """等确认但没有成片（成片被删/下载失败）时读成片是空数组，不报错。"""
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph
+        await repository.create_run(
+            "run-review-empty", "thread-review-empty",
+            "https://acme.feishu.cn/docx/empty",
+            owner_user_id="user-a",
+        )
+        await repository.update_run_status(
+            "run-review-empty", "waiting_review", owner_user_id="user-a",
+        )
+        # 非 ready（尚未落盘完成）的成片不算数：闸门放开也不能放进来。
+        await repository.save_artifact(
+            "run-review-empty",
+            Artifact(
+                artifact_id="artifact-pending-1",
+                task_id="task-1",
+                kind="video",
+                local_path=tmp_path / "outputs" / "runs" / "run-review-empty" / "p.mp4",
+                mime_type="video/mp4",
+                size=123,
+                sha256="sha-pending",
+                status="pending",
+            ),
+        )
+
+        response = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["status"] == "waiting_review"
+    assert item["results"] == []
+    assert item["thumb_url"] == ""
+    assert item["kind"] == "agent"
+
+
+async def test_portal_history_status_mapping_is_unchanged(tmp_path: Path) -> None:
+    """守护 portal_status 映射：它只服务侧栏徽标/状态 chip，与成片闸门无关。"""
+    mapping = {
+        "succeeded": "done",
+        "completed_with_errors": "done",
+        "failed": "failed",
+        "cancelled": "failed",
+        "delivery_failed": "failed",
+        "timed_out": "failed",
+        "waiting_approval": "waiting_approval",
+        "waiting_review": "waiting_review",
+        "running": "running",
+        "resuming": "running",
+    }
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph
+        for index, raw_status in enumerate(mapping):
+            run_id = f"run-map-{index}"
+            await repository.create_run(
+                run_id, f"thread-map-{index}",
+                "https://acme.feishu.cn/docx/map",
+                owner_user_id="user-a",
+            )
+            await repository.update_run_status(
+                run_id, raw_status, owner_user_id="user-a",
+            )
+
+        response = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+
+    assert response.status_code == 200
+    observed = {
+        item["job_id"]: item["status"] for item in response.json()["items"]
+    }
+    assert observed == {
+        f"run-map-{index}": expected
+        for index, expected in enumerate(mapping.values())
+    }
+
+
 def _portal_admin_headers(username_encoded: str, secret: str) -> dict[str, str]:
     ts = int(time.time())
     msg = f"{ts}:1:{username_encoded}".encode("utf-8")
@@ -1119,7 +1356,9 @@ async def test_clone_run_for_approval_initializes_a_real_langgraph_checkpoint(
             run_id="clone-original",
             thread_id="clone-original-thread",
         )
-        for _ in range(100):
+        # 100 x 0.01s = 1s 的等待预算太紧：全量跑时后台节点会被拖过 1 秒，
+        # 偶发 "original run did not reach approval"（2026-09-22 排查）。放宽到 6s。
+        for _ in range(600):
             original = await runtime.get_run_view(original_run_id)
             if original["status"] == "waiting_approval":
                 break
@@ -1451,7 +1690,9 @@ async def test_runtime_graph_calls_do_not_trace_full_prompt_snapshot(
                     ),
                 )
                 run_id = await start_task
-                for _ in range(100):
+                # 100 x 0.01s = 1s 的等待预算太紧：全量跑时后台节点会被拖过 1 秒，
+                # 偶发「run did not reach approval」（2026-09-22 排查）。放宽到 6s。
+                for _ in range(600):
                     run = await runtime.get_run_view(run_id)
                     if run["status"] == "waiting_approval":
                         break
@@ -1742,6 +1983,71 @@ async def test_run_view_recomputes_real_plan_and_audit_validation_issues(
         ]
         assert "audit: 镜头动作缺少可执行细节" not in response.text
         assert "任意旧原文绝不能回传" not in response.text
+
+
+async def test_run_view_exposes_every_audit_risk_note(
+    tmp_path: Path,
+):
+    """审查员的建议性风险必须能在审批页看到（用户 2026-09-21 巨型南瓜）。
+
+    审查员早就写了「3 个分镜合并成 8 秒、单镜头时长被压缩、三组事件可能表达
+    不完整」，但它既不叫「技术阻断」也不含「人工处理」，被关键词白名单静默丢掉，
+    用户批准了一份注定出废片的计划。validation_issues 的过滤行为保持不变
+    （另有用例锁定），风险提示改由 approval.audit_issues 全量上浮。
+    """
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime
+        run_id = (
+            await client.post(
+                "/api/runs",
+                json={"source_url": "https://acme.feishu.cn/docx/audit-risk-notes"},
+            )
+        ).json()["run_id"]
+        await _wait_for_status(client, run_id, "waiting_approval")
+        run = await repository.get_run(run_id)
+        assert run is not None
+        state = graph.states[run["thread_id"]]
+        state["audit_report"] = {
+            "issues": [
+                "计划将镜头1、镜头2、镜头3合并为单个8秒视频任务，"
+                "合并后单镜头时长被压缩，可能影响三组事件的完整呈现。",
+                "计划 duration 设为8秒，文档未明确各镜头时长与总时长，"
+                "该时长属推断，需人工确认是否满足三镜头事件的完整表达。",
+            ],
+            "corrections_required": True,
+        }
+
+        view = (await client.get(f"/api/runs/{run_id}")).json()
+
+        assert view["approval"]["audit_issues"] == [
+            "计划将镜头1、镜头2、镜头3合并为单个8秒视频任务，"
+            "合并后单镜头时长被压缩，可能影响三组事件的完整呈现。",
+            "计划 duration 设为8秒，文档未明确各镜头时长与总时长，"
+            "该时长属推断，需人工确认是否满足三镜头事件的完整表达。",
+        ]
+
+
+async def test_run_view_audit_issues_fail_closed_on_bad_state(
+    tmp_path: Path,
+):
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime
+        run_id = (
+            await client.post(
+                "/api/runs",
+                json={"source_url": "https://acme.feishu.cn/docx/audit-bad-state"},
+            )
+        ).json()["run_id"]
+        await _wait_for_status(client, run_id, "waiting_approval")
+        run = await repository.get_run(run_id)
+        assert run is not None
+        state = graph.states[run["thread_id"]]
+        state["audit_report"] = {"issues": "not-a-list"}
+
+        response = await client.get(f"/api/runs/{run_id}")
+
+        assert response.json()["approval"]["audit_issues"] == []
+        assert response.status_code == 200
 
 
 async def test_run_view_validation_rebuild_fails_closed_for_invalid_typed_state(
@@ -2540,6 +2846,75 @@ async def test_unlink_reference_renumbers_survivors_and_prompt(
         assert approval_task["prompt"] == (
             "@图片1 中的锅；碗；@图片2 中的桌面"
         )
+
+
+async def test_deleting_a_storyboard_keyframe_clears_the_frame_over_http(
+    tmp_path: Path,
+) -> None:
+    """HTTP 层复现：删掉分镜关键帧 → 帧的 selected 清空、候选摘掉、参考图不含它。
+
+    用户 2026-09-23：「分镜图我明明已经删掉他了不需要了还是能影响我」。修复前
+    `DELETE .../references/{asset}` 只摘 `reference_images`，帧上的 `selected`
+    还指着它 —— 批准时按服务端帧重算参考图又把它加了回来（见
+    tests/unit/test_reference_assembly.py 的 `_approve` 用例）。
+    """
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime
+        created = await client.post(
+            "/api/runs",
+            json={"source_url": "https://acme.feishu.cn/docx/storyboard-delete"},
+        )
+        run_id = created.json()["run_id"]
+        await _wait_for_status(client, run_id, "waiting_approval")
+        run = await repository.get_run(run_id)
+        assert run is not None
+        state = graph.states[run["thread_id"]]
+        image_path = Path(state["media_assets"][0]["local_path"])
+        # 分镜候选走单独一条通道（不进 media_assets，否则会触发未覆盖门禁）。
+        state["storyboard_assets"] = [
+            _source_asset(image_path, asset_id) for asset_id in ("sb-a", "sb-b")
+        ]
+        state["draft_plan"]["tasks"][0]["storyboard_frames"] = [
+            {
+                "index": 1,
+                "start": 0.0,
+                "end": 5.0,
+                "prompt": "纸船漂向远处",
+                "candidates": ["sb-a", "sb-b"],
+                "selected": "sb-a",
+            }
+        ]
+        state["draft_plan"]["tasks"][0]["reference_images"] = [
+            {"asset_id": "asset-1", "role": "reference_image", "order": 1},
+            {"asset_id": "sb-a", "role": "reference_image", "order": 2},
+        ]
+        state["task_plan"] = copy.deepcopy(state["draft_plan"])
+
+        before = (await client.get(f"/api/runs/{run_id}")).json()
+        frame = before["approval"]["tasks"][0]["storyboard_frames"][0]
+        assert [item["asset_id"] for item in frame["candidates"]] == [
+            "sb-a",
+            "sb-b",
+        ]
+        assert frame["selected"] == "sb-a"
+
+        removed = await client.delete(
+            f"/api/runs/{run_id}/tasks/task-1/references/sb-a"
+        )
+        assert removed.status_code == 200
+
+        after = (await client.get(f"/api/runs/{run_id}")).json()
+        task = after["approval"]["tasks"][0]
+        assert [ref["asset_id"] for ref in task["reference_images"]] == [
+            "asset-1"
+        ]
+        frame = task["storyboard_frames"][0]
+        assert frame["selected"] is None
+        # 候选里也不能留着它 —— 否则「默认第一张」会把它重新选回来。
+        assert [item["asset_id"] for item in frame["candidates"]] == ["sb-b"]
+        # 剩下的候选也不许被默认高亮（高亮 = 前端批准时回传 = 又给这一段补了张
+        # 用户没挑过的关键帧）。
+        assert [item["selected"] for item in frame["candidates"]] == [False]
 
 
 async def test_approval_with_uncovered_asset_returns_422_before_execution(

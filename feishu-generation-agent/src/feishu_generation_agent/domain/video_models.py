@@ -72,7 +72,14 @@ VIDEO_MODELS: tuple[VideoModelCapability, ...] = (
         duration_min=4,
         duration_max=30,
         default_duration=10,
-        resolutions=("480p", "720p"),
+        # 以前这里只写了 480p/720p，而 2.0 反而有 1080p/4k —— 于是 2.5 永远只能
+        # 出 720p，文档要求 1080p 也会被静默压回 720p。方舟官方文档明确 2.5 支持
+        # 1080p（10bit 位深），定价也按 720p / 1080p 分档：
+        #   https://docs.volcengine.com/docs/ark/seedance-2-5（输出视频规格）
+        #   https://docs.volcengine.com/docs/ark/model-pricing
+        # 4k 没有在 2.5 的规格表里出现过（只出现在通用参数说明里），所以**不加** ——
+        # 宁可不给，也不要给一个上游会拒的档位。
+        resolutions=("480p", "720p", "1080p"),
         default_resolution="720p",
         aspect_ratios=(
             "21:9",

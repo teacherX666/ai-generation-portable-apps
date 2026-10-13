@@ -80,6 +80,19 @@
   const takeFindingsList = byId("take-findings-list");
   // 文档名旁边的一键复制（用户 2026-09-18 要求：需求文档名很长，要能直接复制）。
   const copyDocumentTitle = byId("copy-document-title");
+  const copyDocumentTitleFeedback = byId("copy-document-title-feedback");
+  // 底部操作栏的失败提示（用户 2026-09-21：「重新运行点了没反应」——409 的说明
+  // 只写在页面顶部的 #error-message 里，用户在页脚点按钮时根本看不到）。
+  const actionToast = byId("action-toast");
+  const actionToastText = byId("action-toast-text");
+  const actionToastClose = byId("action-toast-close");
+  const adjustArtifactsHint = byId("adjust-artifacts-hint");
+  // 审批页的原地提示词优化（勾选任务 + 一句要求 → AI 只重写这几条提示词）。
+  const promptOptimizeBox = byId("prompt-optimize-box");
+  const promptOptimizeFeedback = byId("prompt-optimize-feedback");
+  const optimizePromptsButton = byId("optimize-prompts-button");
+  const optimizePromptsHint = byId("optimize-prompts-hint");
+  const auditIssuesMore = byId("audit-issues-more");
   const conflictBox = byId("review-conflict");
   const conflictText = byId("review-conflict-text");
   const permissionGuide = byId("permission-guide");
@@ -130,6 +143,8 @@
   const advancedImageProvider = byId("advanced-image-provider");
   // 规划方式（高级设置里手动切）：text = 逐张看图描述后规划；multimodal = 原图/视频一起交给模型。
   const advancedPlanningPipeline = byId("advanced-planning-pipeline");
+  // 分镜候选数 K：用户 2026-09-22「把 K 的选择放在高级设置里供用户选择」。
+  const advancedStoryboardCandidates = byId("advanced-storyboard-candidates");
   const advancedSettingsSave = byId("advanced-settings-save");
   const advancedSettingsFeedback = byId("advanced-settings-feedback");
   const TERMINAL_RUN_STATUSES = new Set([
@@ -180,6 +195,56 @@
     };
   }
 
+  //: 早期持久化的失败记录只有通用占位文案（"The workflow node could not be
+  //: completed"），按错误类别补一句人话。运行详情面板与历史滑条共用这一张表，
+  //: 免得两处对同一条失败给出不同说法。
+  const FAILURE_CATEGORY_FALLBACK = {
+    permission_error: "飞书应用没有权限读取该文档或素材，请检查文档分享与应用权限。",
+    document_error: "文档读取失败，请检查文档内容或格式。",
+    configuration_error: "服务配置缺失，请联系管理员检查飞书应用配置。",
+    transient_error: "服务暂时不可用，请稍后重试。",
+    provider_terminal_error: "生成服务返回错误，无法继续生成。",
+    delivery_error: "结果写入飞书失败。",
+    validation_error: "任务参数校验失败。",
+  };
+  //: 运行时只在节点没跑完时写这句，等于没写；遇到它就继续往下找真实原因。
+  const GENERIC_FAILURE_MESSAGE = "The workflow node could not be completed";
+
+  //: 运行时里「被取消」的几种写法。多维表格任务状态把它们都压成「失败」，
+  //: 所以只从**运行时状态**判断：用户要的是「这次是被取消的」，而不是
+  //: 一句「未记录失败原因」（2026-09-24）。绝不据此编具体错误。
+  const CANCELLED_RUN_STATUSES = new Set(["cancelled", "canceled"]);
+
+  /** 没有具体错误时，按**运行时状态**给一句实话；认不出就说不知道。 */
+  function failureFallbackByStatus(status) {
+    const value = String(status || "").trim().toLowerCase();
+    if (CANCELLED_RUN_STATUSES.has(value)) return "这次被取消了";
+    return "";
+  }
+
+  //: 这些状态下任务正在跑，才值得显示「已完成/总数」。
+  const GENERATING_STATUSES = new Set([
+    "created", "running", "resuming", "waiting_provider", "planning",
+  ]);
+
+  /**
+   * 状态文案 + 任务级进度（用户 2026-09-23：「3 个任务完成 2 个，界面还是只显示
+   * 『生成中』，看不出在动」）。
+   *
+   * 进度由服务端在运行视图的 `progress` 里给出（执行阶段不在 checkpoint 里，
+   * 后端是按 operations + artifacts 现算的）。拿不到就不加后缀。
+   * 极简假 DOM 测试环境没有 addEventListener 之类的能力，这里只读普通对象字段。
+   */
+  function statusLabelWithProgress(view, label) {
+    const progress = view && view.progress;
+    if (!progress || !GENERATING_STATUSES.has(view.status)) return label;
+    const total = Number(progress.total);
+    const completed = Number(progress.completed);
+    if (!Number.isFinite(total) || total <= 1) return label;
+    if (!Number.isFinite(completed) || completed < 0) return label;
+    return `${label} ${Math.min(completed, total)}/${total}`;
+  }
+
   function element(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -206,6 +271,47 @@
     errorMessage.hidden = true;
   }
 
+  //: 用户点按钮失败时的提示：除了顶部那条 #error-message，再在页脚附近浮一条，
+  //: 保证「点下去到底发生了什么」当场可见。只给用户主动触发的动作调用 ——
+  //: 后台轮询失败不能每 5 秒弹一次。
+  let actionToastTimer = null;
+
+  function hideActionToast() {
+    if (actionToastTimer) {
+      globalThis.clearTimeout(actionToastTimer);
+      actionToastTimer = null;
+    }
+    if (actionToast) actionToast.hidden = true;
+  }
+
+  function showActionToast(message, { tone = "error", timeout = 8000 } = {}) {
+    if (!actionToast || !message) return;
+    actionToastText.textContent = String(message);
+    actionToast.classList.toggle("is-success", tone === "success");
+    actionToast.classList.toggle("is-info", tone === "info");
+    actionToast.hidden = false;
+    if (actionToastTimer && typeof globalThis.clearTimeout === "function") {
+      globalThis.clearTimeout(actionToastTimer);
+    }
+    // 极简假 DOM（前端单测的 vm 沙箱）里没有 setTimeout —— 能力探测一下，
+    // 否则任何触发 toast 的新路径都会在测试里炸掉（2026-09-24 重跑改到审批页时踩到）。
+    if (typeof globalThis.setTimeout !== "function") return;
+    actionToastTimer = globalThis.setTimeout(() => {
+      actionToastTimer = null;
+      actionToast.hidden = true;
+    }, timeout);
+  }
+
+  /** 用户主动触发的动作失败：顶部错误条 + 页脚提示条，两边都写。 */
+  function reportActionFailure(error) {
+    showError(error);
+    showActionToast(error instanceof Error ? error.message : String(error));
+  }
+
+  if (actionToastClose) {
+    actionToastClose.addEventListener("click", hideActionToast);
+  }
+
   function agentUrl(path) {
     if (/^(?:https?:|blob:)/i.test(path)) return path;
     return ApiPaths
@@ -218,6 +324,38 @@
     if (artifact.mime_type === "image/jpeg") return ".jpg";
     if (artifact.mime_type === "image/webp") return ".webp";
     return ".png";
+  }
+
+  /**
+   * 成片卡片上的「镜头 2/3 · 第 1/4 条」标注。
+   *
+   * 服务端按分镜顺序返回成片并带上 shot_index / slot_index（见
+   * `GraphRuntime._artifact_shot_meta`）。缺字段（旧 run 的产物）就退回 task_id，
+   * 至少让用户能把卡片和 id 对上，而不是只看到一串哈希。
+   */
+  function artifactShotLabel(artifact) {
+    if (!artifact) return "";
+    const parts = [];
+    const shotIndex = Number(artifact.shot_index);
+    const shotTotal = Number(artifact.shot_total);
+    if (Number.isFinite(shotIndex) && shotIndex > 0) {
+      parts.push(
+        Number.isFinite(shotTotal) && shotTotal > 1
+          ? `镜头 ${shotIndex}/${shotTotal}`
+          : `镜头 ${shotIndex}`,
+      );
+    }
+    const slotIndex = Number(artifact.slot_index);
+    const slotTotal = Number(artifact.slot_total);
+    if (Number.isFinite(slotTotal) && slotTotal > 1 && Number.isFinite(slotIndex)) {
+      parts.push(`第 ${slotIndex}/${slotTotal} 条`);
+    }
+    const title = typeof artifact.task_title === "string"
+      ? artifact.task_title.trim()
+      : "";
+    if (title) parts.push(title);
+    if (!parts.length && artifact.task_id) parts.push(String(artifact.task_id));
+    return parts.join(" · ");
   }
 
   async function downloadArtifact(artifact, button) {
@@ -436,6 +574,13 @@
         ? "multimodal"
         : "text";
     }
+    if (advancedStoryboardCandidates) {
+      const raw = preferences.storyboard_candidates;
+      const count = Number.isFinite(Number(raw)) ? Number(raw) : 0;
+      advancedStoryboardCandidates.value = String(
+        Math.max(0, Math.min(4, Math.trunc(count))),
+      );
+    }
     advancedSettingsFeedback.textContent = "";
     advancedSettingsFeedback.className = "planner-prompt-feedback";
   }
@@ -477,6 +622,9 @@
           planning_pipeline: advancedPlanningPipeline
             ? advancedPlanningPipeline.value
             : "text",
+          storyboard_candidates: advancedStoryboardCandidates
+            ? Number(advancedStoryboardCandidates.value)
+            : 0,
         }),
       });
       state.providerPreferences = payload;
@@ -798,6 +946,13 @@
       : "";
     currentRunSwitcher.disabled = state.busy || runs.length === 0;
 
+    // 一条记录一行，但**只要这条记录上还有进行中的版本**，删除就必须收起来
+    // —— 删除是按记录归档的，删掉会把在跑/在等人的那条一起带走。
+    const busyRecords = new Set(
+      runs
+        .filter((run) => run.active || RUN_BUSY_STATUSES.has(run.status))
+        .map((run) => run.record_id || `run:${run.run_id}`),
+    );
     const nodes = rows.map((run) => {
       const selected = run.run_id === state.runId;
       const row = element("article", `recent-run${selected ? " is-current" : ""}`);
@@ -815,7 +970,13 @@
             + (produced ? ` · 已成片 ${produced} 条` : ""),
         ),
       );
-      row.append(details, runActionsFor(run, { selected }));
+      row.append(
+        details,
+        runActionsFor(run, {
+          selected,
+          recordBusy: busyRecords.has(run.record_id || `run:${run.run_id}`),
+        }),
+      );
       return row;
     });
     if (!nodes.length) nodes.push(element("p", "bitable-empty", "暂无任务记录。"));
@@ -824,7 +985,7 @@
 
 
   /** 一条运行的按钮组（任务记录里只留「查看 / 删除」；重跑在成片与结果页）。 */
-  function runActionsFor(run, { selected = false } = {}) {
+  function runActionsFor(run, { selected = false, recordBusy = false } = {}) {
     const actions = element("div", "recent-run-actions");
     const view = element(
       "button",
@@ -842,7 +1003,7 @@
       link.rel = "noreferrer";
       actions.append(link);
     }
-    if (canDeleteRun(run)) {
+    if (canDeleteRun(run) && !recordBusy) {
       const remove = element("button", "danger", "删除");
       remove.type = "button";
       remove.disabled = state.busy;
@@ -875,8 +1036,11 @@
       ]);
       const merged = [];
       const seen = new Set();
+      // 「进行中」不能只看接口的 active：recent-runs 里也会有「生成中」的行
+      // （见 RUN_BUSY_STATUSES 的注释），漏判会让整条记录退回到上一版。
+      const busy = (run) => Boolean(run?.active) || RUN_BUSY_STATUSES.has(run?.status);
       [...(activeRuns || []).slice().reverse().map((run) => ({ ...run, active: true })),
-        ...(recentRuns || []).map((run) => ({ ...run, active: false }))]
+        ...(recentRuns || []).map((run) => ({ ...run, active: busy(run) }))]
         .forEach((run) => {
           if (!run?.run_id || seen.has(run.run_id)) return;
           seen.add(run.run_id);
@@ -911,6 +1075,22 @@
     "resuming",
     "waiting_provider",
     "delivering",
+  ]);
+  //: 记录上还压着这些状态的任务时：
+  //:   ① 任务记录那一行必须指向**它**，不能退回到上一版已完成的行；
+  //:   ② 这条记录不能给「删除」—— 删掉会把正在跑 / 正在等人的任务一起归档。
+  //:
+  //: 用户 2026-09-22：「不能跳到正在生成的任务里」「只要有正在进行的任务，
+  //: 删除键就不应该在」。根因：两个接口都**不下发 active 字段**（recent-runs 的
+  //: SQL 本身就只取 active=0），所以「生成中」的那条在 recent-runs 里是 active=null。
+  //: latestRunsByRecord 的「有成片的优先」于是把上一版已完成的行选成了代表 ——
+  //: 下拉跳不到在跑的那条，而那一行是已完成状态，删除键照样出现。
+  const RUN_BUSY_STATUSES = new Set([
+    ...SELF_PROGRESSING_RUN_STATUSES,
+    // 停在等人操作上，但这条记录仍被占着（active=1），同样不能删。
+    "待处理",
+    "待审批",
+    "待确认成片",
   ]);
   const RUN_WATCH_INTERVAL_MS = 5000;
   //: 空闲时的心跳：全都在等人操作也**慢速**对一次。
@@ -1061,13 +1241,25 @@
     const nodes = pageRuns.map((run) => {
       const row = element("article", "trash-item");
       const details = element("div", "");
+      // 自动归档（任务记录只保留最近 10 条，更早的由系统移进回收站）**不是**用户
+      // 自己删的：时间戳只能说「最后更新」——写「删除时间」会让用户以为是自己误删。
+      const autoArchived = Boolean(run.auto_archived);
       const metadata = [`状态：${archivedStatusLabel(run)}`];
       const updatedAt = formatArchivedTime(run.updated_at);
-      if (updatedAt) metadata.push(`删除时间：${updatedAt}`);
+      if (updatedAt) {
+        metadata.push(`${autoArchived ? "最后更新" : "删除时间"}：${updatedAt}`);
+      }
       details.append(
         element("strong", "", run.display_text || run.run_id),
         element("p", "bitable-task-meta", metadata.join(" · ")),
       );
+      if (autoArchived) {
+        details.append(element(
+          "p",
+          "trash-auto-note",
+          "自动归档：任务记录只保留最近 10 条，更早的移到这里（可恢复）",
+        ));
+      }
       const actions = element("div", "trash-item-actions");
       const restore = element("button", "secondary", "恢复");
       restore.type = "button";
@@ -1305,7 +1497,6 @@
     const canAdjustArtifacts = Boolean(
       canReviewArtifacts
       && state.artifactRetryTaskIds.size > 0
-      && artifactReviewFeedback.value.trim()
     );
     const status = state.view?.status;
     const statusInfo = statusUi(status);
@@ -1326,7 +1517,57 @@
     retryFailedAssetsButton.hidden = !canReview || retryableAssetIssues.length === 0;
     confirmArtifactsButton.disabled = state.busy || !canReviewArtifacts;
     adjustArtifactsButton.disabled = state.busy || rerunRequesting || !canAdjustArtifacts;
+    // 「重跑选中任务」的置灰原因必须写出来（用户 2026-09-21：「又点不动了」）。
+    // 前置条件只有一个：勾选至少一条成片。**返工要求可以不填** —— 不填就是
+    // 「提示词原样保留、进审批页重新审核」（用户 2026-09-24 的口径），不是错误。
+    const adjustBlockedReason = !canReviewArtifacts
+      ? ""
+      : state.busy || rerunRequesting
+        ? "正在处理中，请稍候…"
+        : state.artifactRetryTaskIds.size === 0
+          ? "请先在上方成片卡片里勾选「选择此条重跑」"
+          : "";
+    if (adjustArtifactsHint) {
+      adjustArtifactsHint.textContent = adjustBlockedReason;
+      adjustArtifactsHint.hidden = !adjustBlockedReason;
+    }
+    adjustArtifactsButton.title = adjustBlockedReason
+      || "把勾选的成片退回重跑：填了返工要求会先融合改写提示词，然后停在审批页等你确认";
     artifactReviewFeedback.disabled = state.busy || !canReviewArtifacts;
+    // 审批页的原地提示词优化：勾选任务 + 填要求两个前置条件，缺哪个都说出来
+    //（和「重跑选中任务」同一套口径 —— 灰按钮不写原因用户只会说「点不动」）。
+    const selectedForOptimize = ReviewState.selectedTaskIds(state.review);
+    const canOptimizePrompts = Boolean(
+      canReview
+      && selectedForOptimize.length > 0
+      && promptOptimizeFeedback.value.trim()
+      && !state.busy
+      && !rerunRequesting
+    );
+    if (promptOptimizeBox) {
+      promptOptimizeBox.hidden = !canReview;
+    }
+    if (optimizePromptsButton) {
+      optimizePromptsButton.disabled = !canOptimizePrompts;
+      const optimizeBlockedReason = !canReview
+        ? ""
+        : state.busy || rerunRequesting
+          ? "正在处理中，请稍候…"
+          : selectedForOptimize.length === 0
+            ? "请先在上方任务列表里勾选要优化的任务"
+            : !promptOptimizeFeedback.value.trim()
+              ? "请填写优化要求"
+              : "";
+      optimizePromptsButton.title = optimizeBlockedReason
+        || "用 AI 按你的要求重写所选任务的提示词（不重新规划）";
+      if (optimizePromptsHint) {
+        optimizePromptsHint.textContent = optimizeBlockedReason;
+        optimizePromptsHint.hidden = !optimizeBlockedReason;
+      }
+    }
+    if (promptOptimizeFeedback) {
+      promptOptimizeFeedback.disabled = state.busy || !canReview;
+    }
     const terminal = TERMINAL_RUN_STATUSES.has(state.view?.status);
     rerunButton.disabled = state.busy || rerunRequesting
       || state.runMode !== "bitable"
@@ -1621,9 +1862,27 @@
         selection.addRange(range);
       }
     }
-    copyDocumentTitle.textContent = ok ? "已复制 ✓" : "已选中，Ctrl+C";
+    // 图标按钮不能改 textContent（会抹掉 SVG），反馈走 class + title/aria-label，
+    // 外加旁边一条文字回执 —— 只变色用户会以为「点了没反应」。
+    const feedback = ok ? "已复制" : "已选中，按 Ctrl+C 复制";
+    copyDocumentTitle.title = feedback;
+    copyDocumentTitle.setAttribute("aria-label", feedback);
+    copyDocumentTitle.classList.toggle("is-copied", ok);
+    copyDocumentTitle.classList.toggle("is-fallback", !ok);
+    if (copyDocumentTitleFeedback) {
+      copyDocumentTitleFeedback.textContent = feedback;
+      copyDocumentTitleFeedback.classList.toggle("is-fallback", !ok);
+    }
     globalThis.setTimeout(() => {
-      if (copyDocumentTitle) copyDocumentTitle.textContent = "复制文档名";
+      if (copyDocumentTitle) {
+        copyDocumentTitle.title = "复制文档名";
+        copyDocumentTitle.setAttribute("aria-label", "复制文档名");
+        copyDocumentTitle.classList.remove("is-copied", "is-fallback");
+      }
+      if (copyDocumentTitleFeedback) {
+        copyDocumentTitleFeedback.textContent = "";
+        copyDocumentTitleFeedback.classList.remove("is-fallback", "is-error");
+      }
     }, 1800);
   }
 
@@ -1786,6 +2045,109 @@
     return wrapper;
   }
 
+  /**
+   * 图片放大预览：任意图片**双击**即全屏看细节。
+   *
+   * 用户 2026-09-23：「参考图无法看到放大预览，没办法确认细节」—— 分镜候选图只有
+   * 6.5rem 见方，看不出水印/细节。这里用**事件委托**挂在 document 上，所以分镜候选、
+   * 文档参考图、成片缩略图全部自动覆盖，不用逐个渲染点去接。
+   */
+  function openImageLightbox(url) {
+    const overlay = byId("image-lightbox");
+    const image = byId("image-lightbox-img");
+    if (!overlay || !image || !url) return;
+    image.src = url;
+    overlay.hidden = false;
+  }
+
+  function closeImageLightbox() {
+    const overlay = byId("image-lightbox");
+    const image = byId("image-lightbox-img");
+    if (!overlay || overlay.hidden) return;
+    overlay.hidden = true;
+    if (image) image.removeAttribute("src");
+  }
+
+  // 前端测试用的是极简假 DOM（没有 addEventListener / closest），所以这里全部做能力
+  // 探测 —— 挂不上就没有放大预览，绝不能因此让整个 app.js 抛异常（CLAUDE.local.md
+  // 记过同类坑：假 DOM 缺实现导致一批用例一起挂）。
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("dblclick", (event) => {
+      const target = event && event.target;
+      const image = target && typeof target.closest === "function"
+        ? target.closest("img")
+        : null;
+      if (image && image.src) openImageLightbox(image.src);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeImageLightbox();
+    });
+  }
+  const lightboxOverlay = byId("image-lightbox");
+  if (lightboxOverlay && typeof lightboxOverlay.addEventListener === "function") {
+    lightboxOverlay.addEventListener("click", closeImageLightbox);
+  }
+
+  /**
+   * ① 参考素材的**单击**预览入口（用户 2026-10-10：「新增参考素材也能点击预览的功能」）。
+   *
+   * 页面里原本只有「任意 <img> 双击放大」的事件委托 —— 用户不知道要双击，等于没有入口。
+   * 这里给缩略图补上明确的单击入口，**复用同一个 lightbox**（不另造一套）：
+   *   - `attachSingleClickPreview(node, url)`：把单击挂到缩略图**本身**。只用在
+   *     「缩略图本身没有任何点击语义」的地方 —— 参考素材行（那行的操作是替换/删除/
+   *     改序号，都在旁边的按钮上）、排除素材与未使用素材行、成片卡片。
+   *   - `previewButton(url, label)`：返回一个独立的「预览」小按钮。用在**点缩略图
+   *     已经有别的含义**的地方 —— 分镜候选的缩略图点一下是「选中这张关键帧」，
+   *     所以那里叠加一个不抢事件的按钮，而不是改缩略图的单击语义。
+   *
+   * 能力探测：前端测试跑在极简假 DOM 上（没有 addEventListener / closest），挂不上就
+   * 静默跳过，绝不能让整个 app.js 抛异常（CLAUDE.local.md 记过同类坑）。
+   */
+  function attachSingleClickPreview(node, url) {
+    if (!node || !url || typeof node.addEventListener !== "function") return node;
+    if (node.classList && typeof node.classList.add === "function") {
+      node.classList.add("previewable");
+    }
+    if (typeof node.setAttribute === "function") {
+      node.setAttribute("role", "button");
+      node.setAttribute("tabindex", "0");
+      node.setAttribute("aria-label", `${node.alt || "图片"}（单击放大预览）`);
+    }
+    if (!node.title) node.title = "单击放大预览（Esc 或点空白处关闭）";
+    node.addEventListener("click", (event) => {
+      // 缩略图可能落在 label/可拖拽容器里：不让单击顺带触发别的语义。
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      openImageLightbox(url);
+    });
+    node.addEventListener("keydown", (event) => {
+      if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      openImageLightbox(url);
+    });
+    return node;
+  }
+
+  function previewButton(url, label) {
+    const button = element("button", "preview-button", "预览");
+    button.type = "button";
+    button.title = "单击放大预览（Esc 或点空白处关闭）";
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("aria-label", `预览${label || ""}大图`);
+    }
+    if (url && typeof button.addEventListener === "function") {
+      button.addEventListener("click", (event) => {
+        // 分镜候选的外层就是「点一下 = 选中这张」的按钮：务必别冒泡过去。
+        if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        openImageLightbox(url);
+      });
+    } else {
+      button.disabled = true;
+    }
+    return button;
+  }
+
   function updateTask(taskId, patch) {
     try {
       state.review = ReviewState.patchTask(state.review, taskId, patch);
@@ -1861,10 +2223,14 @@
       state.review = ReviewState.setReferenceMode(state.review, taskId, referenceMode);
       state.view = ReviewState.draftView(state.review);
       updateActionAvailability();
-      render();
+      // render(view) 的第一个参数是必须的：内部直接读 view.status，
+      // 无参调用会抛 "Cannot read properties of undefined (reading 'status')"，
+      // 一旦触发，同一事件处理器后续逻辑全部中断（表现之一是参考素材拖拽失效）。
+      // 本文件其它 4 处调用都显式传了 state.view，这里此前漏了。2026-09-29 修。
+      if (state.view) render(state.view, { refreshTasks: true });
     } catch (error) {
       showError(error);
-      render();
+      if (state.view) render(state.view, { refreshTasks: true });
     }
   }
 
@@ -1963,7 +2329,7 @@
     }
   }
 
-  function referenceRow(task, reference) {
+  function referenceRow(task, reference, labels) {
     const asset = assetFor(reference.asset_id);
     const description = descriptionFor(reference.asset_id);
     const row = element("div", "reference-row");
@@ -1985,6 +2351,11 @@
       image.preload = "metadata";
     }
     if (asset?.preview_url) image.src = agentUrl(asset.preview_url);
+    // ① 参考素材缩略图**单击即预览**（用户 2026-10-10）。只挂图片：视频/音频元素本身
+    // 有播放控件，单击是播控语义，抢过来会破坏原有交互。
+    if (!isVideo && !isAudio && asset?.preview_url) {
+      attachSingleClickPreview(image, agentUrl(asset.preview_url));
+    }
 
     const descriptionText = description
       ? [description.subjects?.join("、"), description.scene, description.probable_role]
@@ -1996,20 +2367,36 @@
     const role = element(
       "div",
       "reference-role",
-      reference.role === "first_frame"
-        ? "首帧"
-        : reference.role === "last_frame"
-          ? "尾帧"
-          : isVideo ? "参考视频" : isAudio ? "参考音频" : "普通参考图",
+      // 2026-09-30（用户）：「前端图片、视频这种类型不同的素材，可以分别 123 的顺序来，
+      // 图片1 和 视频1 自然区分开了」。这里显示的就是**提示词里会用的号**（`@图片1` /
+      // `@视频1`），而不是全局提交序号、也不再是「参考视频」这种没有号的说法。
+      labels?.get(reference.asset_id)
+        || (reference.role === "first_frame"
+          ? "首帧"
+          : reference.role === "last_frame"
+            ? "尾帧"
+            : isVideo ? "参考视频" : isAudio ? "参考音频" : "普通参考图"),
     );
 
     const order = document.createElement("input");
     order.type = "number";
     order.min = "1";
-    order.value = reference.order;
-    order.setAttribute("aria-label", "图片顺序");
+    //: 这个框里填的是**该类型内的序号**（图片1 的 1、视频1 的 1），不再是全局 order。
+    //: 改号只在**同类型内部**重排，全局 order 会被自动重编成 1..N 连续 —— 后端要求
+    //: 连续（`integrations/seedance.py` 的 order_mismatch 校验），按类型填号会撞车。
+    order.value = ReviewState.referenceTypeIndex(
+      task.reference_images,
+      reference.asset_id,
+    ) || 1;
+    order.setAttribute("aria-label", "同类型内的顺序");
+    order.title = "同类型内的顺序（决定提示词里的 @图片N / @视频N）";
     order.addEventListener("input", () => {
-      updateReference(task.task_id, reference.asset_id, { order: Number(order.value) });
+      const next = ReviewState.reorderReferenceType(
+        task.reference_images,
+        reference.asset_id,
+        Number(order.value),
+      );
+      updateTask(task.task_id, { reference_images: next });
     });
 
     const actions = element("div", "reference-actions");
@@ -2145,6 +2532,11 @@
     const heading = element("div", "panel-heading");
     heading.append(element("h3", "", "参考素材"));
     const referenceMode = task.reference_mode || "multi_reference";
+    // 2026-09-29：参考素材的增删改**只能在「等待审批」阶段**做。其它阶段后端一律 409
+    // （实测 `only waiting_approval`：`_persist_draft` 会把运行推回审批中断、状态改回
+    // waiting_approval，在"审核成片"的阶段根本落不了地）。所以这里把编辑控件收起来、
+    // 只留只读展示 + 一句"怎么办" —— 否则用户看到能点、一点就报错。
+    const referenceEditable = !state.view || state.view.status === "waiting_approval";
     const mode = document.createElement("select");
     mode.setAttribute("aria-label", "参考模式");
     [
@@ -2162,10 +2554,32 @@
     save.type = "button";
     save.addEventListener("click", () => patchReferences(task));
     heading.append(save);
+    if (!referenceEditable) {
+      mode.disabled = true;
+      save.disabled = true;
+      mode.title = "参考素材只能在审批页修改";
+      save.title = "参考素材只能在审批页修改";
+    }
+    if (referenceMode === "multi_reference") {
+      // 明确的落点提示（用户 2026-09-29：拖了半天不知道往哪拖）——放在节的标题行，
+      // 不用滚到底部那一行才看得到。
+      heading.append(element("span", "reference-drag-hint", "可把文件直接拖进本节"));
+    }
     const list = element("div", "reference-list");
+    //: 编号按**类型**各从 1 起（与提示词里的 @图片N/@视频N 一致），算一次给整列复用。
+    const referenceLabels = ReviewState.referenceLabels(task.reference_images);
     [...task.reference_images]
       .sort((a, b) => a.order - b.order)
-      .forEach((reference) => list.append(referenceRow(task, reference)));
+      .forEach((reference) => {
+        const row = referenceRow(task, reference, referenceLabels);
+        if (!referenceEditable) {
+          // 非审批阶段：行内的「替换 / 删除」点了只会 409 —— 直接收起来，只读展示。
+          row.querySelectorAll(
+            ".reference-delete-button, .reference-replace-label, input[type='file']",
+          ).forEach((node) => node.remove());
+        }
+        list.append(row);
+      });
 
     const modeHint = element(
       "p",
@@ -2185,7 +2599,15 @@
     );
     mutationFeedback.setAttribute("aria-live", "polite");
     section.append(heading, modeHint, list, mutationFeedback);
-    if (referenceMode === "multi_reference") {
+    if (!referenceEditable) {
+      section.append(element(
+        "p",
+        "mode-message reference-readonly-note",
+        "参考素材只能在审批页增删：先点下方「退回修改计划」回到审批页，"
+          + "加好或换好素材后再「批准并开始生成」。",
+      ));
+    }
+    if (referenceEditable && referenceMode === "multi_reference") {
       const upload = element("div", "upload-row");
       const fileInput = document.createElement("input");
       fileInput.type = "file";
@@ -2194,7 +2616,7 @@
       const uploadFeedback = element(
         "p",
         `upload-feedback${feedback ? ` is-${feedback.phase}` : ""}`,
-        feedback?.message || "请选择图片、视频或音频后再上传。",
+        feedback?.message || "请选择图片、视频或音频后再上传（也可以把文件直接拖到本节任意位置）。",
       );
       uploadFeedback.setAttribute("aria-live", "polite");
       const order = document.createElement("input");
@@ -2217,7 +2639,8 @@
           task.task_id,
         ).message;
       });
-      add.addEventListener("click", async () => {
+      // 「增添素材」按钮与**拖入即上传**共用这一段（见下面的 drop 处理器）。
+      const submitPendingReference = async () => {
         const file = ReferenceUploadState.pendingFile(state.referenceUploads, task.task_id);
         if (!file) {
           const message = "请先选择图片、视频或音频文件";
@@ -2251,8 +2674,109 @@
             errorMessage.textContent || "图片添加失败，请重试",
           );
         render(ReviewState.draftView(state.review));
-      });
+      };
+      add.addEventListener("click", submitPendingReference);
       upload.append(fileInput, order, add, uploadFeedback);
+      // 拖文件到「参考素材」这一**节** = 等价于「选择文件」（用户 2026-09-29）。
+      //
+      // 为什么挂在整节上而不是那一行：2026-09-29 用户报「拖动上传还是不行」，实测
+      // （真实页面 + elementFromPoint 命中测试）那一行只有 76px 高、位于页面 y≈5100，
+      // 而**节内任意位置都是有效落点**（命中路径 INPUT < DIV.upload-row <
+      // SECTION.reference-section）。用户的直觉落点是"素材列表/这一节"，拖到缩略图或
+      // 标题上旧实现毫无反应 —— 看起来就是"拖不了"。挂到整节，哪里都能接。
+      //
+      // 只把文件填进选择器并触发 change，**不**直接上传 —— 仍然要点「增添素材」
+      // （方案 A：避免拖错一个文件就消耗一次上传）。
+      //
+      // 另外两个细节也是实测踩出来的：
+      //  1) 指针从节内移到**子元素**上时，浏览器会补一对 dragleave/dragenter ——
+      //     直接按 dragleave 取消高亮会闪，用户以为"没反应"。用进入计数判断真离开。
+      //  2) 拖入的内容里没有文件（从别的网页拖图片、拖文字）时**必须说话**，
+      //     静默 return 会让用户完全不知道发生了什么。
+      let dragDepth = 0;
+      const setDragging = (on) => {
+        section.classList.toggle("isDragging", on);
+        upload.classList.toggle("isDragging", on);
+      };
+      const dropFeedback = (phase, message) => {
+        state.referenceUploads = phase === "error"
+          ? ReferenceUploadState.uploadFailed(state.referenceUploads, task.task_id, message)
+          : ReferenceUploadState.uploadStarted(state.referenceUploads, task.task_id);
+        uploadFeedback.className = `upload-feedback is-${phase}`;
+        uploadFeedback.textContent = message;
+      };
+      const defaultHint = "请选择图片、视频或音频后再上传（也可以把文件直接拖到本节任意位置）。";
+      // 拖动过程中**实时**给反馈：这是"事件到底有没有到这一页"的唯一肉眼判据。
+      // 浏览器安全限制不允许在 drop 之前读文件名，但 `types` 里有没有 "Files" 可读 ——
+      // 用户 2026-09-29 反复报"拖不了"，有这一行就能一眼分辨是"没收到"还是"收到了但没处理"。
+      const restoreFeedback = () => {
+        const current = ReferenceUploadState.feedback(state.referenceUploads, task.task_id);
+        uploadFeedback.className = `upload-feedback${current ? ` is-${current.phase}` : ""}`;
+        uploadFeedback.textContent = current?.message || defaultHint;
+      };
+      section.addEventListener("dragenter", () => {
+        dragDepth += 1;
+        setDragging(true);
+      });
+      section.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        setDragging(true);
+        const hasFiles = Array.from(event.dataTransfer?.types || []).includes("Files");
+        uploadFeedback.className = hasFiles ? "upload-feedback is-selected" : "upload-feedback is-error";
+        uploadFeedback.textContent = hasFiles
+          ? "松开鼠标即可添加（已检测到文件）"
+          : "拖入的不是文件：请拖图片/视频/音频文件（文件夹、网页里的图片都不行）";
+      });
+      section.addEventListener("dragleave", () => {
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) {
+          setDragging(false);
+          restoreFeedback();
+        }
+      });
+      section.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        dragDepth = 0;
+        setDragging(false);
+        const dropped = ReferenceUploadState.droppedFile(event.dataTransfer);
+        if (!dropped) {
+          dropFeedback("error", "拖入的内容里没有文件，请从资源管理器拖图片/视频/音频");
+          return;
+        }
+        // 文件夹 / 压缩包 / 未知类型：`type` 是空串。**必须在这里拦住并说清楚** ——
+        // 塞给 `input.files` 会静默失败，change 里读到空就直接 return，界面上一点反馈
+        // 都没有（用户 2026-09-29：「拖到未选择文件那一栏没反应」就是这个）。
+        if (!ReferenceUploadState.accepts(dropped)) {
+          const name = dropped.name || "未知内容";
+          dropFeedback(
+            "error",
+            dropped.type
+              ? `不支持的类型（${dropped.type}）：请拖图片、视频或音频文件`
+              : `「${name}」是文件夹或没有类型，请拖单个图片/视频/音频文件`,
+          );
+          return;
+        }
+        // 直接写进应用状态，**不依赖** `input.files` 赋值（那条路会静默失败）。
+        state.referenceUploads = ReferenceUploadState.fileSelected(
+          state.referenceUploads,
+          task.task_id,
+          dropped,
+        );
+        // 顺便同步到可见的文件框；失败也不影响（状态里已经有了）。
+        try {
+          const transfer = new DataTransfer();
+          transfer.items.add(dropped);
+          fileInput.files = transfer.files;
+        } catch (error) {
+          /* 忽略：可见性同步失败不影响上传 */
+        }
+        // **拖入即上传**（2026-09-29）。原来是方案 A：拖入只填进选择器，还要再点一次
+        // 「增添素材」——用户那边的表现就是"拖了没反应"。访问日志证实了这个判断：经
+        // Portal 的 29 次参考素材上传里 28 次是 201（全部来自点按钮那条路），而他报告
+        // "传不了" 的那几次**根本没发出 POST**，也就是那一步点击没发生。
+        // 参考素材上传不花钱（只落盘 + 重进审批草稿），所以省掉这一步、拖完就进去。
+        await submitPendingReference();
+      });
       section.append(upload);
     }
     return section;
@@ -2295,6 +2819,10 @@
       if (item.preview_url && item.media_kind !== "file") {
         preview.src = agentUrl(item.preview_url);
       }
+      // ① 排除素材的缩略图同样单击预览（这一行的操作是「排除」，在按钮上，不冲突）。
+      if (item.media_kind === "image" && item.preview_url) {
+        attachSingleClickPreview(preview, agentUrl(item.preview_url));
+      }
       const content = element("div", "excluded-asset-copy");
       content.append(
         element("strong", "", item.asset_id),
@@ -2321,6 +2849,10 @@
         element("p", "", "计划没有用到它：排除掉才能批准；要用就把它加进某个任务的参考图。"),
         exclude,
       );
+      // ⚠️ 刻意**不**给这一行加缩略图：这一列用的是单列模板
+      // （`.excluded-asset-list--uncovered`，2026-10-08 修「逐字换行 + 右侧空白」时
+      // 定下来的），挂上预览元素就必须改回两列模板 —— 那等于回退那次排版修复。
+      // 用户口径是「凡是有缩略图的地方」：这一行本来就没有缩略图。
       row.append(content);
       return row;
     });
@@ -2511,10 +3043,13 @@
 
       const audio = document.createElement("select");
       audio.className = "task-control";
+      // 声音默认开启：未填写（旧计划里是 null）与 true 都显示「开启」，
+      // 跟提交时 `generate_audio is not False` 的判定保持一致，避免界面骗人。
+      const audioEnabled = task.generate_audio !== false;
       [["true", "开启"], ["false", "关闭"]].forEach(([value, label]) => {
         const option = element("option", "", label);
         option.value = value;
-        option.selected = String(Boolean(task.generate_audio)) === value;
+        option.selected = String(audioEnabled) === value;
         audio.append(option);
       });
       audio.addEventListener("change", () => {
@@ -2544,7 +3079,7 @@
           outputCountInput(task),
           `1-${capabilities.max_output_count} 条候选`,
         ),
-        videoField("声音", audio, "按需求开启"),
+        videoField("声音", audio, "默认开启，可手动关闭"),
       );
 
       const resolutionText = capabilities.resolutions.map(resolutionLabel).join(" / ");
@@ -2563,22 +3098,339 @@
     (task.assumptions || []).forEach((text) => notes.append(element("span", "note", `假设：${text}`)));
     (task.warnings || []).forEach((text) => notes.append(element("span", "note", `警告：${text}`)));
     (task.blocking_issues || []).forEach((text) => notes.append(element("span", "note blocking", `阻塞：${text}`)));
-    card.append(titleRow, grid, notes, referenceSection(task));
+    card.append(titleRow, grid, storyboardSection(task), notes, referenceSection(task));
     return card;
+  }
+
+  /**
+   * 选中某个时间段的关键帧候选。
+   *
+   * **不走 updateTask**：`updateTask` 会把补丁直接盖进本地草稿，而选图只需要回传
+   * `selected`；用 `{index, selected}` 覆盖草稿里的 `storyboard_frames` 会把
+   * start/end/prompt/candidates 全弄丢 —— 批准时 StoryboardFrame 缺字段，报
+   * 「Field required；Field required…」（2026-09-22 实跑踩到，2 帧 × 2 字段）。
+   * 这里改成：本地只改高亮（乐观），服务端按 index 合并候选，随后 poll 拉回权威视图。
+   */
+  function selectStoryboardCandidate(task, frame, assetId) {
+    frame.candidates.forEach((item) => {
+      item.selected = item.asset_id === assetId;
+    });
+    const frames = task.storyboard_frames || [];
+    const patch = {
+      storyboard_frames: frames.map((item) => ({
+        index: item.index,
+        start: item.start,
+        end: item.end,
+        prompt: item.prompt || "",
+        // 其它段原样回传**当前高亮的那张**；一张都没高亮就回传 null。
+        // 以前这里兜底成 `candidates[0]`：用户删掉过某段的关键帧（那一段不再高亮
+        // 任何候选）之后，随便在别的段点一下，就会把删掉的那一段又补上一张
+        // 他没挑过的关键帧 —— 还是「删了等于没删」。
+        selected: item.index === frame.index
+          ? assetId
+          : (item.candidates.find((one) => one.selected)?.asset_id || null),
+      })),
+    };
+    api(`/api/runs/${state.runId}/tasks/${encodeURIComponent(task.task_id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch }),
+    }).then(() => poll(false)).catch((error) => reportActionFailure(error));
+  }
+
+  /**
+   * 分镜关键帧选图区（用户 2026-09-22：先生成分镜图供用户选择，再生成视频）。
+   *
+   * 每个时间段一行、横排 K 张候选；点一张即选中（默认第一张）。选中结果通过
+   * 热修改 PATCH 回服务端，服务端会把它变成任务的参考图 + 提示词里的关键帧点名。
+   */
+  function storyboardSection(task) {
+    // 候选被删光的段**也要保留一行**：用户在「参考素材」里删掉该段唯一的关键帧后，
+    // 服务端会把这一段的候选清空（`unlink_reference`）；如果这里按「候选非空」过滤，
+    // 整行（连「重新生成这一张」）会一起消失，用户就再也点不到了。
+    const frames = Array.isArray(task.storyboard_frames)
+      ? task.storyboard_frames.filter((frame) => Array.isArray(frame?.candidates))
+      : [];
+    if (!frames.length) return null;
+    const section = element("section", "storyboard-section");
+    section.append(
+      element(
+        "p",
+        "storyboard-hint",
+        "分镜关键帧：每个时间段挑一张（默认第一张）。选中的图会作为关键帧参考一起提交，"
+          + "画面会严格对齐它 —— 比只给文字稳定得多。",
+      ),
+    );
+    frames.forEach((frame) => {
+      const row = element("div", "storyboard-row");
+      // 没有候选就**不highlight任何一张**（以前会兜底高亮第一张，删空的段会显示成
+      // 「选了第一张」，与「这一段没有关键帧」矛盾）。
+      const selectedId = frame.candidates.find((item) => item.selected)?.asset_id
+        || null;
+      row.append(
+        element(
+          "span",
+          "storyboard-when",
+          `第 ${frame.index} 段 · ${frame.start}-${frame.end}s`,
+        ),
+      );
+      const strip = element("div", "storyboard-strip");
+      frame.candidates.forEach((candidate) => {
+        const choice = document.createElement("button");
+        choice.type = "button";
+        choice.className = candidate.asset_id === selectedId
+          ? "storyboard-candidate is-selected"
+          : "storyboard-candidate";
+        choice.title = `选这张作为第 ${frame.index} 段的关键帧`;
+        choice.addEventListener("click", () => {
+          selectStoryboardCandidate(task, frame, candidate.asset_id);
+        });
+        const image = document.createElement("img");
+        image.loading = "lazy";
+        image.alt = `第 ${frame.index} 段候选`;
+        image.src = agentUrl(candidate.preview_url);
+        choice.append(image);
+        // ① 分镜候选的缩略图**单击已经有语义了**（= 选这张关键帧），所以这里不抢它的
+        // 单击，而是并排给一个独立的「预览」小按钮（放在按钮外层，避免 button 套
+        // button 的非法结构）。用户要的是「有明确的点击预览入口」，语义冲突的地方
+        // 用独立入口才不破坏原有交互。
+        const cell = element("div", "storyboard-candidate-cell");
+        cell.append(
+          choice,
+          previewButton(
+            candidate.preview_url ? agentUrl(candidate.preview_url) : "",
+            `第 ${frame.index} 段候选`,
+          ),
+        );
+        strip.append(cell);
+      });
+      if (!frame.candidates.length) {
+        strip.append(
+          element(
+            "span",
+            "storyboard-empty",
+            "本段关键帧已删除，不会再作为参考图提交；需要的话重新生成这一张。",
+          ),
+        );
+      }
+      row.append(strip);
+      // 每段行尾一个「重新生成这一张」：同一段描述、同一参考图重新采样 K 张，
+      // 不重新规划、不改提示词、不动其它段（用户 2026-09-22 选的方案 A）。
+      const regenerate = document.createElement("button");
+      regenerate.type = "button";
+      regenerate.className = "storyboard-regenerate secondary";
+      regenerate.textContent = "重新生成这一张";
+      regenerate.title = "同一段描述重新出图，只替换这一段的候选";
+      regenerate.addEventListener("click", () => {
+        regenerateStoryboardFrame(task, frame, regenerate);
+      });
+      row.append(regenerate);
+      section.append(row);
+    });
+    return section;
+  }
+
+  /** 只重跑某一段的分镜图（方案 A）。 */
+  function regenerateStoryboardFrame(task, frame, button) {
+    if (!state.runId || button.disabled) return;
+    button.disabled = true;
+    const label = button.textContent;
+    button.textContent = "生成中…";
+    api(
+      `/api/runs/${state.runId}/tasks/${encodeURIComponent(task.task_id)}`
+        + `/storyboard/${frame.index}/regenerate`,
+      { method: "POST" },
+    )
+      .then(() => poll(false))
+      .catch((error) => reportActionFailure(error))
+      .finally(() => {
+        button.disabled = false;
+        button.textContent = label;
+      });
   }
 
   // 同一条需求历次尝试的成片（run_id → artifacts）。取过一次就缓存，避免
   // 成片预览每秒轮询时反复拉同一批数据。
   const artifactHistoryCache = new Map();
+  //: 拉取失败的版本 → 失败时间戳。**失败绝不能写成空数组**：那会让卡片永远显示
+  //: 「这一版没有成片。」而且再也不重试（缓存命中了）。用户 2026-09-22「有些卡片
+  //: 没有预览」，实测就是服务重启期间的失败被永久缓存了 —— 同一批版本在干净页面
+  //: 上全都能出预览。
+  const artifactHistoryFailedAt = new Map();
+  const ARTIFACT_HISTORY_RETRY_MS = 30000;
   //: 每次生成**自己的**时间（来自 /api/runs/{id}）。
   //:
   //: 不能用 recent-runs 的 updated_at —— 那是**多维表格记录行**的更新时间，一条记录
   //: 一行，同一记录的历次尝试全是同一个时间（用户 2026-09-18：「所有日期都一样，
   //: 没有按照顺序来，跟生成的时机完全不一样」）。
   const runTimeCache = new Map();
+  //: 失败尝试的**可读原因**（run_id → 文字），与 artifacts 同一次请求取回。
+  //: 拿不到就空串 —— 卡片上如实写「未记录失败原因」，绝不编一个理由出来。
+  const artifactHistoryFailureReason = new Map();
+
+  //: 打开某条运行时按记录拉回的**完整**历次尝试（record_id → runs）。
+  //:
+  //: 「最近任务」列表是窗口化的：最多 10 条任务、后端只扫最近 800 条 run。
+  //: 更老记录的历次尝试因此永远进不了那份列表（2026-09-24 实测：89 条失败尝试里
+  //: 45 条属于窗口外的老记录）。用户点开某条记录时要的是**它自己**的完整历史，
+  //: 所以另走 `/api/bitable/record-runs`（按 record_id 查，不受窗口限制），
+  //: 拉回来的结果只喂给「往次成片」滑条 —— 全局任务记录列表仍用原来那份窗口数据。
+  const recordRunsCache = new Map();
+  //: 拉取失败的运行 → 失败时间戳（退避重试，避免「重画 → 再拉 → 再失败」死循环）。
+  const recordRunsFailedAt = new Map();
+  //: run_id → record_id：前端手上不一定有 record_id（运行详情里没这个字段），
+  //: 由这一次请求的响应带回来。
+  const recordIdByRun = new Map();
+  const RECORD_RUNS_RETRY_MS = 30000;
+
+  /** 当前运行属于哪条记录（列表里有就用列表的，没有就用刚拉回来的）。 */
+  function currentRecordIdFor(runId) {
+    const known = (state.bitable.recentRuns || []).find(
+      (run) => run && run.run_id === runId,
+    );
+    return (known && known.record_id) || recordIdByRun.get(runId) || "";
+  }
+
+  /**
+   * 拉这条运行所属记录的**全部**历次尝试。成功返回 true。
+   *
+   * 失败**不写空数组**（同 artifactHistoryCache 的教训）：写空会让滑条永远只有
+   * 窗口里那几条，且再也不重试。失败只记时间戳，退避后再试。
+   */
+  async function ensureRecordRuns(runId) {
+    if (!runId) return false;
+    const failedAt = recordRunsFailedAt.get(runId);
+    if (failedAt !== undefined && Date.now() - failedAt <= RECORD_RUNS_RETRY_MS) {
+      return false;
+    }
+    try {
+      const payload = await api(
+        `/api/bitable/record-runs?run_id=${encodeURIComponent(runId)}`,
+      );
+      const runs = Array.isArray(payload?.runs) ? payload.runs : [];
+      const recordId = payload?.record_id
+        || (runs.find((run) => run && run.record_id) || {}).record_id
+        || "";
+      if (!recordId) {
+        recordRunsFailedAt.set(runId, Date.now());
+        return false;
+      }
+      recordIdByRun.set(runId, recordId);
+      recordRunsCache.set(recordId, runs);
+      recordRunsFailedAt.delete(runId);
+      return true;
+    } catch (error) {
+      recordRunsFailedAt.set(runId, Date.now());
+      return false;
+    }
+  }
+
+  /** 该记录的完整历史是否还没拉过（拉失败的在退避窗口内不算「要拉」）。 */
+  function needsRecordRuns(runId) {
+    if (!runId) return false;
+    const recordId = currentRecordIdFor(runId);
+    if (recordId && recordRunsCache.has(recordId)) return false;
+    const failedAt = recordRunsFailedAt.get(runId);
+    return failedAt === undefined || Date.now() - failedAt > RECORD_RUNS_RETRY_MS;
+  }
+
+  /**
+   * 给「往次成片」用的运行列表：窗口里的最近任务 **∪** 当前这条记录的完整历史。
+   *
+   * 完整历史按 run_id 覆盖窗口切片（同一版本以完整那份为准，字段更全：多了
+   * `runtime_status`）。这样老记录的失败尝试也能出现在滑条上，而全局列表的
+   * 数据一个字段都没动。
+   */
+  function runsForArtifactHistory() {
+    const list = state.bitable.recentRuns || [];
+    const recordId = currentRecordIdFor(state.runId);
+    const full = recordId ? recordRunsCache.get(recordId) : null;
+    if (!Array.isArray(full) || !full.length) return list;
+    const seen = new Set(full.map((run) => run && run.run_id));
+    return [
+      ...full,
+      ...list.filter((run) => run && !seen.has(run.run_id)),
+    ];
+  }
+
+  /**
+   * 从一次运行的详情里挑出**能给人看**的失败原因。
+   *
+   * 优先级按生产数据定的（记录 recvvWdIXpk2uE 的 4 条失败尝试实测）：
+   *  1. `last_error.message` —— 运行时自己记的原因，最准；只有通用占位
+   *     （"The workflow node could not be completed"）时按类别换成中文，再往下找；
+   *  2. 该次运行第一条 `status=failed` 事件的摘要；
+   *  3. `execution_records[].error.message` —— **生产上大多数失败只有这一条**
+   *     （last_error 是 null、事件里也没有 failed），例如
+   *     `seedance2.5：生成参数不符合供应商要求`；
+   *  4. 都没有 → 按**运行时状态**说一句实话：`cancelled` 就是「这次被取消了」
+   *     （多维表格任务状态把它和 failed 一起压成「失败」，只能看运行时状态）；
+   *     认不出状态就返回空串，界面显示「未记录失败原因」，**绝不编具体错误**。
+   *
+   * 极简假 DOM 环境只读普通字段，不碰任何 DOM API。
+   */
+  function failureReasonFromRun(view) {
+    if (!view || typeof view !== "object") return "";
+    const lastError = view.last_error;
+    const rawMessage = typeof lastError === "string"
+      ? lastError
+      : (lastError && typeof lastError.message === "string" ? lastError.message : "");
+    const message = rawMessage.trim();
+    if (message && message !== GENERIC_FAILURE_MESSAGE) return message;
+    if (message === GENERIC_FAILURE_MESSAGE) {
+      const category = lastError && lastError.category;
+      const readable = FAILURE_CATEGORY_FALLBACK[category]
+        || (lastError && lastError.technical_detail)
+        || "";
+      if (String(readable).trim()) return String(readable).trim();
+    }
+    const events = Array.isArray(view.events) ? view.events : [];
+    const failedEvent = events.find((event) => (
+      event
+      && /fail/i.test(String(event.status || ""))
+      && String(event.summary || "").trim()
+    ));
+    if (failedEvent) return String(failedEvent.summary).trim();
+    const records = Array.isArray(view.execution_records)
+      ? view.execution_records
+      : [];
+    const failedRecord = records.find((record) => (
+      record && record.error && String(record.error.message || "").trim()
+    ));
+    if (failedRecord) {
+      const provider = failedRecord.provider ? `${failedRecord.provider}：` : "";
+      return `${provider}${failedRecord.error.message}`.trim();
+    }
+    // 具体原因一条都没有时，至少把「被取消」和「真的没记原因」分开说。
+    // 运行详情里的 `status` 就是运行时状态；payload 路径另给了 `runtime_status`。
+    return failureFallbackByStatus(view.runtime_status || view.status);
+  }
+
+  /** 这条 run 是不是**失败的尝试**（滑条上要打失败徽标、不给下载入口）。 */
+  function isFailedAttempt(run) {
+    return Boolean(run) && run.status === "失败";
+  }
+
+  /**
+   * 失败尝试的原因：先用手上就有的（recent-runs 下发的 last_error），
+   * 再用逐条拉回来的运行详情。都拿不到时按**运行时状态**给一句实话
+   * （「这次被取消了」），认不出来才返回空串。
+   */
+  function failureReasonForRun(run) {
+    const cached = artifactHistoryFailureReason.get(run.run_id);
+    if (cached) return cached;
+    const payloadError = typeof run.last_error === "string" ? run.last_error.trim() : "";
+    return payloadError || failureFallbackByStatus(run.runtime_status);
+  }
 
   async function ensureArtifactHistory(runIds) {
-    const missing = runIds.filter((runId) => !artifactHistoryCache.has(runId));
+    const now = Date.now();
+    const missing = runIds.filter((runId) => {
+      if (artifactHistoryCache.has(runId)) return false;
+      const failedAt = artifactHistoryFailedAt.get(runId);
+      // 失败过就退避一段时间再试，避免「重画 → 再拉 → 再失败」的死循环。
+      return failedAt === undefined || now - failedAt > ARTIFACT_HISTORY_RETRY_MS;
+    });
     if (!missing.length) return false;
     await Promise.all(missing.map(async (runId) => {
       try {
@@ -2591,10 +3443,15 @@
           created_at: sibling?.created_at,
           updated_at: sibling?.updated_at,
         });
+        artifactHistoryFailureReason.set(
+          runId,
+          failureReasonFromRun(sibling),
+        );
+        artifactHistoryFailedAt.delete(runId);
       } catch (error) {
-        // 某一版拉不到不影响其它版本，也不该弹全局错误。
-        artifactHistoryCache.set(runId, []);
-        runTimeCache.set(runId, {});
+        // 某一版拉不到不影响其它版本，也不该弹全局错误 —— 但**也不能假装它没有
+        // 成片**：以前这里写空数组，卡片会永远显示「这一版没有成片。」且不再重试。
+        artifactHistoryFailedAt.set(runId, Date.now());
       }
     }));
   }
@@ -2613,10 +3470,13 @@
    *
    * 任务记录一条记录一行；历次版本在这里（成片与结果那一栏的横向滑条里）看和切，
    * 不另开往下的分区 —— 那样页面会挤。产物取过一次就缓存：成片预览每秒轮询。
+   *
+   * 运行列表用 `runsForArtifactHistory()`：窗口里的最近任务 ∪ 当前记录的完整历史
+   * （后者按 record_id 单独拉，老记录的失败尝试也能看到）。
    */
   function artifactHistorySnapshot() {
     const siblings = BitableState.siblingRuns(
-      state.bitable.recentRuns || [],
+      runsForArtifactHistory(),
       state.runId,
     )
       // 按**每次生成自己的**时间倒序：表格行的时间对同一记录全都一样，排不出先后。
@@ -2636,6 +3496,7 @@
           run.status,
           run.updated_at,
           artifactHistoryCache.has(run.run_id),
+          artifactHistoryFailedAt.has(run.run_id),
           runTimeCache.get(run.run_id)?.updated_at || "",
         ]),
       ),
@@ -2644,8 +3505,17 @@
 
   /** 一个「往次版本」卡片：和当前成片并排在同一栏，能直接播、能切过去看。 */
   function artifactHistoryCard(run) {
-    const card = element("figure", "artifact-card artifact-history-card");
+    const failed = isFailedAttempt(run);
+    const card = element(
+      "figure",
+      failed
+        ? "artifact-card artifact-history-card is-failed"
+        : "artifact-card artifact-history-card",
+    );
     card.dataset.runId = run.run_id;
+    // 失败版要一眼看出来：灰化 + 「失败」徽标 + 卡片上直接写失败原因
+    //（用户 2026-09-24：「我失败过几次、为什么失败」看不到）。
+    if (failed) card.dataset.failed = "1";
     const cachedTime = runTimeCache.get(run.run_id);
     const displayTime =
       (cachedTime && (cachedTime.updated_at || cachedTime.created_at))
@@ -2656,6 +3526,9 @@
       `往次 · ${statusUi(run.status).label}`
         + (displayTime ? ` · ${formatRecentTime(displayTime)}` : ""),
     );
+    if (failed) {
+      caption.prepend(element("span", "artifact-history-badge", "失败"));
+    }
     const open = element("button", "quiet-button", "查看这一版");
     open.type = "button";
     // 刻意**不**按 state.busy 置灰：它是纯导航，而终态运行不会再轮询 ——
@@ -2668,8 +3541,35 @@
     const artifact = artifacts.find(
       (item) => item && item.preview_url && item.kind !== "file",
     );
+    // 失败尝试**只给看/切过去看**，不给下载、不给「送结果表」入口 ——
+    // 它没有可交付的成片，给了会让人以为这一版能直接用。
+    // （下载/导出入口在主面板，由 run 状态决定；历史格子这里一个都不加。）
+    if (failed) {
+      const reason = failureReasonForRun(run);
+      const reasonText = reason
+        || (artifactHistoryFailedAt.has(run.run_id)
+          // 「这次运行的详情没拉回来」和「真的没记原因」是两件事，分开说。
+          ? "暂时没取到，点「查看这一版」打开。"
+          : "未记录失败原因");
+      card.append(element(
+        "p",
+        "artifact-history-reason",
+        `失败原因：${reasonText}`,
+      ));
+      // 悬停也能看到（title 是普通属性，极简假 DOM 下同样安全）。
+      card.title = `失败原因：${reasonText}`;
+    }
     if (!artifact) {
-      card.append(element("p", "bitable-task-meta", "这一版没有成片。"));
+      if (!failed) {
+        // 「拉失败」和「真的没有成片」是两件事，不能都说成「这一版没有成片。」
+        card.append(element(
+          "p",
+          "bitable-task-meta",
+          artifactHistoryFailedAt.has(run.run_id)
+            ? "预览暂时没取到，点「查看这一版」打开。"
+            : "这一版没有成片。",
+        ));
+      }
       return card;
     }
     if (artifact.kind === "video") {
@@ -2685,6 +3585,8 @@
       image.alt = artifact.artifact_id;
       image.loading = "lazy";
       image.src = agentUrl(artifact.preview_url);
+      // ① 往次成片的缩略图同样单击预览。
+      attachSingleClickPreview(image, agentUrl(artifact.preview_url));
       card.prepend(image);
     }
     return card;
@@ -2707,11 +3609,26 @@
         if (state.view) render(state.view);
       });
     }
+    // 这条记录**完整**的历次尝试：窗口（最近 10 条任务 / 800 条 run）之外的老记录，
+    // 失败尝试只有这里才看得到。拉回来只喂「往次成片」滑条，全局任务记录列表仍用
+    // 原来那份窗口数据；每个 run 只拉一次，失败的在退避窗口内不再重试。
+    // 只对多维表格运行拉：直接创建的自由运行不在生产表里，问了必然是 404。
+    if (state.runMode === "bitable" && needsRecordRuns(state.runId)) {
+      ensureRecordRuns(state.runId).then((loaded) => {
+        if (!loaded) return;
+        state.artifactPreviewSignature = null;
+        if (state.view) renderArtifactReview(state.view);
+      });
+    }
     // 只在**真的有东西要拉**时才补数据并重画一次：否则会变成
     // 「重画 → 缓存已命中 → 再重画」的微任务死循环（实测把测试跑挂了）。
-    const missingHistory = history.siblings.filter(
-      (run) => !artifactHistoryCache.has(run.run_id),
-    );
+    // 失败过的版本在退避窗口内不算「要拉」，否则同样是死循环。
+    const historyRetryAt = Date.now() - ARTIFACT_HISTORY_RETRY_MS;
+    const missingHistory = history.siblings.filter((run) => {
+      if (artifactHistoryCache.has(run.run_id)) return false;
+      const failedAt = artifactHistoryFailedAt.get(run.run_id);
+      return failedAt === undefined || failedAt <= historyRetryAt;
+    });
     if (missingHistory.length) {
       ensureArtifactHistory(missingHistory.map((run) => run.run_id)).then(() => {
         state.artifactPreviewSignature = null;
@@ -2813,13 +3730,25 @@
       const size = typeof artifact.size === "number"
         ? `${(artifact.size / 1024 / 1024).toFixed(1)} MB`
         : "—";
+      // 卡片必须标出「这是第几镜的第几条」：以前只写「视频 · 5.4 MB」，
+      // 多条成片长得一模一样，用户根本不知道该勾哪一条重跑
+      //（2026-09-23：「卡片顺序对不上分镜顺序，不知道该勾哪一条」）。
+      const shotLabel = artifactShotLabel(artifact);
       const caption = element("figcaption", "", `${label} · ${size}`);
+      if (shotLabel) {
+        caption.prepend(element("span", "artifact-shot-label", shotLabel));
+      }
       if (canReviewArtifacts) {
         const choice = element("label", "artifact-retry-choice", "");
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.checked = state.artifactRetryTaskIds.has(artifact.task_id);
-        checkbox.setAttribute("aria-label", `选择重跑任务 ${artifact.task_id}`);
+        checkbox.setAttribute(
+          "aria-label",
+          shotLabel
+            ? `选择重跑 ${shotLabel}（${artifact.task_id}）`
+            : `选择重跑任务 ${artifact.task_id}`,
+        );
         checkbox.addEventListener("change", () => {
           if (checkbox.checked) state.artifactRetryTaskIds.add(artifact.task_id);
           else state.artifactRetryTaskIds.delete(artifact.task_id);
@@ -2848,6 +3777,8 @@
         image.alt = artifact.artifact_id;
         image.loading = "lazy";
         image.src = agentUrl(artifact.preview_url);
+        // ① 成片缩略图单击预览（卡片上的操作是勾选/下载，都在 figcaption 里，不冲突）。
+        attachSingleClickPreview(image, agentUrl(artifact.preview_url));
         card.prepend(image);
       }
       return card;
@@ -2861,17 +3792,66 @@
     artifactList.replaceChildren(...artifactNodes, ...historyNodes);
   }
 
+  //: 审查员风险提示默认只铺前几条：审查员的工作方式是「逐条列举遗漏」，提示词里
+  //: 没有任何条数上限（AuditReport.issues 是无界数组，_normalize_audit_report
+  //: 只规整措辞、不去重不截断），实测 11~53 条 —— 文档分镜表列越多、通用要求越
+  //: 细，条目越多（用户 2026-09-22：「为什么有时候能显示 50 多条」）。
+  //: 全铺出来会把审批页刷成一堵墙，所以默认 5 条 + 「展开全部」。
+  const AUDIT_PREVIEW_COUNT = 5;
+  let auditIssuesExpanded = false;
+  let auditIssuesRunId = null;
+
+  function renderAuditIssues(view) {
+    const box = byId("audit-issues");
+    const list = byId("audit-issues-list");
+    const count = byId("audit-issues-count");
+    if (!box || !list) return;
+    const all = Array.isArray(view?.approval?.audit_issues)
+      ? view.approval.audit_issues.filter(
+        (issue) => typeof issue === "string" && issue.trim(),
+      )
+      : [];
+    // 换一条运行就收起，别把上一条的展开状态带过去。
+    if (auditIssuesRunId !== (view?.run_id ?? null)) {
+      auditIssuesRunId = view?.run_id ?? null;
+      auditIssuesExpanded = false;
+    }
+    const overflow = Math.max(0, all.length - AUDIT_PREVIEW_COUNT);
+    const visible = auditIssuesExpanded || !overflow
+      ? all
+      : all.slice(0, AUDIT_PREVIEW_COUNT);
+    list.replaceChildren(...visible.map((issue) => element("li", "", issue)));
+    if (count) count.textContent = `（${all.length} 条）`;
+    box.hidden = all.length === 0;
+    // 默认展开：它的价值就在于「批准之前看见」，整块藏起来等于没提示。
+    if (all.length) box.open = true;
+    if (auditIssuesMore) {
+      auditIssuesMore.hidden = overflow === 0;
+      auditIssuesMore.textContent = auditIssuesExpanded
+        ? `只看前 ${AUDIT_PREVIEW_COUNT} 条`
+        : `展开全部 ${all.length} 条`;
+    }
+  }
+
+  if (auditIssuesMore) {
+    auditIssuesMore.addEventListener("click", () => {
+      auditIssuesExpanded = !auditIssuesExpanded;
+      if (state.view) renderAuditIssues(state.view);
+    });
+  }
+
   function render(view, { refreshTasks = true } = {}) {
     state.view = view;
     renderRecentRuns();
     const statusInfo = statusUi(view.status);
+    const statusLabel = statusLabelWithProgress(view, statusInfo.label);
     const statusBadge = byId("status-badge");
-    statusBadge.textContent = statusInfo.label;
+    statusBadge.textContent = statusLabel;
     statusBadge.dataset.tone = statusInfo.tone;
-    byId("run-status").textContent = statusInfo.label;
+    byId("run-status").textContent = statusLabel;
     runGuidance.dataset.tone = statusInfo.tone;
     runGuidance.replaceChildren(
-      element("strong", "", statusInfo.label),
+      element("strong", "", statusLabel),
       element("span", "", statusInfo.action),
     );
     byId("thread-id").textContent = view.thread_id;
@@ -2941,16 +3921,8 @@
     if (lastError && lastError.message) {
       // 早期持久化的失败记录可能只有通用占位文案，这里按错误类别补齐可读原因，
       // 让历史任务点进去能直接看懂为什么没有成片。
-      const genericMessage = lastError.message === "The workflow node could not be completed";
-      const categoryFallback = {
-        permission_error: "飞书应用没有权限读取该文档或素材，请检查文档分享与应用权限。",
-        document_error: "文档读取失败，请检查文档内容或格式。",
-        configuration_error: "服务配置缺失，请联系管理员检查飞书应用配置。",
-        transient_error: "服务暂时不可用，请稍后重试。",
-        provider_terminal_error: "生成服务返回错误，无法继续生成。",
-        delivery_error: "结果写入飞书失败。",
-        validation_error: "任务参数校验失败。",
-      };
+      const genericMessage = lastError.message === GENERIC_FAILURE_MESSAGE;
+      const categoryFallback = FAILURE_CATEGORY_FALLBACK;
       const message = genericMessage
         ? (categoryFallback[lastError.category]
           || lastError.technical_detail
@@ -2966,6 +3938,7 @@
     const issueBox = byId("validation-issues");
     issueBox.textContent = issues.join("；");
     issueBox.hidden = issues.length === 0;
+    renderAuditIssues(view);
     // 文档读取权限不足时，给出可执行的授权步骤，而不是只丢一句“权限不足”。
     const permissionError = lastError && lastError.category === "permission_error";
     if (permissionError) {
@@ -3162,13 +4135,62 @@
     }
   }
 
-  async function rerunBitableTask(runId = state.runId) {
-    if (!runId || state.busy || rerunRequesting) return;
+  /** 重跑成功后的文案：必须如实说明这次有没有改写提示词。 */
+  function rerunToastMessage(feedback) {
+    return feedback
+      ? "已按返工要求优化提示词，请审核后批准"
+      : "未填返工要求，提示词原样保留，请审核后批准";
+  }
+
+  /** 返工要求输入框里现在的内容（没有输入框就当作空 = 原样重跑）。 */
+  function currentReworkFeedback() {
+    return artifactReviewFeedback ? artifactReviewFeedback.value.trim() : "";
+  }
+
+  /**
+   * 「重新运行」与「重跑选中任务」**共用**的重跑逻辑（用户口径 2026-09-24）。
+   *
+   * 状态机（两条入口完全一致）：
+   *   ① 复用上一版**已批准的计划** —— 不重新规划，省一次规划；
+   *   ② 返工要求有内容 → 后端调融合把要求并进提示词；**没内容就一个字都不改**
+   *      （也不调模型、不产生费用）；
+   *   ③ 新运行停在**待审批**，用户能看到改后的提示词/参数，还能继续编辑；
+   *   ④ 点「批准并开始生成」之后才真正提交生成。
+   *
+   * 与「退回修改计划」（整份计划**重新规划**）分工不同；以前这里走的是
+   * `clone_approved_plan` 之后直接进执行，用户没有确认机会。
+   */
+  async function rerunBitableTask(runId = state.runId, options = {}) {
+    // 以前这里是静默 return —— 按钮可见却点不动时用户只会说「点了没反应」。
+    if (!runId) {
+      showActionToast("当前没有选中的任务，先在上方任务列表里选一条再重跑。");
+      return;
+    }
+    if (state.busy || rerunRequesting) {
+      showActionToast("上一次操作还在提交中，请稍候再点「重新运行」。", { timeout: 4000 });
+      return;
+    }
+    const taskIds = Array.isArray(options.taskIds)
+      ? options.taskIds.filter(Boolean)
+      : [...state.artifactRetryTaskIds];
+    const feedback = options.feedback === undefined
+      ? currentReworkFeedback()
+      : String(options.feedback || "").trim();
+    // 勾了成片 → 只重跑勾中的那几条（`rerun-selected`）；没勾 → 整份计划（`rerun`）。
+    // 两条后端入口都会「融合改写（有要求时）→ 停在待审批」。
+    const endpoint = taskIds.length
+      ? `/api/bitable/runs/${encodeURIComponent(runId)}/rerun-selected`
+      : `/api/bitable/runs/${encodeURIComponent(runId)}/rerun`;
+    const body = taskIds.length
+      ? { action: "adjust", feedback, task_ids: taskIds }
+      : { feedback };
     setRerunRequesting(true);
     clearError();
     try {
-      const created = await api(`/api/bitable/runs/${encodeURIComponent(runId)}/rerun`, {
+      const created = await api(endpoint, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
       state.runId = created.run_id;
       state.runMode = "bitable";
@@ -3176,13 +4198,16 @@
       state.referenceUploads = ReferenceUploadState.createState();
       state.referenceMutations = ReferenceMutationState.createState();
       state.artifactPreviewSignature = null;
-          state.artifactRetryTaskIds = new Set();
+      state.artifactRetryTaskIds = new Set();
+      state.artifactReviewRunId = null;
+      if (artifactReviewFeedback) artifactReviewFeedback.value = "";
       await poll(true);
       startPolling();
       await loadRecentRuns();
       document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
+      showActionToast(rerunToastMessage(feedback), { tone: "info", timeout: 12000 });
     } catch (error) {
-      showError(error);
+      reportActionFailure(error);
       await loadRecentRuns();
     } finally {
       setRerunRequesting(false);
@@ -3218,9 +4243,51 @@
         state.review = ReviewState.failApprovalSubmit(state.review);
         state.view = ReviewState.draftView(state.review);
       }
-      showError(error);
+      reportActionFailure(error);
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * 审批页**原地**用 AI 重写所选任务的提示词。
+   *
+   * 与「退回修改计划」分工不同：不重新规划、不新建运行、不动分镜结构，只把勾中的
+   * 那几条任务的提示词按这次要求改写一遍，改完仍停在审批页给用户过目。
+   */
+  async function optimizeSelectedPrompts() {
+    const taskIds = [...ReviewState.selectedTaskIds(state.review)];
+    const feedback = promptOptimizeFeedback.value.trim();
+    if (!taskIds.length) {
+      reportActionFailure(new Error("请先在上方任务列表里勾选要优化的任务"));
+      return;
+    }
+    if (!feedback) {
+      reportActionFailure(new Error("请填写优化要求"));
+      return;
+    }
+    setRerunRequesting(true);
+    clearError();
+    try {
+      await api(`/api/runs/${state.runId}/optimize-prompts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_ids: taskIds, feedback }),
+      });
+      promptOptimizeFeedback.value = "";
+      // 服务端已经改写了这几条提示词：丢掉它们在本地未保存的草稿，否则界面会被
+      // 旧草稿遮住新提示词。勾选**保留**（用户多半要接着批准所选任务）。
+      const remainingEdits = { ...state.review.editsByTaskId };
+      for (const taskId of taskIds) delete remainingEdits[taskId];
+      state.review = { ...state.review, editsByTaskId: remainingEdits };
+      // 这是我们自己刚改的：告诉下一次轮询「这个变化是自己造成的」，
+      // 别当成别人改了而弹「服务端计划已更新」。
+      selfSavedPending = true;
+      await poll(false);
+    } catch (error) {
+      reportActionFailure(error);
+    } finally {
+      setRerunRequesting(false);
     }
   }
 
@@ -3232,47 +4299,27 @@
       || !ARTIFACT_REVIEWABLE_STATUSES.has(state.view.status)
       || state.view.delivery
     ) return;
-    const body = { action };
     if (action === "adjust") {
-      body.feedback = artifactReviewFeedback.value;
-      body.task_ids = [...state.artifactRetryTaskIds];
-      if (!body.feedback || !body.feedback.trim()) {
-        showError(new Error("请填写调整意见"));
+      // 「重跑选中任务」= 与底部「重新运行」**同一条逻辑**：复用已批准计划 →
+      // （有返工要求就融合改写提示词，没有就一个字不改）→ 停在审批页等用户确认。
+      //
+      // 以前这里走 `/api/runs/{id}/artifact-review`（**原地**重跑）：提示词改完
+      // 立刻开始生成，用户根本没机会确认（用户 2026-09-24：「我说的是我的返工
+      // 要求重跑选中任务应该是优化我的提示词然后让我确认啊」）。
+      if (!state.artifactRetryTaskIds.size) {
+        reportActionFailure(new Error("请至少选择一条需要重跑的任务"));
         return;
       }
-      if (!body.task_ids.length) {
-        showError(new Error("请至少选择一条需要重跑的任务"));
-        return;
-      }
+      await rerunBitableTask(state.runId, {
+        taskIds: [...state.artifactRetryTaskIds],
+        feedback: currentReworkFeedback(),
+      });
+      return;
     }
+    const body = { action };
     setRerunRequesting(true);
     clearError();
     try {
-      if (action === "adjust" && state.runMode === "bitable") {
-        const created = await api(
-          `/api/bitable/runs/${state.runId}/rerun-selected`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          },
-        );
-        state.runId = created.run_id;
-        state.runMode = "bitable";
-        state.review = ReviewState.createReviewState();
-        state.referenceUploads = ReferenceUploadState.createState();
-        state.referenceMutations = ReferenceMutationState.createState();
-        state.artifactPreviewSignature = null;
-        state.artifactRetryTaskIds = new Set();
-        state.artifactReviewRunId = null;
-        artifactReviewFeedback.value = "";
-        await poll(true);
-        startPolling();
-        await loadRecentRuns();
-        renderRecentRuns();
-        document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth" });
-        return;
-      }
       await api(`/api/runs/${state.runId}/artifact-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3280,7 +4327,7 @@
       });
       await poll(true);
     } catch (error) {
-      showError(error);
+      reportActionFailure(error);
     } finally {
       setRerunRequesting(false);
     }
@@ -3294,7 +4341,7 @@
       await api(`/api/runs/${state.runId}/cancel`, { method: "POST" });
       await poll(true);
     } catch (error) {
-      showError(error);
+      reportActionFailure(error);
     } finally {
       setBusy(false);
     }
@@ -3313,6 +4360,12 @@
   adjustArtifactsButton.addEventListener("click", () => submitArtifactReview("adjust"));
   rerunArtifactsButton.addEventListener("click", () => rerunBitableTask());
   artifactReviewFeedback.addEventListener("input", updateActionAvailability);
+  if (optimizePromptsButton) {
+    optimizePromptsButton.addEventListener("click", () => optimizeSelectedPrompts());
+  }
+  if (promptOptimizeFeedback) {
+    promptOptimizeFeedback.addEventListener("input", updateActionAvailability);
+  }
   rerunButton.addEventListener("click", () => rerunBitableTask());
   retryFailedAssetsButton.addEventListener("click", async () => {
     if (!state.runId || state.busy || state.view?.status !== "waiting_approval") return;
@@ -3329,7 +4382,7 @@
       await poll(true);
     } catch (error) {
       retryFailedAssetsFeedback.textContent = "重新读取失败";
-      showError(error);
+      reportActionFailure(error);
     } finally {
       setBusy(false);
     }
@@ -3354,7 +4407,7 @@
       if (state.view?.status === "delivering") startPolling();
     } catch (error) {
       state.bitable = BitableState.retryFailed(state.bitable, error.message);
-      showError(error);
+      reportActionFailure(error);
     } finally {
       setBusy(false);
     }
@@ -3391,6 +4444,8 @@
   ].forEach(([toggleId, bodyId]) => {
     const toggle = byId(toggleId);
     const body = byId(bodyId);
+    // 页面结构与脚本版本对不上时（浏览器缓存了旧 HTML）宁可不折叠，也别抛错。
+    if (!toggle || !body) return;
     toggle.addEventListener("click", () => {
       body.hidden = !body.hidden;
       toggle.setAttribute("aria-expanded", String(!body.hidden));
@@ -3439,6 +4494,17 @@
     renderPlannerPrompt();
     loadPlannerPrompt();
   }
+  // 拖放防误伤（用户 2026-09-29）：把文件拖到「参考素材」节**以外**时，浏览器的默认
+  // 行为是**导航到那个本地文件** —— 页面被顶掉，用户的体感就是"拖不了 / 页面坏了"。
+  // 在 document 上兜住：拖到哪都不许导航。节内那一套自己 preventDefault，不受影响。
+  const carriesFiles = (event) =>
+    Array.from(event.dataTransfer?.types || []).includes("Files");
+  document.addEventListener("dragover", (event) => {
+    if (carriesFiles(event)) event.preventDefault();
+  });
+  document.addEventListener("drop", (event) => {
+    if (carriesFiles(event)) event.preventDefault();
+  });
   configureModes();
   startBitableRefresh();
 })();

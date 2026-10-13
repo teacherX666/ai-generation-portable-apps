@@ -8,6 +8,7 @@ from feishu_generation_agent.integrations.rework_prompt import (
     REWORK_MARKER,
     build_fallback_prompt,
     build_rework_prompt,
+    fusion_rejection_reason,
     is_acceptable_fusion,
     merge_negative_constraints,
     merge_requirements,
@@ -266,10 +267,106 @@ def test_fusion_rejected_when_missing_or_blank() -> None:
     assert not is_acceptable_fusion("   ", base_prompt="x")
 
 
+# 用户 2026-09-30（杂技小象）：「现在怎么重做又变了」。真实数据：那一轮只有一条要求
+# 「场景不要发生突变，动作流畅，不要人机感」，融合却在**结尾整段新增**了一个
+# `【场景与动作连续性】` 小节（+212 字）。两道旧拦截都没挡住：
+#   - `_SUMMARY_BLOCK` 只认固定抬头（约束/汇总/补充要求/衔接…），新抬头不认识；
+#   - `trailing_growth_reason` 只是"结尾段增长 ≤1.5 倍"的比例阈值，基准结尾段本来就长。
+_ELEPHANT_BASE = (
+    "【一句话概述】小象在马戏团舞台上表演。\n"
+    "【全局视觉设定】全局风格：3D卡通渲染，圆润黏土质感。\n"
+    "【详细情节】\n镜头 1（0-9秒）：小象走上圆台抛接彩球，重心转移自然。\n"
+    "【全局连续性与结尾约束】全片为同一处马戏团场地，红幕布与彩灯位置不变，18秒内恒定。"
+)
+_ELEPHANT_APPENDED = (
+    "\n\n【场景与动作连续性】\n全片舞台空间自始至终为同一处马戏团场地：圆形木质舞台地面、"
+    "红幕布、星空彩灯与虚化观众席的位置、比例与光照方向在18秒内保持恒定，镜头切换时背景"
+    "陈设不跳变、不替换、不新增或消失道具。小象的行走、抛接、下压、腾空、回旋与落台各动作"
+    "之间以连续的重心转移和肢体惯性衔接，前一个动作的收势直接成为后一个动作的起势，关节与"
+    "躯干运动轨迹平滑连贯，无卡顿、无跳帧、无机械式匀速位移，整体呈现自然流畅的卡通表演节奏。"
+)
+
+
+def test_fusion_rejected_when_a_new_section_is_appended() -> None:
+    reason = fusion_rejection_reason(
+        _ELEPHANT_BASE + _ELEPHANT_APPENDED, base_prompt=_ELEPHANT_BASE
+    )
+
+    assert reason is not None, "结尾新增【场景与动作连续性】小节必须被拒"
+    assert "场景与动作连续性" in reason
+
+
+def test_fusion_rejected_when_a_new_section_is_inserted_in_the_middle() -> None:
+    """插在中间同样是结构破坏 —— 不只拦结尾。"""
+    fused = _ELEPHANT_BASE.replace(
+        "【详细情节】", "【场景与动作连续性】同一处场地。\n【详细情节】"
+    )
+
+    assert not is_acceptable_fusion(fused, base_prompt=_ELEPHANT_BASE)
+
+
+def test_fusion_still_accepted_when_existing_sections_are_only_rewritten() -> None:
+    """只重写原有小节里的句子照旧放行 —— 别把正常返工也拦死。"""
+    fused = _ELEPHANT_BASE.replace(
+        "小象走上圆台抛接彩球，重心转移自然。",
+        "小象以连续的重心转移走上圆台，抛接彩球时肩背惯性顺势带动，动作不停顿。",
+    )
+
+    assert is_acceptable_fusion(fused, base_prompt=_ELEPHANT_BASE)
+
+
 def test_fusion_accepted_when_contract_holds() -> None:
     assert is_acceptable_fusion(
         "@图片1 中的猫缓慢行走", base_prompt="@图片1 中的猫在跑"
     )
+
+
+#: 用户 2026-09-22 的真实提示词（去掉结尾叠加块后的基准）。
+_MULTISHOT_BASE = (
+    "吉卜力动画风格，9:16 竖屏。"
+    "镜头 1（0-5s）：卡车行驶，南瓜滚落，后方车辆紧急刹车。"
+    "镜头 2（5-10s）：司机惊叫打方向，撞上路边护栏。"
+    "镜头 3（10-15s）：双向车流堵成长龙，车辆杂乱错落停放。"
+    "风格与约束：全片风格统一，画质清晰稳定、无锐化过度，人物与车辆不悬浮、"
+    "不穿模、重心稳定，动作符合身体结构与因果顺序；不要出现任何 logo 或品牌"
+    "特征，无水印、不变形。"
+)
+
+
+def test_fusion_rejected_when_requirements_are_piled_up_at_the_end() -> None:
+    """「怎么重做又变成叠加在结尾了」—— 结尾多出一大段罗列必须拦住。
+
+    真实产出用「全片动作连续流畅：…」起头，**绕过了按小标题匹配的
+    `_SUMMARY_BLOCK`**，所以这里改成量结尾段的长度。
+    """
+    fused = _MULTISHOT_BASE + (
+        "全片动作连续流畅：卡车行驶、绑带崩断、南瓜滚落、后车急刹追尾、司机惊叫"
+        "打方向撞护栏、南瓜从车顶飞过、最终堵成长龙，各动作首尾相接、速度均匀无"
+        "跳帧；镜头切换点保持主体位置与运动方向连续，前一镜头结尾的南瓜滚动方向"
+        "与下一镜头开头一致，硬切处不出现画面停顿或重复帧。"
+    )
+
+    assert not is_acceptable_fusion(fused, base_prompt=_MULTISHOT_BASE)
+
+
+def test_fusion_accepted_when_requirements_are_woven_into_the_sentences() -> None:
+    """就地并进原句（哪怕风格段多写了几十字）要放行。"""
+    fused = _MULTISHOT_BASE.replace(
+        "风格与约束：全片风格统一，",
+        "风格与约束：全片风格统一，全片动作首尾相接、速度均匀无跳帧，"
+        "镜头切换点保持主体位置与运动方向连续，",
+    )
+
+    assert is_acceptable_fusion(fused, base_prompt=_MULTISHOT_BASE)
+
+
+def test_trailing_growth_check_is_skipped_without_a_style_block() -> None:
+    """单镜头 / 文生视频没有段落结构，不做结尾长度判断。"""
+    from feishu_generation_agent.integrations.rework_prompt import (
+        trailing_growth_reason,
+    )
+
+    assert trailing_growth_reason("一只猫在跑，跑得更慢了", "一只猫在跑") is None
 
 
 # --- 共享入口：两条重跑路径（图节点 / 多维表格 clone）必须走同一套语义 ---
@@ -629,3 +726,397 @@ async def test_build_rework_prompt_logs_rejection_reason(caplog) -> None:
     joined = " ".join(record.getMessage() for record in caplog.records)
     assert "丢了素材引用" in joined
     assert "@图片1" in joined
+
+
+# --- 2026-09-28 生产实测：返工的两个反向故障 ---
+#
+# 同一周内用户先报「两次修改都没有改动我的提示词，都提示不用改」，后报
+# 「它会改一些我没有说的问题，即使本来是对的，它也要加一些词」。查下来是
+# 同一个洞的两面：看片没带提示词 → 融合拿不到差距 → 要么原样退回、要么自己
+# 发明问题。契约当时两条都拦不住。
+
+
+def test_fusion_rejected_when_result_is_identical_to_base() -> None:
+    """逐字（或只差空白）交回原文 = 没落实任何要求，必须判不合格。
+
+    2026-09-28 实测：14:05 那轮只删了 17 个换行符、14:17 那轮逐字节相同，
+    两次都通过契约进了生产，用户看到的是「本次返工没有改变提示词正文」。
+    """
+    from feishu_generation_agent.integrations.rework_prompt import (
+        fusion_rejection_reason,
+    )
+
+    assert "一致" in fusion_rejection_reason("一只猫在跑", base_prompt="一只猫在跑")
+    assert "一致" in fusion_rejection_reason(
+        "一只猫\n在跑  ", base_prompt="一只猫在跑"
+    )
+
+
+def test_fusion_accepted_when_only_wording_changed() -> None:
+    from feishu_generation_agent.integrations.rework_prompt import (
+        fusion_rejection_reason,
+    )
+
+    assert fusion_rejection_reason("一只猫缓缓走开", base_prompt="一只猫在跑") is None
+
+
+_BUS_TAKE = "镜头 1：红色玩具巴士停在石板台上，木质网格切板自上而下切割车身。"
+
+#: 2026-09-28 真实看片描述里的物件（生产记录原文摘录）。
+_BUS_VISUAL = (
+    "约4.7秒起镜头突然横移，出现黑色多孔电木块（被银色金属细杆与透光底平台"
+    "隔开），6.5秒后画面转为中远景，可见水泥砖墙、带脚轮工具柜与黄色电缆。"
+)
+
+
+def test_fusion_rejected_when_it_turns_the_picture_into_prohibitions() -> None:
+    """把看片描述里的杂物抄成「不许出现××」= 用户没提过的新约束，必须拦住。
+
+    2026-09-28 14:57 那轮的真实产出（净 +85 字）：「…不出现黑色多孔电木/胶木块、
+    银色金属细杆、透光底平台、水泥砖墙、带脚轮工具柜、黄色电缆等任何其他物件」。
+    这些物件名全部来自上一版成片的看片描述 —— 用户从没说过一个。
+    """
+    from feishu_generation_agent.integrations.rework_prompt import (
+        fusion_rejection_reason,
+    )
+
+    fused = _BUS_TAKE + (
+        "画面中不出现黑色多孔电木块、银色金属细杆、透光底平台、水泥砖墙、"
+        "带脚轮工具柜与黄色电缆。"
+    )
+
+    reason = fusion_rejection_reason(
+        fused, base_prompt=_BUS_TAKE, visual_context=_BUS_VISUAL
+    )
+
+    assert reason is not None
+    assert "画面描述" in reason
+
+
+def test_picture_copy_guard_needs_the_visual_context() -> None:
+    """没有画面上下文时不能凭这段文字判死（否则正常提示词会被误伤）。"""
+    from feishu_generation_agent.integrations.rework_prompt import (
+        fusion_rejection_reason,
+    )
+
+    fused = _BUS_TAKE + "画面中不出现黑色多孔电木块、水泥砖墙与黄色电缆。"
+
+    assert (
+        fusion_rejection_reason(fused, base_prompt=_BUS_TAKE, visual_context="")
+        is None
+    )
+
+
+def test_fusion_accepted_when_it_only_rewrites_the_sentence_that_was_wrong() -> None:
+    """正常返工（就地改那句错的）不许被新判据误伤。"""
+    from feishu_generation_agent.integrations.rework_prompt import (
+        fusion_rejection_reason,
+    )
+
+    fused = _BUS_TAKE.replace(
+        "木质网格切板自上而下切割车身",
+        "木质网格切板自上而下切割车身、一路贯穿到底，车身作为刚体不变形",
+    )
+
+    assert (
+        fusion_rejection_reason(
+            fused, base_prompt=_BUS_TAKE, visual_context=_BUS_VISUAL
+        )
+        is None
+    )
+
+
+async def test_build_rework_prompt_tells_the_model_why_retrying() -> None:
+    """重试必须带上「上一次为什么不合格」—— 同一输入原样重发 4 次毫无意义。
+
+    2026-09-28 实测：融合器原样返回时，旧代码只是把同样的请求再发 3 遍，
+    第 4 次失败后回退成"正文原样"，用户什么也得不到。
+    """
+    seen: list[str] = []
+
+    async def fuse(prompt, requirements, *, visual_context="", retry_feedback=""):
+        seen.append(retry_feedback)
+        if len(seen) == 1:
+            return {"prompt": prompt, "must_avoid": []}  # 原样返回 → 判不合格
+        return {"prompt": f"{prompt}（已融合）", "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse
+    )
+
+    assert prompt == "原始画面（已融合）"
+    assert seen[0] == ""
+    assert "一致" in seen[1]
+
+
+# --- 2026-09-28 用户要求：一次多模态调用（成片视频进同一次融合请求） ---
+
+_TAKE_PART = {
+    "type": "video_url",
+    "video_url": {"url": "https://example.invalid/take.mp4"},
+}
+
+
+async def test_build_rework_prompt_passes_the_take_video_to_the_fuser() -> None:
+    """成片作为 video_url part 传进融合器 —— 不再先转成一段文字描述。"""
+    seen: list[object] = []
+
+    async def fuse(
+        prompt, requirements, *, visual_context="", media_parts=None
+    ):
+        seen.append(media_parts)
+        return {"prompt": f"{prompt}（已融合）", "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse, media_parts=[_TAKE_PART]
+    )
+
+    assert prompt == "原始画面（已融合）"
+    assert seen == [[_TAKE_PART]]
+
+
+async def test_build_rework_prompt_retry_keeps_the_take_video() -> None:
+    """重试时视频要一起重发，否则第 2 次起模型又看不到成片了。"""
+    seen: list[object] = []
+
+    async def fuse(
+        prompt, requirements, *, media_parts=None, retry_feedback=""
+    ):
+        seen.append(media_parts)
+        if len(seen) == 1:
+            return {"prompt": prompt, "must_avoid": []}  # 原样 → 判不合格
+        return {"prompt": f"{prompt}（已融合）", "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=fuse, media_parts=[_TAKE_PART]
+    )
+
+    assert prompt == "原始画面（已融合）"
+    assert seen == [[_TAKE_PART], [_TAKE_PART]]
+
+
+async def test_build_rework_prompt_tolerates_fuser_without_media_parts() -> None:
+    """老融合器不收 media_parts —— 不能因此报错（签名探测兜底）。"""
+
+    async def legacy_fuse(original_prompt: str, requirements: list[str]) -> dict:
+        return {"prompt": f"{original_prompt}（旧融合器）", "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        "原始画面", ["手不要僵"], fuse=legacy_fuse, media_parts=[_TAKE_PART]
+    )
+
+    assert "旧融合器" in prompt
+
+
+# --- 2026-09-29 用户要求：「把累积的规则删了」 ---
+
+
+def test_fusion_requirements_takes_only_this_round() -> None:
+    """喂给融合的只有本轮要求 —— 历史不再重喂（见 test_optimize_prompts 的实测说明）。"""
+    from feishu_generation_agent.integrations.rework_prompt import (
+        fusion_requirements,
+    )
+
+    assert fusion_requirements("手不要僵") == ["手不要僵"]
+    assert fusion_requirements("  背景太暗  ") == ["背景太暗"]
+    assert fusion_requirements("") == []
+    assert fusion_requirements(None) == []
+
+
+def test_rework_inputs_still_accumulates_for_the_record() -> None:
+    """`rework_inputs` 的累积语义**不变**（记录 + 重新规划的历史都靠它）。"""
+    from types import SimpleNamespace
+
+    from feishu_generation_agent.integrations.rework_prompt import rework_inputs
+
+    task = SimpleNamespace(
+        prompt="上一版正文",
+        rework_requirements=["历史要求"],
+        rework_base_prompt="冻结的第一版",
+    )
+
+    base_prompt, requirements = rework_inputs(task, "本轮要求")
+
+    assert base_prompt == "上一版正文"
+    assert requirements == ["历史要求", "本轮要求"]
+
+
+# --- 2026-10-10「铲」任务：视觉要求被融合器落进了【声音】段 ---
+#
+# 真实数据（run cf40359d，需求「铲」）：用户本轮要求是
+#   「上一版质感对了，但是这一版质感又变回去了，不是硬化后的，然后铲子铲的是
+#     明确的红色区域，不要铲橙色」
+# 融合结果的**唯一改动**是在【全局声音与字幕约束】里把「蜡片卷曲」改成
+# 「蜡片脆性断裂卷曲」（+4 字），**视觉段一个字没动** —— 而这两段在上一版
+# 已经逐字相同，所以用户看到的现象是「改了提示词，画面却没有任何变化」。
+#
+# 旧契约拦不住：`_same_text` 只拦「逐字返回」，新小节/结尾段增长两道判据都不适用
+# （改动发生在原有小节内部）。所以补一条**落点**判据：本轮要求讲的是画面/材质时，
+# 改动必须发生在**非声音段**的正文里。
+
+_SPADE_BASE = (
+    "【全局声音与字幕约束】不要BGM、不要字幕，只保留音效：铲子刮擦蜡层、蜡片卷曲、"
+    "蜡豆碰撞堆叠与铲出蜡面的实拍声。\n"
+    "【素材说明】@图片1 中的彩虹色蜡层与蜡豆布局。\n"
+    "【一句话概述】真人手握铲子铲开蜡层。\n"
+    "【全局视觉设定】全局风格：写实实拍产品特写，蜡体为明显硬化的实心蜡质。\n"
+    "【详细情节】0-3秒：铲尖对准画面最右侧的红色条纹，沿条纹切下一条红色条状蜡。\n"
+    "【全局连续性与结尾约束】桌面上不要出现任何 logo、品牌特征、水印与文字。"
+)
+
+_SPADE_VISUAL_REQUIREMENT = (
+    "上一版质感对了，但是这一版质感又变回去了，不是硬化后的，"
+    "然后铲子铲的是明确的红色区域，不要铲橙色"
+)
+
+
+def test_fusion_rejected_when_a_visual_requirement_lands_only_in_the_audio_section() -> None:
+    fused = _SPADE_BASE.replace("蜡片卷曲", "蜡片脆性断裂卷曲")
+
+    reason = fusion_rejection_reason(
+        fused,
+        base_prompt=_SPADE_BASE,
+        requirements=[_SPADE_VISUAL_REQUIREMENT],
+    )
+
+    assert reason is not None, "只在声音段改字、视觉段一字未动，必须判不合格"
+    assert "声音" in reason or "音效" in reason
+
+
+def test_fusion_accepted_when_the_visual_requirement_is_woven_into_the_visual_section() -> None:
+    """就地改进视觉句（哪怕声音段同时也有改动）照旧放行 —— 别把正常返工拦死。"""
+    fused = _SPADE_BASE.replace("蜡片卷曲", "蜡片脆性断裂卷曲").replace(
+        "铲尖对准画面最右侧的红色条纹",
+        "铲尖只对准画面最右侧的红色条纹、铲面始终不接触相邻的橙色条纹",
+    )
+
+    assert (
+        fusion_rejection_reason(
+            fused,
+            base_prompt=_SPADE_BASE,
+            requirements=[_SPADE_VISUAL_REQUIREMENT],
+        )
+        is None
+    )
+
+
+def test_fusion_accepted_when_an_audio_requirement_changes_the_audio_section() -> None:
+    """要求本身就在讲音效时，落在声音段正是**正确**落点。"""
+    fused = _SPADE_BASE.replace("蜡片卷曲", "蜡片脆性断裂卷曲")
+
+    assert (
+        fusion_rejection_reason(
+            fused,
+            base_prompt=_SPADE_BASE,
+            requirements=["只要铲、蜡和蜡豆的动作音效，不要任何BGM"],
+        )
+        is None
+    )
+
+
+def test_audio_landing_check_is_skipped_without_sections() -> None:
+    """单镜头 / 文生视频没有分段结构，不做落点判断。"""
+    assert (
+        fusion_rejection_reason(
+            "一只猫在缓慢行走",
+            base_prompt="一只猫在跑",
+            requirements=[_SPADE_VISUAL_REQUIREMENT],
+        )
+        is None
+    )
+
+
+# --- 2026-10-10：整篇「重新生成计划」要继承累积的返工要求（而不是清零） ---
+#
+# 真实数据（run e3ac684b）：用户点了「重新生成计划」，新 run 从
+# `ingest_source → plan_requirements` 重跑，新任务的 `rework_requirements` 变成
+# **空列表** —— 上一轮攒下的「蜡是比较硬化状态的」直接消失，用户不得不在
+# 两小时后重新说一遍「蜡的质感是明显硬化的」。这就是「上一版质感对了，
+# 这一版质感又变回去了」的来源。
+#
+# 这两条是纯函数：跨 run 收集 + 并回计划，接线在 runtime / nodes 里。
+
+
+def test_collect_rework_requirements_unions_across_runs_in_order() -> None:
+    from feishu_generation_agent.integrations.rework_prompt import (
+        collect_rework_requirements,
+    )
+
+    older = {"approved_plan": {"tasks": [{"rework_requirements": ["蜡要硬化"]}]}}
+    newer = {
+        "draft_plan": {
+            "tasks": [
+                {"rework_requirements": ["蜡要硬化", "只铲最右侧的红色"]},
+                {"rework_requirements": ["不要铲橙色"]},
+            ]
+        }
+    }
+
+    collected = collect_rework_requirements([older, newer])
+
+    assert collected == ["蜡要硬化", "只铲最右侧的红色", "不要铲橙色"]
+
+
+def test_collect_rework_requirements_caps_the_history() -> None:
+    from feishu_generation_agent.integrations.rework_prompt import (
+        collect_rework_requirements,
+    )
+
+    state = {
+        "draft_plan": {
+            "tasks": [{"rework_requirements": [f"要求{i}" for i in range(30)]}]
+        }
+    }
+
+    collected = collect_rework_requirements([state], limit=5)
+
+    assert len(collected) == 5
+    # 留最近的 5 条
+    assert collected == [f"要求{i}" for i in range(25, 30)]
+
+
+def test_collect_rework_requirements_ignores_blank_and_broken_states() -> None:
+    from feishu_generation_agent.integrations.rework_prompt import (
+        collect_rework_requirements,
+    )
+
+    assert collect_rework_requirements([]) == []
+    assert collect_rework_requirements([{}, {"draft_plan": None}]) == []
+    assert collect_rework_requirements(
+        [{"draft_plan": {"tasks": [{"rework_requirements": ["", "  ", "真要求"]}]}}]
+    ) == ["真要求"]
+
+
+def test_inherit_rework_requirements_stamps_every_task() -> None:
+    from feishu_generation_agent.integrations.rework_prompt import (
+        inherit_rework_requirements,
+    )
+
+    plan = {
+        "tasks": [
+            {"task_id": "task-1"},
+            {"task_id": "task-2", "rework_requirements": ["本轮新要求"]},
+        ]
+    }
+
+    stamped = inherit_rework_requirements(plan, ["蜡要硬化", "只铲最右侧的红色"])
+
+    assert stamped == 2
+    assert plan["tasks"][0]["rework_requirements"] == ["蜡要硬化", "只铲最右侧的红色"]
+    # 累积语义：继承的在前，任务自己的在后
+    assert plan["tasks"][1]["rework_requirements"] == [
+        "蜡要硬化",
+        "只铲最右侧的红色",
+        "本轮新要求",
+    ]
+
+
+def test_inherit_rework_requirements_without_history_is_a_noop() -> None:
+    from feishu_generation_agent.integrations.rework_prompt import (
+        inherit_rework_requirements,
+    )
+
+    plan = {"tasks": [{"task_id": "task-1"}]}
+
+    assert inherit_rework_requirements(plan, []) == 0
+    assert "rework_requirements" not in plan["tasks"][0]

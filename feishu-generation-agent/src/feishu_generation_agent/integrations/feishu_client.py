@@ -868,6 +868,15 @@ class FeishuClient:
             category = ErrorCategory.TRANSIENT
             message = "飞书服务暂时不可用，请稍后重试"
             retryable = True
+        elif FeishuClient._is_transient_provider_code(payload):
+            # 飞书把一部分**服务端瞬时故障**也塞在 HTTP 400 里回来，典型是
+            # `code=131001 msg=rpc fail`（2026-09-23 实测：同一个 wiki 链接连续两次
+            # 都报这个，直接打飞书接口却是 code=0 success —— 文档本身没问题）。
+            # 以前这种被归到下面的 DOCUMENT + 不可重试分支，一次抖动就让整条运行
+            # 永久失败，用户看到的是「文档读取失败，请检查文档内容或格式」。
+            category = ErrorCategory.TRANSIENT
+            message = "飞书服务暂时不可用，请稍后重试"
+            retryable = True
         else:
             category = ErrorCategory.DOCUMENT
             message = "飞书文档响应无效或不受支持"
@@ -919,6 +928,23 @@ class FeishuClient:
         return (
             response.status_code == 401
             or FeishuClient._api_code(payload) == _TOKEN_INVALID_CODE
+        )
+
+    @staticmethod
+    def _is_transient_provider_code(payload: dict) -> bool:
+        """飞书把哪些「HTTP 400 + 业务 code」当成**瞬时故障**。
+
+        `131001 rpc fail` 是实测撞到的：同一个 wiki 链接连续两次都报它，而直接打
+        飞书接口是 `code=0 success` —— 属于飞书服务端抖动，重试就能过。
+        其余 400 类错误（权限、token 无效、文档不存在）**不能**当瞬时，重试只是浪费。
+        """
+        code = payload.get("code")
+        if code in {131001, 131002, 131003, 99991400}:
+            return True
+        message = str(payload.get("msg") or payload.get("message") or "").lower()
+        return any(
+            marker in message
+            for marker in ("rpc fail", "system busy", "try again", "internal error")
         )
 
     @staticmethod

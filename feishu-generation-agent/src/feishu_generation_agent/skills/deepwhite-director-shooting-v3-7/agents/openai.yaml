@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deepwhite导演拍摄技能v3.7"
+  short_description: "导演分镜、故事板与Seedance提示词｜作者：DeepWhite"
+  default_prompt: "使用 $deepwhite-director-shooting-v3-7，忠实保留剧本和台词，完成资产、空间、分镜、火柴人简笔画故事板及 Seedance 2.5 提示词；文戏强化镜头任务、连续运动和切镜动势，战斗或高运动段仅在提示词阶段使用动态动作与物理因果模块。"

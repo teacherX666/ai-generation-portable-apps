@@ -34,6 +34,9 @@ from feishu_generation_agent.integrations.feishu_source import (
 from feishu_generation_agent.integrations.feishu_sheet_export import (
     FeishuSheetExporter,
 )
+from feishu_generation_agent.integrations.director_skill import (
+    director_skill_prompt_section,
+)
 from feishu_generation_agent.integrations.planner import DeepSeekPlanner
 from feishu_generation_agent.integrations.routing_delivery import RoutingDeliveryWriter
 from feishu_generation_agent.integrations.production_bitable import ProductionBitableClient
@@ -394,8 +397,14 @@ async def _open_application_services(
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_model,
             temperature=0,
-            max_retries=2,
-            timeout=120,
+            # 规划调用本身就很重：导演技能注入段约 34k 字符 + 文档 + 素材，而且
+            # `DeepSeekPlanner` 给规划模型开了 thinking + reasoning_effort=high。
+            # 实测正常规划要 88~175 秒，120 秒的单次超时太紧 —— 2026-09-23
+            # 【宝石】ai片头需求文档1 连续两次卡在 120×3=360 秒预算上失败
+            # （operation=plan; cause=APITimeoutError）。给到 300 秒让慢调用跑完，
+            # 同时把重试从 2 次收到 1 次，最坏耗时锁在 2×300=600 秒而不是 900 秒。
+            max_retries=1,
+            timeout=300,
         )
         # 素材库打不开不该阻断整个 agent：图片模式退化成人工挂参考图。
         try:
@@ -583,7 +592,16 @@ async def _open_application_services(
             ),
             public_media_host=UguuPublicMediaHost(provider_http),
             planner=DeepSeekPlanner(
-                planner_model, max_output_count=settings.max_output_count
+                planner_model,
+                max_output_count=settings.max_output_count,
+                skill_section=(
+                    director_skill_prompt_section(
+                        scope=settings.planner_skill_scope,
+                        max_chars=settings.planner_skill_max_chars,
+                    )
+                    if settings.planner_skill_enabled
+                    else ""
+                ),
             ),
             image_generator=(
                 ChiyunImageGenerator(

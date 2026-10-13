@@ -16,7 +16,9 @@ test("workflow uses user-facing status guidance instead of raw internal state", 
   assert.match(html, /任务状态/);
   assert.match(app, /waiting_approval:\s*\{ label: "等待你审核"/);
   assert.match(app, /delivery_failed:\s*\{ label: "写入结果表失败"/);
-  assert.match(app, /statusBadge\.textContent = statusInfo\.label/);
+  // 状态徽标写的是「状态文案 + 任务级进度」（生成中 2/3），见 app_run_progress.test.cjs。
+  assert.match(app, /statusBadge\.textContent = statusLabel/);
+  assert.match(app, /statusLabelWithProgress\(view, statusInfo\.label\)/);
 });
 
 test("technical workflow events are progressively disclosed", () => {

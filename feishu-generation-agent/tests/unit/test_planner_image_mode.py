@@ -134,11 +134,16 @@ def _image_plan_json(**updates: object) -> str:
 
 
 def test_video_planner_prompt_hash_is_still_frozen():
-    """图片模式不得改动视频 system prompt。"""
+    """图片模式不得改动视频 system prompt。
+
+    2026-10-12：视频契约按「原图保真」口径改过（水印不再触发 `usable=false`、
+    「不要水印/Logo」收窄到第三方），哈希随之更新 —— 改动是有意的，见
+    `tests/unit/test_reference_fidelity_rules.py`。
+    """
     assert hashlib.sha256(
         planner_system_prompt().encode("utf-8")
     ).hexdigest() == (
-        "db77e6e4a995de911ca75a4013a25a4382e088578f15a3c8258b0599c6ba992f"
+        "65fb914f8005792653c2ec688ad0c704dae50769dc90893d265db7fb88ed2f8b"
     )
 
 

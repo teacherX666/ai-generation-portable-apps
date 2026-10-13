@@ -401,6 +401,15 @@ class VideoReferenceAnalysis(BaseModel):
     summary: str = ""
     representative_frame_index: int = Field(default=1, ge=1)
     uncertainties: list[str] = Field(default_factory=list)
+    #: 2026-10-10（P1）：运镜与剪辑节奏**无条件**输出。
+    #:
+    #: 以前这两件事只在 `summary` 里、且只有 kind 判成 camera_movement /
+    #: editing_style 时才要求写 —— 单镜头任务（文档分镜表只有 1 行）没有分镜可依据，
+    #: 运镜与剪辑节奏是唯一能约束成片节奏的语义，留空就只能靠猜。给默认值是为了
+    #: 不打破原生多模态路径（graph/nodes.py）与 DeepSeekVideoInsight 的既有构造；
+    #: 抽帧路径由 `vision.py` 的 analyze_video 显式要求非空（空则重试）。
+    camera_movement: str = ""
+    editing_style: str = ""
 
 
 class VideoShot(BaseModel):

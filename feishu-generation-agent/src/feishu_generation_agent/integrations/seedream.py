@@ -44,6 +44,9 @@ from feishu_generation_agent.storage.provider_results import (
 _PROVIDER_NAME = "seedream"
 _RESULT_MIME = "image/png"
 _MAX_REFERENCE_IMAGES = 10
+#: 生图请求的超时（秒）。同步接口，整个生成过程都在这一个请求里，比视频的 120s
+#: 默认值需要宽得多；实测带参考图的 2K 图生图可以跑到 2 分钟以上。
+_IMAGE_REQUEST_TIMEOUT_SECONDS = 300.0
 
 # 来自 nano-banana 子应用的实测约束，勿凭空推导。
 _SEEDREAM_5_PRO_SIZES: dict[str, dict[str, str]] = {
@@ -101,6 +104,13 @@ class SeedreamImageGenerator:
         )
         self._base_url = self._transport._base_url
         self._model = self._transport._model
+        # 生图是**同步**接口：图直接在响应体里回来，整个生成过程都占着这一次请求。
+        # 视频那边是异步（提交后轮询），所以 transport 默认的 120s 够用；生图不够
+        # —— 2026-09-22 实测：带两张 5MB 参考图的图生图稳定在 120.2s 被 ReadTimeout
+        # 掐断（6 个并发里 4 个失败），表现就是「每段只剩一张分镜图」。
+        self._transport._timeout = httpx.Timeout(
+            _IMAGE_REQUEST_TIMEOUT_SECONDS, connect=10
+        )
         if result_downloader is None:
             raise self._configuration_error(
                 "result_downloader", "cause=missing"

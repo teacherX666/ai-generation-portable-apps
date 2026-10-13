@@ -30,6 +30,11 @@
   function serverIdentity(view) {
     const approval = view?.approval || {};
     return JSON.stringify(stableValue({
+      // **run_id 必须在身份里**：用户反复重跑同一条文档时，两条运行的
+      // status / revision / tasks 可能完全一样；少了 run_id 就会被判成「服务端视图
+      // 没变」→ 继续用上一条运行的本地草稿 → 切换任务记录时看到的是**旧运行的分镜图**
+      //（用户 2026-09-23：「我点另外一条任务记录就会出现这个问题」）。
+      run_id: view?.run_id || null,
       status: view?.status || null,
       revision: approval.revision ?? null,
       tasks: approval.tasks || [],
@@ -415,6 +420,32 @@
     );
   }
 
+  /**
+   * 批准 payload 里的任务：分镜关键帧只回传**标量字段**。
+   *
+   * 视图里的 `storyboard_frames[].candidates` 是带 preview_url 的对象（给界面渲染
+   * 用），而任务模型里 `candidates` 是 asset_id 字符串数组 —— 原样回传会校验失败。
+   * 候选图服务端自己存着（按 index 合并），这里只需要告诉它用户选了哪张。
+   */
+  function approvalTask(task) {
+    const frames = Array.isArray(task.storyboard_frames)
+      ? task.storyboard_frames
+      : [];
+    if (!frames.length) return task;
+    return {
+      ...task,
+      storyboard_frames: frames.map((frame) => ({
+        index: frame.index,
+        start: frame.start,
+        end: frame.end,
+        prompt: frame.prompt || "",
+        selected: frame.selected
+          || frame.candidates?.find((item) => item.selected)?.asset_id
+          || null,
+      })),
+    };
+  }
+
   function buildApprovalPayload(state) {
     if (state.conflict) throw new Error(state.conflict);
     if (state.submitting) throw new Error("审批提交中，请勿重复提交");
@@ -430,7 +461,7 @@
     return {
       action: "approve",
       selected_task_ids: [...state.selectedTaskIds],
-      tasks: draftTasks(state),
+      tasks: draftTasks(state).map(approvalTask),
     };
   }
 
@@ -526,9 +557,94 @@
       !== taskEditorIdentity(nextState?.serverView);
   }
 
+  //: ── 素材编号：界面必须和**提示词里的编号**一致 ───────────────────────────────
+  //:
+  //: 用户 2026-09-30：「前端图片、视频这种类型不同的素材，可以分别 123 的顺序来，
+  //: 图片1 和 视频1 自然区分开了」。这和后端契约本来就一致：规划器拿到的素材目录是
+  //: **按类型各从 1 起**编号的（`planner.py` 的「图片、视频、音频按实际提交顺序**分别
+  //: 1 起**编号」，提示词里写 `@图片N / @视频N / @音频N`）；而 `order` 字段只是**全局
+  //: 提交顺序**，后端要求它恰好是 1..N 连续（`integrations/seedance.py` 的
+  //: `order_mismatch` 校验），两者不是一回事。
+  //:
+  //: 所以：界面显示按类型的号（图片1 / 视频1…），`order` 继续做全局序号 —— 改号时只在
+  //: **该类型内部**重排，然后把全局 order 重编成 1..N（类型之间的槽位保持不变）。
+  const KIND_OF_ROLE = {
+    reference_video: "video",
+    reference_audio: "audio",
+    first_frame: "first_frame",
+    last_frame: "last_frame",
+  };
+  const KIND_LABEL = { image: "图片", video: "视频", audio: "音频" };
+
+  function referenceKind(reference) {
+    return KIND_OF_ROLE[reference?.role] || "image";
+  }
+
+  /** asset_id → 界面标签：`图片1` / `图片2` / `视频1` / `音频1` / `首帧` / `尾帧`。 */
+  function referenceLabels(references) {
+    const labels = new Map();
+    const counters = new Map();
+    [...(references || [])]
+      .sort((left, right) => left.order - right.order)
+      .forEach((reference) => {
+        const kind = referenceKind(reference);
+        if (kind === "first_frame" || kind === "last_frame") {
+          labels.set(reference.asset_id, kind === "first_frame" ? "首帧" : "尾帧");
+          return;
+        }
+        const next = (counters.get(kind) || 0) + 1;
+        counters.set(kind, next);
+        labels.set(reference.asset_id, `${KIND_LABEL[kind]}${next}`);
+      });
+    return labels;
+  }
+
+  /** 该素材在**自己类型里**的序号（1 起）；首帧/尾帧返回 0（不参与编号）。 */
+  function referenceTypeIndex(references, assetId) {
+    const list = [...(references || [])].sort((left, right) => left.order - right.order);
+    const target = list.find((reference) => reference.asset_id === assetId);
+    if (!target) return 0;
+    const kind = referenceKind(target);
+    if (kind === "first_frame" || kind === "last_frame") return 0;
+    return list.filter((reference) => referenceKind(reference) === kind)
+      .findIndex((reference) => reference.asset_id === assetId) + 1;
+  }
+
+  /** 改「同类型内的序号」：在该类型内部重排，再把全局 order 重编成 1..N。
+   *
+   *  类型之间的**槽位交错保持不变**（图片占它原来的槽位、视频占它原来的槽位），于是：
+   *   - 后端要求的 `order == 1..N 连续` 永远成立（不会再报 order_mismatch）；
+   *   - 界面上的「图片1 / 视频1」与提示词里的 `@图片1 / @视频1` 一一对应。
+   */
+  function reorderReferenceType(references, assetId, nextIndex) {
+    const list = [...(references || [])].sort((left, right) => left.order - right.order);
+    const target = list.find((reference) => reference.asset_id === assetId);
+    if (!target) return references;
+    const kind = referenceKind(target);
+    if (kind === "first_frame" || kind === "last_frame") return references;
+    const slots = list
+      .map((reference, index) => ({ reference, index }))
+      .filter((item) => referenceKind(item.reference) === kind);
+    const current = slots.findIndex((item) => item.reference.asset_id === assetId);
+    const wanted = Math.min(Math.max(1, Number(nextIndex) || 1), slots.length) - 1;
+    if (current < 0 || wanted === current) return references;
+    const ordered = slots.map((item) => item.reference);
+    const [moved] = ordered.splice(current, 1);
+    ordered.splice(wanted, 0, moved);
+    const next = [...list];
+    slots.forEach((item, index) => {
+      next[item.index] = ordered[index];
+    });
+    return next.map((reference, index) => ({ ...reference, order: index + 1 }));
+  }
+
   return {
     CONFLICT_MESSAGE,
     beginApprovalSubmit,
+    referenceKind,
+    referenceLabels,
+    referenceTypeIndex,
+    reorderReferenceType,
     buildApprovalPayload,
     assetCoverage,
     canApprove,

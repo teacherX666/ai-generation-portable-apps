@@ -1,3 +1,67 @@
+/* 图片放大预览：任意图片双击即全屏看细节（分镜候选、参考图都覆盖）。 */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .6rem;
+  background: rgba(9, 16, 26, .9);
+  cursor: zoom-out;
+}
+.image-lightbox[hidden] { display: none; }
+.image-lightbox img {
+  max-width: 94vw;
+  max-height: 88vh;
+  object-fit: contain;
+  border-radius: .5rem;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .5);
+  background: #fff;
+}
+.image-lightbox-hint {
+  margin: 0;
+  color: rgba(255, 255, 255, .72);
+  font-size: .78rem;
+}
+img { cursor: zoom-in; }
+
+/* ① 单击预览（2026-10-10）：
+   - `.previewable` 是「这张缩略图点一下就能放大」的显式标记（img 本来就是 zoom-in
+     光标，这里再补一层可聚焦/可键盘触发的语义）；
+   - `.preview-button` 用在**点缩略图已经有别的含义**的地方（分镜候选：点一下是选中
+     这张关键帧），所以给一个独立的小按钮，不抢原来的单击；
+   - `.storyboard-candidate-cell` 把「候选按钮 + 预览按钮」竖排，避免 button 套 button。 */
+.previewable { cursor: zoom-in; }
+.previewable:focus-visible,
+.preview-button:focus-visible {
+  outline: 2px solid var(--ui-action-primary, #235fd6);
+  outline-offset: 2px;
+}
+.preview-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .2rem;
+  padding: .1rem .45rem;
+  border: 1px solid rgba(20, 38, 31, .22);
+  border-radius: .35rem;
+  background: rgba(255, 255, 255, .92);
+  color: inherit;
+  font-size: .7rem;
+  line-height: 1.4;
+  cursor: zoom-in;
+}
+.preview-button:hover { background: #fff; border-color: rgba(20, 38, 31, .4); }
+.preview-button:disabled { cursor: not-allowed; opacity: .5; }
+.storyboard-candidate-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .25rem;
+}
+
 :root {
   color-scheme: light;
   /* The approval workflow keeps its own green semantic accent inside the
@@ -411,6 +475,27 @@ button {
 .excluded-asset-copy { min-width: 0; }
 .excluded-asset-copy strong { overflow-wrap: anywhere; font-size: .8rem; }
 .excluded-asset-copy p { margin: .2rem 0 0; color: var(--muted); font-size: .76rem; }
+/* 「未使用素材」的行**没有媒体预览**（只 append 了 .excluded-asset-copy），却沿用了上面
+   `.excluded-asset-row` 的「68px 预览 + 1fr 正文」两列模板 —— grid 自动放置会把唯一的
+   子项放进第 1 列（68px），第 2 列空着。于是正文被压到 68px 宽、中文按最小内容宽度
+   逐字换行（7 行），而卡片仍被父级 grid 拉伸到整行宽 → 右侧一大片空白（2026-10-08）。
+   这里只给「未使用素材」这一个区块换成单列 + 正文占满（作用域限定在
+   `.excluded-asset-list--uncovered` 内，不碰 .card / p 等全局选择器，也不影响
+   「排除素材」区块那种**带预览**的两列行）。 */
+.excluded-asset-list--uncovered { gap: .75rem; }
+.excluded-asset-list--uncovered .excluded-asset-row {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+.excluded-asset-list--uncovered .excluded-asset-copy {
+  width: 100%;
+}
+/* 长 URL / 长英文串不溢出；**不用** word-break: break-all（那会把中文和英文单词一起
+   强制切断）。overflow-wrap 只在「整段放不下」时才断开，中文照旧按标点自然折行。 */
+.excluded-asset-list--uncovered .excluded-asset-copy p {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
 .task-list { display: grid; gap: 1rem; }
 .task-card { border: 1px solid var(--line); border-radius: .75rem; padding: 1rem; background: #fcfdfb; }
 .task-title-row { display: flex; gap: .75rem; align-items: flex-start; }
@@ -521,7 +606,21 @@ button {
 .upload-feedback.is-uploading { color: var(--warning); font-weight: 700; }
 .upload-feedback.is-success { color: var(--brand-dark); font-weight: 700; }
 .upload-feedback.is-error { color: var(--danger); font-weight: 700; }
+/* 拖文件到「增添素材」那一行时的落点提示（2026-09-29） */
+.upload-row.isDragging { outline: 2px dashed var(--brand-dark); outline-offset: 3px; border-radius: .5rem; }
+/* 拖到「参考素材」整节的任意位置都算（用户直觉落点是这一节，不是那条细行） */
+.reference-section.isDragging { outline: 2px dashed var(--brand-dark); outline-offset: 4px; border-radius: .6rem; background: rgba(37, 99, 235, .04); }
+/* 标题行里的落点提示（2026-09-29） */
+.reference-drag-hint { margin-left: auto; color: var(--muted); font-size: .76rem; font-weight: 400; }
 .feedback-box { margin-top: 1.25rem; }
+/* 审批页的原地提示词优化：按钮与置灰原因同一行。 */
+.prompt-optimize-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+  margin-top: .5rem;
+}
 
 .action-bar {
   position: fixed;
@@ -653,6 +752,11 @@ button {
   gap: .4rem;
   align-items: center;
 }
+.trash-auto-note {
+  margin: .3rem 0 0;
+  color: var(--muted);
+  font-size: .74rem;
+}
 .trash-empty {
   margin: 0;
   color: var(--muted);
@@ -751,6 +855,32 @@ button {
 .artifact-history-card img,
 .artifact-history-card video { max-height: 200px; }
 .artifact-history-card figcaption { flex-direction: column; align-items: flex-start; }
+/* 失败的尝试也要出现在滑条里，但**必须**和成功版一眼分得开：
+   灰化 + 红边 + 「失败」徽标 + 卡片上直接写失败原因
+   （用户 2026-09-24：「我失败过几次、为什么失败」看不到）。 */
+.artifact-history-card.is-failed {
+  border-color: #e3c4c4;
+  background: #faf5f5;
+  filter: grayscale(.55);
+  opacity: .92;
+}
+.artifact-history-card.is-failed figcaption { color: #8a5a5a; }
+.artifact-history-badge {
+  padding: .1rem .4rem;
+  border-radius: .4rem;
+  background: #f3dcdc;
+  color: #9b2c2c;
+  font-size: .72rem;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.artifact-history-reason {
+  margin: .1rem .65rem .55rem;
+  color: #7a3b3b;
+  font-size: .76rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 .artifact-card {
   margin: 0;
   overflow: hidden;
@@ -775,6 +905,13 @@ button {
   color: var(--muted);
   font-size: .8rem;
 }
+/* 「镜头 2/3 · 第 1/4 条 · 标题」：卡片之间长得一样，没有它用户分不清该勾哪一条。 */
+.artifact-shot-label {
+  flex: 1 1 100%;
+  color: var(--text);
+  font-weight: 750;
+  line-height: 1.35;
+}
 .artifact-download-button {
   min-height: 2rem;
   margin-left: auto;
@@ -786,8 +923,7 @@ button {
   font-size: .78rem;
   font-weight: 750;
   cursor: pointer;
-}
-.artifact-download-button:hover { background: var(--brand-soft); border-color: var(--brand-border); }
+}.artifact-download-button:hover { background: var(--brand-soft); border-color: var(--brand-border); }
 .artifact-download-button:disabled { cursor: wait; opacity: .65; }
 .artifact-review-actions {
   display: flex;
@@ -995,27 +1131,51 @@ button {
   margin: 8px 0 0;
   padding: 0;
   display: grid;
+  /* 单列锁在容器宽度里：auto 列会被行内不可断的长串（URL）撑宽，整行溢出卡片右侧。
+   * 与「未使用素材」那次同一个坑（auto 轨道按最宽子项定宽）。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
 }
 .take-finding {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  min-width: 0;
   font-size: 13px;
 }
+/* 时间/徽标是元信息：定宽、不压缩、不换行，永远和左侧文字同一行。 */
 .take-finding-at {
   color: var(--muted);
+  flex: 0 0 auto;
   min-width: 42px;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+/* 左侧正文：flex 子项默认 min-width:auto，长内容撑不下就会去侵占右侧空间。
+ * 给一个 5em（≈5 个汉字）的下限：flex 收缩是按「自身内容宽度」比例分摊的，
+ * 内容极短的那一列会被压到 1 个字宽、竖着堆成一列（同一类「堆叠」）。
+ * 8% 的封顶保证窄屏（单列移动端）不会因为下限把卡片撑破。 */
+.take-finding-issue {
+  flex: 0 1 auto;
+  min-width: min(5em, 8%);
+  overflow-wrap: anywhere;
+}
+/* 理由列吸收剩余宽度：左侧一长它就被压成几十像素宽的竖条、正文按两三个字一行堆成
+ * 几十行（用户报的「堆叠、占很多行」）。min-width 给下限，overflow-wrap 兜长串。 */
 .take-finding-why {
   color: var(--muted);
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: min(5em, 8%);
+  overflow-wrap: anywhere;
 }
+/* 采纳按钮是这一行唯一的动作：不许被挤走、不许自己换行，始终右对齐。 */
 .take-finding-adopt {
+  flex: 0 0 auto;
   margin-left: auto;
+  white-space: nowrap;
 }
 .take-finding-kind {
+  flex: 0 0 auto;
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 999px;
@@ -1023,11 +1183,263 @@ button {
   color: #fff;
   white-space: nowrap;
 }
+/* 摘要/说明里的长串（URL）不撑破卡片；中文断行规则不变（不用 word-break: break-all）。 */
+.take-findings p {
+  overflow-wrap: anywhere;
+}
+/* 标题行：右侧按钮是元信息，不能被左侧文字挤走。 */
+.take-findings-head button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .take-finding.is-violation .take-finding-issue {
   font-weight: 600;
 }
+/* 文档名与「复制」图标按钮同一行：图标紧跟标题右侧，标题过长时自己换行。 */
+.review-title-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  min-width: 0;
+}
+.review-title-row h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 #copy-document-title {
-  margin-top: 6px;
-  font-size: 12px;
-  padding: 2px 8px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  color: var(--muted);
+  background: #fff;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+#copy-document-title:hover:not(:disabled) {
+  color: var(--brand-dark);
+  border-color: var(--brand-border);
+  background: var(--brand-soft-hover);
+}
+#copy-document-title:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+#copy-document-title .copy-page-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+#copy-document-title .copy-page-icon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+#copy-document-title.is-copied {
+  color: var(--brand-dark);
+  border-color: var(--brand-border);
+  background: var(--brand-soft);
+}
+#copy-document-title.is-fallback {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--line));
+  background: #fdf5e6;
+}
+/* 图标变色太含蓄，用户会以为「点了没反应」——旁边再给一条文字回执。 */
+.copy-title-feedback {
+  font-size: .74rem;
+  font-weight: 700;
+  color: var(--brand-dark);
+  white-space: nowrap;
+}
+.copy-title-feedback:empty {
+  display: none;
+}
+.copy-title-feedback.is-fallback {
+  color: var(--warning);
+}
+.copy-title-feedback.is-error {
+  color: var(--danger);
+}
+
+/* 置灰按钮旁边的「为什么点不动」提示。 */
+.action-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.4;
+}
+
+/* 分镜关键帧选图区：每段一行，横排 K 张候选，选中的描边高亮。 */
+.storyboard-section {
+  margin-top: .9rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand-border);
+  border-radius: .6rem;
+  background: #fbfdfc;
+}
+.storyboard-hint {
+  margin: 0 0 .6rem;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.5;
+}
+.storyboard-row {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  margin-top: .5rem;
+}
+.storyboard-when {
+  flex: 0 0 auto;
+  min-width: 8.5rem;
+  color: var(--brand-dark);
+  font-size: .78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.storyboard-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+/* 候选被删光的段：这一行只留一句说明（该段没有关键帧，不会再作为参考图提交）。 */
+.storyboard-empty {
+  align-self: center;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.5;
+}
+.storyboard-candidate {
+  padding: 0;
+  width: 6.5rem;
+  height: 6.5rem;
+  border: 2px solid var(--line);
+  border-radius: .5rem;
+  background: #fff;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.storyboard-candidate img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.storyboard-candidate:hover {
+  border-color: var(--brand-border);
+}
+/* 「重新生成这一张」：跟在候选横排后面，不抢视觉重心。 */
+.storyboard-regenerate {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-left: .25rem;
+  padding: .35rem .6rem;
+  font-size: .76rem;
+  white-space: nowrap;
+}
+.storyboard-regenerate:disabled { opacity: .6; cursor: default; }
+
+.storyboard-candidate.is-selected {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft-hover);
+}
+
+/* 审查员风险提示：批准之前必须看得见，所以默认展开、用警示色左边界。 */
+.audit-issues {
+  margin-top: .75rem;
+  padding: .7rem .85rem;
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--line));
+  border-left: 4px solid var(--warning);
+  border-radius: .6rem;
+  background: #fdf8ef;
+}
+.audit-issues > summary {
+  color: #7a4f10;
+  font-size: .84rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.audit-issues-count {
+  color: var(--muted);
+  font-weight: 600;
+}
+.audit-issues-list {
+  margin: .55rem 0 0;
+  padding-left: 1.15rem;
+  display: grid;
+  gap: .35rem;
+  color: #6b4712;
+  font-size: .82rem;
+  line-height: 1.55;
+}
+.audit-issues-list li {
+  overflow-wrap: anywhere;
+}
+.audit-issues-more {
+  margin-top: .55rem;
+  padding: .3rem .6rem;
+  font-size: .76rem;
+}
+
+/* 底部操作栏按钮的失败提示：固定贴在底部中间，不管页面滚到哪都看得见。 */
+.action-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 5.5rem;
+  transform: translateX(-50%);
+  z-index: 1200;
+  display: flex;
+  align-items: flex-start;
+  gap: .6rem;
+  max-width: min(42rem, calc(100vw - 2rem));
+  padding: .7rem .8rem .7rem .95rem;
+  border: 1px solid #e4aaa5;
+  border-left: 4px solid var(--danger);
+  border-radius: .6rem;
+  background: #fff5f4;
+  color: #7d241e;
+  font-size: .84rem;
+  font-weight: 650;
+  line-height: 1.5;
+  box-shadow: 0 10px 28px rgba(20, 38, 31, .18);
+}
+.action-toast.is-success {
+  border-color: var(--brand-border);
+  border-left-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--brand-dark);
+}
+.action-toast.is-info {
+  border-color: var(--brand-border);
+  border-left-color: var(--brand);
+  background: #f2f7fb;
+  color: #24455f;
+}
+.action-toast-text {
+  overflow-wrap: anywhere;
+}
+.action-toast-close {
+  flex: 0 0 auto;
+  padding: 0 .3rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  opacity: .7;
+}
+.action-toast-close:hover {
+  opacity: 1;
 }

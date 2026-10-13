@@ -28,9 +28,17 @@ VideoProvider = str
 DEFAULT_IMAGE_PROVIDER: ImageProvider = "banana"
 # provider 只接受这三个基准分辨率档位；像素尺寸属于 size_variants。
 # Seedance/视频提示词的硬性上限，规划与提交共用同一个值。
-SEEDANCE_PROMPT_MAX_CHARS = 1500
+#
+# 2026-09-22 从 1500 提到 2500：接入 Deepwhite 导演技能后，提示词按技能格式写
+# （全局声音约束 + 素材说明「参考什么/不参考什么」+ 一句话概述 + 全局视觉设定 +
+# 详细情节 + 连续性与结尾约束），信息量本来就比旧的三段式大；技能自己明确
+# 「不设固定字符数上限」。仍然保留一个上限，因为提交给方舟的载荷有实际约束
+# （SEEDANCE_PROMPT_SUBMIT_MAX_CHARS 会再追加参考图映射与负面约束）。
+SEEDANCE_PROMPT_MAX_CHARS = 2500
 # 提交时会追加参考图映射与负面约束，给最终供应商载荷保留独立余量。
-SEEDANCE_PROMPT_SUBMIT_MAX_CHARS = 2048
+# 必须**大于** SEEDANCE_PROMPT_MAX_CHARS，否则规划通过的提示词会在提交时被拒
+# （2026-09-22 提上限时踩到：规划 2500 / 提交 2048，等于上限形同虚设）。
+SEEDANCE_PROMPT_SUBMIT_MAX_CHARS = 3500
 IMAGE_SIZE_TOKENS = ("1K", "1.5K", "2K")
 # 图片生成模型（seedream / banana / gpt-image2）支持的离散画面比例。
 # 需求文档里的 1700*2500 是交付尺寸，不是比例参数：禁止写进 aspect_ratio。
@@ -119,6 +127,55 @@ class ImageReference(BaseModel):
         return value
 
 
+class StoryboardFrame(BaseModel):
+    """一个时间段的**关键帧**（分镜图）：这一段的静帧画面 + 候选图。
+
+    时间轴切段是确定性的（`reference_contract.timeline_segments`），帧描述直接取
+    该段正文 —— 所以 `index/start/end/prompt` 由系统回填，规划模型不需要产出它们。
+    `candidates` 是这一段的候选图 asset_id（规划阶段并发生成），`selected` 是用户
+    在审批页挑中的那张。
+    """
+
+    index: int = Field(ge=1)
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    prompt: str = ""
+    candidates: list[str] = Field(default_factory=list)
+    selected: str | None = None
+    #: 用户**显式删掉**了这一段的关键帧（在审批页的「参考素材」里删了那张图）。
+    #: 用户 2026-09-23：「分镜图我明明已经删掉他了不需要了还是能影响我」——
+    #: 删了就是「这一段不要关键帧」，不能被「没选就取第一张候选」的默认规则补回来。
+    #: 与「还没选过」（selected=None 但没删过）区分开：后者仍然按默认第一张算。
+    selection_cleared: bool = False
+
+
+class ReferencePlanItem(BaseModel):
+    """规划器对**每一个文档素材**的判断：它是分镜图、全局图还是参考视频，能不能直接用。
+
+    用户 2026-09-22 的口径：
+
+    - **分镜图**（role=shot）：跟某个时间段绑定，**每个分镜只保留 1 张**；
+    - **非分镜图**（role=global）：角色图 / 场景图，**全部保留**当全局参考；
+    - `usable=False`（水印、模糊、低质…）的图**不能直接参考** → 水印已不再触发任何
+      自动重画（用户 2026-10-10 删掉了那条链路），这类图仍按原口径**不进参考图**
+      （分镜图被摘掉、全局图被剔出生图输入）；要留原图得在审批页手动挂。
+
+    2026-10-08 新增 **role=video**（参考视频）：视频是**全局运动参考**，
+    `segment_index` 留空。它在契约里原本没有地位 —— planner 想用（判
+    `usable=true, role=global`）、应用却在规划后无条件把它摘掉，于是用户看到的
+    就是「规划阶段直接排除了参考视频」。现在有了明确 role：只要可用就必须照旧写进
+    `reference_images`（role 写 `reference_video`）并在 prompt 里用 `@视频N` 落点。
+    """
+
+    asset_id: str
+    role: Literal["shot", "global", "video"] = "global"
+    #: role=shot 时：这张图对应时间轴上的第几段（从 1 开始）。
+    segment_index: int | None = None
+    usable: bool = True
+    #: 不能用的原因（水印 / 模糊 / 低质 / 与分镜不符…），写给人看。
+    reason: str = ""
+
+
 class GenerationTask(BaseModel):
     task_id: str
     task_type: TaskType
@@ -128,6 +185,9 @@ class GenerationTask(BaseModel):
     prompt: str
     negative_constraints: list[str] = Field(default_factory=list)
     reference_images: list[ImageReference] = Field(default_factory=list)
+    #: 规划器对每张文档配图的判断（分镜图 / 全局图、能不能直接用）。
+    #: 只有分镜图开启时才消费它；见 graph/nodes.py 的参考图组装。
+    reference_plan: list[ReferencePlanItem] = Field(default_factory=list)
     reference_mode: ReferenceMode | None = None
     aspect_ratio: str
     image_size: str | None = None
@@ -143,6 +203,11 @@ class GenerationTask(BaseModel):
     duration: int | None = None
     resolution: str | None = None
     generate_audio: bool | None = None
+    # 分镜关键帧（每个时间段一张静帧 + 候选图）。由系统在规划阶段回填/生成，
+    # 不该出现在给规划模型的 JSON Schema 里（模型只写带时间轴的正文）。
+    storyboard_frames: SkipJsonSchema[list[StoryboardFrame]] = Field(
+        default_factory=list
+    )
     output_count: int = Field(default=1, ge=1)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     assumptions: list[str] = Field(default_factory=list)

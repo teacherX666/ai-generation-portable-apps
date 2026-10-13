@@ -119,8 +119,15 @@ async def test_unknown_size_is_not_blocked(tmp_path: Path) -> None:
     assert services.repository.events == []
 
 
-async def test_video_reference_is_dropped_with_an_event(tmp_path: Path) -> None:
-    from feishu_generation_agent.graph.nodes import _without_video_references
+async def test_video_reference_is_kept_without_an_event(tmp_path: Path) -> None:
+    """**视频不再被摘掉**（2026-10-08 P0）。
+
+    旧行为：`_without_unusable_references` 无条件把 `video/*` 从素材列表摘掉，与上游
+    能力（`video_url + role=reference_video`）冲突，而且是 2026-09-24「摘了视频但任务
+    还引用它 → `generation_asset_mapping_mismatch` → 节点全 completed、零产物、
+    `last_error: null`」的根因。现在视频原样保留，降级只在上游明确拒绝时发生。
+    """
+    from feishu_generation_agent.graph.nodes import _without_unusable_references
 
     services = _Services()
     assets = [
@@ -129,13 +136,29 @@ async def test_video_reference_is_dropped_with_an_event(tmp_path: Path) -> None:
         _asset(tmp_path, "image-2", "image/jpeg"),
     ]
 
+    kept = await _without_unusable_references(assets, "run-1", services)
+
+    assert [asset.asset_id for asset in kept] == [
+        "image-1",
+        "upload-abc",
+        "image-2",
+    ]
+    assert services.repository.events == []
+
+
+async def test_legacy_alias_also_keeps_videos(tmp_path: Path) -> None:
+    from feishu_generation_agent.graph.nodes import _without_video_references
+
+    services = _Services()
+    assets = [
+        _asset(tmp_path, "image-1", "image/png"),
+        _asset(tmp_path, "upload-abc", "video/mp4"),
+    ]
+
     kept = await _without_video_references(assets, "run-1", services)
 
-    assert [asset.asset_id for asset in kept] == ["image-1", "image-2"]
-    assert services.repository.events
-    node, status, summary = services.repository.events[0]
-    assert (node, status) == ("execute_selected_tasks", "running")
-    assert "视频" in summary
+    assert [asset.asset_id for asset in kept] == ["image-1", "upload-abc"]
+    assert services.repository.events == []
 
 
 async def test_no_event_when_there_is_no_video(tmp_path: Path) -> None:

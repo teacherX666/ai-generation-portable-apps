@@ -224,6 +224,10 @@ async def test_analyze_video_classifies_semantics_and_picks_representative_frame
             "summary": "缓慢推近镜头",
             "representative_frame_index": 9,
             "uncertainties": [],
+            # 2026-10-10（P1 ③）：运镜与剪辑节奏改成**无条件输出**，抽帧路径缺一
+            # 不可（`vision.analyze_video` 会当成校验失败重试）。
+            "camera_movement": "从全景缓慢推近到主体特写",
+            "editing_style": "无剪辑、单镜头连续",
         }
     )
     analyzer = ClaudeVisionAnalyzer(model, repository, prompt_version="vision-v1")
@@ -235,7 +239,53 @@ async def test_analyze_video_classifies_semantics_and_picks_representative_frame
     assert result.asset_id == "video-1"
     assert result.kind == VideoReferenceKind.CAMERA_MOVEMENT
     assert result.representative_frame_index == 3
+    assert result.camera_movement == "从全景缓慢推近到主体特写"
+    assert result.editing_style == "无剪辑、单镜头连续"
     assert len(model.last_messages[1]["content"]) == 4
+
+
+async def test_analyze_video_requires_camera_movement_and_editing_style(
+    repository: Repository,
+    tmp_path: Path,
+):
+    """③：运镜 / 剪辑节奏缺失时必须重试到上限后报错，不能静默放过。
+
+    单镜头任务（文档分镜表只有 1 行）没有分镜可依据，这两项是唯一能约束成片节奏的
+    语义 —— 留空就等于让规划阶段靠猜（用户 2026-10-10 要求「无条件要求输出运镜与
+    剪辑节奏语义」）。
+    """
+    frames: list[ExtractedVideoFrame] = []
+    for index in range(2):
+        frame = tmp_path / f"frame-{index + 1}.png"
+        Image.new("RGB", (32, 32), "blue").save(frame, format="PNG")
+        frames.append(
+            ExtractedVideoFrame(index=index + 1, path=frame, mime_type="image/png")
+        )
+    asset = MediaAsset(
+        asset_id="video-1",
+        source_block_id="video-block",
+        origin="feishu_video",
+        local_path=tmp_path / "video.mp4",
+        mime_type="video/mp4",
+        size=100,
+        sha256="video-sha",
+    )
+    model = FakeVisionModel(
+        {
+            "asset_id": "ignored",
+            "kind": VideoReferenceKind.SCENE_STYLE.value,
+            "summary": "场景参考",
+            "representative_frame_index": 1,
+            "uncertainties": [],
+        }
+    )
+    analyzer = ClaudeVisionAnalyzer(model, repository, prompt_version="vision-v1")
+
+    with pytest.raises(AgentError):
+        await analyzer.analyze_video(asset, frames)
+    # 重试到上限（3 次）而不是静默返回空字段
+    assert model.calls == 3
+    assert "camera_movement" in str(model.last_messages)
 
 
 async def test_cache_key_is_exact_and_only_stores_description_json(

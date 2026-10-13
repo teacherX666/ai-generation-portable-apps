@@ -226,6 +226,130 @@ async def test_submit_can_use_official_asset_urls_for_image_references(tmp_path:
     assert submission.provider == "volcengine_portrait"
 
 
+@pytest.mark.asyncio
+async def test_submit_sends_reference_video_as_video_url_with_role(
+    tmp_path: Path,
+) -> None:
+    """参考视频**真的**以 `video_url + role=reference_video` 发给上游。
+
+    2026-10-08 P0：这是用户诉求的核心 —— 以前 `graph/nodes.py` 会在提交前把
+    `reference_video` 换成一张抽帧静帧（role 改写为 `reference_image`），于是运动参考
+    被阉割、静帧的内容（小红书水印 + 不要参考的紫海绵块）被吸收进成片。上游方舟多参考
+    模式本来就接受 `video_url`（`_validate_submission` 明确放行），这条路径以前永远走不到。
+    """
+    requests: list[httpx.Request] = []
+    host = _FakePublicMediaHost()
+
+    def create(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "task-ark-video-ref", "status": "queued"})
+
+    video_bytes = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 32
+    video = _asset(
+        tmp_path, "upload-sand-video", content=video_bytes, mime_type="video/mp4"
+    )
+    task = _video_task(
+        references=[
+            {"asset_id": "asset-blue", "role": "reference_image", "order": 1},
+            {
+                "asset_id": "upload-sand-video",
+                "role": "reference_video",
+                "order": 2,
+            },
+        ]
+    )
+    image = _asset(tmp_path, "asset-blue", content=PNG_BLUE, mime_type="image/png")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(create)) as client:
+        generator = SeedanceVideoGenerator(
+            client,
+            base_url="https://ark.fictional.test/api/v3",
+            api_key="fictional-key",
+            model="fictional-model",
+            public_media_host=host,
+        )
+        assert generator.supports_video_references is True
+        await generator.submit(task, [image, video])
+
+    content = json.loads(requests[0].content)["content"]
+    assert content[1]["type"] == "image_url"
+    assert content[2]["type"] == "video_url"
+    assert content[2]["role"] == "reference_video"
+    assert content[2]["video_url"]["url"].startswith("https://public.example/")
+    # 视频走的是「上传到公开图床 → 发 video_url」，不是 base64 / asset://。
+    assert any(mime == "video/mp4" for _, mime in host.uploads)
+
+
+@pytest.mark.asyncio
+async def test_portrait_channel_rejects_video_references_instead_of_stripping(
+    tmp_path: Path,
+) -> None:
+    """只收图片的通道遇到视频引用要**明确报错**，不再静默摘掉。
+
+    2026-10-08：把两处互相矛盾的摘除逻辑合并成一条 —— 适配层只负责说实话（报一个
+    可判定的错误），要不要降级成抽帧由执行层决定并写可见事件。以前这里是
+    `_strip_non_image_references`：悄悄摘掉引用 + 重写提示词 token，事件里什么都没有。
+    """
+    requests: list[httpx.Request] = []
+
+    def create(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "task-portrait", "status": "queued"})
+
+    async def asset_url(task, reference, asset, content) -> str:
+        del task, reference, asset, content
+        return "asset://portrait-image-1"
+
+    video = _asset(
+        tmp_path,
+        "upload-sand-video",
+        content=b"\x00\x00\x00\x18ftypisom" + b"\x00" * 32,
+        mime_type="video/mp4",
+    )
+    task = _video_task(
+        references=[
+            {"asset_id": "asset-blue", "role": "reference_image", "order": 1},
+            {
+                "asset_id": "upload-sand-video",
+                "role": "reference_video",
+                "order": 2,
+            },
+        ]
+    )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(create)) as client:
+        generator = SeedanceVideoGenerator(
+            client,
+            base_url="https://ark.fictional.test/api/v3",
+            api_key="fictional-key",
+            model="fictional-model",
+            provider_name="volcengine_portrait",
+            image_url_resolver=asset_url,
+        )
+        assert generator.supports_video_references is False
+        with pytest.raises(AgentError) as caught:
+            await generator.submit(task, [_asset(tmp_path, "asset-blue", content=PNG_BLUE, mime_type="image/png"), video])
+
+    detail = caught.value.detail
+    assert detail.category is ErrorCategory.VALIDATION
+    # 文案里必须出现「参考视频」：执行层靠它判定「上游明确拒绝视频」并走抽帧降级。
+    assert "参考视频" in detail.message
+    assert "video_reference_not_supported" in detail.technical_detail
+    # 没有发出任何请求（本地就该拦下）。
+    assert requests == []
+
+
+def test_planner_contract_gives_the_reference_video_a_role() -> None:
+    """契约必须给视频明确地位（否则 planner 想用、应用却删）。"""
+    from feishu_generation_agent.integrations.planner import planner_system_prompt
+
+    contract = planner_system_prompt()
+    assert 'role="video"' in contract
+    assert "reference_video" in contract
+    # 视频只约束运动、不得贡献画面内容（用户原话：主角被换成了不要参考的那个）。
+    assert "只约束运动" in contract
+
+
 async def test_submit_allows_text_only_video_without_references(
     tmp_path: Path,
 ) -> None:
@@ -412,6 +536,17 @@ async def test_submit_treats_official_id_only_response_as_queued(
 async def test_submit_accepts_origin_base_and_valid_first_last_frames(
     tmp_path: Path,
 ) -> None:
+    """首尾帧任务下发时 ratio 必须被改写成 adaptive。
+
+    2026-10-09：审批通过的首尾帧任务带着规划器给的 `9:16` 原样下发，方舟前置校验
+    直接 400（`submit_invalidparameter.tasktypeconstraint`）：
+
+        The parameter ratio specified in the request is not valid. For first-frame
+        or first-last-frame generation, the output ratio follows the first-frame image.
+
+    方舟文档：首帧/首尾帧生视频任务下 ratio 仅支持 adaptive。这里同时钉住两件事 ——
+    下发的值是 adaptive，而**审批通过的那份 task 不被改动**（计划/审批记录照旧）。
+    """
     requests: list[httpx.Request] = []
 
     def create(request: httpx.Request) -> httpx.Response:
@@ -445,7 +580,43 @@ async def test_submit_accepts_origin_base_and_valid_first_last_frames(
         "first_frame",
         "last_frame",
     ]
-    assert body["generate_audio"] is False
+    # 首尾帧：输出比例跟随首帧图，只能下发 adaptive。
+    assert body["ratio"] == "adaptive"
+    # 审批通过的原任务不受影响（多参考图/文生视频仍按原比例下发）。
+    assert task.aspect_ratio == "9:16"
+    # 声音默认开启（用户 2026-09-21）：「未填写」不再等于静音，只有显式
+    # false 才静音。旧断言 `is False` 是「没提声音就静音」时代的契约。
+    assert body["generate_audio"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("generate_audio", "expected"),
+    [(None, True), (True, True), (False, False)],
+)
+async def test_submit_defaults_audio_on_unless_explicitly_disabled(
+    tmp_path: Path,
+    generate_audio: bool | None,
+    expected: bool,
+) -> None:
+    """声音默认开启：未填写(None) 与 true 都要出声，只有显式 false 才静音。
+
+    用户 2026-09-21：「为什么有的文档不会开启声音？现在所有文档默认把声音
+    打开」。旧实现是 `bool(task.generate_audio)`，未填写会静默变成静音。
+    """
+    requests: list[httpx.Request] = []
+    task = _video_task().model_copy(update={"generate_audio": generate_audio})
+    async with _recording_client(requests) as client:
+        generator = SeedanceVideoGenerator(
+            client,
+            base_url="https://ark.fictional.test",
+            api_key=SecretStr("fictional-key"),
+            model="fictional-model",
+        )
+        await generator.submit(task, _assets(tmp_path))
+
+    body = json.loads(requests[0].content)
+    assert body["generate_audio"] is expected
 
 
 @pytest.mark.asyncio
@@ -853,7 +1024,10 @@ async def test_submit_allows_raw_total_over_limit_when_references_are_remapped(
 @pytest.mark.asyncio
 async def test_submit_allows_final_prompt_over_planning_limit(tmp_path: Path) -> None:
     assets = _assets(tmp_path)
-    task = _video_task().model_copy(update={"prompt": "a" * 1490})
+    # 规划上限本身就是常量：写死 1490 会在上限调整后失效（2026-09-22 提到 2500 时踩到）。
+    task = _video_task().model_copy(
+        update={"prompt": "a" * (SEEDANCE_PROMPT_MAX_CHARS - 10)}
+    )
     requests: list[httpx.Request] = []
 
     async with _recording_client(requests) as client:
