@@ -1169,23 +1169,23 @@
           <table class="ip-stats-table ui-data-table">
             <thead>
               <tr>
-                <th>时间</th><th>用户</th><th v-if="genHasRemote()">来源</th><th>应用</th><th>模型 / 计费项</th>
-                <th>供应商</th><th>提示词</th><th>用量</th><th>单价</th><th>金额</th><th>状态</th>
+                <th class="gc-time">时间</th><th class="gc-user">用户</th><th class="gc-src" v-if="genHasRemote()">来源</th><th class="gc-app">应用</th><th class="gc-model">模型 / 计费项</th>
+                <th class="gc-provider">供应商</th><th class="gc-prompt">提示词</th><th class="gc-usage">用量</th><th class="gc-price">单价</th><th class="gc-amount">金额</th><th class="gc-status">状态</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="row in genData.rows" :key="(row.job_id || '') + row.ts + (row.source || '')">
-                <td>{{ (row.time || '').slice(5, 16) }}</td>
-                <td>{{ row.username }}</td>
-                <td v-if="genHasRemote()" :title="row.source_host || ''">{{ row.source || '本机' }}</td>
-                <td>{{ appLabel(row.app) }}</td>
-                <td>{{ genModelLabel(row) }}</td>
-                <td :title="row.provider_detail || ''">{{ genProviderLabel(row) }}</td>
-                <td class="gen-prompt" :title="row.title || ''"><span class="gen-prompt-text">{{ genPromptBrief(row) }}</span></td>
-                <td>{{ fmtUsage(row) }}</td>
-                <td>{{ fmtUnitPrice(row) }}</td>
-                <td><strong>{{ fmtMoney(row.amount) }}</strong></td>
-                <td>{{ genStatusText(row.status) }}</td>
+                <td class="gc-time">{{ (row.time || '').slice(5, 16) }}</td>
+                <td class="gc-user">{{ row.username }}</td>
+                <td class="gc-src" v-if="genHasRemote()" :title="row.source_host || ''">{{ row.source || '本机' }}</td>
+                <td class="gc-app">{{ appLabel(row.app) }}</td>
+                <td class="gc-model">{{ genModelLabel(row) }}</td>
+                <td class="gc-provider" :title="row.provider_detail || ''">{{ genProviderLabel(row) }}</td>
+                <td class="gc-prompt gen-prompt" :title="row.title || ''"><span class="gen-prompt-text">{{ genPromptBrief(row) }}</span></td>
+                <td class="gc-usage">{{ fmtUsage(row) }}</td>
+                <td class="gc-price">{{ fmtUnitPrice(row) }}</td>
+                <td class="gc-amount"><strong>{{ fmtMoney(row.amount) }}</strong></td>
+                <td class="gc-status">{{ genStatusText(row.status) }}</td>
               </tr>
             </tbody>
           </table>

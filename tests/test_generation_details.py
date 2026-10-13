@@ -809,6 +809,16 @@ class GenerationApiTests(unittest.TestCase):
         self.assertEqual(len(h2.json_payload["rows"]), 3)
         self.assertEqual(len([r for r in h2.json_payload["rows"] if r.get("source")]), 2)
 
+    def test_remote_sync_route_is_post_only(self):
+        """「立即同步」是**动作**，只挂在 POST 上。
+
+        2026-10-13 踩到：第一版把这条路由加进了 do_GET 的链子里，而前端发的是 POST →
+        点了按钮没反应（日志里连请求都没有）。挂在 GET 上还会被 <img>/预取误触发。
+        """
+        import inspect
+        self.assertNotIn("remote-sources/sync", inspect.getsource(self.mod.Handler.do_GET))
+        self.assertIn("remote-sources/sync", inspect.getsource(self.mod.Handler.do_POST))
+
     def test_remote_source_sync_status_endpoint(self):
         """同步状态接口：没配来源时也要 200（界面上那几件东西按 sources 是否为空来显隐）。"""
         h = self._handler("/api/platform/remote-sources")

@@ -3586,8 +3586,6 @@ class Handler(SimpleHTTPRequestHandler):
             self._platform_stats_generations_export_xlsx(user)
         elif path == "/api/platform/remote-sources":
             self._remote_sources_status(user)
-        elif path == "/api/platform/remote-sources/sync":
-            self._remote_sources_sync(user)
         elif path == "/api/platform/stats/generations/summary.csv":
             self._platform_stats_generations_summary_export(user)
         elif path == "/api/platform/queue":
@@ -3687,6 +3685,10 @@ class Handler(SimpleHTTPRequestHandler):
             return
         user = self._require_auth(path)
         if not user:
+            return
+        if path == "/api/platform/remote-sources/sync":
+            # 「立刻同步一次」是动作 → 只在 POST 上暴露（GET 上暴露会被 <img>/预取误触发）
+            self._remote_sources_sync(user)
             return
         if path == "/api/auth/logout":
             token = ""

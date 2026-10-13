@@ -3049,16 +3049,21 @@ body.portal-home-active .portal-mobile-switcher { display: none !important; }
 #tab-stats .gen-table-wrap .ip-stats-table { width: 100%; min-width: 1080px; table-layout: fixed; }
 #tab-stats .gen-table-wrap .ip-stats-table th,
 #tab-stats .gen-table-wrap .ip-stats-table td { overflow: hidden; text-overflow: ellipsis; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(1),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(1)  { width: 5.4%; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(2),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(2)  { width: 3.6%; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(3),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(3)  { width: 6.2%; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(4),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(4)  { width: 11.4%; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(5),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(5)  { width: 8.9%; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(6),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(6)  { width: 41.7%; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(7),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(7)  { width: 8.9%; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(8),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(8)  { width: 5.9%; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(9),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(9)  { width: 4%; }
-#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(10), #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(10) { width: 4%; }
+/* 列宽按**类名**分配，不再按 nth-child —— 「来源」列是条件显示的（只有存在远端记录才出现），
+   用序号定位会让它后面的列全部错位（2026-10-13 加远端来源时踩到）。 */
+#tab-stats .gen-table-wrap .ip-stats-table .gc-time     { width: 5.0%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-user     { width: 3.4%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-src      { width: 6.0%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-app      { width: 5.6%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-model    { width: 10.6%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-provider { width: 8.2%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-prompt   { width: 36.0%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-usage    { width: 8.2%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-price    { width: 5.4%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-amount   { width: 3.6%; }
+#tab-stats .gen-table-wrap .ip-stats-table .gc-status   { width: 4.0%; }
+/* 没有「来源」列时（纯本机用户），把这一列省下的宽度补给提示词列 */
+#tab-stats .gen-table-wrap .ip-stats-table:not(:has(.gc-src)) .gc-prompt { width: 42.0%; }
 
 /* 折叠区：原生 <details>，不需要 JS（按用户趋势 / 系统与权限 默认收起） */
 .stats-fold {
