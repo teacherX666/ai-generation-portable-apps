@@ -31,6 +31,7 @@
         <optgroup label="创作区">
           <option value="feishu-generation-agent">飞书创作助手</option>
           <option value="free-creation">自由创作</option>
+          <option value="drama-pipeline">AI短剧全流程</option>
           <option value="seedance">视频生成</option>
           <option value="nb">图片生成</option>
           <option value="volcengine-portrait">人像视频</option>
@@ -68,6 +69,10 @@
         <button id="tab-btn-free-creation" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-free-creation" tabindex="-1" data-tab="free-creation">
           <span class="portal-nav__label">自由创作</span>
           <span class="portal-nav__desc">一个提示词，自由创作图片与视频</span>
+        </button>
+        <button id="tab-btn-drama-pipeline" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-drama-pipeline" tabindex="-1" data-tab="drama-pipeline">
+          <span class="portal-nav__label">AI短剧全流程</span>
+          <span class="portal-nav__desc">从一句话想法到逐镜视频提示词的 8 阶段流水线</span>
         </button>
         <button id="tab-btn-seedance" class="app-tab ui-tab" role="tab" aria-selected="false" aria-controls="tab-seedance" tabindex="-1" data-tab="seedance">
           <span class="portal-nav__label">视频生成</span>
@@ -309,6 +314,11 @@
     <iframe class="portal-iframe" id="iframe-previz" data-app="previz" data-fallback-src="/previz/index.html" src="/previz/index.html" allow="fullscreen"></iframe>
   </div>
 
+  <!-- DRAMA PIPELINE AI短剧全流程（端口 8903） -->
+  <div class="tab-panel iframe-panel" id="tab-drama-pipeline" role="tabpanel" aria-labelledby="tab-btn-drama-pipeline" hidden>
+    <iframe class="portal-iframe" id="iframe-drama-pipeline" data-app="drama-pipeline" data-fallback-src="/drama-pipeline/index.html" title="AI 短剧自动化全流程" allow="fullscreen"></iframe>
+  </div>
+
   <!-- RAG ASSISTANT -->
   <div class="tab-panel iframe-panel" id="tab-rag-assistant" role="tabpanel" aria-labelledby="tab-btn-rag-assistant" hidden>
     <iframe class="portal-iframe" id="iframe-rag-assistant" data-app="rag-assistant" data-fallback-src="/rag-assistant/" title="报错问答助手" allow="fullscreen"></iframe>
@@ -366,6 +376,7 @@
           <span>第 {{ page }} / {{ totalPages }} 页（共 {{ total }} 条）</span>
           <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="page >= totalPages" @click="goPage(page + 1)">下一页 ›</button>
         </div>
+        <p class="hist-count" v-if="total">共 {{ total }} 条记录 · 网格可单独滚动（筛选与翻页常驻）</p>
       </section>
     </div>
 
@@ -1052,21 +1063,77 @@
 
   <!-- STATS -->
   <div class="tab-panel" id="tab-stats" role="tabpanel" aria-labelledby="tab-btn-stats" hidden v-scope="StatsApp()" @vue:mounted="init()">
-    <div class="portal-content ui-admin-page ui-admin-page--narrow">
+    <!-- 不再用 ui-admin-page--narrow / 全局 1000px 上限：使用记录表要 10 列，
+         1000px 会把提示词压到 340px 截断（2026-10-13 用户要求「宽一点，展示所有信息」）。 -->
+    <div class="portal-content ui-admin-page ui-admin-page--wide">
       <div class="ui-page-header">
         <div><h1 class="ui-page-header__title">统计与管理</h1><p class="ui-page-header__desc">查看使用量、用户状态与服务配置。</p></div>
       </div>
-      <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin && localGateway">
-        <h2>本地模型服务</h2>
-        <div class="stats-row ui-kpi-grid">
-          <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ localGateway.ready ? '正常' : '异常' }}</div><div class="stat-label ui-kpi__label">AI Port 状态</div></div>
-          <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ (localGateway.modules || []).length }}</div><div class="stat-label ui-kpi__label">可用模块</div></div>
-          <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ localGateway.checks && localGateway.checks.queue ? (localGateway.checks.queue.count || 0) : '—' }}</div><div class="stat-label ui-kpi__label">本地队列</div></div>
+      <section class="stats-panel ui-panel ui-admin-page__section">
+        <h2>总览</h2>
+        <div class="day-picker-row ui-toolbar ui-toolbar--wrap">
+          <div class="ui-toolbar__group">
+            <label class="ui-date-field"><span>起</span>
+              <input type="date" v-model="genStart" @change="genResetAndLoad()">
+            </label>
+            <label class="ui-date-field"><span>止</span>
+              <input type="date" v-model="genEnd" @change="genResetAndLoad()">
+            </label>
+          </div>
+          <div class="ui-toolbar__group">
+            <label class="ui-field"><span>用户</span>
+              <select v-model="genUser" @change="genResetAndLoad()">
+                <option value="">全部用户</option>
+                <option v-for="u in genUserOptions()" :value="u">{{ u }}</option>
+              </select>
+            </label>
+            <label class="ui-field"><span>应用</span>
+              <select v-model="genApp" @change="genResetAndLoad()">
+                <option value="">全部应用</option>
+                <option v-for="a in genAppOptions()" :value="a">{{ appLabel(a) }}</option>
+              </select>
+            </label>
+            <label class="ui-field"><span>状态</span>
+              <select v-model="genStatus" @change="genResetAndLoad()">
+                <option value="">全部状态</option>
+                <option value="succeeded">成功</option>
+                <option value="failed">失败</option>
+                <option value="submitted">已提交</option>
+              </select>
+            </label>
+            <input type="search" v-model="genQuery" @keyup.enter="genResetAndLoad()"
+                   placeholder="搜索 提示词 / 模型 / 任务ID" class="ui-input">
+            <button type="button" @click="genResetAndLoad()" :disabled="genLoading"
+                    class="admin-secondary-action ui-btn ui-btn--strong ui-btn--sm">
+              {{ genLoading ? '查询中…' : '查询' }}
+            </button>
+            <label class="ui-field" style="gap:4px">
+              <input type="checkbox" v-model="genIncludeHistory" @change="genResetAndLoad()">
+              <span>包含历史记录（当时未统计用量，无金额）</span>
+            </label>
+          </div>
         </div>
-        <p class="admin-muted" style="font-size:12px;margin:8px 0 0">地址：{{ localGateway.resolved_url || localGateway.configured_url || '—' }}</p>
-        <p class="admin-muted" style="font-size:12px;margin:4px 0 0">模块：{{ localModuleSummary() }}</p>
-        <p v-if="localGateway.error" class="admin-status--danger" style="font-size:12px;margin:4px 0 0">错误：{{ localGateway.error }}</p>
+        <p style="font-size:11px;color:#697386;margin:8px 0 0">
+          统计区间内<b>每一次生成记一条</b>：走方舟（按 token 计费）的任务带用量与金额，
+          其余通道上游不返回用量就如实留空。{{ isAdmin ? '管理员可见全部用户' : '仅可见自己' }}。
+        </p>
+        <p v-if="genAppBreakdown().length" style="font-size:12px;margin:6px 0 0">
+          <span style="color:#697386">按应用：</span>{{ genAppBreakdown().join(' · ') }}
+        </p>
+        <p v-if="(genData.summary || {}).unpriced_count" style="font-size:11px;color:#b45309;margin:6px 0 0">
+          其中 {{ genData.summary.unpriced_count }} 条没有金额：历史记录当时未做用量统计（时间和产物准确、数字留空），
+          或该通道上游不返回用量。<b>它们不计入上面的 token 与金额合计</b>，所以合计只会偏少、不会虚高。
+        </p>
+        <div class="stats-cards">
+          <div class="stats-card"><span>任务数</span><strong>{{ fmtTokens(genData.total || 0) }}</strong></div>
+          <div class="stats-card"><span>用量 token</span><strong>{{ fmtTokens((genData.summary || {}).tokens || 0) }}</strong></div>
+          <div class="stats-card"><span>金额</span><strong>{{ fmtMoney((genData.summary || {}).amount) }}</strong></div>
+          <div class="stats-card"><span>涉及用户</span><strong>{{ (genData.summary || {}).users || 0 }}</strong></div>
+        </div>
+        <p v-if="genError" style="color:#f87171;font-size:12px;margin:8px 0 0">{{ genError }}</p>
+        <p v-if="genNote" style="font-size:11px;color:#697386;margin:8px 0 0">{{ genNote }}</p>
       </section>
+
       <section class="stats-panel ui-panel ui-admin-page__section">
         <h2>今日用量</h2>
         <div class="stats-row ui-kpi-grid">
@@ -1075,248 +1142,294 @@
           <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ todayRequests }}</div><div class="stat-label ui-kpi__label">今日请求（全站）</div></div>
         </div>
       </section>
-      <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
-        <h2>用户管理</h2>
-        <div class="admin-control-strip">
-          <span class="admin-muted" style="font-size:13px">公开注册：<span :class="signupEnabled ? 'admin-status--success' : 'admin-muted'">{{ signupEnabled ? '开启（任何人可注册）' : '关闭（仅 admin 可创建用户）' }}</span></span>
-          <button class="admin-secondary-action ui-btn ui-btn--strong" @click="toggleSignup()" :disabled="signupBusy">{{ signupEnabled ? '关闭注册' : '开启注册' }}</button>
-        </div>
-        <form class="admin-form ui-form-grid ui-form-grid--action" @submit.prevent="createUser()">
-          <label>用户名<input v-model="newUser.username" required placeholder="如 alice"></label>
-          <label>密码（≥6位）<input v-model="newUser.password" type="password" required></label>
-          <label>角色<select v-model="newUser.role">
-            <option value="user">user</option>
-            <option value="admin">admin</option>
-            <option value="viewer">viewer</option>
-          </select></label>
-          <div class="ui-form-grid__end-action">
-            <button class="admin-primary-action ui-btn ui-btn--primary" type="submit" :disabled="creating">{{ creating ? '创建中' : '创建用户' }}</button>
-          </div>
-        </form>
-        <p v-if="userHint" style="font-size:12px;margin:0 0 12px" :class="userHintOk ? 'admin-status--success' : 'admin-status--danger'">{{ userHint }}</p>
-        <div class="ui-table-wrap ui-table-wrap--scroll"><table class="ip-stats-table ui-data-table ui-data-table--users">
-          <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
-          <tbody>
-            <tr v-for="u in users">
-              <td>{{ u.username }}</td>
-              <td>
-                <select class="ui-select ui-select--sm" :value="u.role" @change="setRole(u, $event.target.value)">
-                  <option value="user">user</option>
-                  <option value="admin">admin</option>
-                  <option value="viewer">viewer</option>
-                </select>
-              </td>
-              <td>
-                <span :class="u.enabled ? 'admin-status--success' : 'admin-status--danger'">{{ u.enabled ? '启用' : '禁用' }}</span>
-              </td>
-              <td>
-                <div class="ui-table-actions">
-                  <button class="ui-btn ui-btn--strong ui-btn--sm" @click="toggleEnabled(u)">{{ u.enabled ? '禁用' : '启用' }}</button>
-                  <button class="ui-btn ui-btn--warning-outline ui-btn--sm" @click="resetPassword(u)">重置密码</button>
-                </div>
-              </td>
-            </tr>
-            <tr v-if="!users.length"><td colspan="4" style="color:#697386;text-align:center">加载中...</td></tr>
-          </tbody>
-        </table></div>
-      </section>
-      <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
-        <h2>人像生成共用 Key</h2>
-        <p class="admin-muted" style="font-size:12px;margin:0 0 10px">由 admin 统一配置；所有用户共享这份火山方舟 Key/AK/SK。留空字段表示不修改。</p>
-        <form class="admin-field-grid" @submit.prevent="savePortraitKey()">
-          <label style="font-size:12px">API Key（生成调用）
-            <input type="password" v-model="portraitKey.api_key" autocomplete="off"
-                   :placeholder="portraitKey.has_api_key ? '已设置（留空保持不变）' : 'ark-...'"
-                   style="display:block;width:100%;margin-top:4px;padding:6px 8px;font-size:13px">
+
+      <section class="stats-panel ui-panel ui-admin-page__section">
+        <h2>使用记录</h2>
+        <!-- 顶部放一份翻页：表格 20 行 + 上方还有别的区块，翻页控件在页面 4000px 处够不着 -->
+        <div class="pager pager-top" v-if="genData.total > 0">
+          <button type="button" class="ui-btn" :disabled="genPage <= 1 || genLoading"
+                  @click="setGenPage(genPage - 1)">上一页</button>
+          <span class="pager-info">第 {{ genPage }} / {{ genTotalPages() }} 页 · 共 {{ fmtTokens(genData.total) }} 条</span>
+          <button type="button" class="ui-btn" :disabled="genPage >= genTotalPages() || genLoading"
+                  @click="setGenPage(genPage + 1)">下一页</button>
+          <label class="ui-field"><span>每页</span>
+            <select v-model.number="genPageSize" @change="genResetAndLoad()">
+              <option :value="30">30</option>
+              <option :value="50">50</option>
+              <option :value="100">100</option>
+            </select>
           </label>
-          <div class="admin-field-grid admin-field-grid--two">
-            <label style="font-size:12px">Access Key（素材管理）
-              <input type="password" v-model="portraitKey.access_key" autocomplete="off"
-                     :placeholder="portraitKey.has_access_key ? '已设置（留空保持不变）' : 'AKLT...'"
+          <input type="number" class="ui-input" style="min-width:80px;width:90px" v-model.number="genJump"
+                 min="1" :max="genTotalPages()" placeholder="跳页"
+                 @keyup.enter="setGenPage(genJump)">
+          <button type="button" class="ui-btn" @click="setGenPage(genJump)">跳转</button>
+        </div>
+        <div class="ui-table-wrap gen-table-wrap" v-if="genData.rows.length">
+          <table class="ip-stats-table ui-data-table">
+            <thead>
+              <tr>
+                <th>时间</th><th>用户</th><th>应用</th><th>模型 / 计费项</th>
+                <th>供应商</th><th>提示词</th><th>用量</th><th>单价</th><th>金额</th><th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in genData.rows" :key="(row.job_id || '') + row.ts">
+                <td>{{ (row.time || '').slice(5, 16) }}</td>
+                <td>{{ row.username }}</td>
+                <td>{{ appLabel(row.app) }}</td>
+                <td>{{ genModelLabel(row) }}</td>
+                <td :title="row.provider_detail || ''">{{ genProviderLabel(row) }}</td>
+                <td class="gen-prompt" :title="row.title || ''"><span class="gen-prompt-text">{{ genPromptBrief(row) }}</span></td>
+                <td>{{ fmtUsage(row) }}</td>
+                <td>{{ fmtUnitPrice(row) }}</td>
+                <td><strong>{{ fmtMoney(row.amount) }}</strong></td>
+                <td>{{ genStatusText(row.status) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else-if="genLoading" style="color:#697386;font-size:12px">正在加载…</p>
+        <p v-else style="color:#697386;font-size:12px">该条件下没有记录</p>
+        <div class="pager" v-if="genData.total > 0">
+          <button type="button" class="ui-btn" :disabled="genPage <= 1 || genLoading"
+                  @click="setGenPage(genPage - 1)">上一页</button>
+          <span class="pager-info">第 {{ genPage }} / {{ genTotalPages() }} 页 · 共 {{ fmtTokens(genData.total) }} 条</span>
+          <button type="button" class="ui-btn" :disabled="genPage >= genTotalPages() || genLoading"
+                  @click="setGenPage(genPage + 1)">下一页</button>
+          <label class="ui-field"><span>每页</span>
+            <select v-model.number="genPageSize" @change="genResetAndLoad()">
+              <option :value="30">30</option>
+              <option :value="50">50</option>
+              <option :value="100">100</option>
+            </select>
+          </label>
+          <span class="pager-info">导出会带上当前筛选条件</span>
+        </div>
+        <div class="ui-toolbar ui-toolbar--wrap" style="margin-top:10px">
+          <button type="button" @click="exportGenerations()" :disabled="genExporting || !genData.rows.length"
+                  class="admin-secondary-action ui-btn ui-btn--strong ui-btn--sm"
+                  title="导出当前筛选条件下的每一条记录（UTF-8 BOM，Excel/WPS 可直接打开）">
+            {{ genExporting ? '导出中…' : '导出明细 CSV' }}
+          </button>
+          <button type="button" @click="exportGenerationsSummary()" :disabled="genSummaryExporting || !(genData.billSummary || []).length"
+                  class="admin-secondary-action ui-btn ui-btn--strong ui-btn--sm"
+                  title="按「日期 × 计费项」汇总，字段对齐方舟控制台消费明细，便于和账单对账">
+            {{ genSummaryExporting ? '导出中…' : '导出汇总 CSV（对账）' }}
+          </button>
+        </div>
+      </section>
+
+      <section class="stats-panel ui-panel ui-admin-page__section">
+        <h2>汇总（按天 × 计费项 · 可与方舟账单对账）</h2>
+        <div class="ui-table-wrap" v-if="(genData.billSummary || []).length">
+          <table class="ip-stats-table ui-data-table">
+            <thead>
+              <tr>
+                <th>消费日期</th><th>模型</th><th>计费项</th><th>次数</th>
+                <th>用量<br><small style="font-weight:400;color:#94a3b8">千tokens</small></th>
+                <th>单价<br><small style="font-weight:400;color:#94a3b8">元/千tokens</small></th>
+                <th>金额<br><small style="font-weight:400;color:#94a3b8">元</small></th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(b, i) in genData.billSummary" :key="i">
+                <td>{{ b['消费日期'] }}</td>
+                <td>{{ b['模型'] }}</td>
+                <td>{{ b['计费项'] }}</td>
+                <td>{{ b['次数'] }}</td>
+                <td>{{ b['用量(千tokens)'] }}</td>
+                <td>{{ b['单价(元/千tokens)'] === '' ? '—' : b['单价(元/千tokens)'] }}</td>
+                <td>{{ b['金额(元)'] === '' ? '—' : b['金额(元)'] }}</td>
+                <td>{{ b['备注'] }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else style="color:#697386;font-size:12px">该条件下没有可汇总的记录</p>
+      </section>
+
+      <details class="stats-fold">
+        <summary>按用户趋势（每人每天的用量曲线）</summary>
+        <div class="stats-fold__body">
+        <section class="stats-panel ui-panel ui-admin-page__section">
+          <h2>按用户趋势</h2>
+          <div class="trend-controls">
+            <span style="font-size:12px;color:#94a3b8;margin-right:10px">区间</span>
+            <button type="button" :class="{ active: historyDays === 7 }" @click="setHistoryDays(7)">最近 7 天</button>
+            <button type="button" :class="{ active: historyDays === 30 }" @click="setHistoryDays(30)">最近 30 天</button>
+            <button type="button" :class="{ active: historyDays === 90 }" @click="setHistoryDays(90)">最近 90 天</button>
+            <span class="trend-range" v-if="history.dates.length">{{ history.dates[0] }} → {{ history.dates[history.dates.length - 1] }}</span>
+          </div>
+          <div class="trend-header">
+            <span class="uname">用户</span>
+            <span class="trend-cell-h" v-for="app in ['seedance','nano-banana','dreamina','volcengine-portrait']">
+              <span class="label" :style="{ color: appColor(app) }">{{ appLabel(app) }}</span>
+              <span class="unit">{{ appUnit(app) }}</span>
+            </span>
+          </div>
+          <div class="trend-row" v-for="(stats, uname) in history.users">
+            <span class="uname">{{ uname }}</span>
+            <span class="trend-cell" v-for="app in ['seedance','nano-banana','dreamina','volcengine-portrait']">
+              <span class="trend-spark" v-html="svgSpark(pickAppValues(stats[app], app), app)"></span>
+              <span class="trend-total">总 {{ sumSeries(pickAppValues(stats[app], app)) }} {{ appUnit(app) }}</span>
+            </span>
+          </div>
+          <p v-if="!Object.keys(history.users).length" style="color:#697386;font-size:12px">暂无趋势数据</p>
+        </section>
+  
+        </div>
+      </details>
+
+      <details class="stats-fold">
+        <summary>系统与权限：本地模型服务 / 用户管理 / 共用 Key / 飞书日报 / 最近活动</summary>
+        <div class="stats-fold__body">
+        <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin && localGateway">
+          <h2>本地模型服务</h2>
+          <div class="stats-row ui-kpi-grid">
+            <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ localGateway.ready ? '正常' : '异常' }}</div><div class="stat-label ui-kpi__label">AI Port 状态</div></div>
+            <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ (localGateway.modules || []).length }}</div><div class="stat-label ui-kpi__label">可用模块</div></div>
+            <div class="stat-card ui-kpi"><div class="stat-value ui-kpi__value">{{ localGateway.checks && localGateway.checks.queue ? (localGateway.checks.queue.count || 0) : '—' }}</div><div class="stat-label ui-kpi__label">本地队列</div></div>
+          </div>
+          <p class="admin-muted" style="font-size:12px;margin:8px 0 0">地址：{{ localGateway.resolved_url || localGateway.configured_url || '—' }}</p>
+          <p class="admin-muted" style="font-size:12px;margin:4px 0 0">模块：{{ localModuleSummary() }}</p>
+          <p v-if="localGateway.error" class="admin-status--danger" style="font-size:12px;margin:4px 0 0">错误：{{ localGateway.error }}</p>
+        </section>
+  
+        <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
+          <h2>用户管理</h2>
+          <div class="admin-control-strip">
+            <span class="admin-muted" style="font-size:13px">公开注册：<span :class="signupEnabled ? 'admin-status--success' : 'admin-muted'">{{ signupEnabled ? '开启（任何人可注册）' : '关闭（仅 admin 可创建用户）' }}</span></span>
+            <button class="admin-secondary-action ui-btn ui-btn--strong" @click="toggleSignup()" :disabled="signupBusy">{{ signupEnabled ? '关闭注册' : '开启注册' }}</button>
+          </div>
+          <form class="admin-form ui-form-grid ui-form-grid--action" @submit.prevent="createUser()">
+            <label>用户名<input v-model="newUser.username" required placeholder="如 alice"></label>
+            <label>密码（≥6位）<input v-model="newUser.password" type="password" required></label>
+            <label>角色<select v-model="newUser.role">
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+              <option value="viewer">viewer</option>
+            </select></label>
+            <div class="ui-form-grid__end-action">
+              <button class="admin-primary-action ui-btn ui-btn--primary" type="submit" :disabled="creating">{{ creating ? '创建中' : '创建用户' }}</button>
+            </div>
+          </form>
+          <p v-if="userHint" style="font-size:12px;margin:0 0 12px" :class="userHintOk ? 'admin-status--success' : 'admin-status--danger'">{{ userHint }}</p>
+          <div class="ui-table-wrap ui-table-wrap--scroll"><table class="ip-stats-table ui-data-table ui-data-table--users">
+            <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+            <tbody>
+              <tr v-for="u in users">
+                <td>{{ u.username }}</td>
+                <td>
+                  <select class="ui-select ui-select--sm" :value="u.role" @change="setRole(u, $event.target.value)">
+                    <option value="user">user</option>
+                    <option value="admin">admin</option>
+                    <option value="viewer">viewer</option>
+                  </select>
+                </td>
+                <td>
+                  <span :class="u.enabled ? 'admin-status--success' : 'admin-status--danger'">{{ u.enabled ? '启用' : '禁用' }}</span>
+                </td>
+                <td>
+                  <div class="ui-table-actions">
+                    <button class="ui-btn ui-btn--strong ui-btn--sm" @click="toggleEnabled(u)">{{ u.enabled ? '禁用' : '启用' }}</button>
+                    <button class="ui-btn ui-btn--warning-outline ui-btn--sm" @click="resetPassword(u)">重置密码</button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="!users.length"><td colspan="4" style="color:#697386;text-align:center">加载中...</td></tr>
+            </tbody>
+          </table></div>
+        </section>
+  
+        <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
+          <h2>人像生成共用 Key</h2>
+          <p class="admin-muted" style="font-size:12px;margin:0 0 10px">由 admin 统一配置；所有用户共享这份火山方舟 Key/AK/SK。留空字段表示不修改。</p>
+          <form class="admin-field-grid" @submit.prevent="savePortraitKey()">
+            <label style="font-size:12px">API Key（生成调用）
+              <input type="password" v-model="portraitKey.api_key" autocomplete="off"
+                     :placeholder="portraitKey.has_api_key ? '已设置（留空保持不变）' : 'ark-...'"
                      style="display:block;width:100%;margin-top:4px;padding:6px 8px;font-size:13px">
             </label>
-            <label style="font-size:12px">Secret Key
-              <input type="password" v-model="portraitKey.secret_key" autocomplete="off"
-                     :placeholder="portraitKey.has_secret_key ? '已设置（留空保持不变）' : '(base64 secret)'"
-                     style="display:block;width:100%;margin-top:4px;padding:6px 8px;font-size:13px">
+            <div class="admin-field-grid admin-field-grid--two">
+              <label style="font-size:12px">Access Key（素材管理）
+                <input type="password" v-model="portraitKey.access_key" autocomplete="off"
+                       :placeholder="portraitKey.has_access_key ? '已设置（留空保持不变）' : 'AKLT...'"
+                       style="display:block;width:100%;margin-top:4px;padding:6px 8px;font-size:13px">
+              </label>
+              <label style="font-size:12px">Secret Key
+                <input type="password" v-model="portraitKey.secret_key" autocomplete="off"
+                       :placeholder="portraitKey.has_secret_key ? '已设置（留空保持不变）' : '(base64 secret)'"
+                       style="display:block;width:100%;margin-top:4px;padding:6px 8px;font-size:13px">
+              </label>
+            </div>
+            <div class="admin-form-actions">
+              <button class="admin-primary-action" type="submit" :disabled="portraitKey.saving" style="padding:7px 16px;border-radius:5px;font-size:13px">
+                {{ portraitKey.saving ? '保存中...' : '保存' }}
+              </button>
+              <span v-if="portraitKey.hint" style="font-size:12px" :class="portraitKey.hintOk ? 'admin-status--success' : 'admin-status--danger'">{{ portraitKey.hint }}</span>
+            </div>
+          </form>
+        </section>
+  
+        <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
+          <h2>飞书日报</h2>
+          <p style="font-size:12px;color:#94a3b8;margin:0 0 10px">每天到点自动把昨日 Portal 使用数据推送到飞书群机器人。管理员可预览/立即发送。</p>
+          <div class="ui-form-grid ui-form-grid--settings">
+            <label class="ui-form-grid__wide">
+              <div style="font-size:12px;color:#94a3b8">Webhook URL</div>
+              <input v-model="feishu.webhook_url" :placeholder="feishu._webhookPresent ? ('已配置 ' + feishu._webhookHint + ' (留空不修改)') : 'https://open.feishu.cn/open-apis/bot/v2/hook/...'" style="width:100%">
+            </label>
+            <label>
+              <div style="font-size:12px;color:#94a3b8">签名 secret (可选)</div>
+              <input type="password" autocomplete="off" v-model="feishu.sign_secret" :placeholder="feishu._secretPresent ? '已配置(留空不修改)' : ''" style="width:100%">
+            </label>
+            <label>
+              <div style="font-size:12px;color:#94a3b8">触发时间</div>
+              <input v-model="feishu.schedule_time" placeholder="09:05" style="width:100%">
+            </label>
+            <label>
+              <div style="font-size:12px;color:#94a3b8">Portal 基础 URL</div>
+              <input v-model="feishu.portal_base_url" placeholder="https://192.168.x.x:9091" style="width:100%">
+            </label>
+            <label class="ui-switch-field">
+              <input type="checkbox" v-model="feishu.enabled">
+              <span>启用定时</span>
             </label>
           </div>
-          <div class="admin-form-actions">
-            <button class="admin-primary-action" type="submit" :disabled="portraitKey.saving" style="padding:7px 16px;border-radius:5px;font-size:13px">
-              {{ portraitKey.saving ? '保存中...' : '保存' }}
-            </button>
-            <span v-if="portraitKey.hint" style="font-size:12px" :class="portraitKey.hintOk ? 'admin-status--success' : 'admin-status--danger'">{{ portraitKey.hint }}</span>
-          </div>
-        </form>
-      </section>
-      <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
-        <h2>飞书日报</h2>
-        <p style="font-size:12px;color:#94a3b8;margin:0 0 10px">每天到点自动把昨日 Portal 使用数据推送到飞书群机器人。管理员可预览/立即发送。</p>
-        <div class="ui-form-grid ui-form-grid--settings">
-          <label class="ui-form-grid__wide">
-            <div style="font-size:12px;color:#94a3b8">Webhook URL</div>
-            <input v-model="feishu.webhook_url" :placeholder="feishu._webhookPresent ? ('已配置 ' + feishu._webhookHint + ' (留空不修改)') : 'https://open.feishu.cn/open-apis/bot/v2/hook/...'" style="width:100%">
-          </label>
-          <label>
-            <div style="font-size:12px;color:#94a3b8">签名 secret (可选)</div>
-            <input type="password" autocomplete="off" v-model="feishu.sign_secret" :placeholder="feishu._secretPresent ? '已配置(留空不修改)' : ''" style="width:100%">
-          </label>
-          <label>
-            <div style="font-size:12px;color:#94a3b8">触发时间</div>
-            <input v-model="feishu.schedule_time" placeholder="09:05" style="width:100%">
-          </label>
-          <label>
-            <div style="font-size:12px;color:#94a3b8">Portal 基础 URL</div>
-            <input v-model="feishu.portal_base_url" placeholder="https://192.168.x.x:9091" style="width:100%">
-          </label>
-          <label class="ui-switch-field">
-            <input type="checkbox" v-model="feishu.enabled">
-            <span>启用定时</span>
-          </label>
-        </div>
-        <div class="ui-toolbar ui-toolbar--wrap ui-toolbar--start" style="margin-top:10px">
-          <button class="admin-secondary-action ui-btn ui-btn--strong" @click="saveFeishuConfig()">保存配置</button>
-          <label class="ui-date-field">
-            <span>日期</span>
-            <input v-model="feishu.previewDate" type="date">
-          </label>
-          <button class="admin-secondary-action ui-btn ui-btn--strong" @click="previewFeishu()">预览卡片</button>
-          <button class="admin-primary-action ui-btn ui-btn--primary" @click="sendFeishuNow()">立即发送</button>
-          <span v-if="feishu.status" class="admin-muted" style="font-size:12px">{{ feishu.status }}</span>
-        </div>
-        <pre v-if="feishu.previewJson" class="admin-pre" style="max-height:320px;overflow:auto;padding:10px;border-radius:6px;font-size:11px;margin-top:10px">{{ feishu.previewJson }}</pre>
-      </section>
-      <section class="stats-panel ui-panel ui-admin-page__section">
-        <h2>按用户统计</h2>
-        <div class="ui-table-wrap"><table class="ip-stats-table ui-data-table">
-          <thead><tr><th>用户</th><th>Seedance<br><small style="font-weight:400;color:#94a3b8">秒</small></th><th>图像生成模块<br><small style="font-weight:400;color:#94a3b8">张</small></th><th>Dreamina<br><small style="font-weight:400;color:#94a3b8">张/秒</small></th><th>人像生成<br><small style="font-weight:400;color:#94a3b8">秒</small></th></tr></thead>
-          <tbody>
-            <tr v-for="(stats, uname) in byUser">
-              <td>{{ uname }}</td>
-              <td>{{ (stats.seedance||{}).seconds||0 }}s</td>
-              <td>{{ (stats['nano-banana']||{}).images||0 }}</td>
-              <td>{{ fmtDmStat(stats.dreamina) }}</td>
-              <td>{{ (stats['volcengine-portrait']||{}).seconds||0 }}s</td>
-            </tr>
-            <tr v-if="!Object.keys(byUser).length"><td colspan="5" style="color:#697386;text-align:center">暂无数据（任务完成后更新）</td></tr>
-          </tbody>
-        </table></div>
-      </section>
-      <section class="stats-panel ui-panel ui-admin-page__section">
-        <h2>按日期查看</h2>
-        <div class="day-picker-row">
-          <label style="font-size:12px">日期
-            <input type="date" v-model="selectedDate" @change="loadDay()" style="margin-left:8px;padding:4px 8px;font-size:13px">
-          </label>
-          <span style="font-size:11px;color:#697386;margin-left:14px" v-if="daySnapshot">
-            {{ daySnapshot.date }} · 任务 {{ daySnapshot.total_jobs || 0 }} · 请求 {{ daySnapshot.total_requests || 0 }}
-          </span>
-        </div>
-        <div class="ui-table-wrap" v-if="daySnapshot"><table class="ip-stats-table ui-data-table">
-          <thead><tr><th>用户</th><th>Seedance<br><small style="font-weight:400;color:#94a3b8">秒</small></th><th>图像生成模块<br><small style="font-weight:400;color:#94a3b8">张</small></th><th>Dreamina<br><small style="font-weight:400;color:#94a3b8">张/秒</small></th><th>人像生成<br><small style="font-weight:400;color:#94a3b8">秒</small></th></tr></thead>
-          <tbody>
-            <tr v-for="(stats, uname) in (daySnapshot.by_user || {})">
-              <td>{{ uname }}</td>
-              <td>{{ (stats.seedance||{}).seconds||0 }}s</td>
-              <td>{{ (stats['nano-banana']||{}).images||0 }}</td>
-              <td>{{ fmtDmStat(stats.dreamina) }}</td>
-              <td>{{ (stats['volcengine-portrait']||{}).seconds||0 }}s</td>
-            </tr>
-            <tr v-if="!Object.keys(daySnapshot.by_user || {}).length"><td colspan="5" style="color:#697386;text-align:center">该日期无记录</td></tr>
-          </tbody>
-        </table></div>
-        <p v-if="!daySnapshot" style="color:#697386;font-size:12px">选择日期后显示该日数据</p>
-      </section>
-
-      <section class="stats-panel ui-panel ui-admin-page__section">
-        <h2>按日期段查询 / 导出</h2>
-        <div class="day-picker-row ui-toolbar ui-toolbar--wrap">
-          <div class="ui-toolbar__group">
-            <label class="ui-date-field"><span>起</span>
-              <input type="date" v-model="rangeStart" @change="loadRange()">
+          <div class="ui-toolbar ui-toolbar--wrap ui-toolbar--start" style="margin-top:10px">
+            <button class="admin-secondary-action ui-btn ui-btn--strong" @click="saveFeishuConfig()">保存配置</button>
+            <label class="ui-date-field">
+              <span>日期</span>
+              <input v-model="feishu.previewDate" type="date">
             </label>
-            <label class="ui-date-field"><span>止</span>
-              <input type="date" v-model="rangeEnd" @change="loadRange()">
-            </label>
+            <button class="admin-secondary-action ui-btn ui-btn--strong" @click="previewFeishu()">预览卡片</button>
+            <button class="admin-primary-action ui-btn ui-btn--primary" @click="sendFeishuNow()">立即发送</button>
+            <span v-if="feishu.status" class="admin-muted" style="font-size:12px">{{ feishu.status }}</span>
           </div>
-          <div class="ui-toolbar__group">
-            <button type="button" @click="loadRange()" :disabled="rangeLoading"
-                    class="admin-secondary-action ui-btn ui-btn--strong ui-btn--sm">
-              {{ rangeLoading ? '查询中…' : '刷新' }}
-            </button>
-            <button type="button" @click="exportRange()" :disabled="exporting || !rangeStart || !rangeEnd"
-                    class="admin-primary-action ui-btn ui-btn--primary ui-btn--sm"
-                    :title="'导出 CSV (UTF-8 BOM, Excel/WPS 可直接打开)'">
-              {{ exporting ? '导出中…' : '导出 CSV' }}
-            </button>
-            <span v-if="rangeError" style="color:#f87171;font-size:11px">{{ rangeError }}</span>
+          <pre v-if="feishu.previewJson" class="admin-pre" style="max-height:320px;overflow:auto;padding:10px;border-radius:6px;font-size:11px;margin-top:10px">{{ feishu.previewJson }}</pre>
+        </section>
+  
+        <section class="activity-panel ui-panel ui-admin-page__section" v-if="recentActivity.length">
+          <h2>最近活动</h2>
+          <div class="activity-list">
+            <div v-for="item in recentActivity" class="activity-item">
+              <span class="activity-time">{{ (item.created_at||item.time||'').slice(11,19) }}</span>
+              <span class="activity-app">{{ item._app || '?' }}</span>
+              <span class="activity-user">{{ item.username || '—' }}</span>
+              <span class="activity-detail">{{ item.title || item.prompt || item.request_kind || item.task_type || item.method || '' }}</span>
+            </div>
           </div>
+        </section>
+  
         </div>
-        <p style="font-size:11px;color:#697386;margin:6px 0 0">
-          区间内汇总：每用户按 4 个子应用的图片张数 / 视频秒数累加。{{ isAdmin ? '管理员可见全部用户' : '仅可见自己' }}。
-        </p>
-        <div class="ui-table-wrap" v-if="Object.keys(rangeData.users || {}).length"><table class="ip-stats-table ui-data-table">
-          <thead>
-            <tr>
-              <th>用户</th>
-              <th>Seedance<br><small style="font-weight:400;color:#94a3b8">秒</small></th>
-              <th>图像生成模块<br><small style="font-weight:400;color:#94a3b8">张</small></th>
-              <th>Dreamina<br><small style="font-weight:400;color:#94a3b8">张/秒</small></th>
-              <th>人像生成<br><small style="font-weight:400;color:#94a3b8">秒</small></th>
-              <th>合计<br><small style="font-weight:400;color:#94a3b8">张/秒</small></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(apps, uname) in (rangeData.users || {})">
-              <td>{{ uname }}</td>
-              <td>{{ ((apps.seedance||{}).seconds||[]).reduce((x,y)=>x+(y||0),0) }}s</td>
-              <td>{{ ((apps['nano-banana']||{}).images||[]).reduce((x,y)=>x+(y||0),0) }}</td>
-              <td>{{ ((apps.dreamina||{}).images||[]).reduce((x,y)=>x+(y||0),0) }}张 / {{ ((apps.dreamina||{}).seconds||[]).reduce((x,y)=>x+(y||0),0) }}s</td>
-              <td>{{ ((apps['volcengine-portrait']||{}).seconds||[]).reduce((x,y)=>x+(y||0),0) }}s</td>
-              <td>{{ rangeUserTotals(uname).images }}张 / {{ rangeUserTotals(uname).seconds }}s</td>
-            </tr>
-          </tbody>
-        </table></div>
-        <p v-if="!rangeLoading && !Object.keys(rangeData.users || {}).length" style="color:#697386;font-size:12px">该区间无记录</p>
-      </section>
+      </details>
 
-      <section class="stats-panel ui-panel ui-admin-page__section">
-        <h2>按用户趋势</h2>
-        <div class="trend-controls">
-          <span style="font-size:12px;color:#94a3b8;margin-right:10px">区间</span>
-          <button type="button" :class="{ active: historyDays === 7 }" @click="setHistoryDays(7)">最近 7 天</button>
-          <button type="button" :class="{ active: historyDays === 30 }" @click="setHistoryDays(30)">最近 30 天</button>
-          <button type="button" :class="{ active: historyDays === 90 }" @click="setHistoryDays(90)">最近 90 天</button>
-          <span class="trend-range" v-if="history.dates.length">{{ history.dates[0] }} → {{ history.dates[history.dates.length - 1] }}</span>
-        </div>
-        <div class="trend-header">
-          <span class="uname">用户</span>
-          <span class="trend-cell-h" v-for="app in ['seedance','nano-banana','dreamina','volcengine-portrait']">
-            <span class="label" :style="{ color: appColor(app) }">{{ appLabel(app) }}</span>
-            <span class="unit">{{ appUnit(app) }}</span>
-          </span>
-        </div>
-        <div class="trend-row" v-for="(stats, uname) in history.users">
-          <span class="uname">{{ uname }}</span>
-          <span class="trend-cell" v-for="app in ['seedance','nano-banana','dreamina','volcengine-portrait']">
-            <span class="trend-spark" v-html="svgSpark(pickAppValues(stats[app], app), app)"></span>
-            <span class="trend-total">总 {{ sumSeries(pickAppValues(stats[app], app)) }} {{ appUnit(app) }}</span>
-          </span>
-        </div>
-        <p v-if="!Object.keys(history.users).length" style="color:#697386;font-size:12px">暂无趋势数据</p>
-      </section>
 
-      <section class="activity-panel ui-panel ui-admin-page__section" v-if="recentActivity.length">
-        <h2>最近活动</h2>
-        <div class="activity-list">
-          <div v-for="item in recentActivity" class="activity-item">
-            <span class="activity-time">{{ (item.created_at||item.time||'').slice(11,19) }}</span>
-            <span class="activity-app">{{ item._app || '?' }}</span>
-            <span class="activity-user">{{ item.username || '—' }}</span>
-            <span class="activity-detail">{{ item.title || item.prompt || item.request_kind || item.task_type || item.method || '' }}</span>
-          </div>
-        </div>
-      </section>
+
+
+
+
     </div>
   </div>
 

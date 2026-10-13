@@ -4,14 +4,19 @@ Sub-apps report final_status="failed" as soon as a single item errors, so a job
 that produced 3 of 4 images arrives at finalize_job as a failure. The daily.jobs
 rollback is correct there, but the per-item images/seconds tally lives in the
 poll loop — dropping the job from _pending_jobs would lose those 3 billed items.
+
+注意：这个测试会驱动真实的轮询循环体，而轮询终态现在还会写「按次生成明细」。
+所以必须走 tests/portal_isolation.py 的隔离加载，否则假数据会写进生产 state
+（2026-10-12 真实发生过）。
 """
 
-import importlib.util
 import json
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
+
+from tests.portal_isolation import load_isolated
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,11 +24,7 @@ PORTAL_APP = ROOT / "portal" / "app.py"
 
 
 def load_portal_module():
-    spec = importlib.util.spec_from_file_location("portal_app_partial_usage", PORTAL_APP)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    return load_isolated("portal_app_partial_usage", PORTAL_APP)
 
 
 class FakeResponse:

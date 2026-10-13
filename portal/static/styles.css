@@ -223,6 +223,14 @@ pre { min-height: 80px; max-height: 200px; overflow: auto; margin: 0; padding: 1
 .portal-content { max-width: 1000px; margin: 0 auto; padding: 24px; }
 .portal-content.ui-admin-page { width: 100%; }
 .portal-content.ui-admin-page--narrow { max-width: 920px; }
+/* 使用统计要展示 10 列数据表：全局的 1000px 会把提示词列挤到 340px 截断，
+   宽屏（实测 2560px）下放宽到整宽。**只加在使用统计页**，其它页保持阅读宽度。 */
+/* 使用统计/创作记录要展示宽表，但全局 1000px 太窄（提示词被截）。
+   2026-10-13 定稿：**1900px** —— 正常宽屏设计比例（2560px 屏左右留白、不铺满），
+   同时配合下面提示词列「最多两行」，120 字的记录完全放得下、不再截断。
+   其它页仍保持 1000px 阅读宽度。 */
+.portal-content.ui-admin-page--wide,
+.portal-content.history-content { max-width: 1900px; }
 .tab-panel.active > .ui-admin-page { min-height: auto; }
 .tab-panel.active > .portal-content { flex: 0 0 auto; }
 .admin-control-strip { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:var(--surface-soft); border:1px solid var(--border); border-radius:var(--radius-md); margin-bottom:14px; }
@@ -1144,11 +1152,20 @@ body.director-collapsed .director-body { display: none !important; }
 
 /* ===== 历史记录（方案二媒体卡片） ===== */
 .history-content { padding: 14px; }
+/* 创作记录也用正常宽屏比例（1900px，见上面 ui-admin-page--wide 那条）：
+   全局 1000px 上限只排 4 列卡片，1900px 排 6 列，比例正常又不浪费。 */
+.portal-content.history-content { max-width: 1900px; }
 .hist-filters { margin-bottom: 14px; }
 .hist-filters .ctrl:not(.ui-btn) { min-height: 34px; padding: 0 10px; font-size: 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); }
 .hist-search { width: min(360px, 100%); flex: 1 1 240px; }
 .hist-filters__search-row { max-width: 620px; }
 .hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+/* 宽屏下卡片别太碎：最小宽度提到 270px（2560px 屏约 8 列，比原来的 10 列小卡好读）；
+   网格自身滚动 → 顶部筛选与底部翻页永远在屏上，不用滚整页。 */
+@media (min-width: 1600px) {
+  .hist-grid { grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
+}
+.hist-grid { max-height: calc(100vh - 300px); overflow-y: auto; padding-right: 4px; }
 .hist-card { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); cursor: pointer; transition: border-color .15s, transform .15s; }
 .hist-card:hover { border-color: #0e9f96; transform: translateY(-2px); }
 .hist-media { position: relative; height: 140px; background: #eef1f6; display: flex; align-items: center; justify-content: center; overflow: hidden; }
@@ -1186,15 +1203,17 @@ body.director-collapsed .director-body { display: none !important; }
 }
 .hist-modal {
   display: grid;
-  grid-template-columns: 300px minmax(0, 480px);
+  /* 宽屏上把预览区与正文都放大：以前固定 300+480 上限 860px，在 2560px 屏上又小又挤，
+     提示词/参数要来回滚（2026-10-13 调整）。 */
+  grid-template-columns: minmax(320px, 520px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
-  max-width: 860px;
+  max-width: min(1400px, 94vw);
   width: 100%;
-  height: min(84vh, 720px);
+  height: min(88vh, 860px);
   max-height: calc(100dvh - 40px);
 }
 .hist-modal-media {
@@ -1237,6 +1256,7 @@ body.director-collapsed .director-body { display: none !important; }
 .hist-result-none { font-size: 12px; color: #8b98ab; }
 .hist-modal-close { align-self: flex-end; padding: 6px 16px; font-size: 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; }
 .hist-pager { display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 14px; font-size: 12px; color: #8b98ab; }
+.hist-count { margin: 8px 2px 2px; font-size: 11px; color: var(--text-secondary, #8b98ab); }
 .hist-pager button:disabled { opacity: .4; cursor: not-allowed; }
 .hist-codebox-scroll { max-height: 220px; overflow-y: auto; }
 
@@ -2983,3 +3003,86 @@ body.portal-home-active .portal-mobile-switcher { display: none !important; }
 .portal-nav.is-collapsed .portal-nav__badge--status { width: 17px; min-width: 17px; height: 17px; padding: 0; font-size: 9px; }
 @media (max-width: 680px) { .portal-nav__badges { right: 6px; } }
 @media (prefers-reduced-motion: reduce) { .portal-nav__badge--status { transition: none !important; } }
+
+/* ── 使用统计：总览卡 / 筛选 / 分页 / 提示词列 ────────────────────────────────
+   2026-10-12 合并页面（按用户统计 / 按日期查看 / 按日期段查询 / Token 消耗 → 总览 +
+   使用记录 + 汇总）时新增，随使用统计页一起生效。 */
+.stats-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 10px; }
+.stats-card { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--border, #e2e8f0); border-radius: 10px; background: var(--surface-soft, #f8fafc); }
+.stats-card span { font-size: 12px; color: var(--text-secondary, #697386); }
+.stats-card strong { font-size: 20px; line-height: 1.1; }
+.pager { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.pager-info { font-size: 12px; color: var(--text-secondary, #697386); }
+/* 注意：设计系统的 .ui-btn 文字是白色（为深色按钮准备的）。这里背景改成浅色，
+   必须同时把文字颜色改回深色，否则**白字白底 = 看不见**（2026-10-13 实测踩到）。 */
+.pager .ui-btn,
+.pager-top .ui-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 28px; padding: 4px 12px; border: 1px solid var(--border, #d7dce5);
+  border-radius: 6px; background: #fff; color: var(--text-primary, #1f2937);
+  font-size: 13px; line-height: 1; cursor: pointer;
+}
+.pager .ui-btn:hover:not(:disabled),
+.pager-top .ui-btn:hover:not(:disabled) { background: var(--surface-soft, #f3f6fa); border-color: #b9c2cf; }
+.pager .ui-btn:disabled,
+.pager-top .ui-btn:disabled { color: #9aa4b2; background: #f6f7f9; cursor: default; }
+.pager-top { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 8px 0 6px; }
+
+/* 使用统计的数据表：**所有单元格不换行**。窄列（用量「476,100 token · 22s」、单价
+   「40.29 元/百万」、时间）一折行行高就涨到 76px，一屏放不下 15 条（2026-10-13 实测）。
+   现在单行约 40px；列宽由内容决定，放不下时由 .ui-table-wrap 横向滚动。 */
+#tab-stats .ui-data-table th,
+#tab-stats .ui-data-table td { white-space: nowrap; }
+#tab-stats .ui-data-table td { padding: 5px 10px; font-size: 12.5px; line-height: 1.35; }
+#tab-stats .ui-data-table th { padding: 6px 10px; }
+
+/* 使用记录：**固定高度 + 内部滚动 + 表头吸顶**。工具栏/概览/翻页永远在屏上，
+   只有表格体内部滚动 —— 不用滚整页去找翻页按钮（2026-10-13 用户反馈「全部都要滑动」）。 */
+.gen-table-wrap { max-height: calc(100vh - 330px); min-height: 220px; overflow: auto; }
+.gen-table-wrap .ip-stats-table thead th {
+  position: sticky; top: 0; z-index: 2; background: var(--surface-soft, #f8fafc);
+  box-shadow: inset 0 -1px 0 var(--border, #e2e8f0);
+}
+
+/* 列宽固定分配，让**提示词列拿走剩余空间**（2560px 屏上能显示 600+px 的提示词，以前只有 340px）。
+   table-layout: fixed + nowrap + ellipsis = 行高恒 28px、列不互相挤；窗口窄时横向滚动而不是压扁。 */
+#tab-stats .gen-table-wrap .ip-stats-table { width: 100%; min-width: 1080px; table-layout: fixed; }
+#tab-stats .gen-table-wrap .ip-stats-table th,
+#tab-stats .gen-table-wrap .ip-stats-table td { overflow: hidden; text-overflow: ellipsis; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(1),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(1)  { width: 5.4%; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(2),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(2)  { width: 3.6%; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(3),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(3)  { width: 6.2%; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(4),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(4)  { width: 11.4%; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(5),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(5)  { width: 8.9%; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(6),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(6)  { width: 41.7%; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(7),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(7)  { width: 8.9%; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(8),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(8)  { width: 5.9%; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(9),  #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(9)  { width: 4%; }
+#tab-stats .gen-table-wrap .ip-stats-table th:nth-child(10), #tab-stats .gen-table-wrap .ip-stats-table td:nth-child(10) { width: 4%; }
+
+/* 折叠区：原生 <details>，不需要 JS（按用户趋势 / 系统与权限 默认收起） */
+.stats-fold {
+  margin-top: 12px; border: 1px solid var(--border, #e2e8f0); border-radius: 10px;
+  background: #fff; overflow: hidden;
+}
+.stats-fold > summary {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer;
+  font-weight: 700; font-size: 13px; color: var(--text-secondary, #475569);
+  background: var(--surface-soft, #f8fafc); list-style: none;
+}
+.stats-fold > summary::-webkit-details-marker { display: none; }
+.stats-fold > summary::before { content: '▸'; font-size: 12px; color: #94a3b8; }
+.stats-fold[open] > summary::before { content: '▾'; }
+.stats-fold__body { padding: 10px 12px 12px; }
+.stats-fold__body .stats-panel { margin-top: 0; }
+.gen-prompt { color: var(--text-secondary, #697386); }
+/* 提示词列**最多三行**（120 字中英混排两行装不下，三行必定放完）：120 字的提示词在 ~600px 列宽下两行正好放完 → 记录信息完整可读。
+   ⚠️ 两行截断必须套在**单元格内的 span** 上，不能直接给 <td> 设 display:-webkit-box ——
+   那会让 td 不再是表格单元格，`table-layout: fixed` 的列宽全崩（实测提示词列会掉到 240px）。 */
+.gen-prompt-text {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; white-space: normal; line-height: 1.25; font-size: 11px;
+}
+.ui-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary, #697386); }
+.ui-field select, input.ui-input { padding: 4px 8px; font-size: 13px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; background: #fff; color: inherit; }
+input.ui-input { min-width: 190px; }

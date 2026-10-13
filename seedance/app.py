@@ -63,6 +63,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared import local_gateway  # noqa: E402
 from shared import model_gateway  # noqa: E402
+# 方舟按 token 计费：任务的 usage 就是实际用量。取值口径统一在 shared/ark_usage，
+# 三个子应用（seedance / nano-banana / volcengine-portrait）必须一致。
+from shared.ark_usage import extract_tokens  # noqa: E402
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 STATIC_DIR = ROOT / "static"
 
@@ -577,7 +580,112 @@ def _ws_dir(ws_id: str) -> Path:
 
 
 def _ws_media_dir(ws_id: str) -> Path:
+    """**低层**路径拼接：给什么作用域就用什么，**不做任何解析**。
+
+    ⚠️ 别拿它直接找「用户的素材」—— 生产上素材可能落在两种布局里：
+
+    * `u_<用户>_<ws>`：用户前缀作用域（`_config_scope_for` 产出，新素材都写这里）
+    * `<ws>`：裸 ws（前缀隔离之前的旧素材）
+
+    对不上就**静默找不到文件**（2026-10-12 事故：重启恢复拿裸 ws 找前缀目录 → 参考素材
+    被静默丢掉、作业照旧成功）。找素材一律走：
+
+    * 读 → `media_dirs_for_read(ws_id, username)`（自动给候选目录）
+    * 写 → `_config_scope_for(ws_id, username)`（写入只落用户作用域）
+    """
     return _ws_dir(ws_id) / "media"
+
+
+def media_dirs_for_read(ws_id: str, username: str = "") -> list[Path]:
+    """读素材的**唯一入口**：按优先级给出候选目录。
+
+    顺序 = 每个作用域先 `media/` 再 `media_trash/`：用户前缀作用域优先、裸 ws 兜底
+    （前缀隔离之前的旧素材）。回收站也要读 —— 换素材时旧文件是**移进回收站**而不是删掉，
+    历史作业的 `restore.media` 在保留期内仍然有效（见 `retire_replaced_media`）。
+    `ws_id` 已经带前缀时 `_config_scope_for` 会原样返回，不会重复加前缀。
+    """
+    scopes: list[str] = []
+    if username:
+        scopes.append(_config_scope_for(ws_id, username))
+    scopes.append(ws_id)
+    dirs: list[Path] = []
+    for scope in scopes:
+        if not scope:
+            continue
+        for candidate in (_ws_media_dir(scope), _ws_trash_dir(scope)):
+            if candidate not in dirs:
+                dirs.append(candidate)
+    return dirs
+
+
+#: 回收站里被替换下来的素材保留几天（比它老才轮转清掉）。历史作业的重试/恢复在此期间有效。
+MEDIA_TRASH_DAYS = 14
+
+
+def retire_replaced_media(media_dir: Path, stored_name: str) -> Path | None:
+    """换素材时把**旧文件移进回收站**，而不是删掉（用户 2026-10-12 定口径）。
+
+    为什么不能直接删：历史作业的 `restore.media` 只记**文件名**，重试 / 重启恢复都要靠它回读，
+    删掉就等于把那条作业的参考素材**永久**弄丢。实测：MM 17:41 换了参考视频 → 17:06 那条作业的
+    `ref_video_1` 从此取不到（同一份 restore 回放，之前能重建 3 个素材，之后只剩 2 个）。
+
+    移进同作用域的 `media_trash/` 后 `media_dirs_for_read` 仍能读到，超过保留期的由
+    `sweep_media_trash()` 轮转清掉。返回落点；任何异常都**保留原文件不动** ——
+    宁可不清理，也不静默丢数据。
+    """
+    if not stored_name:
+        return None
+    old_path = media_dir / stored_name
+    if not old_path.is_file():
+        return None
+    trash_dir = media_dir.parent / "media_trash"
+    try:
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        target = trash_dir / old_path.name
+        if target.exists():
+            target = trash_dir / f"{int(time.time())}_{old_path.name}"
+        shutil.move(str(old_path), str(target))
+        return target
+    except Exception:  # noqa: BLE001 —— 移不动就留着，绝不退化成删除
+        return None
+
+
+def sweep_media_trash(max_age_days: int = MEDIA_TRASH_DAYS) -> dict[str, Any]:
+    """轮转回收站：删掉超过保留期的旧素材（启动时跑一次，`cleanup_cache` 也会跑）。"""
+    cutoff = time.time() - max(1, int(max_age_days)) * 86400
+    removed = kept = 0
+    bytes_freed = 0
+    for trash_dir in STATE_DIR.glob("workspaces/*/media_trash"):
+        if not trash_dir.is_dir():
+            continue
+        for path in trash_dir.iterdir():
+            try:
+                if not path.is_file():
+                    continue
+                if path.stat().st_mtime >= cutoff:
+                    kept += 1
+                    continue
+                size = path.stat().st_size
+                path.unlink()
+                removed += 1
+                bytes_freed += size
+            except OSError:
+                continue
+    return {
+        "removed": removed,
+        "kept": kept,
+        "bytes_freed": bytes_freed,
+        "max_age_days": int(max_age_days),
+    }
+
+
+def _ws_trash_dir(ws_id: str) -> Path:
+    """素材回收站（同作用域内）：换素材时旧文件移到这里，保留 `MEDIA_TRASH_DAYS` 天。
+
+    之所以要它：历史作业的 `restore.media` 只记文件名，重试 / 重启恢复都要回读 ——
+    直接删除等于永久弄丢那条作业的参考素材（2026-10-12 实测踩到）。
+    """
+    return _ws_dir(ws_id) / "media_trash"
 
 
 def _ws_preset_path(ws_id: str) -> Path:
@@ -1303,24 +1411,43 @@ def _backlog_remove_locked(job_id: str) -> None:
         _backlog_save(backlog)
 
 
-def _files_from_restore(restore: dict[str, Any], ws_id: str) -> dict[str, tuple[str, bytes]]:
-    """copy_files_to_restore 的逆操作：从落盘的素材文件重建 files 字典。"""
+def _files_from_restore(
+    restore: dict[str, Any], ws_id: str, username: str = ""
+) -> dict[str, tuple[str, bytes]]:
+    """copy_files_to_restore 的逆操作：从落盘的素材文件重建 files 字典。
+
+    **作用域解析就收在这一层**：调用者只给「ws + 用户名」，候选目录由
+    `media_dirs_for_read` 推出（用户前缀作用域优先、裸 ws 兜底）—— 调用点没有再传错
+    作用域的机会。这是 2026-10-12 事故的结构性收口。
+
+    **2026-10-12 生产事故**：调用点自己拼了个**裸 ws** 交给 `_ws_media_dir`，而素材全在
+    用户前缀目录里 → `path.exists()` 为假 → 静默 `continue` → `files` 为空 →
+    重启「自动恢复入队」重投成**没有参考素材**的作业（事件里
+    `creating task (text:1, image_url:0, video_url:0, audio_url:0)`），而且**照旧显示成功**。
+    当天 Portal/子应用被重启 5 次，用户体感就是「参考图能看见，但生成时没用上，时好时坏」。
+    """
     files: dict[str, tuple[str, bytes]] = {}
     media = (restore or {}).get("media") or {}
     if not isinstance(media, dict):
         return files
-    media_dir = _ws_media_dir(ws_id)
+    media_dirs = media_dirs_for_read(ws_id, username)
+    if not media_dirs:
+        return files
     for key, item in media.items():
         if key not in FILE_FIELDS or not isinstance(item, dict):
             continue
         stored = Path(str(item.get("stored", ""))).name
-        path = media_dir / stored
-        if not stored or not path.exists():
+        if not stored:
             continue
-        try:
-            files[key] = (str(item.get("filename") or stored), path.read_bytes())
-        except OSError:
-            continue
+        for media_dir in media_dirs:
+            path = media_dir / stored
+            if not path.exists():
+                continue
+            try:
+                files[key] = (str(item.get("filename") or stored), path.read_bytes())
+            except OSError:
+                continue
+            break
     return files
 
 
@@ -1399,9 +1526,11 @@ def retry_job(job_id: str) -> str:
     # restore 有意剥离 api_key：重放时回填服务端统一配置（与原提交逻辑一致）
     values.setdefault("api_key", str((SECRETS or {}).get("volcengine_api_key") or ""))
     ws_id = str((act or {}).get("workspace_id") or "localhost")
-    files = _files_from_restore(restore, ws_id)
     username = str((act or {}).get("username") or "")
     media_scope = _config_scope_for(ws_id, username)
+    # 素材作用域由 _files_from_restore 自己解析（用户前缀作用域优先 + 裸 ws 兜底），
+    # 调用点不再自己拼作用域 —— 2026-10-12 的事故就是拼错在这里。
+    files = _files_from_restore(restore, ws_id, username)
     # 先落盘 restore（可能失败），再改活动记录，最后才建作业——顺序很重要：
     # 旧实现的顺序是「create_job 先入库 → 再 copy_files_to_restore → 再改活动记录」，
     # 中间任一步失败都会返回 400 却把作业留在队列里（没有 worker 线程）→ 永久
@@ -1461,8 +1590,17 @@ def recover_backlog() -> tuple[int, int]:
             # restore 有意剥离 api_key：重放时回填服务端统一配置
             values.setdefault("api_key", str((SECRETS or {}).get("volcengine_api_key") or ""))
             ws_id = str(meta.get("ws_id") or "localhost")
-            media_scope = _config_scope_for(ws_id, str(meta.get("username") or ""))
-            files = _files_from_restore(restore, ws_id)
+            username = str(meta.get("username") or "")
+            media_scope = _config_scope_for(ws_id, username)
+            # 作用域解析收在 _files_from_restore 内部（前缀优先 + 裸 ws 兜底）；
+            # 调用点自己拼作用域正是 2026-10-12 把参考素材丢掉的原因。
+            files = _files_from_restore(restore, ws_id, username)
+            media_total = len(restore.get("media") or {})
+            media_note = (
+                f"；⚠️ 只找回 {len(files)}/{media_total} 个参考素材，缺失的这次生成不会用上"
+                if len(files) < media_total
+                else ""
+            )
             # 排队中/运行中统一语义（2026-09-09 用户确认）：
             # 重启后原 job_id 重新入队、自动继续跑，活动记录保持 running——
             # 重启前后用户无感。failed/succeeded 的任务由上方终态守卫保护。
@@ -1471,7 +1609,7 @@ def recover_backlog() -> tuple[int, int]:
             with JOBS_LOCK:
                 JOBS[job_id] = {
                     "id": job_id, "status": "queued", "events": [{"time": time.strftime("%H:%M:%S"),
-                                                                   "message": "服务重启后自动恢复入队"}],
+                                                                   "message": "服务重启后自动恢复入队" + media_note}],
                     "results": [], "errors": [], "done": 0, "total": 0,
                     "duration": max(0, int(str(values.get("duration") or "0") or "0")),
                     "username": str(meta.get("username") or ""),
@@ -2675,6 +2813,41 @@ def content_counts(payload: dict[str, Any]) -> str:
     return ", ".join(f"{k}:{v}" for k, v in counts.items())
 
 
+def declared_reference_fields(form: cgi.FieldStorage) -> list[str]:
+    """本任务**声明**要带的参考素材字段 —— 刻意**不看文件能不能真读到**。
+
+    判据取两处（任一命中即算声明过）：
+    * `saved_media` JSON 里的键（界面「从历史里选一张」走这条）；
+    * 表单里真的有上传文件（`get_file`）。
+    """
+    declared = {name for name in parse_saved_media(form) if name in FILE_FIELDS}
+    for name in FILE_FIELDS:
+        if get_file(form, name):
+            declared.add(name)
+    return sorted(declared)
+
+
+def reference_attachment_warning(declared: list[str], counts: str) -> str | None:
+    """提交前不变量：**声明了参考素材、上游却一张都没收到** → 必须说出来。
+
+    2026-10-12 事故的形态：重启恢复没找回素材 → 作业照旧 `succeeded`，成片却是无视参考图的
+    文生图，界面上一个字都没有，用户只能靠肉眼发现。这里**只看结果不看原因** —— 作用域错、
+    文件被清理、恢复没重建回来、模板没挂上……任何原因造成的「声明 N 个、挂上 0 个」都在
+    这里现形（所以它是这个 bug 类的**兜底**，不再依赖「记得传对作用域」）。
+
+    刻意做成纯函数（只吃「声明了哪些字段」+「上游内容计数文本」），好测、好复用。
+    """
+    entries = [str(item) for item in declared if str(item).strip()]
+    if not entries:
+        return None
+    if re.search(r"(?:image_url|video_url|audio_url):[1-9]", counts or ""):
+        return None
+    return (
+        f"⚠️ 声明了 {len(entries)} 个参考素材（{'、'.join(entries)}），但上游请求一个都没挂上"
+        f"（{counts}）—— 本次生成用不到参考素材，建议取消后重试"
+    )
+
+
 def resolve_output_dir(raw: str | None) -> Path:
     if raw and raw.strip():
         path = Path(raw.strip()).expanduser()
@@ -2763,6 +2936,10 @@ def cleanup_cache(media_days: int = 30, log_days: int = 14) -> dict[str, Any]:
             path.unlink()
             stats["logs_deleted"] += 1
             stats["bytes_deleted"] += size
+    # 素材回收站：显式清理时一并轮转（与启动时同一套规则）
+    trash = sweep_media_trash()
+    stats["trash_removed"] = trash["removed"]
+    stats["bytes_deleted"] += trash["bytes_freed"]
     return stats
 
 
@@ -2930,6 +3107,8 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
         JOBS[job_id] = {
             "id": job_id, "status": "queued", "events": [], "results": [], "errors": [],
             "done": 0, "total": 0, "duration": per_item_duration,
+            # 方舟 token 用量：每个 run 完成后累加，Portal 轮询终态时读走写入 by_user。
+            "tokens": 0,
             "username": username,
             "workspace_id": ws_id,
             "activity_id": activity_id,
@@ -3183,6 +3362,9 @@ def _run_local_video(job_id: str, index: int, form: cgi.FieldStorage, form_value
         "task_id": str(local_job_id),
         "status": "succeeded",
         "video_url": "",
+        # 本地 ComfyUI/MiniMax H3 不上云、不按 token 计费 → 恒 0。
+        # 显式写出来，让 job JSON 的 tokens 字段在任何 provider 下都存在。
+        "tokens": 0,
         "duration": seconds,
         "download_url": f"/api/download/{file_token}",
         "filename": out_name,
@@ -3228,6 +3410,13 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
     payload = build_payload(form, api_key, base_url, index - 1, ws_id, request_host=request_host, notes=notes)
     for note in notes:
         add_event(job_id, f"Run {index}: {note}")
+    # 提交前不变量（2026-10-12）：声明了参考素材却一张都没挂上 → 写一条**可见**事件。
+    # 不管原因是什么（作用域错 / 文件被清理 / 恢复没重建回来），都不许再静默出无参考的片子。
+    attachment_warning = reference_attachment_warning(
+        declared_reference_fields(form), content_counts(payload)
+    )
+    if attachment_warning:
+        add_event(job_id, f"Run {index}: {attachment_warning}")
     add_event(job_id, f"Run {index}: creating task ({content_counts(payload)})")
     create_result = request_json("POST", create_url, api_key, payload)
     task_id = create_result.get("id") or create_result.get("task_id")
@@ -3363,6 +3552,8 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
             "task_id": task_id,
             "status": "succeeded",
             "video_url": video_url,
+            # 方舟按 token 计费，usage 就是这一条 run 的真实用量（缺失/本地 provider → 0）。
+            "tokens": extract_tokens(status_result),
             "duration": int(actual_duration) if isinstance(actual_duration, (int, float)) else None,
             "download_url": f"/api/download/{file_token}",
             "filename": out_name,
@@ -3443,6 +3634,9 @@ def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tupl
                             continue
                         JOBS[job_id]["results"].append(result)
                         JOBS[job_id]["done"] += 1
+                        # token 按 run 累加：并发/多跑时每个 run 是独立的一次方舟任务。
+                        JOBS[job_id]["tokens"] = (int(JOBS[job_id].get("tokens") or 0)
+                                                  + int(result.get("tokens") or 0))
                 except TaskCancelled:
                     # 取消不是错误：不记 errors、不计 done
                     add_event(job_id, "Run cancelled")
@@ -4043,12 +4237,9 @@ class Handler(SimpleHTTPRequestHandler):
             media = preset.get("media") or {}
             old = media.get(field_name)
             if old and old.get("stored"):
-                old_path = media_dir / old["stored"]
-                try:
-                    if old_path.exists() and old_path.name != stored:
-                        old_path.unlink()
-                except Exception:
-                    pass
+                # 换素材：旧文件**移进回收站**而不是删除 —— 历史作业的 restore 在保留期内
+                # 仍然能读到它（2026-10-12 用户口径；以前 unlink 会让老作业永久丢参考素材）。
+                retire_replaced_media(media_dir, str(old["stored"]))
             media[field_name] = {"filename": filename, "mime": mime, "stored": stored}
             preset["media"] = media
             write_active_preset(preset, ws)
@@ -4248,6 +4439,18 @@ def main() -> None:
             print(f"[recover] 任务恢复：{recovered} 个排队任务重新入队，{interrupted} 个运行中任务标记中断")
     except Exception as exc:
         print(f"[recover] 任务恢复失败（不影响启动）: {exc}")
+    # 素材回收站轮转（每天启动时清一次过期的）：换素材时旧文件进媒体回收站而不是删除，
+    # 保留期内历史作业的 restore 仍能读到它（2026-10-12 口径）。
+    try:
+        swept = sweep_media_trash()
+        if swept["removed"]:
+            print(
+                f"[trash] 素材回收站轮转：清掉 {swept['removed']} 个超过 "
+                f"{swept['max_age_days']} 天的旧素材（{swept['bytes_freed'] / 1e6:.1f}MB），"
+                f"保留 {swept['kept']} 个"
+            )
+    except Exception as exc:
+        print(f"[trash] 素材回收站轮转失败（不影响启动）: {exc}")
     port = int(os.environ.get("PORT", "8787"))
     host = os.environ.get("HOST", "127.0.0.1")
     server = ThreadingHTTPServer((host, port), Handler)

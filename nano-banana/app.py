@@ -65,6 +65,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared import local_gateway  # noqa: E402
+# 方舟（Seedream / ark_seedream 通道）按 token 计费，取值口径与 seedance、
+# volcengine-portrait 共用 shared/ark_usage。其余通道（t8star / gemini / 本地
+# ComfyUI）不返回也不按 token 计费 → 记 0。
+from shared.ark_usage import extract_tokens  # noqa: E402
 
 # Ark 错误中文翻译表在 portal/ 下共享（与 seedance/volcengine-portrait 同一张表）。
 # nano-banana 走 OpenAI 兼容错误形状，但 code/message 结构与 Ark 视频端点一致，
@@ -357,7 +361,111 @@ def _ws_dir(ws_id: str) -> Path:
 
 
 def _ws_media_dir(ws_id: str) -> Path:
+    """**低层**路径拼接：给什么作用域就用什么，**不做任何解析**。
+
+    ⚠️ 别拿它直接找「用户的素材」—— 生产上素材可能落在两种布局里：
+
+    * `u_<用户>_<ws>`：用户前缀作用域（`_config_scope_for` 产出，新素材都写这里）
+    * `<ws>`：裸 ws（前缀隔离之前的旧素材）
+
+    对不上就**静默找不到文件**（2026-10-12 事故：重启恢复拿裸 ws 找前缀目录 → 参考素材
+    被静默丢掉、作业照旧成功）。找素材一律走：
+
+    * 读 → `media_dirs_for_read(ws_id, username)`（自动给候选目录）
+    * 写 → `_config_scope_for(ws_id, username)`（写入只落用户作用域）
+    """
     return _ws_dir(ws_id) / "media"
+
+
+def media_dirs_for_read(ws_id: str, username: str = "") -> list[Path]:
+    """读素材的**唯一入口**：按优先级给出候选目录。
+
+    顺序 = 每个作用域先 `media/` 再 `media_trash/`：用户前缀作用域优先、裸 ws 兜底
+    （前缀隔离之前的旧素材）。回收站也要读 —— 换素材时旧文件是**移进回收站**而不是删掉，
+    历史作业的 `restore.media` 在保留期内仍然有效（见 `retire_replaced_media`）。
+    `ws_id` 已经带前缀时 `_config_scope_for` 会原样返回，不会重复加前缀。
+    """
+    scopes: list[str] = []
+    if username:
+        scopes.append(_config_scope_for(ws_id, username))
+    scopes.append(ws_id)
+    dirs: list[Path] = []
+    for scope in scopes:
+        if not scope:
+            continue
+        for candidate in (_ws_media_dir(scope), _ws_trash_dir(scope)):
+            if candidate not in dirs:
+                dirs.append(candidate)
+    return dirs
+
+
+#: 回收站里被替换下来的素材保留几天（比它老才轮转清掉）。历史作业的重试/恢复在此期间有效。
+MEDIA_TRASH_DAYS = 14
+
+
+def retire_replaced_media(media_dir: Path, stored_name: str) -> Path | None:
+    """换素材时把**旧文件移进回收站**，而不是删掉（用户 2026-10-12 定口径）。
+
+    为什么不能直接删：历史作业的 `restore.media` 只记**文件名**，重试 / 重启恢复都要靠它回读，
+    删掉就等于把那条作业的参考素材**永久**弄丢。
+
+    移进同作用域的 `media_trash/` 后 `media_dirs_for_read` 仍能读到，超过保留期的由
+    `sweep_media_trash()` 轮转清掉。返回落点；任何异常都**保留原文件不动** ——
+    宁可不清理，也不静默丢数据。
+    """
+    if not stored_name:
+        return None
+    old_path = media_dir / stored_name
+    if not old_path.is_file():
+        return None
+    trash_dir = media_dir.parent / "media_trash"
+    try:
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        target = trash_dir / old_path.name
+        if target.exists():
+            target = trash_dir / f"{int(time.time())}_{old_path.name}"
+        shutil.move(str(old_path), str(target))
+        return target
+    except Exception:  # noqa: BLE001 —— 移不动就留着，绝不退化成删除
+        return None
+
+
+def sweep_media_trash(max_age_days: int = MEDIA_TRASH_DAYS) -> dict[str, Any]:
+    """轮转回收站：删掉超过保留期的旧素材（启动时跑一次，`cleanup_cache` 也会跑）。"""
+    cutoff = time.time() - max(1, int(max_age_days)) * 86400
+    removed = kept = 0
+    bytes_freed = 0
+    for trash_dir in STATE_DIR.glob("workspaces/*/media_trash"):
+        if not trash_dir.is_dir():
+            continue
+        for path in trash_dir.iterdir():
+            try:
+                if not path.is_file():
+                    continue
+                if path.stat().st_mtime >= cutoff:
+                    kept += 1
+                    continue
+                size = path.stat().st_size
+                path.unlink()
+                removed += 1
+                bytes_freed += size
+            except OSError:
+                continue
+    return {
+        "removed": removed,
+        "kept": kept,
+        "bytes_freed": bytes_freed,
+        "max_age_days": int(max_age_days),
+    }
+
+
+def _ws_trash_dir(ws_id: str) -> Path:
+    """素材回收站（同作用域内）：换素材时旧文件移到这里，保留 `MEDIA_TRASH_DAYS` 天。
+
+    之所以要它：历史作业的 `restore.media` 只记文件名，重试 / 重启恢复都要回读 ——
+    直接删除等于永久弄丢那条作业的参考素材（2026-10-12 实测踩到）。
+    """
+    return _ws_dir(ws_id) / "media_trash"
 
 
 def _ws_preset_path(ws_id: str) -> Path:
@@ -476,7 +584,29 @@ VALUE_FIELDS = {
     "concurrency", "poll_interval", "timeout", "vary_seed", "prompt", "archive_name", "output_name",
     "resize_enabled", "resize_width", "resize_height", "resize_interpolation", "resize_method",
     "resize_condition", "resize_multiple_of",
+    # 扩图（outpaint）：本地通道透传给 AI Port 的 ImagePadForOutpaint；云端只当提示词用。
+    "outpaint_left", "outpaint_top", "outpaint_right", "outpaint_bottom", "outpaint_feather",
 }
+
+#: 扩图模式名。前端「模式」下拉的第三个选项。
+OUTPAINT_MODE = "outpaint"
+
+#: 本地模型 → 承载「工作流分支」的字段名。只有这两个模型有真正的像素级扩图分支。
+LOCAL_OUTPAINT_MODELS = {
+    "flux2_klein_allinone": "flux2_mode",
+    "zimage_multifunction": "zimage_mode",
+}
+
+#: 本地「自动（推荐）」+ 扩图时用哪个模型：Z-Image 最快（实测 90s vs Klein 166s）。
+LOCAL_OUTPAINT_AUTO_MODEL = "zimage_multifunction"
+
+#: 云端扩图靠提示词。用户自己已经写了扩图要求时不重复追加。
+_OUTPAINT_INSTRUCTION = (
+    "对这张图做扩图（outpainting）：向外延展并补全被裁切/缺失的画面内容，"
+    "新增区域必须与原画面无缝衔接，严格保持原有光线方向、色调、透视、景深与主体外观不变，"
+    "不要改变主体本身，不要出现接缝、错位、重影或重复物体。"
+)
+_OUTPAINT_KEYWORDS = ("outpaint", "扩图", "扩展画面", "向外延展", "画面延展", "extend the image")
 
 FALLBACK_PROVIDERS = {
     "schema_version": 1,
@@ -1206,24 +1336,41 @@ def _backlog_remove_locked(job_id: str) -> None:
         _backlog_save(backlog)
 
 
-def _files_from_restore(restore: dict[str, Any], ws_id: str) -> dict[str, tuple[str, bytes]]:
-    """copy_files_to_restore 的逆操作：从落盘的素材文件重建 files 字典。"""
+def _files_from_restore(
+    restore: dict[str, Any], ws_id: str, username: str = ""
+) -> dict[str, tuple[str, bytes]]:
+    """copy_files_to_restore 的逆操作：从落盘的素材文件重建 files 字典。
+
+    **作用域解析就收在这一层**：调用者只给「ws + 用户名」，候选目录由
+    `media_dirs_for_read` 推出（用户前缀作用域优先、裸 ws 兜底）—— 调用点没有再传错
+    作用域的机会。这是 2026-10-12 事故的结构性收口。
+
+    **2026-10-12 生产事故**：调用点自己拼了个**裸 ws** 交给 `_ws_media_dir`，而素材全在
+    用户前缀目录里 → `path.exists()` 为假 → 静默 `continue` → `files` 为空 → 重启
+    「自动恢复入队」重投成**没有参考素材**的作业，而且**照旧显示成功**。
+    """
     files: dict[str, tuple[str, bytes]] = {}
     media = (restore or {}).get("media") or {}
     if not isinstance(media, dict):
         return files
-    media_dir = _ws_media_dir(ws_id)
+    media_dirs = media_dirs_for_read(ws_id, username)
+    if not media_dirs:
+        return files
     for key, item in media.items():
         if key not in FILE_FIELDS or not isinstance(item, dict):
             continue
         stored = Path(str(item.get("stored", ""))).name
-        path = media_dir / stored
-        if not stored or not path.exists():
+        if not stored:
             continue
-        try:
-            files[key] = (str(item.get("filename") or stored), path.read_bytes())
-        except OSError:
-            continue
+        for media_dir in media_dirs:
+            path = media_dir / stored
+            if not path.exists():
+                continue
+            try:
+                files[key] = (str(item.get("filename") or stored), path.read_bytes())
+            except OSError:
+                continue
+            break
     return files
 
 
@@ -1244,10 +1391,13 @@ def retry_job(job_id: str) -> str:
     # restore 有意剥离 api_key：重放时回填服务端统一配置（与原提交逻辑一致）
     values.setdefault("api_key", resolve_provider_api_key(str(values.get("provider") or "")))
     ws_id = str((act or {}).get("workspace_id") or "localhost")
-    files = _files_from_restore(restore, ws_id)
     username = str((act or {}).get("username") or "")
+    media_scope = _config_scope_for(ws_id, username)
+    # 素材作用域由 _files_from_restore 自己解析（用户前缀作用域优先 + 裸 ws 兜底），
+    # 调用点不再自己拼作用域 —— 2026-10-12 的事故就是拼错在这里。
+    files = _files_from_restore(restore, ws_id, username)
     return create_job(values, files, source="retry", request_kind="retry",
-                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username, media_scope=_config_scope_for(ws_id, username))
+                      request_data={"retried_from": job_id}, ws_id=ws_id, username=username, media_scope=media_scope)
 
 
 def recover_backlog() -> tuple[int, int]:
@@ -1280,8 +1430,17 @@ def recover_backlog() -> tuple[int, int]:
             # restore 有意剥离 api_key：重放时回填服务端统一配置
             values.setdefault("api_key", resolve_provider_api_key(str(values.get("provider") or "")))
             ws_id = str(meta.get("ws_id") or "localhost")
-            media_scope = _config_scope_for(ws_id, str(meta.get("username") or ""))
-            files = _files_from_restore(restore, ws_id)
+            username = str(meta.get("username") or "")
+            media_scope = _config_scope_for(ws_id, username)
+            # 作用域解析收在 _files_from_restore 内部（前缀优先 + 裸 ws 兜底）；
+            # 调用点自己拼作用域正是 2026-10-12 把参考素材丢掉的原因。
+            files = _files_from_restore(restore, ws_id, username)
+            media_total = len(restore.get("media") or {})
+            media_note = (
+                f"；⚠️ 只找回 {len(files)}/{media_total} 个参考素材，缺失的这次生成不会用上"
+                if len(files) < media_total
+                else ""
+            )
             # 排队中/运行中统一语义（2026-09-09 用户确认）：
             # 重启后原 job_id 重新入队、自动继续跑，活动记录保持 running——
             # 重启前后用户无感。failed/succeeded 的任务由上方终态守卫保护。
@@ -1289,7 +1448,7 @@ def recover_backlog() -> tuple[int, int]:
             with LOCK:
                 JOBS[job_id] = {
                     "id": job_id, "status": "queued", "events": [{"time": time.strftime("%H:%M:%S"),
-                                                                   "message": "服务重启后自动恢复入队"}],
+                                                                   "message": "服务重启后自动恢复入队" + media_note}],
                     "results": [], "errors": [], "done": 0, "total": 0,
                     "username": str(meta.get("username") or ""),
                     "workspace_id": ws_id,
@@ -1307,6 +1466,10 @@ def recover_backlog() -> tuple[int, int]:
                 }
                 _backlog_set_locked(job_id, stage="queued", activity_id=activity_id, ws_id=ws_id)
             threading.Thread(target=run_job, args=(job_id, values, files, activity_id, media_scope), daemon=True).start()
+            # 计数（2026-10-12 补）：以前这里忘了 +1，于是 `recover_backlog()` 永远返回
+            # recovered=0，启动日志里那句「N 个排队任务重新入队」从来不打 —— 恢复动作
+            # 明明发生了却看不见，排查「重启后参考素材丢了」时白绕一大圈。
+            recovered += 1
         except Exception as exc:
             # 数据残缺无法重放：活动记录还在 → 标记中断；记录已被 100 条上限
             # 滚出日志 → 直接丢弃，绝不造无主失败条目污染任务列表
@@ -1411,6 +1574,36 @@ def parse_saved_media(form: cgi.FieldStorage | dict[str, Any]) -> dict[str, Any]
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def declared_reference_fields(form: cgi.FieldStorage | dict[str, Any]) -> list[str]:
+    """本任务**声明**要带的参考图字段 —— 刻意**不看文件能不能真读到**。
+
+    判据取两处（任一命中即算声明过）：`saved_media` JSON 里的键（界面「用历史素材」走这条）、
+    表单里真的有上传文件。
+    """
+    declared = {name for name in parse_saved_media(form) if name in FILE_FIELDS}
+    for name in FILE_FIELDS:
+        if get_file(form, name):
+            declared.add(name)
+    return sorted(declared)
+
+
+def reference_attachment_warning(declared: list[str], input_images: int) -> str | None:
+    """提交前不变量：**声明了参考图、实际上游一张都收不到** → 必须说出来。
+
+    2026-10-12 事故的形态（seedance 现场）：重启恢复没找回素材 → 作业照旧 succeeded，
+    成片却是无视参考图的文生图，事件流一个字都没有。这里**只看结果不看原因** ——
+    作用域错、文件被清理、恢复没重建回来……任何原因造成的「声明 N 个、挂上 0 个」都现形，
+    所以它是这个 bug 类的**兜底**，不再依赖「记得传对作用域」。
+    """
+    entries = [str(item) for item in declared if str(item).strip()]
+    if not entries or input_images > 0:
+        return None
+    return (
+        f"⚠️ 声明了 {len(entries)} 个参考图（{'、'.join(entries)}），但一张都读不到"
+        f"（上游收到 0 张）—— 本次生成用不到参考图，建议取消后重试"
+    )
 
 
 def get_file_or_saved(form: cgi.FieldStorage | dict[str, Any], name: str, ws_id: str = "localhost") -> tuple[str, bytes] | None:
@@ -1687,6 +1880,10 @@ def cleanup_cache(media_days: int = 30, log_days: int = 14) -> dict[str, Any]:
             path.unlink()
             stats["logs_deleted"] += 1
             stats["bytes_deleted"] += size
+    # 素材回收站：显式清理时一并轮转（与启动时同一套规则）
+    trash = sweep_media_trash()
+    stats["trash_removed"] = trash["removed"]
+    stats["bytes_deleted"] += trash["bytes_freed"]
     return stats
 
 
@@ -1762,6 +1959,13 @@ def request_template() -> dict[str, Any]:
         "resize_method": defaults.get("resize_method", "stretch"),
         "resize_condition": defaults.get("resize_condition", "always"),
         "resize_multiple_of": defaults.get("resize_multiple_of", 0),
+        # 扩图（mode=outpaint）：本地模型用这几个像素参数做真扩图；
+        # 云端模型只把它们当提示词扩图的辅助（画幅由 aspect_ratio 决定）。
+        "outpaint_left": 256,
+        "outpaint_top": 0,
+        "outpaint_right": 256,
+        "outpaint_bottom": 0,
+        "outpaint_feather": 50,
         "media": {f"image_{i}": None for i in range(1, 15)},
     }
     full["media"]["image_1"] = {"filename": "reference.png", "data_url": "data:image/png;base64,..."}
@@ -1831,6 +2035,8 @@ def create_job(values: dict[str, Any], files: dict[str, tuple[str, bytes]], sour
         JOBS[job_id] = {
             "id": job_id, "status": "queued", "events": [], "results": [], "errors": [],
             "done": 0, "total": 0,
+            # 方舟 token 用量：每个 run 完成后累加，Portal 轮询终态时读走写入 by_user。
+            "tokens": 0,
             "username": username,
             "workspace_id": ws_id,
             "activity_id": activity_id,
@@ -2280,6 +2486,77 @@ def truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"on", "true", "1", "yes"}
 
 
+def is_outpaint_mode(mode: Any) -> bool:
+    return str(mode or "").strip().lower() == OUTPAINT_MODE
+
+
+def outpaint_prompt(prompt: str, aspect_ratio: str, *, include_ratio: bool) -> str:
+    """把用户的提示词补成一条完整的扩图指令。
+
+    - 用户自己已经写了扩图要求（中文「扩图/向外延展…」或英文 outpaint）→ 原样保留，不重复追加；
+    - 云端：扩图的画幅由「比例」决定，所以把比例写进指令；选 auto 时不下死比例，
+      交给上游按画面内容判断（用户明确要求「不一定要 16:9」）；
+    - 本地：画幅由「原图 + 扩展像素」决定，指令里就**不提比例**，免得模型自己去改画幅。
+    """
+    text = str(prompt or "").strip()
+    lowered = text.lower()
+    if any(keyword in lowered for keyword in _OUTPAINT_KEYWORDS):
+        return text
+    instruction = _OUTPAINT_INSTRUCTION
+    if include_ratio:
+        ratio = str(aspect_ratio or "auto").strip()
+        if ratio and ratio.lower() != "auto":
+            instruction += f" 输出画幅 {ratio}。"
+        else:
+            instruction += " 输出画幅按画面内容自然延展决定。"
+    return f"{text}\n{instruction}".strip() if text else instruction
+
+
+def local_outpaint_padding(values: dict[str, Any], model_kind: str) -> dict[str, str]:
+    """本地扩图的下发参数：四周扩展像素 + 羽化。
+
+    AI Port 侧对 Klein 的默认是左右各 504 / 羽化 50，对 Z-Image 是左右各 256 / 羽化 100；
+    这里统一默认左右各 256、羽化 50，用户在界面上可以改。
+    """
+    def _number(key: str, default: int, ceiling: int) -> str:
+        raw = str(values.get(key) or "").strip()
+        try:
+            parsed = int(float(raw))
+        except (TypeError, ValueError):
+            parsed = default
+        return str(max(0, min(ceiling, parsed)))
+
+    return {
+        "outpaint_left": _number("outpaint_left", 256, 4096),
+        "outpaint_top": _number("outpaint_top", 0, 4096),
+        "outpaint_right": _number("outpaint_right", 256, 4096),
+        "outpaint_bottom": _number("outpaint_bottom", 0, 4096),
+        "outpaint_feather": _number("outpaint_feather", 50, 1024),
+    }
+
+
+def local_mode_values(model_kind: str, mode: str, has_reference: bool) -> dict[str, str]:
+    """本地模型该下发哪个工作流分支。
+
+    2026-10-10 修复：以前本地请求体是白名单，`flux2_mode` / `zimage_mode` **从来没发出去**
+    （实测：选 Z-Image + 参考图 + 模式=img2img，AI Port 收到的仍是 `zimage_t2i_api`，
+    参考图被忽略）。现在按界面上的「模式」如实透传。
+
+    - 扩图：交给 AI Port 的真·扩图分支（Klein / Z-Image 才有）；
+    - 其余：Klein 保持 auto（AI Port 按参考图数量自动挑 t2i/single/double/triple），
+      Z-Image 按 text2img/有无参考图映射 t2i / img2img。
+    """
+    field = LOCAL_OUTPAINT_MODELS.get(str(model_kind or "").strip().lower())
+    if not field:
+        return {}
+    if is_outpaint_mode(mode):
+        return {field: OUTPAINT_MODE}
+    if field != "zimage_mode":
+        return {field: "auto"}
+    text_mode = str(mode or "").strip().lower() == "text2img"
+    return {"zimage_mode": "t2i" if (text_mode or not has_reference) else "img2img"}
+
+
 def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tuple[str, bytes]], ws_id: str = "localhost") -> dict[str, Any]:
     form = build_form(values, files)
     api_key = str(values["api_key"]).strip()
@@ -2305,12 +2582,40 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
     if seed > 0:
         common["seed"] = str(seed)
 
+    config, _ = load_provider_config()
+    provider_cfg = (config.get("providers") or {}).get(provider) or {}
+    is_local_provider = provider_cfg.get("api_style") == "comfyui_workflow"
+    if is_outpaint_mode(mode):
+        # 扩图必须有原图：本地是 ImagePadForOutpaint 的输入，云端是提示词扩图的底图。
+        if not any(get_file_or_saved(form, f"image_{i}", ws_id) for i in range(1, 15)):
+            raise ValueError("扩图模式需要一张原图作为输入，请先上传参考图")
+        if is_local_provider and str(common["model"]).strip().lower() not in LOCAL_OUTPAINT_MODELS:
+            raise ValueError(
+                "本地扩图只支持「Klein 多模态」和「Z-Image 多功能」两个模型；"
+                "选「自动（推荐）」会自动使用 Z-Image。"
+            )
+        # 云端的扩图指令带上目标比例；本地画幅由扩展像素决定，指令里不提比例。
+        common["prompt"] = outpaint_prompt(
+            common["prompt"], common["aspect_ratio"], include_ratio=not is_local_provider
+        )
+
     seed_label = f", seed:{seed}" if seed > 0 else ""
+
+    # 提交前不变量（2026-10-12）：**声明了参考图却一张都读不到** → 写一条可见事件。
+    # 与 seedance 同款：只看结果不看原因（作用域错 / 文件被清理 / 重启恢复没重建回来…）。
+    # 以前这种作业会静默降级成纯文生图，还显示成功，用户只能靠肉眼发现参考图没生效。
+    declared_refs = declared_reference_fields(form)
+    if declared_refs:
+        supplied = any(
+            get_file_or_saved(form, f"image_{i}", ws_id) for i in range(1, 15)
+        )
+        ref_warning = reference_attachment_warning(declared_refs, 1 if supplied else 0)
+        if ref_warning:
+            add_event(job_id, f"Run {index}: {ref_warning}")
+
     if _job_cancel_requested(job_id):
         raise TaskCancelled("任务已取消。")
     add_event(job_id, f"Run {index}: submitting {provider}/{common['model']}/{mode}{seed_label}")
-    config, _ = load_provider_config()
-    provider_cfg = (config.get("providers") or {}).get(provider) or {}
     if provider_cfg.get("company_key"):
         # A server-managed credential must never follow a client-controlled
         # URL. Lock managed providers to their committed official endpoint.
@@ -2342,6 +2647,19 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             "height": height,
             "repeat_count": 1,
         }
+        # 工作流分支必须如实下发（扩图 / 洗图 / 局部重绘…），否则 AI Port 会按默认分支跑。
+        values_payload.update(
+            local_mode_values(model_kind, mode, has_reference=bool(files_payload))
+        )
+        if is_outpaint_mode(mode):
+            values_payload.update(local_outpaint_padding(values, model_kind))
+            add_event(
+                job_id,
+                f"Run {index}: 扩图（本地真扩图）"
+                f" 左右各 +{values_payload['outpaint_left']}/{values_payload['outpaint_right']}px"
+                f"、上下 +{values_payload['outpaint_top']}/{values_payload['outpaint_bottom']}px"
+                f"、羽化 {values_payload['outpaint_feather']}",
+            )
         if seed > 0:
             values_payload["seed"] = seed
         values_payload["timeout"] = int(values.get("timeout") or 2400)
@@ -2502,6 +2820,9 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             "index": index,
             "task_id": task_id,
             "status": "succeeded",
+            # 方舟图片通道按 token 计费：usage.total_tokens 是这次请求的真实用量。
+            # 其他通道（t8star / gemini / 本地）响应里没有 usage → 0。
+            "tokens": extract_tokens(result),
             "seed": None,
             "images": file_token_results,
         }
@@ -2754,10 +3075,17 @@ _LOCAL_AUTO_MODEL_CHAIN = {
 }
 
 
-def _local_auto_candidates(model: str, file_count: int) -> list[str]:
+def _local_auto_candidates(model: str, file_count: int, mode: str = "img2img") -> list[str]:
+    """本地「自动（推荐）」选哪个模型。
+
+    扩图例外：默认链路第一位是 qwen2511（图片编辑，没有扩图分支），
+    所以扩图 + 自动时改用有真扩图分支的 Z-Image（实测最快，90s）。
+    """
     model = str(model or "").strip().lower()
     if model != "auto":
         return [model]
+    if is_outpaint_mode(mode):
+        return [LOCAL_OUTPAINT_AUTO_MODEL]
     return [_LOCAL_AUTO_MODEL_CHAIN.get(file_count, "qwen2511")]
 
 
@@ -2769,14 +3097,13 @@ def _prepare_model_attempt(
     attempt = dict(values)
     attempt["model"] = model
     attempt["custom_model"] = ""
-    if model == "flux2_klein_allinone":
-        attempt["flux2_mode"] = "auto"
-    elif model == "zimage_multifunction":
-        requested_mode = str(attempt.get("mode") or "").strip().lower()
-        if requested_mode == "text2img" or not files:
-            attempt["zimage_mode"] = "t2i"
-        else:
-            attempt["zimage_mode"] = "img2img"
+    attempt.update(
+        local_mode_values(
+            model,
+            str(attempt.get("mode") or "").strip().lower() or "img2img",
+            has_reference=bool(files),
+        )
+    )
     return attempt
 
 
@@ -2834,7 +3161,11 @@ def run_one_with_fallback(job_id: str, index: int, values: dict[str, Any], files
             add_event(job_id, f"Run {index}: batch {chunk_no}/{len(chunks)} completed")
         return _merge_local_batch_results(batch_results, index)
 
-    candidate = _local_auto_candidates(requested_model, len(files))[0]
+    candidate = _local_auto_candidates(
+        requested_model,
+        len(files),
+        str(values.get("mode") or "").strip().lower() or "img2img",
+    )[0]
     attempt_values = _prepare_model_attempt(values, candidate, files)
     try:
         result = run_one(job_id, index, attempt_values, files, ws_id)
@@ -2887,6 +3218,9 @@ def run_job(job_id: str, values: dict[str, Any], files: dict[str, tuple[str, byt
                             continue
                         JOBS[job_id]["results"].append(result)
                         JOBS[job_id]["done"] += 1
+                        # token 按 run 累加（只有方舟通道会给非 0 值）。
+                        JOBS[job_id]["tokens"] = (int(JOBS[job_id].get("tokens") or 0)
+                                                  + int(result.get("tokens") or 0))
                         if result.get("model"):
                             JOBS[job_id]["model"] = result.get("model")
                         if result.get("provider"):
@@ -2997,7 +3331,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "app": "nano-banana",
                 "version": "1.0.0",
                 "port": int(os.environ.get("PORT", "8797")),
-                "capabilities": ["text2img", "img2img"],
+                "capabilities": ["text2img", "img2img", "outpaint"],
                 "status": "ready",
             })
             return
@@ -3344,12 +3678,9 @@ class Handler(SimpleHTTPRequestHandler):
             media = preset.get("media") or {}
             old = media.get(field_name)
             if old and old.get("stored"):
-                old_path = media_dir / old["stored"]
-                try:
-                    if old_path.exists() and old_path.name != stored:
-                        old_path.unlink()
-                except Exception:
-                    pass
+                # 换素材：旧文件**移进回收站**而不是删除 —— 历史作业的 restore 在保留期内
+                # 仍然能读到它（2026-10-12 用户口径；以前 unlink 会让老作业永久丢参考素材）。
+                retire_replaced_media(media_dir, str(old["stored"]))
             media[field_name] = {"filename": filename, "mime": mime, "stored": stored}
             preset["media"] = media
             write_active_preset(preset, ws)
@@ -3530,6 +3861,18 @@ def main() -> None:
             print(f"[recover] 任务恢复：{recovered} 个排队任务重新入队，{interrupted} 个运行中任务标记中断")
     except Exception as exc:
         print(f"[recover] 任务恢复失败（不影响启动）: {exc}")
+    # 素材回收站轮转（启动时清一次过期的）：换素材时旧文件进媒体回收站而不是删除，
+    # 保留期内历史作业的 restore 仍能读到它（2026-10-12 口径）。
+    try:
+        swept = sweep_media_trash()
+        if swept["removed"]:
+            print(
+                f"[trash] 素材回收站轮转：清掉 {swept['removed']} 个超过 "
+                f"{swept['max_age_days']} 天的旧素材（{swept['bytes_freed'] / 1e6:.1f}MB），"
+                f"保留 {swept['kept']} 个"
+            )
+    except Exception as exc:
+        print(f"[trash] 素材回收站轮转失败（不影响启动）: {exc}")
     port = int(os.environ.get("PORT", "8797"))
     host = os.environ.get("HOST", "127.0.0.1")
     server = ThreadingHTTPServer((host, port), Handler)

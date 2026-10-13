@@ -33,6 +33,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared import local_gateway  # noqa: E402
+from shared.ark_usage import extract_tokens  # noqa: E402
+from shared.net import UPSTREAM  # noqa: E402
 
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 STATIC_DIR = ROOT / "static"
@@ -1177,7 +1179,7 @@ def _openapi_call_once(action, body, ak=None, sk=None, timeout=120):
     print(f"[openapi_call] Action={action} AK={ak[:8]}... SK[0:4]={sk[:4]}... SK len={len(sk)}", flush=True)
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with UPSTREAM.open(req, timeout=timeout) as resp:
             result = json.loads(resp.read())
             print(f"[openapi_call] SUCCESS Action={action}", flush=True)
             return result
@@ -1223,7 +1225,7 @@ def _ark_v3_call_once(method, path, body=None, timeout=120, api_key=None):
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with UPSTREAM.open(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         err_body = ""
@@ -1261,7 +1263,7 @@ def upload_file_to_ark(file_data, filename, mime_type, api_key=None):
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
 
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with UPSTREAM.open(req, timeout=120) as resp:
             result = json.loads(resp.read())
             fid = result.get("id") or result.get("file_id", "")
             fname = result.get("filename", filename)
@@ -1310,7 +1312,7 @@ def poll_asset_status(asset_id, ak=None, sk=None):
 def download_video(video_url, job_id, idx, out_dir: Path | None = None):
     try:
         req = urllib.request.Request(video_url)
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with UPSTREAM.open(req, timeout=300) as resp:
             ext = mimetypes.guess_extension(resp.headers.get("Content-Type", "video/mp4")) or ".mp4"
             fname = f"{job_id}_{idx}{ext}"
             fpath = (out_dir or OUTPUT_DIR) / fname
@@ -1477,7 +1479,7 @@ def _upload_to_public_host(file_data, filename, mime_type):
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with UPSTREAM.open(req, timeout=60) as resp:
             result = json.loads(resp.read())
         files = result.get("files") or []
         if files and files[0].get("url"):
@@ -2219,7 +2221,7 @@ def _http_json(url, payload=None, timeout=120):
         method = "POST"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with UPSTREAM.open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
@@ -2230,7 +2232,7 @@ def _http_json(url, payload=None, timeout=120):
 
 def _download_public_file(url: str) -> tuple[bytes, str]:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with UPSTREAM.open(req, timeout=120) as resp:
         data = resp.read()
         mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
         if not mime:
@@ -2771,6 +2773,9 @@ def _run_virtual_job_impl(job_id, job):
                         if (isinstance(actual_duration, (int, float)) and actual_duration > 0
                                 and int(job.get("duration") or 0) <= 0):
                             job["duration"] = int(actual_duration)
+                        # 方舟按 token 计费：这条 run 的真实用量累加到任务上，
+                        # Portal 轮询终态时读 job["tokens"] 写入 by_user。
+                        job["tokens"] = int(job.get("tokens") or 0) + extract_tokens(task_result)
                         job["results"].append({
                             "index": idx,
                             "task_id": task_id,

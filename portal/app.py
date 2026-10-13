@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import collections
 import csv
 from datetime import datetime, timedelta
 import hashlib
@@ -41,6 +42,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared import local_gateway  # noqa: E402
+from shared.net import UPSTREAM  # noqa: E402  直连 opener：出站别走系统代理（本机踩过 socks4 坑）
 
 _DATA_BASE = Path(os.environ.get("DATA_DIR", str(ROOT)))
 STATIC_DIR = ROOT / "static"
@@ -68,6 +70,12 @@ if hasattr(subprocess, "CREATE_NO_WINDOW"):
 STATE_DIR = _DATA_BASE / "state"
 USAGE_PATH = STATE_DIR / "usage.json"
 USAGE_JSONL_RETENTION_DAYS = 30
+# 按次生成的用量/金额明细（像中转站的使用记录）。追加写 JSONL，不参与 usage.json
+# 的热路径改写 —— usage.json 每次统计变动都要整份重写，明细进去会把它撑大。
+GENERATIONS_PATH = STATE_DIR / "generations.jsonl"
+GENERATIONS_RETENTION_DAYS = 180
+# 单价表：按「模型 + 分辨率 + 有/无输入视频」查表算钱。可手改，改完立即生效。
+PRICING_PATH = STATE_DIR / "pricing.json"
 HISTORY_PATH = STATE_DIR / "history.json"
 HISTORY_CAP = 10000
 HISTORY_DAYS = 30
@@ -186,20 +194,384 @@ _METADATA_WHITELIST = {
     "resolution", "image_size", "count", "mode", "style",
     "negative_prompt", "seed", "generate_audio", "model",
     "custom_model", "model_name", "model_version",
+    # 供应商：子应用的表单里本来就有（seedance/nano-banana 的 provider 切换），
+    # 取到就能在「使用记录」里直接显示，不必靠模型名反推。
+    "provider",
 }
 _MODEL_FIELDS = {"model", "custom_model", "model_name", "model_version"}
+_PROVIDER_FIELDS = {"provider"}
+
+# 供应商显示名（把通道名里的写法归一成「提供 key 的一方」）
+_PROVIDER_ALIASES = {
+    "volcengine": "火山方舟", "ark": "火山方舟", "volc": "火山方舟",
+    "t8star": "T8Star", "chiyun": "Chiyun", "gemini": "Chiyun",
+    "local": "本地（不消耗外部 key）", "aiport": "本地（不消耗外部 key）",
+    "comfyui": "本地（不消耗外部 key）",
+    "minimax": "本地（不消耗外部 key）", "feishu": "飞书 Agent（自带 key）",
+}
+
+
+def _read_json_key(rel_path: str, key_path: list[str] | None = None,
+                   key_field: str = "") -> str:
+    """从本机某份 JSON 里读一个密钥（只在本机、只读，取不到返回空串 → 功能自动关闭）。"""
+    try:
+        path = REPO_ROOT / rel_path
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    node: Any = data
+    for step in key_path or []:
+        if not isinstance(node, dict):
+            return ""
+        node = node.get(step)
+    if key_field:
+        node = node.get(key_field) if isinstance(node, dict) else None
+    return str(node or "").strip()
+
+
+_ARK_TASKS_CACHE: dict[str, Any] = {"ts": 0.0, "data": {}}
+_ARK_TASKS_TTL = 600.0
+_RELAY_CACHE: dict[str, Any] = {}
+
+
+def ark_task_index() -> dict[str, dict]:
+    """方舟**账号级**任务索引：{任务id: {tokens, model, resolution, has_input_video, duration}}。
+
+    为什么要它：飞书任务的 token 消耗只记在方舟那边（飞书自己不上报 usage），而飞书 Agent 的
+    `operations` 表里存着方舟任务号（实测 seedance2.5 560 条里 540 条有 `official_id`）。
+    有了这张索引，飞书任务就能补上**真实** token 与金额，连「有/无输入视频」档位都准确
+    （列表里成功任务带 `content`，看有没有 video_url 就知道）。
+
+    失败/超时一律返回上次缓存或空表：这是**锦上添花**的数据，绝不能拖垮统计页。
+    """
+    now = time.time()
+    if _ARK_TASKS_CACHE["data"] and now - float(_ARK_TASKS_CACHE["ts"]) < _ARK_TASKS_TTL:
+        return _ARK_TASKS_CACHE["data"]
+    table = pricing_table()
+    src = table.get("ark_source") or {}
+    key = _read_json_key(str(src.get("key_file") or ""), key_field=str(src.get("key_field") or ""))
+    if not key:
+        return _ARK_TASKS_CACHE["data"] or {}
+    index: dict[str, dict] = {}
+    opener = getattr(UPSTREAM, "open", urllib.request.urlopen)
+    for page in range(1, 21):                      # 最多 20 页 × 100 = 2000 条，够覆盖保留期
+        url = (f"https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
+               f"?page_size=100&page_num={page}")
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+            with opener(req, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            break
+        items = payload.get("items") or []
+        if not items:
+            break
+        for item in items:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
+            content = item.get("content") if isinstance(item.get("content"), dict) else {}
+            parts = content.get("content") if isinstance(content.get("content"), list) else []
+            index[str(item["id"])] = {
+                "tokens": int(usage.get("total_tokens") or usage.get("completion_tokens") or 0),
+                "model": str(item.get("model") or ""),
+                "resolution": str(item.get("resolution") or ""),
+                "duration": int(item.get("duration") or 0),
+                "status": str(item.get("status") or ""),
+                "has_input_video": any(
+                    str(part.get("type") or "") == "video_url"
+                    for part in parts if isinstance(part, dict)),
+            }
+    if index:
+        _ARK_TASKS_CACHE["data"] = index
+        _ARK_TASKS_CACHE["ts"] = now
+    return _ARK_TASKS_CACHE["data"] or {}
+
+
+def relay_usage_entries() -> dict[str, list[dict]]:
+    """中转站（new-api）的**按请求**用量日志：{来源id: [{created_at, model, quota, tokens...}]}。
+
+    chiyun.work / ai.t8star.org 都是 new-api，`GET /api/log/token?key=<令牌>` 返回每次调用的
+    模型、额度（quota）、prompt/completion tokens 与时间 —— 这是云代理唯一能拿到用量的口子
+    （它们的**生成响应体里没有 usage**，所以以前只能显示「—」）。
+    """
+    now = time.time()
+    table = pricing_table()
+    out: dict[str, list[dict]] = {}
+    for src in (table.get("relay_sources") or []):
+        if not isinstance(src, dict):
+            continue
+        sid = str(src.get("id") or "")
+        if not sid:
+            continue
+        cache = _RELAY_CACHE.get(sid) or {}
+        if cache.get("data") is not None and now - float(cache.get("ts") or 0) < 300.0:
+            out[sid] = cache["data"]
+            continue
+        key = _read_json_key(str(src.get("key_file") or ""),
+                             key_path=list(src.get("key_path") or []))
+        entries: list[dict] = []
+        if key:
+            base = str(src.get("base_url") or "").rstrip("/")
+            opener = getattr(UPSTREAM, "open", urllib.request.urlopen)
+            try:
+                url = f"{base}/api/log/token?key={urllib.parse.quote(key)}&p=0&page_size=200"
+                req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+                with opener(req, timeout=20) as resp:
+                    payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                for item in (payload.get("data") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    entries.append({
+                        "created_at": float(item.get("created_at") or 0),
+                        "model": str(item.get("model_name") or ""),
+                        "quota": float(item.get("quota") or 0),
+                        "prompt_tokens": int(item.get("prompt_tokens") or 0),
+                        "completion_tokens": int(item.get("completion_tokens") or 0),
+                    })
+            except Exception:  # noqa: BLE001
+                entries = cache.get("data") or []
+        _RELAY_CACHE[sid] = {"ts": now, "data": entries}
+        out[sid] = entries
+    return out
+
+
+def relay_amount(quota: float, table: dict | None = None) -> float | None:
+    """new-api 的 quota → 人民币。汇率口径写在 pricing.json 里（quota_per_usd / usd_cny）。"""
+    table = table or pricing_table()
+    per_usd = float(table.get("relay_quota_per_usd") or 0) or 500000.0
+    usd_cny = float(table.get("usd_cny") or 0) or 7.2
+    if quota <= 0:
+        return None
+    return round(quota / per_usd * usd_cny, 4)
+
+
+def _apply_relay_usage(rows: list[dict], window: float = 300.0) -> int:
+    """给「我方明明发了请求、但金额留空」的行补上中转站记录的真实花费。
+
+    对齐口径：**模型名相同 + 时间窗内最近的、还没被用掉的**一条日志。中转站日志是按令牌的，
+    同账号下的其它令牌也可能出现，所以只做「一对一」消费（用掉就不再匹配第二次），
+    并在 note 里写明来源 —— 对不上的宁可留空。
+    """
+    entries = relay_usage_entries()
+    pool: list[dict] = []
+    for sid, items in entries.items():
+        for item in items:
+            pool.append({**item, "source": sid})
+    if not pool:
+        return 0
+    table = pricing_table()
+    filled = 0
+    for row in rows:
+        if isinstance(row.get("amount"), (int, float)):
+            continue
+        if str(row.get("price_source") or "") not in ("unknown", "untracked", ""):
+            continue
+        model = str(row.get("model") or "").strip()
+        if not model:
+            continue
+        try:
+            ts = float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        best = None
+        for item in pool:
+            if item.get("used") or item["model"] != model:
+                continue
+            delta = abs(item["created_at"] - ts)
+            if delta > window:
+                continue
+            if best is None or delta < best[0]:
+                best = (delta, item)
+        if best is None:
+            continue
+        item = best[1]
+        amount = relay_amount(item["quota"], table)
+        if amount is None:
+            continue
+        item["used"] = True
+        row["amount"] = amount
+        images = int(row.get("images") or 0)
+        row["unit_price"] = (round(amount / images, 4) if images else None)
+        row["unit"] = "CNY/张" if images else "CNY/次"
+        row["price_source"] = "relay_log"
+        note = str(row.get("note") or "")
+        extra = (f"金额取自中转站用量日志（{item['source']}，quota={int(item['quota'])}）；"
+                 f"该请求上游返回 {item['prompt_tokens']}+{item['completion_tokens']} tokens")
+        row["note"] = (note + "；" + extra) if note else extra
+        if item.get("completion_tokens"):
+            row["tokens"] = int(item["completion_tokens"])
+        filled += 1
+    return filled
+
+
+def _apply_ark_usage(rows: list[dict]) -> int:
+    """给飞书行补方舟的真实 token 与金额（按 operations 里的方舟任务号精确对齐）。"""
+    index = ark_task_index()
+    if not index:
+        return 0
+    table = pricing_table()
+    filled = 0
+    for row in rows:
+        ids = [str(t) for t in (row.get("provider_task_ids") or []) if str(t) in index]
+        if not ids:
+            continue
+        tokens = 0
+        model = ""
+        resolution = ""
+        has_input = False
+        for task_id in ids:
+            info = index[task_id]
+            tokens += int(info.get("tokens") or 0)
+            model = model or str(info.get("model") or "")
+            resolution = resolution or str(info.get("resolution") or "")
+            has_input = has_input or bool(info.get("has_input_video"))
+        row["tokens"] = tokens
+        row["model"] = str(row.get("model") or "") or model
+        # 补上模型后，供应商也该跟着变（飞书任务实际上就是走方舟 key 出的片）
+        row["provider_label"] = provider_label("feishu-generation-agent", row["model"], "")
+        row["provider_detail"] = provider_detail("feishu-generation-agent", row["model"], "")
+        row["resolution"] = str(row.get("resolution") or "") or resolution
+        row["has_input_video"] = has_input
+        quote = quote_generation(model=model or str(row.get("model") or ""),
+                                 resolution=resolution, has_input_video=has_input,
+                                 tokens=tokens, app=str(row.get("app") or ""))
+        if isinstance(quote.get("amount"), (int, float)):
+            row["unit_price"] = quote.get("unit_price")
+            row["unit"] = quote.get("unit")
+            row["amount"] = quote.get("amount")
+            row["price_source"] = "ark_usage"
+            row["price_family"] = quote.get("label") or ""
+        note = str(row.get("note") or "")
+        extra = f"token 取自方舟任务记录（{len(ids)} 个任务，逐任务精确对齐）"
+        row["note"] = (note + "；" + extra) if note else extra
+        filled += 1
+    return filled
+
+
+_PROVIDERS_CACHE: dict[str, Any] = {}
+
+
+def _app_providers(app: str) -> dict[str, dict]:
+    """读子应用的 providers.json → {通道id: {host, models}}（按 mtime 缓存）。
+
+    **通道 id ≠ 提供 key 的一方**：nano-banana 里通道叫 `gemini`，但它的 base_url 是
+    `https://chiyun.work` —— key 是 Chiyun 提供的。用户要看的正是「谁给我 key」。
+    """
+    try:
+        path = REPO_ROOT / str(app) / "providers.json"
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    cache = _PROVIDERS_CACHE.get(app) or {}
+    if cache.get("mtime") == mtime:
+        return cache.get("data") or {}
+    data: dict[str, dict] = {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        provs = raw.get("providers") or raw
+        for name, cfg in (provs.items() if isinstance(provs, dict) else []):
+            if not isinstance(cfg, dict):
+                continue
+            base = str(cfg.get("base_url") or "")
+            host = urllib.parse.urlsplit(base).hostname or ""
+            models = []
+            for item in (cfg.get("models") or []):
+                mid = item.get("id") if isinstance(item, dict) else item
+                if mid:
+                    models.append(str(mid))
+            data[str(name)] = {"host": host, "models": models}
+    except (OSError, json.JSONDecodeError, AttributeError):
+        data = {}
+    _PROVIDERS_CACHE[app] = {"mtime": mtime, "data": data}
+    return data
+
+
+def key_vendor_for_host(host: str) -> str:
+    """base_url 的主机名 → **提供 key 的供应商**（认不出就原样返回主机名，不编品牌）。"""
+    h = str(host or "").strip().lower()
+    if not h:
+        return ""
+    if "volces.com" in h or h.endswith("volcengineapi.com"):
+        return "火山方舟"
+    if "chiyun.work" in h:
+        return "Chiyun"
+    if "t8star" in h:
+        return "T8Star"
+    if h in ("localhost", "127.0.0.1", "0.0.0.0") or h.endswith(".local") or h.startswith("192.168."):
+        return "本地（不消耗外部 key）"
+    if h.endswith(".cn") or h.endswith(".com") or h.endswith(".ai") or h.endswith(".org"):
+        return h
+    return h
+
+
+def _model_vendor(model: str) -> str:
+    """老记录没存通道 id 时，按**模型名**去各子应用的 providers.json 反查供应商。"""
+    needle = _normalize_model_key(model)
+    if not needle:
+        return ""
+    for app in ("nano-banana", "seedance"):
+        for cfg in _app_providers(app).values():
+            for mid in cfg.get("models") or []:
+                key = _normalize_model_key(mid)
+                if key and (key == needle or key in needle):
+                    return key_vendor_for_host(cfg.get("host") or "")
+    return ""
+
+
+def provider_info(app: str = "", model: str = "", provider: str = "") -> tuple[str, str]:
+    """(供应商, 依据说明)。供应商 = **提供 key 的那一方**（火山方舟 / Chiyun / T8Star / 本地 …）。"""
+    raw = str(provider or "").strip()
+    if raw:
+        cfg = _app_providers(app).get(raw) or _app_providers(app).get(raw.lower()) or {}
+        host = str(cfg.get("host") or "")
+        vendor = key_vendor_for_host(host)
+        if vendor:
+            return vendor, f"按通道 {raw} 的 base_url（{host}）判定"
+        vendor = _PROVIDER_ALIASES.get(raw.lower().replace("-", "").replace("_", ""), "")
+        if vendor:
+            return vendor, f"按通道名 {raw} 判定"
+        # 通道名认不出：原样显示它（别丢信息），并说明这是未识别的通道名
+        return raw[:24], f"未识别的通道名（{raw}），原样显示"
+    vendor = _model_vendor(model)
+    if vendor:
+        return vendor, "按模型名反查各通道的 base_url 判定"
+    text = f"{app} {model}".lower()
+    if "feishu" in text:
+        return "飞书 Agent（自带 key）", "飞书任务由飞书 Agent 自己的 key 发起"
+    if any(t in text for t in ("flux2", "zimage", "klein", "krea", "anime2real", "qwen-image",
+                               "minimax", "h3_", "comfyui")):
+        return "本地（不消耗外部 key）", "本地模型，无外部 key"
+    if text.strip().startswith("ep-") or any(t in text for t in ("doubao", "seedance", "seedream")):
+        return "火山方舟", "模型名属于火山方舟"
+    if "dreamina" in text or "jimeng" in text:
+        return "即梦 Dreamina", "即梦官方账号"
+    return "", ""
+
+
+def provider_label(app: str = "", model: str = "", provider: str = "") -> str:
+    """「供应商 / 通道」显示名（只取名字，说明见 provider_detail）。"""
+    return provider_info(app, model, provider)[0]
+
+
+def provider_detail(app: str = "", model: str = "", provider: str = "") -> str:
+    return provider_info(app, model, provider)[1]
 _METADATA_BLOCKLIST_SUBSTR = ("key", "token", "secret", "password")
 _METADATA_MAX_BODY = 256 * 1024 * 1024
 _METADATA_MAX_TEXT_VALUE = 128 * 1024
 
 
-def _extract_multipart_text_fields(content_type: str, body: bytes) -> dict:
+def _extract_multipart_text_fields(content_type: str, body: bytes,
+                                   file_fields: list[str] | None = None) -> dict:
     """Extract text form fields without decoding large file payloads.
 
     Job creation often includes multi-megabyte reference videos. The previous
     parser skipped every multipart body above 5 MiB, which silently dropped the
     prompt/model from Portal history. This scanner keeps non-file fields and
     ignores file parts.
+
+    ``file_fields``（可选）只收集文件字段的**名字**（不碰内容），用于判断这次生成
+    有没有带参考视频/首尾帧 —— 方舟对「有/无输入视频」是两档单价，差 1.6 倍。
     """
     fields: dict[str, str] = {}
     try:
@@ -233,16 +605,23 @@ def _extract_multipart_text_fields(content_type: str, body: bytes) -> dict:
                 if line.lower().startswith("content-disposition:"):
                     disposition = line
                     break
-            if "form-data" not in disposition.lower() or "filename=" in disposition.lower():
+            if "form-data" not in disposition.lower():
                 pos = next_pos
                 continue
             name_match = re.search(r'name="([^"]*)"', disposition, flags=re.IGNORECASE)
             if not name_match:
                 pos = next_pos
                 continue
+            field_name = name_match.group(1)
+            if "filename=" in disposition.lower():
+                # 文件部分：只记名字，绝不读内容（body 里可能是几十 MB 的参考视频）
+                if file_fields is not None and field_name:
+                    file_fields.append(field_name)
+                pos = next_pos
+                continue
             value_bytes = part[header_end + 4:]
             if len(value_bytes) <= _METADATA_MAX_TEXT_VALUE:
-                fields[name_match.group(1)] = value_bytes.decode("utf-8", errors="replace")
+                fields[field_name] = value_bytes.decode("utf-8", errors="replace")
             pos = next_pos
     except Exception:
         return fields
@@ -251,18 +630,19 @@ def _extract_multipart_text_fields(content_type: str, body: bytes) -> dict:
 def extract_job_metadata(content_type: str, body: bytes) -> dict:
     """从任务创建请求体提取提示词与白名单参数。永不采集密钥类字段。
     解析失败/超大 body 静默降级为空——采集绝不抛异常。"""
-    result: dict = {"prompt": "", "model": "", "params": {}}
+    result: dict = {"prompt": "", "model": "", "provider": "", "params": {}}
     try:
         if not body or len(body) > _METADATA_MAX_BODY:
             return result
         fields: dict = {}
+        media_fields: list[str] = []
         ctype = (content_type or "").split(";")[0].strip().lower()
         if ctype == "application/json":
             data = json.loads(body.decode("utf-8", errors="replace"))
             if isinstance(data, dict):
                 fields = data
         elif ctype == "multipart/form-data":
-            fields = _extract_multipart_text_fields(content_type, body)
+            fields = _extract_multipart_text_fields(content_type, body, media_fields)
         else:
             return result
         for key, value in fields.items():
@@ -280,8 +660,17 @@ def extract_job_metadata(content_type: str, body: bytes) -> dict:
                             continue
                         if low == "custom_model" or not result["model"]:
                             result["model"] = candidate
+                    elif low in _PROVIDER_FIELDS:
+                        result["provider"] = str(value).strip()[:60]
                     else:
                         result["params"][low] = value
+        # 「有没有输入视频」决定查哪一档单价（方舟两档差 1.6 倍）。判据只取**视频类**
+        # 文件字段：首帧/尾帧是图，不算输入视频。判错的代价是价格偏高或偏低，所以
+        # 原始字段名一并存进明细，方便事后核对。
+        result["media_fields"] = media_fields[:20]
+        result["has_input_video"] = any(
+            ("video" in name.lower()) for name in media_fields
+        )
         return result
     except Exception:
         return result
@@ -1137,6 +1526,392 @@ def _publish_history_event(record: dict) -> None:
         pass
 
 
+# ─── 单价表 + 按次生成明细 ─────────────────────────────────────────────────────
+#
+# 「像中转站那样一条一条记录用量和价格」的两块地基：
+#
+# 1) 单价表（state/pricing.json，可手改、改完即时生效）。数值来自方舟控制台导出的
+#    「消费明细」：单价 = 原价 ÷ 用量。该表区分**分辨率**与**有无输入视频**——
+#    同模型这两档能差 1.6 倍（Seedance 2.0：无输入 44.88 / 有输入 28.00 元每百万
+#    token），所以查表必须带这两个维度，不能只按模型给一个价。
+#
+# 2) 按次明细（state/generations.jsonl，追加写）。之所以不塞进 usage.json：
+#    usage.json 每次统计变动都整份重写，明细进去会把它越撑越大（仓库里有过
+#    因此把 Portal 拖垮的教训）。
+#
+# 查不到单价的模型：金额留空并标记 price_source="unknown"，**不猜**——宁可显示
+# 「—」也不要给一个看起来合理的错数字。
+
+_DEFAULT_PRICING: dict[str, Any] = {
+    "schema_version": 1,
+    "currency": "CNY",
+    "note": ("单价由方舟控制台消费明细反推（原价÷用量）。families 有序，先匹配到的先用；"
+             "endpoint_aliases 把推理接入点 id（ep-xxx）指到模型族。unit 为 video 时价格是"
+             "元/百万 token，image 时是元/张。"),
+    "endpoint_aliases": {
+        "ep-20260912121738-vtd78": "seedance-2.0-mini",
+    },
+    "families": [
+        {
+            "id": "seedance-2.5", "label": "Seedance 2.5", "unit": "video",
+            "match": ["doubao-seedance-2-5"],
+            "resolution_buckets": {"480p": "480p/720p", "720p": "480p/720p"},
+            "prices": {"480p/720p": {"no_input_video": 67.17, "input_video": 40.29}},
+        },
+        {
+            "id": "seedance-2.0-fast", "label": "Seedance 2.0 fast", "unit": "video",
+            "match": ["doubao-seedance-2-0-fast"],
+            "resolution_buckets": {},
+            "prices": {"default": {"no_input_video": 37.00, "input_video": 22.00}},
+        },
+        {
+            "id": "seedance-2.0-mini", "label": "Seedance 2.0 mini", "unit": "video",
+            "match": ["doubao-seedance-2-0-mini"],
+            "resolution_buckets": {},
+            "prices": {"default": {"no_input_video": 23.00, "input_video": 14.00}},
+        },
+        {
+            "id": "seedance-2.0", "label": "Seedance 2.0", "unit": "video",
+            "match": ["doubao-seedance-2-0", "doubao-seedance-1"],
+            "resolution_buckets": {"480p": "default", "720p": "default", "1080p": "1080p", "4k": "4k"},
+            "prices": {
+                "default": {"no_input_video": 44.88, "input_video": 28.00},
+                "1080p": {"no_input_video": 50.50, "input_video": 31.00},
+                "4k": {"no_input_video": 26.00, "input_video": 16.00},
+            },
+        },
+        {
+            "id": "seedream-5.0-pro", "label": "Seedream 5.0 Pro", "unit": "image",
+            "match": ["doubao-seedream-5-0-pro", "seedream-5-0-pro"],
+            "image_size_buckets": {"1k": "small", "1.5k": "small", "2k": "medium"},
+            "prices": {"small": 0.27, "medium": 0.42},
+        },
+        # 本地通道的 API 花费确实是 0（不是「不知道」）→ 单价写 0，页面显示 ¥0 而不是「—」。
+        # 必须排在最后，免得把云模型的 id 抢走匹配。
+        {
+            "id": "local-image", "label": "本地图像 · 不计费", "unit": "image",
+            "match": ["flux2", "zimage", "klein", "krea", "anime2real", "qwen-image", "comfyui"],
+            "image_size_buckets": {},
+            "prices": {"default": 0},
+        },
+        {
+            "id": "local-video", "label": "本地视频 · 不计费", "unit": "video",
+            "match": ["minimax", "h3_"],
+            "prices": {"default": {"no_input_video": 0, "input_video": 0}},
+        },
+    ],
+}
+
+_PRICING_LOCK = threading.Lock()
+_PRICING_CACHE: dict[str, Any] = {"mtime": -1.0, "data": _DEFAULT_PRICING}
+_GENERATIONS_LOCK = threading.Lock()
+_GENERATIONS_LAST_PRUNE = 0.0
+
+# 「只计数」的建任务路径（**精确匹配**，不含子操作）：这些应用能建任务，但不上报
+# `X-Job-Id`，Portal 既拿不到 job id 也轮询不了它的进度 —— 于是过去**一条都不统计**
+# （2026-10-12 实测：飞书当天新建 35 个 run，Portal 记录 0）。
+# 兜底登记只记「次数 / 用户 / 应用 / 时间」，token 与金额如实留空，绝不臆造。
+_COUNT_ONLY_JOB_PATHS = ("/api/runs",)
+
+# 飞书任务：**只有真的生成过才计数**（用户 2026-10-12 明确要求「必须完成一次生成任务后
+# 才会有记录」）。等审批 = 还没开始生成；排队/创建中/正在生成同理。等确认（waiting_review）
+# 意味着成片已经出来了、只是在等人点确认，算生成完成。
+_FEISHU_PRE_GENERATION = {"created", "queued", "pending", "running", "waiting_approval",
+                          "approving", "planning"}
+# 失败但**一件产物都没有** = 没有发生有效生成，不计数；失败但有产物 = 部分成功，计数。
+_FEISHU_FAILED_NO_OUTPUT = {"failed", "cancelled", "canceled", "timed_out", "expired"}
+
+
+def pricing_table() -> dict[str, Any]:
+    """读单价表；mtime 变了就重读。
+
+    与 shared/model_registry.json 同样的做法：运维手改单价后**不需要重启 Portal**
+    （重启会带走所有子应用和运行中的任务）。文件缺失/损坏 → 回落到内置表。
+    """
+    with _PRICING_LOCK:
+        try:
+            mtime = PRICING_PATH.stat().st_mtime
+        except OSError:
+            mtime = -1.0
+        if mtime != _PRICING_CACHE["mtime"]:
+            data = None
+            if mtime >= 0:
+                try:
+                    loaded = json.loads(PRICING_PATH.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict) and loaded.get("families"):
+                        data = loaded
+                except (OSError, json.JSONDecodeError) as exc:
+                    print(f"  [pricing] 读取失败，沿用内置表: {exc}", flush=True)
+            _PRICING_CACHE["data"] = data or _DEFAULT_PRICING
+            _PRICING_CACHE["mtime"] = mtime
+        return _PRICING_CACHE["data"]
+
+
+def _normalize_model_key(value: str) -> str:
+    """把模型 id 归一后比较：大小写、`.`/`_`/`-` 三种分隔符、空格都拉平。
+
+    同一颗模型在文档/控制台/接口里写作 doubao-seedance-2.0-mini /
+    doubao-seedance-2-0-mini 都出现过，归一后一个 pattern 就能匹配到。
+    """
+    text = str(value or "").strip().lower()
+    for ch in (".", "_", " "):
+        text = text.replace(ch, "-")
+    while "--" in text:
+        text = text.replace("--", "-")
+    return text
+
+
+def match_price_family(model: str, table: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """把模型 id / 接入点 id 归到某个模型族。families 是有序的，先匹配到的先用
+    （所以 mini / fast / 2.5 必须排在通用的 2.0 前面）。"""
+    table = table or pricing_table()
+    needle = _normalize_model_key(model)
+    if not needle:
+        return None
+    aliases = {_normalize_model_key(k): v for k, v in (table.get("endpoint_aliases") or {}).items()}
+    families = table.get("families") or []
+    alias = aliases.get(needle)
+    if alias:
+        for fam in families:
+            if str(fam.get("id") or "") == alias:
+                return fam
+    for fam in families:
+        for pattern in fam.get("match") or []:
+            if _normalize_model_key(pattern) in needle:
+                return fam
+    return None
+
+
+# 某些应用固定走一条通道、任务里却不带模型名时的兜底（应用事实，不是猜）
+_APP_DEFAULT_FAMILIES = {
+    "drama-pipeline": ("local-video",),   # 出片固定交本机 MiniMax H3，云费用 ¥0
+}
+
+
+def quote_generation(
+    *,
+    model: str,
+    resolution: str = "",
+    image_size: str = "",
+    has_input_video: bool = False,
+    tokens: int = 0,
+    images: int = 0,
+    app: str = "",
+) -> dict[str, Any]:
+    """算一次生成的单价与金额。
+
+    返回 {"unit_price", "unit", "amount", "currency", "label", "family_id", "source"}；
+    认不出模型族或取不到对应档位时 amount 为 None、source 为 "unknown"。
+    """
+    table = pricing_table()
+    currency = str(table.get("currency") or "CNY")
+    blank = {"unit_price": None, "unit": "", "amount": None, "currency": currency,
+             "label": "", "family_id": "", "source": "unknown"}
+    fam = match_price_family(model, table)
+    if not fam:
+        # 按应用兜底：有些应用固定走某条通道，但任务里不带模型名
+        # （例如 AI 短剧的出片固定是本机 MiniMax H3）——这是应用事实，不是猜测。
+        for family in table.get("families") or []:
+            if str(family.get("id") or "") in _APP_DEFAULT_FAMILIES.get(str(app or ""), ()):
+                fam = family
+                break
+    if not fam:
+        return blank
+
+    label = str(fam.get("label") or fam.get("id") or "")
+    family_id = str(fam.get("id") or "")
+    unit = str(fam.get("unit") or "video")
+    prices = fam.get("prices") or {}
+
+    if unit == "image":
+        # 图片按张计价，档位由输出尺寸决定（方舟按 ≤1.5K / >1.5K≤2K 分档）。
+        size_key = str(image_size or "").strip().lower().replace(" ", "")
+        bucket = (fam.get("image_size_buckets") or {}).get(size_key)
+        if bucket is None:
+            bucket = "medium" if "medium" in prices else (next(iter(prices), None))
+        per_image = prices.get(str(bucket)) if bucket is not None else None
+        if not isinstance(per_image, (int, float)):
+            return {**blank, "label": label, "family_id": family_id, "unit": "CNY/张"}
+        return {
+            "unit_price": float(per_image), "unit": "CNY/张",
+            "amount": round(float(images or 0) * float(per_image), 4),
+            "currency": currency, "label": label, "family_id": family_id, "source": "pricing_table",
+        }
+
+    # 视频按 token 计价：先按分辨率归到档位，认不出就退回 default。
+    buckets = fam.get("resolution_buckets") or {}
+    res_key = str(resolution or "").strip().lower()
+    bucket = buckets.get(res_key)
+    if bucket is None:
+        bucket = "default" if "default" in prices else None
+    tier = prices.get(str(bucket)) if bucket is not None else None
+    if not isinstance(tier, dict):
+        return {**blank, "label": label, "family_id": family_id, "unit": "CNY/百万token"}
+    field = "input_video" if has_input_video else "no_input_video"
+    unit_price = tier.get(field)
+    if not isinstance(unit_price, (int, float)):
+        unit_price = tier.get("no_input_video")
+        field = "no_input_video"
+    if not isinstance(unit_price, (int, float)):
+        return {**blank, "label": label, "family_id": family_id, "unit": "CNY/百万token"}
+    amount = round(int(tokens or 0) / 1_000_000 * float(unit_price), 4)
+    return {
+        "unit_price": float(unit_price), "unit": "CNY/百万token", "amount": amount,
+        "currency": currency, "label": label, "family_id": family_id,
+        "source": "pricing_table", "tier": str(bucket), "input_video": bool(has_input_video),
+    }
+
+
+# 账单「计费项」的命名（照方舟控制台「消费明细」里的写法），用于导出对账。
+# 导出的汇总表按这个字段分组，就能和账单逐项对照。
+_BILLING_SEEDANCE_BASE = {
+    "2.5": "Doubao-Seedance-2.5在线推理",
+    "mini": "Doubao-Seedance-2.0-mini在线推理",
+    "fast": "Doubao-Seedance-2.0-fast在线推理",
+    "2.0": "Doubao-Seedance-2.0在线推理",
+}
+_BILLING_SEEDANCE_RES = {
+    ("2.5", "480p"): "480P/720P",
+    ("2.5", "720p"): "480P/720P",
+    ("2.0", "1080p"): "1080P",
+    ("2.0", "4k"): "4k",
+}
+_BILLING_SEEDREAM_SIZE = {
+    "1k": "不超过1.5K输出图",
+    "1.5k": "不超过1.5K输出图",
+    "2k": "超过1.5K不超过2K输出图",
+}
+
+
+def billing_item_label(price_family: str, resolution: str = "", image_size: str = "",
+                       has_input_video: bool = False) -> str:
+    """把「我们这边的档位」翻译成账单里的计费项名。
+
+    方舟把视频按「模型 + 分辨率 + 有无输入视频」拆成不同计费项（单价能差 1.6 倍），
+    这里保持同样的拆分，导出的汇总才能和账单对齐。认不出模型族就返回空串（不猜）。
+    """
+    text = str(price_family or "").lower()
+    res = str(resolution or "").strip().lower()
+    size = str(image_size or "").strip().lower().replace(" ", "")
+    if not text:
+        return ""
+    if "seedream" in text:
+        return f"Doubao-Seedream-5.0-pro-{_BILLING_SEEDREAM_SIZE.get(size, '输出图')}"
+    if "2.5" in text:
+        key, base = "2.5", _BILLING_SEEDANCE_BASE["2.5"]
+    elif "mini" in text:
+        key, base = "mini", _BILLING_SEEDANCE_BASE["mini"]
+    elif "fast" in text:
+        key, base = "fast", _BILLING_SEEDANCE_BASE["fast"]
+    elif "seedance" in text or "2.0" in text:
+        key, base = "2.0", _BILLING_SEEDANCE_BASE["2.0"]
+    else:
+        return ""
+    res_part = _BILLING_SEEDANCE_RES.get((key, res), "")
+    tier = "有输入视频" if has_input_video else "无输入视频"
+    return f"{base}{res_part}（{tier}）"
+
+
+def _append_generation_record(record: dict[str, Any]) -> None:
+    """追加写一条按次明细。统计主链路绝不能因为写明细失败而中断。"""
+    global _GENERATIONS_LAST_PRUNE
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record, ensure_ascii=False)
+        with _GENERATIONS_LOCK:
+            with GENERATIONS_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+            now = time.time()
+            if now - _GENERATIONS_LAST_PRUNE > 6 * 3600:
+                _GENERATIONS_LAST_PRUNE = now
+                _prune_generation_records()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [generations] append failed: {exc}", flush=True)
+
+
+def _prune_generation_records() -> None:
+    """删掉超过保留期的明细行（追加写文件，整份重写一次即可）。调用方已持锁。"""
+    try:
+        if not GENERATIONS_PATH.exists():
+            return
+        cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - GENERATIONS_RETENTION_DAYS * 86400))
+        kept: list[str] = []
+        with GENERATIONS_PATH.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    day = str(json.loads(line).get("date") or "")
+                except json.JSONDecodeError:
+                    continue
+                if day >= cutoff:
+                    kept.append(line if line.endswith("\n") else line + "\n")
+        tmp = GENERATIONS_PATH.with_name(GENERATIONS_PATH.name + f".tmp{os.getpid()}")
+        tmp.write_text("".join(kept), encoding="utf-8")
+        os.replace(tmp, GENERATIONS_PATH)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [generations] prune failed: {exc}", flush=True)
+
+
+def read_generation_records(start: str, end: str, username: str = "",
+                            is_admin: bool = True, limit: int = 2000,
+                            offset: int = 0, user_filter: str = "",
+                            app_filter: str = "", status_filter: str = "",
+                            query: str = "") -> tuple[list[dict[str, Any]], int]:
+    """按日期区间读明细（最新在前），支持按用户/应用/状态/关键词筛选与分页。
+
+    返回 (本页行, 命中总数)。文件是追加写的小 JSONL（一次生成一行），全量扫一遍即可；
+    分页在内存里切片，这样 total 与筛选口径天然一致。
+    """
+    rows: list[dict[str, Any]] = []
+    if not GENERATIONS_PATH.exists():
+        return rows, 0
+    needle = str(query or "").strip().lower()
+    try:
+        with GENERATIONS_PATH.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                day = str(item.get("date") or "")
+                if day < start or day > end:
+                    continue
+                if not is_admin and str(item.get("username") or "") != username:
+                    continue
+                if user_filter and str(item.get("username") or "") != user_filter:
+                    continue
+                if app_filter and str(item.get("app") or "") != app_filter:
+                    continue
+                if status_filter and str(item.get("status") or "") != status_filter:
+                    continue
+                if needle:
+                    hay = " ".join(str(item.get(k) or "") for k in
+                                   ("title", "model", "price_family", "job_id", "username")).lower()
+                    if needle not in hay:
+                        continue
+                # 供应商一律**读取时重算**：老记录里存的是改规则之前算出来的标签
+                # （例如把通道名 gemini 直接当成供应商），不重算就会新旧混在一起。
+                label, detail = provider_info(str(item.get("app") or ""),
+                                              str(item.get("model") or ""),
+                                              str(item.get("provider") or ""))
+                if label:
+                    item["provider_label"] = label
+                    item["provider_detail"] = detail
+                elif item.get("provider_label"):
+                    item["provider_detail"] = "旧记录：按当时的规则判定"
+                rows.append(item)
+    except OSError as exc:
+        print(f"  [generations] read failed: {exc}", flush=True)
+        return [], 0
+    rows.sort(key=lambda r: (str(r.get("date") or ""), float(r.get("ts") or 0)), reverse=True)
+    total = len(rows)
+    page_size = max(1, min(int(limit or 2000), 20000))
+    page_offset = max(0, int(offset or 0))
+    return rows[page_offset:page_offset + page_size], total
+
+
 class UsageTracker:
     def __init__(self):
         self._lock = threading.Lock()
@@ -1287,15 +2062,37 @@ class UsageTracker:
             pass
 
     def _auto_backup_loop(self):
-        """Every 6 hours, re-sync .bak from primary if primary is parseable."""
+        """定期备份：usage.json.bak 同步 + history.json 按天留快照。
+
+        历史记录是**一次损坏就全丢**的单文件 —— 2026-10-12 真丢过 2554 条，而磁盘上
+        没有任何副本可恢复（只剩子应用活动日志里的最近 100 条/应用）。所以这里额外留一份
+        按天命名的快照，并清理 14 天前的旧快照。启动时先立刻做一次，不等 6 小时。
+        """
         while True:
-            time.sleep(6 * 3600)
             try:
                 if USAGE_PATH.exists() and self._try_parse(USAGE_PATH) is not None:
                     bak_path = USAGE_PATH.with_suffix(USAGE_PATH.suffix + ".bak")
                     shutil.copyfile(USAGE_PATH, bak_path)
             except Exception:
                 pass
+            try:
+                if HISTORY_PATH.exists() and self._try_parse(HISTORY_PATH) is not None:
+                    snap = HISTORY_PATH.with_name(
+                        f"{HISTORY_PATH.stem}.daily-{time.strftime('%Y-%m-%d')}{HISTORY_PATH.suffix}")
+                    if not snap.exists():
+                        shutil.copyfile(HISTORY_PATH, snap)
+                        print(f"  [history] 日备份 → {snap.name}", flush=True)
+                    cutoff = time.time() - 14 * 86400
+                    for old in HISTORY_PATH.parent.glob(
+                            f"{HISTORY_PATH.stem}.daily-*{HISTORY_PATH.suffix}"):
+                        try:
+                            if old.stat().st_mtime < cutoff:
+                                old.unlink()
+                        except OSError:
+                            pass
+            except Exception:
+                pass
+            time.sleep(6 * 3600)
 
     def record(self, app: str, client_ip: str, method: str, path: str, username: str = ""):
         today = time.strftime("%Y-%m-%d")
@@ -1322,11 +2119,27 @@ class UsageTracker:
             pass
 
     def register_job(self, app: str, job_id: str, username: str, job_type: str = "image", duration_per_item: int = 0, metadata: dict | None = None):
+        meta = metadata or {}
+        params = meta.get("params") if isinstance(meta.get("params"), dict) else {}
         with self._lock:
+            # 去重：同一 (app, job_id) 只能有一个 pending 条目。重复条目会在轮询终态时
+            # 重复计账 —— by_user 与按次明细一起被放大（2026-10-12 实测同一 job 写了 6 次）。
+            if any(j.get("app") == app and j.get("job_id") == job_id for j in self._pending_jobs):
+                print(f"  [usage] 重复注册被忽略: {app}:{job_id}", flush=True)
+                return
             self._pending_jobs.append({
                 "app": app, "job_id": job_id, "username": username,
                 "job_type": job_type, "duration_per_item": duration_per_item,
                 "submitted_at": time.time(), "date": time.strftime("%Y-%m-%d"),
+                # 按次明细要用的维度：模型 + 分辨率（或图片尺寸）+ 有无输入视频。
+                # 方舟同一模型这两档单价差 1.6 倍，缺了就没法算钱。
+                "model": str(meta.get("model") or "")[:120],
+                "provider": str(meta.get("provider") or "")[:60],
+                "resolution": str(params.get("resolution") or "")[:20],
+                "image_size": str(params.get("image_size") or "")[:20],
+                "has_input_video": bool(meta.get("has_input_video")),
+                "media_fields": list(meta.get("media_fields") or [])[:20],
+                "title": str(meta.get("title") or meta.get("prompt") or "")[:120],
             })
             owners = self._data.setdefault("job_owners", {})
             owners[f"{app}:{job_id}"] = {"username": username, "ts": time.time()}
@@ -1369,8 +2182,14 @@ class UsageTracker:
             return {}
 
     def _restore_pending_jobs(self) -> list[dict]:
-        """Resume polling non-terminal history records after a Portal restart."""
+        """Resume polling non-terminal history records after a Portal restart.
+
+        按 (app, job_id) 去重：同一任务在历史里若有多条记录，**必须只产生一个 pending
+        条目** —— 多份条目会让轮询终态时重复计账，把 by_user 和按次明细一起放大
+        （2026-10-12：同一 job 被写 5~6 次，token 翻了几倍）。
+        """
         restored: list[dict] = []
+        seen: set[tuple[str, str]] = set()
         for record in self._load_history().values():
             if not isinstance(record, dict):
                 continue
@@ -1381,6 +2200,9 @@ class UsageTracker:
                 continue
             if not app or app not in APPS or not job_id:
                 continue
+            if (app, job_id) in seen:
+                continue
+            seen.add((app, job_id))
             params = record.get("params") if isinstance(record.get("params"), dict) else {}
             try:
                 duration_per_item = max(0, int(params.get("duration") or 0))
@@ -1395,6 +2217,15 @@ class UsageTracker:
                 "duration_per_item": duration_per_item,
                 "submitted_at": submitted_at,
                 "date": time.strftime("%Y-%m-%d", time.localtime(submitted_at)),
+                # 恢复的条目也要带上传价维度，否则这些任务在按次明细里会是「未识别计费项」、
+                # 算不出金额（2026-10-12 实测：一次重启后 4 条/132 万 token 没有价）。
+                # 有无输入视频在历史记录里没有存（不进白名单），只能按「无输入」档保守估算。
+                "model": str(record.get("model") or "")[:120],
+                "resolution": str(params.get("resolution") or "")[:20],
+                "image_size": str(params.get("image_size") or "")[:20],
+                "has_input_video": False,
+                "media_fields": [],
+                "title": str(record.get("title") or "")[:120],
             })
         return restored
 
@@ -1539,9 +2370,21 @@ class UsageTracker:
                     )
                     data = dict(sorted_items[-HISTORY_CAP:])
                 HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-                tmp = HISTORY_PATH.with_suffix(".tmp")
+                # 原子写：tmp 名带 pid+线程，避免并发写互相截断（固定 ".tmp" 在 Windows
+                # 上出现过「合法 JSON + 多余 }」的损坏 → 之后 _load_history 解析失败 →
+                # 下一次 upsert 把整个历史重写成 1~2 条，**直接丢历史**，2026-10-12 真实发生。
+                # os.replace 还会因为读者持有句柄而失败（本仓库记录过的 WinError 5），
+                # 所以失败要重试，不能一次失败就算了（那会丢这次更新）。
+                tmp = HISTORY_PATH.with_name(f"{HISTORY_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp")
                 tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-                tmp.replace(HISTORY_PATH)
+                for attempt in range(6):
+                    try:
+                        os.replace(tmp, HISTORY_PATH)
+                        break
+                    except OSError:
+                        if attempt == 5:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
             if should_publish:
                 _publish_history_event(record)
         except Exception:
@@ -1622,16 +2465,30 @@ class UsageTracker:
                             # image, no meaningless 0-row — but still drop it from
                             # pending below so we stop polling it.
                             per_item = 0
-                            if done > 0:
+                            # 方舟 token 用量：子应用把上游 usage 累加到 job 上，随 job
+                            # JSON 一起带出来（seedance / nano-banana / volcengine-portrait）。
+                            # 非方舟通道不带这个字段 → 0。与 images/seconds 同口径：
+                            # 只有真产出（done>0）才计。
+                            tokens = int(data.get("tokens") or nested.get("tokens") or 0)
+                            # `tallied` 兜底：即使同一 job 意外出现多个 pending 条目（或终态分支
+                            # 在写完之后抛异常没走到 done_ids），也绝不重复计账。
+                            if done > 0 and not job.get("tallied"):
+                                job["tallied"] = True
                                 if job_type == "video":
                                     # Prefer per-item duration the subapp reports directly.
                                     per_item = (int(data.get("duration") or 0)
                                                 or int(data.get("duration_seconds") or 0)
                                                 or int(nested.get("duration") or 0)
                                                 or int(job.get("duration_per_item") or 0))
-                                    self._add_user_stat(job["date"], job["username"], job["app"], 0, done * per_item)
+                                    self._add_user_stat(job["date"], job["username"], job["app"], 0, done * per_item, tokens)
                                 else:
-                                    self._add_user_stat(job["date"], job["username"], job["app"], done, 0)
+                                    self._add_user_stat(job["date"], job["username"], job["app"], done, 0, tokens)
+                                # 按次明细（像中转站的使用记录）：一次生成一条，带用量与金额。
+                                # 写明细失败绝不能影响上面的统计，所以整块兜住异常。
+                                try:
+                                    self._record_generation(job, done, per_item, tokens, status, data, nested)
+                                except Exception as exc:  # noqa: BLE001
+                                    print(f"  [generations] record failed: {exc}", flush=True)
                             # 历史记录终态更新（采集失败不影响统计）
                             self.history_update_terminal(
                                 job["app"], job["job_id"], status, data, job_type)
@@ -1663,14 +2520,120 @@ class UsageTracker:
                 with self._lock:
                     self._pending_jobs = [j for j in self._pending_jobs if j["job_id"] not in done_ids]
 
-    def _add_user_stat(self, date: str, username: str, app: str, images: int, seconds: int):
+    def record_untracked_job(self, app: str, username: str, job_type: str = "image",
+                             title: str = "") -> None:
+        """兜底登记「不上报 X-Job-Id」的生成任务（如飞书 run）。
+
+        Portal 没有它的 job id、**轮询不了进度**，所以这里只做三件事：
+          - `daily.jobs` +1（任务数）
+          - 写一条按次明细（`status="submitted"`、`tokens=0`、金额留空、`tracked=False`）
+          - **不动 by_user** —— 张数/秒数/token 都不知道，写 0 会污染「按用户统计」
+        """
+        self.inc_daily_jobs(app)
+        try:
+            _append_generation_record({
+                "ts": time.time(),
+                "date": time.strftime("%Y-%m-%d"),
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "username": username,
+                "app": app,
+                "job_id": "",
+                "task_ids": [],
+                "kind": job_type,
+                "model": "",
+                "title": str(title or "")[:120],
+                "resolution": "",
+                "has_input_video": False,
+                "media_fields": [],
+                "runs": 0,
+                "images": 0,
+                "seconds": 0,
+                "tokens": 0,
+                "unit_price": None,
+                "unit": "",
+                "amount": None,
+                "currency": "CNY",
+                "price_source": "untracked",
+                "price_family": "",
+                "status": "submitted",
+                "tracked": False,
+                "note": "该应用不上报 X-Job-Id，Portal 无法轮询进度：只记次数与归属，token/金额留空",
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [generations] untracked record failed: {exc}", flush=True)
+
+    def _add_user_stat(self, date: str, username: str, app: str, images: int, seconds: int, tokens: int = 0):
         with self._lock:
             by_user = self._data.setdefault("by_user", {}).setdefault(date, {})
             u = by_user.setdefault(username, {})
-            s = u.setdefault(app, {"images": 0, "seconds": 0})
+            # `tokens` 是后加的字段：老数据里没有，一律按 0 兼容（火山方舟按 token
+            # 计费；t8star / gemini / 本地 ComfyUI 不产生 token，恒为 0）。
+            s = u.setdefault(app, {"images": 0, "seconds": 0, "tokens": 0})
             s["images"] += images
             s["seconds"] += seconds
+            s["tokens"] = int(s.get("tokens") or 0) + int(tokens or 0)
             self._save()
+
+    def _record_generation(self, job: dict, done: int, per_item: int, tokens: int,
+                           status: str, data: dict, nested: dict) -> None:
+        """写一条按次明细（像中转站的使用记录）：一次生成一条。
+
+        字段刻意与计费口径对齐：模型 + 分辨率 + 有无输入视频 → 单价；用量（token
+        或张数）→ 金额。认不出单价的模型 amount 为 None（前端显示「—」），
+        **不猜价格**。
+        """
+        job_type = str(job.get("job_type") or "image")
+        is_video = job_type == "video"
+        quote = quote_generation(
+            model=str(job.get("model") or ""),
+            resolution=str(job.get("resolution") or ""),
+            image_size=str(job.get("image_size") or ""),
+            has_input_video=bool(job.get("has_input_video")),
+            tokens=int(tokens or 0),
+            images=0 if is_video else int(done or 0),
+            app=str(job.get("app") or ""),
+        )
+        task_ids: list[str] = []
+        for source in (data, nested):
+            raw = source.get("provider_tasks") if isinstance(source, dict) else None
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                if isinstance(item, dict) and item.get("task_id"):
+                    tid = str(item["task_id"])
+                    if tid and tid not in task_ids:
+                        task_ids.append(tid)
+        _append_generation_record({
+            "ts": time.time(),
+            "date": job.get("date") or time.strftime("%Y-%m-%d"),
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "username": job.get("username") or "",
+            "app": job.get("app") or "",
+            "job_id": job.get("job_id") or "",
+            "task_ids": task_ids[:20],
+            "kind": job_type,
+            "model": job.get("model") or "",
+            "provider": job.get("provider") or "",
+            "provider_label": provider_label(str(job.get("app") or ""),
+                                             str(job.get("model") or ""),
+                                             str(job.get("provider") or "")),
+            "title": job.get("title") or "",
+            "resolution": job.get("resolution") or "",
+            "has_input_video": bool(job.get("has_input_video")),
+            "media_fields": list(job.get("media_fields") or [])[:20],
+            "runs": int(done or 0),
+            "images": 0 if is_video else int(done or 0),
+            "seconds": (int(done or 0) * int(per_item or 0)) if is_video else 0,
+            "tokens": int(tokens or 0),
+            "unit_price": quote.get("unit_price"),
+            "unit": quote.get("unit") or "",
+            "amount": quote.get("amount"),
+            "currency": quote.get("currency") or "CNY",
+            "price_source": quote.get("source") or "unknown",
+            "price_family": quote.get("label") or "",
+            "price_family_id": quote.get("family_id") or "",
+            "status": status,
+        })
 
     def inc_daily_jobs(self, app: str):
         today = time.strftime("%Y-%m-%d")
@@ -1761,6 +2724,17 @@ class UsageTracker:
                         "/api/v1/jobs"]
         return any(path.startswith(p) for p in job_patterns)
 
+    def _is_count_only_job_request(self, method: str, path: str) -> bool:
+        """兜底登记：能建任务、但不上报 X-Job-Id 的应用（见 _COUNT_ONLY_JOB_PATHS）。
+
+        **精确匹配**（去掉 query 与尾部斜杠），所以 `/api/runs/<id>/decision` 这类子操作
+        不会被算成新建任务。
+        """
+        if method != "POST":
+            return False
+        clean = path.split("?", 1)[0].rstrip("/")
+        return clean in _COUNT_ONLY_JOB_PATHS
+
     def get_stats(self, username: str = "", role: str = "user") -> dict[str, Any]:
         today = time.strftime("%Y-%m-%d")
         with self._lock:
@@ -1834,10 +2808,11 @@ class UsageTracker:
                 for d in dates:
                     day_user = (by_user_full.get(d, {}) or {}).get(u, {}) or {}
                     for app_name, stats in day_user.items():
-                        slot = per_app.setdefault(app_name, {"images": [0] * len(dates), "seconds": [0] * len(dates)})
+                        slot = per_app.setdefault(app_name, {"images": [0] * len(dates), "seconds": [0] * len(dates), "tokens": [0] * len(dates)})
                         idx = dates.index(d)
                         slot["images"][idx] = int(stats.get("images", 0) or 0)
                         slot["seconds"][idx] = int(stats.get("seconds", 0) or 0)
+                        slot["tokens"][idx] = int(stats.get("tokens", 0) or 0)
                 users[u] = per_app
         # Hide dates outside the window (the loop above only writes inside the window)
         _ = date_set
@@ -1881,9 +2856,10 @@ class UsageTracker:
                 for idx, d in enumerate(dates):
                     day_user = (by_user_full.get(d, {}) or {}).get(u, {}) or {}
                     for app_name, stats in day_user.items():
-                        slot = per_app.setdefault(app_name, {"images": [0] * len(dates), "seconds": [0] * len(dates)})
+                        slot = per_app.setdefault(app_name, {"images": [0] * len(dates), "seconds": [0] * len(dates), "tokens": [0] * len(dates)})
                         slot["images"][idx] = int(stats.get("images", 0) or 0)
                         slot["seconds"][idx] = int(stats.get("seconds", 0) or 0)
+                        slot["tokens"][idx] = int(stats.get("tokens", 0) or 0)
                 users[u] = per_app
         return {"dates": dates, "users": users}
 
@@ -1903,30 +2879,37 @@ class UsageTracker:
                 user_universe = {username} if username else set()
             rows: list[dict[str, Any]] = []
             for u in sorted(user_universe):
-                totals: dict[str, dict[str, int]] = {a: {"images": 0, "seconds": 0} for a in app_names}
+                totals: dict[str, dict[str, int]] = {a: {"images": 0, "seconds": 0, "tokens": 0} for a in app_names}
                 for d in dates:
                     day_user = (by_user_full.get(d, {}) or {}).get(u, {}) or {}
                     for app_name, stats in day_user.items():
-                        slot = totals.setdefault(app_name, {"images": 0, "seconds": 0})
+                        slot = totals.setdefault(app_name, {"images": 0, "seconds": 0, "tokens": 0})
                         slot["images"] += int(stats.get("images", 0) or 0)
                         slot["seconds"] += int(stats.get("seconds", 0) or 0)
+                        slot["tokens"] += int(stats.get("tokens", 0) or 0)
                 row: dict[str, Any] = {"username": u}
                 grand_images = 0
                 grand_seconds = 0
+                grand_tokens = 0
                 for a in app_names:
                     row[f"{a}_images"] = totals[a]["images"]
                     row[f"{a}_seconds"] = totals[a]["seconds"]
+                    row[f"{a}_tokens"] = totals[a]["tokens"]
                     grand_images += totals[a]["images"]
                     grand_seconds += totals[a]["seconds"]
+                    grand_tokens += totals[a]["tokens"]
                 # Include any extra apps that appeared in the window but aren't in app_names
                 for a, v in totals.items():
                     if a in app_names: continue
                     row[f"{a}_images"] = v["images"]
                     row[f"{a}_seconds"] = v["seconds"]
+                    row[f"{a}_tokens"] = v["tokens"]
                     grand_images += v["images"]
                     grand_seconds += v["seconds"]
+                    grand_tokens += v["tokens"]
                 row["total_images"] = grand_images
                 row["total_seconds"] = grand_seconds
+                row["total_tokens"] = grand_tokens
                 rows.append(row)
         _ = date_set
         return rows
@@ -2435,6 +3418,12 @@ class Handler(SimpleHTTPRequestHandler):
             self._platform_stats_range(user)
         elif path == "/api/platform/stats/export":
             self._platform_stats_export(user)
+        elif path == "/api/platform/stats/generations":
+            self._platform_stats_generations(user)
+        elif path == "/api/platform/stats/generations/export":
+            self._platform_stats_generations_export(user)
+        elif path == "/api/platform/stats/generations/summary.csv":
+            self._platform_stats_generations_summary_export(user)
         elif path == "/api/platform/queue":
             self._platform_queue(user)
         elif path == "/api/platform/activity":
@@ -2957,26 +3946,393 @@ class Handler(SimpleHTTPRequestHandler):
         rows = tracker.export_range(start, end, app_names, username=user["username"], role=user["role"])
         # Build CSV with UTF-8 BOM so Excel/WPS double-click renders Chinese correctly.
         buf = io.StringIO()
-        # Header row order: username, <app>_images, <app>_seconds for each app, total_images, total_seconds
+        # Header row order: username, <app>_images, <app>_seconds, <app>_tokens,
+        # total_images, total_seconds, total_tokens
         fieldnames = ["username"]
         for a in app_names:
             fieldnames.append(f"{a}_images")
             fieldnames.append(f"{a}_seconds")
+            fieldnames.append(f"{a}_tokens")
         # Tail: any extra apps that may have appeared but aren't in APPS list (defensive)
         extra_keys: list[str] = []
         for r in rows:
             for k in r.keys():
-                if k in fieldnames or k in ("total_images", "total_seconds"): continue
+                if k in fieldnames or k in ("total_images", "total_seconds", "total_tokens"): continue
                 if k not in extra_keys: extra_keys.append(k)
         for k in extra_keys:
             fieldnames.append(k)
-        fieldnames.extend(["total_images", "total_seconds"])
+        fieldnames.extend(["total_images", "total_seconds", "total_tokens"])
         writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for r in rows:
             writer.writerow(r)
         body = ("﻿" + buf.getvalue()).encode("utf-8")
         filename = f"usage-{start}-{end}.csv"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _generation_query(self) -> tuple[str, str] | None:
+        """读 ?start=&end=（默认最近 7 天）。非法返回 None 并已回 400。"""
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        end = (qs.get("end", [""])[0] or time.strftime("%Y-%m-%d")).strip()
+        default_start = time.strftime("%Y-%m-%d", time.localtime(time.time() - 6 * 86400))
+        start = (qs.get("start", [""])[0] or default_start).strip()
+        if not UsageTracker._validate_date(start) or not UsageTracker._validate_date(end):
+            self._json(400, {"ok": False, "error": "invalid date format (expect YYYY-MM-DD)"})
+            return None
+        return start, end
+
+    @staticmethod
+    def _generation_summary(rows: list[dict]) -> dict:
+        priced = [r for r in rows if isinstance(r.get("amount"), (int, float))]
+        currency = str((priced[0].get("currency") if priced else "CNY") or "CNY")
+        return {
+            "count": len(rows),
+            "tokens": sum(int(r.get("tokens") or 0) for r in rows),
+            "amount": round(sum(float(r.get("amount") or 0) for r in priced), 4),
+            "priced_count": len(priced),
+            "unpriced_count": len(rows) - len(priced),
+            "currency": currency,
+            "users": len({str(r.get("username") or "") for r in rows if r.get("username")}),
+            # 按应用计数：页面上一眼看出「飞书有没有被记上」——以前只有总数，
+            # 飞书任务被 seedance 挤到后面几页时会以为没记录。
+            "apps": dict(collections.Counter(
+                str(r.get("app") or "") for r in rows if r.get("app"))),
+        }
+    def _feishu_generation_rows(self, start: str, end: str, is_admin: bool,
+                                username: str) -> list[dict]:
+        """把飞书任务作为「使用记录」的一部分（**查询时合并**，不落盘）。
+
+        为什么不靠代理登记：实测 2026-10-12 飞书当天 35 个 run **没有一个经过 Portal 的
+        HTTP 代理**（日志里只有 `POST /api/runs/<id>/decision` 这类子操作，没有
+        `POST /api/runs`）—— 这些 run 由飞书多维表格/Agent 自己创建。只有向飞书 Agent
+        拉取它的运行记录才看得见（Portal 的「创作记录」本来就是这么合并的）。
+
+        代价：每个 Portal 用户一次本地调用（飞书侧是本地 SQLite 查询），管理员视角最多
+        十几次；这条路径本来就在「创作记录」每次加载时跑，属于既有模式。
+        """
+        targets: list[tuple[str, str]] = []
+        try:
+            users = [u for u in auth.list_users() if u.get("enabled", True)]
+        except Exception:  # noqa: BLE001
+            users = []
+        if is_admin:
+            targets = [(str(u.get("id") or ""), str(u.get("username") or "")) for u in users]
+        else:
+            me = next((u for u in users if str(u.get("username")) == username), None)
+            if me is not None:
+                targets = [(str(me.get("id") or ""), username)]
+        rows: list[dict] = []
+        for uid, uname in targets:
+            for rec in _fetch_feishu_history(uid, uname, limit=200):
+                try:
+                    ts = float(rec.get("submitted_at") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if ts <= 0:
+                    continue
+                day = time.strftime("%Y-%m-%d", time.localtime(ts))
+                if day < start or day > end:
+                    continue
+                status = str(rec.get("status") or "").lower()
+                results = rec.get("results") or []
+                if status in _FEISHU_PRE_GENERATION:
+                    continue      # 还没生成（等审批 / 排队 / 正在跑）
+                if status in _FEISHU_FAILED_NO_OUTPUT and not results:
+                    continue      # 没有产物的失败 = 没有发生有效生成
+                rows.append({
+                    "ts": ts, "date": day,
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)),
+                    "username": uname, "app": "feishu-generation-agent",
+                    "job_id": str(rec.get("job_id") or ""),
+                    "task_ids": [], "kind": str(rec.get("kind") or "video"),
+                    "model": str(rec.get("model") or ""),
+                    "provider": "", "provider_label": "飞书 Agent（自带 key）",
+                    "provider_detail": "飞书任务由飞书 Agent 自己的 key 发起（方舟 key）",
+                    "title": str(rec.get("prompt") or "")[:200],
+                    "resolution": "", "has_input_video": False, "media_fields": [],
+                    "runs": 1, "images": 0, "seconds": 0,
+                    "tokens": 0, "unit_price": None, "unit": "",
+                    "amount": None, "currency": "CNY",
+                    "price_source": "untracked", "price_family": "",
+                    "status": str(rec.get("status") or ""),
+                    "tracked": False,
+                    # 飞书 Agent 存着方舟任务号：拿它去方舟换真实 usage（token / 档位 / 金额）
+                    "provider_task_ids": [str(t) for t in (rec.get("provider_task_ids") or [])][:40],
+                    "results": rec.get("results") or [],
+                    "thumb_url": str(rec.get("thumb_url") or ""),
+                    "note": "飞书任务：取自飞书 Agent 自身的运行记录",
+                })
+        try:
+            _apply_ark_usage(rows)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [usage] ark enrich failed: {exc}", flush=True)
+        return rows
+
+    def _history_generation_rows(self, start: str, end: str) -> list[dict]:
+        """把「创作记录」（history.json）里、**明细里没有的**历史生成，也补进使用记录。
+
+        为什么：明细文件（generations.jsonl）是 10-12 才有的，之前每一次生成都没有明细行，
+        用户看到的是「很多生成没记录」。而 history.json 里恢复出了完整的时间/用户/应用/产物
+        （9/11 起 2639 条），把它们并进来才叫「所有生成都有记录」。
+
+        **准确优先**：这些历史记录当时**没有做用量统计**，所以 tokens/金额一律留空并写明原因，
+        绝不按模型或时间去猜一个数字填进去。
+        """
+        rows: list[dict] = []
+        try:
+            history = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return rows
+        for rec in history.values():
+            if not isinstance(rec, dict):
+                continue
+            try:
+                ts = float(rec.get("submitted_at") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts <= 0:
+                continue
+            day = time.strftime("%Y-%m-%d", time.localtime(ts))
+            if day < start or day > end:
+                continue
+            app = str(rec.get("app") or "")
+            model = str(rec.get("model") or "")
+            provider = str(rec.get("provider") or "")
+            rows.append({
+                "ts": ts, "date": day,
+                "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)),
+                "username": str(rec.get("username") or ""), "app": app,
+                "job_id": str(rec.get("job_id") or ""),
+                "task_ids": list(rec.get("task_ids") or [])[:20],
+                "kind": str(rec.get("kind") or "image"), "model": model,
+                "provider": provider,
+                "provider_label": provider_label(app, model, provider),
+                "provider_detail": provider_detail(app, model, provider),
+                "title": str(rec.get("title") or rec.get("prompt") or "")[:200],
+                "resolution": str(rec.get("resolution") or ""),
+                "has_input_video": bool(rec.get("has_input_video")), "media_fields": [],
+                "runs": int(rec.get("runs") or 0), "images": int(rec.get("images") or 0),
+                "seconds": int(rec.get("seconds") or 0),
+                # 当时没有用量统计 → 留空（不是 0，0 会被当成「确实没用量」）
+                "tokens": int(rec.get("tokens") or 0),
+                "unit_price": None, "unit": "", "amount": None,
+                "currency": "CNY", "price_source": "history_only", "price_family": "",
+                "status": str(rec.get("status") or ""), "tracked": False,
+                "results": rec.get("results") or [],
+                "thumb_url": str(rec.get("thumb_url") or ""),
+                "note": "历史记录（当时未做用量统计）：时间/用户/应用/产物准确，用量与金额留空",
+                "_recovered_from": str(rec.get("_recovered_from") or "history"),
+            })
+        return rows
+
+    def _generation_rows_merged(self, start: str, end: str, user: dict, is_admin: bool,
+                                filters: dict) -> list[dict]:
+        """我方明细 + 飞书任务（查询时合并），并套用页面的筛选条件。"""
+        ours, _ = read_generation_records(
+            start, end, username=user.get("username", ""), is_admin=is_admin,
+            limit=20000, offset=0, **filters)
+        have = {str(r.get("job_id") or "") for r in ours if r.get("job_id")}
+        extra = [r for r in self._feishu_generation_rows(start, end, is_admin, user.get("username", ""))
+                 if str(r.get("job_id") or "") not in have]
+        # 再把创作记录里「明细没有的」历史生成补进来 —— 目标是「所有生成都有记录」
+        # （默认不加：它们没有用量数字，勾上「包含历史记录」才显示）
+        if self._include_history_flag():
+            for row in self._history_generation_rows(start, end):
+                key = str(row.get("job_id") or "")
+                if key and key in have:
+                    continue
+                if key:
+                    have.add(key)
+                extra.append(row)
+        app_f = str(filters.get("app_filter") or "")
+        user_f = str(filters.get("user_filter") or "")
+        status_f = str(filters.get("status_filter") or "")
+        needle = str(filters.get("query") or "").lower()
+        merged = list(ours)
+        for row in extra:
+            if app_f and row.get("app") != app_f:
+                continue
+            if user_f and row.get("username") != user_f:
+                continue
+            if status_f and row.get("status") != status_f:
+                continue
+            if needle:
+                hay = f"{row.get('title') or ''} {row.get('job_id') or ''}".lower()
+                if needle not in hay:
+                    continue
+            merged.append(row)
+        merged.sort(key=lambda r: (str(r.get("date") or ""), float(r.get("ts") or 0)), reverse=True)
+        # 云代理（中转站）的真实花费：它们的生成响应里没有 usage，只能从用量日志补
+        try:
+            _apply_relay_usage(merged)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [usage] relay enrich failed: {exc}", flush=True)
+        return merged
+
+    def _include_history_flag(self) -> bool:
+        """?include_history=1 时，才把「当时没做用量统计」的历史记录并进使用记录。
+
+        默认不显示：这些行没有 token/金额，一屏全是「—」会淹没真正有数据的记录
+        （2026-10-13 用户反馈）。勾上就全都有 —— 「所有生成都有记录」这条依然成立。
+        """
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        vals = qs.get("include_history") or []
+        return bool(vals) and str(vals[0]).strip() not in ("", "0", "false", "False")
+
+    def _platform_stats_generations(self, user: dict):
+        """按次生成明细（用量 + 金额）。管理员看全部，普通用户只看自己。
+
+        支持筛选（区间 / 用户 / 应用 / 状态 / 关键词）与**翻页**；`summary` 与
+        `bill_summary` 按**整个筛选区间**算（不是只算当前页），否则翻页时数字会跳。
+        """
+        rng = self._generation_query()
+        if not rng:
+            return
+        start, end = rng
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+
+        def _first(key: str, default: str = "") -> str:
+            vals = qs.get(key)
+            return ((vals[0] if vals else "") or default).strip()
+
+        try:
+            limit = max(1, min(int(_first("limit", "15")), 500))
+        except ValueError:
+            limit = 15
+        try:
+            offset = max(0, int(_first("offset", "0")))
+        except ValueError:
+            offset = 0
+        filters = {
+            "user_filter": _first("user"),
+            "app_filter": _first("app"),
+            "status_filter": _first("status"),
+            "query": _first("q"),
+        }
+        is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
+        # 一次读全（内存切片）：total / summary 与筛选口径天然一致；飞书任务在查询时合并进来
+        all_rows = self._generation_rows_merged(start, end, user, is_admin, filters)
+        total = len(all_rows)
+        page = all_rows[offset:offset + limit]
+        self._json(200, {
+            "ok": True, "start": start, "end": end,
+            "rows": page, "total": total, "offset": offset, "limit": limit,
+            "summary": self._generation_summary(all_rows),
+            "bill_summary": self._bill_summary_rows(all_rows),
+            "is_admin": is_admin,
+            "price_note": "金额按 state/pricing.json 的方舟单价估算（原价，未计优惠）。"
+                          "Chiyun / T8Star / 本地 ComfyUI 上游不返回 token，也没有单价，显示为「—」；"
+                          "飞书任务等不上报进度的应用只记次数。",
+        })
+
+    def _generation_filters(self) -> dict:
+        """页面上「使用记录」的筛选条件，导出时沿用同一套（否则导出的和看到的不是一回事）。"""
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+
+        def _first(key: str, default: str = "") -> str:
+            vals = qs.get(key)
+            return ((vals[0] if vals else "") or default).strip()
+
+        return {
+            "user_filter": _first("user"),
+            "app_filter": _first("app"),
+            "status_filter": _first("status"),
+            "query": _first("q"),
+        }
+
+    def _platform_stats_generations_export(self, user: dict):
+        rng = self._generation_query()
+        if not rng:
+            return
+        start, end = rng
+        is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
+        rows = self._generation_rows_merged(start, end, user, is_admin, self._generation_filters())
+        buf = io.StringIO()
+        fieldnames = ["time", "date", "username", "app", "model", "provider", "provider_label",
+                      "kind", "task_ids",
+                      "runs", "images", "seconds", "tokens", "unit_price", "unit",
+                      "amount", "currency", "price_source", "price_family",
+                      "resolution", "has_input_video", "status", "job_id", "title"]
+        writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            out = dict(row)
+            out["task_ids"] = "|".join(row.get("task_ids") or [])
+            writer.writerow(out)
+        body = ("﻿" + buf.getvalue()).encode("utf-8")
+        filename = f"generations-{start}-{end}.csv"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    @staticmethod
+    def _bill_summary_rows(rows: list[dict]) -> list[dict]:
+        """按「日期 + 计费项」汇总，字段口径对齐方舟账单（用量用千tokens，单价用元/千tokens）。"""
+        groups: dict[tuple, dict] = {}
+        for row in rows:
+            family = str(row.get("price_family") or row.get("price_family_id") or row.get("model") or "")
+            item = billing_item_label(family, str(row.get("resolution") or ""),
+                                      str(row.get("image_size") or ""),
+                                      bool(row.get("has_input_video")))
+            day = str(row.get("date") or "")
+            key = (day, item or "（未识别计费项）", family)
+            bucket = groups.setdefault(key, {
+                "账期": day[:7], "消费日期": day, "模型": family,
+                "计费项": item or "（未识别计费项）", "次数": 0,
+                "用量(tokens)": 0, "用量(千tokens)": 0.0, "单位": "千tokens",
+                "_amount": 0.0, "_priced": 0, "币种": str(row.get("currency") or "CNY"),
+            })
+            tokens = int(row.get("tokens") or 0)
+            bucket["次数"] += 1
+            bucket["用量(tokens)"] += tokens
+            bucket["用量(千tokens)"] = round(bucket["用量(千tokens)"] + tokens / 1000.0, 3)
+            if isinstance(row.get("amount"), (int, float)):
+                bucket["_amount"] += float(row["amount"])
+                bucket["_priced"] += 1
+        out = []
+        for bucket in groups.values():
+            tokens_k = bucket["用量(千tokens)"]
+            priced = bucket["_priced"]
+            bucket["单价(元/千tokens)"] = (
+                round(bucket["_amount"] / tokens_k, 6) if tokens_k > 0 and priced else "")
+            bucket["金额(元)"] = round(bucket["_amount"], 4) if priced else ""
+            bucket["备注"] = "" if priced == bucket["次数"] else f"{bucket['次数'] - priced} 次无单价"
+            bucket.pop("_amount", None)
+            bucket.pop("_priced", None)
+            out.append(bucket)
+        out.sort(key=lambda b: (b["消费日期"], b["计费项"]))
+        return out
+
+    def _platform_stats_generations_summary_export(self, user: dict):
+        """导出「按日期 × 计费项」的汇总表，口径对齐方舟控制台消费明细，便于对账。"""
+        rng = self._generation_query()
+        if not rng:
+            return
+        start, end = rng
+        is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
+        rows = self._generation_rows_merged(start, end, user, is_admin, self._generation_filters())
+        summary = self._bill_summary_rows(rows)
+        buf = io.StringIO()
+        fieldnames = ["账期", "消费日期", "模型", "计费项", "次数", "用量(tokens)",
+                      "用量(千tokens)", "单位", "单价(元/千tokens)", "金额(元)", "币种", "备注"]
+        writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in summary:
+            writer.writerow(row)
+        body = ("﻿" + buf.getvalue()).encode("utf-8")
+        filename = f"usage-summary-{start}-{end}.csv"
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
@@ -3519,6 +4875,8 @@ class Handler(SimpleHTTPRequestHandler):
     def _proxy(self, app_name: str, port: int, method: str, target_path: str, user: dict):
         client_ip = self.client_address[0]
         is_job = tracker._is_job_request(method, target_path)
+        # 兜底：能建任务但不上报 X-Job-Id 的应用（飞书 run 等）——过去完全不统计
+        count_only = tracker._is_count_only_job_request(method, target_path)
         tracker.record(app_name, client_ip, method, target_path, username=user["username"])
 
         # Detect job type for usage stats. Video duration is read later from
@@ -3635,6 +4993,13 @@ class Handler(SimpleHTTPRequestHandler):
                     tracker.register_job(app_name, jid_header, user["username"],
                                          job_type, metadata=metadata)
                     tracker.inc_daily_jobs(app_name)
+            elif count_only and 200 <= resp.status < 300:
+                # 该应用建了任务但不上报 X-Job-Id：只记次数与归属（详见 record_untracked_job）
+                title = ""
+                if method == "POST" and body:
+                    title = str((extract_job_metadata(
+                        self.headers.get("Content-Type", ""), body) or {}).get("title") or "")
+                tracker.record_untracked_job(app_name, user["username"], job_type, title=title)
 
             content_type = resp.getheader("Content-Type", "")
             # Only buffer JSON bodies we still need to inspect (none for now —

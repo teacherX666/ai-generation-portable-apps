@@ -1584,6 +1584,23 @@ function StatsApp() {
     rangeLoading: false,
     rangeError: '',
     exporting: false,
+    // 使用统计（2026-10-12 合并页）：总览卡 + 使用记录（筛选/翻页）+ 汇总
+    genStart: '',
+    genEnd: '',
+    genUser: '',
+    genApp: '',
+    genStatus: '',
+    genQuery: '',
+    genPage: 1,
+    genPageSize: 30,
+    genJump: 1,
+    genIncludeHistory: false,
+    genData: { rows: [], total: 0, summary: {}, billSummary: [] },
+    genLoading: false,
+    genError: '',
+    genExporting: false,
+    genSummaryExporting: false,
+    genNote: '',
     // Admin-only: company-wide volcengine-portrait key (no plaintext returned)
     portraitKey: {
       api_key: '', access_key: '', secret_key: '',
@@ -1626,12 +1643,14 @@ function StatsApp() {
       const weekAgo = new Date(today.getTime() - 6 * 86400000);
       this.rangeEnd = this.selectedDate;
       this.rangeStart = new Date(weekAgo - tz).toISOString().slice(0, 10);
+      // 生成明细默认与「按日期段查询」同一个区间
+      this.genEnd = this.rangeEnd;
+      this.genStart = this.rangeStart;
       this.loadStats();
       this.loadActivity();
       this.loadPlatformStatus();
-      this.loadDay();
       this.loadHistory();
-      this.loadRange();
+      this.loadGenerations();
       if (this.isAdmin) {
         this.loadUsers();
         this.loadSignupStatus();
@@ -1811,6 +1830,255 @@ function StatsApp() {
         seconds += (s.seconds || []).reduce((x, y) => x + (y || 0), 0);
       }
       return { images, seconds };
+    },
+
+    // ── Token 消耗（火山方舟） ──────────────────────────────────────────────
+    // 口径：只有上游按 token 计费的通道才非 0（火山方舟的视频 Seedance、
+    // 图片 Seedream、人像）；Chiyun(gemini) / T8Star / 本地 ComfyUI / Dreamina
+    // 上游不返回 usage，恒为 0。数据来自同一个 rangeData（区间与「按日期段
+    // 查询」共用起止日期）。
+    rangeTokenTotals(user) {
+      const apps = this.rangeData?.users?.[user] || {};
+      const perApp = {};
+      let total = 0;
+      for (const a in apps) {
+        const n = (apps[a]?.tokens || []).reduce((x, y) => x + (y || 0), 0);
+        perApp[a] = n;
+        total += n;
+      }
+      return { total, perApp };
+    },
+
+    fmtTokens(n) {
+      const v = Math.round(Number(n) || 0);
+      return v.toLocaleString('en-US');
+    },
+
+    // 只在区间内真的产生过 token 的应用才出列，避免给 Chiyun/本地通道摆一排 0。
+    tokenAppList() {
+      const seen = new Set();
+      const users = this.rangeData?.users || {};
+      for (const u in users) {
+        const apps = users[u] || {};
+        for (const a in apps) {
+          if (((apps[a] || {}).tokens || []).some((v) => v)) seen.add(a);
+        }
+      }
+      const order = ['seedance', 'nano-banana', 'volcengine-portrait', 'dreamina'];
+      const rest = [...seen].filter((a) => !order.includes(a)).sort();
+      return order.filter((a) => seen.has(a)).concat(rest);
+    },
+
+    rangeTokenGrandTotal() {
+      const users = this.rangeData?.users || {};
+      let total = 0;
+      for (const u in users) total += this.rangeTokenTotals(u).total;
+      return total;
+    },
+
+    // ── 生成明细（像中转站的使用记录：一次生成一条，带用量与金额） ─────────────
+    // ── 使用统计：筛选 / 翻页 ──────────────────────────────────────────────
+    genFilterParams() {
+      const p = new URLSearchParams({
+        start: this.genStart,
+        end: this.genEnd,
+        offset: String(Math.max(0, (this.genPage - 1) * this.genPageSize)),
+        limit: String(this.genPageSize),
+      });
+      if (this.genUser) p.set('user', this.genUser);
+      if (this.genApp) p.set('app', this.genApp);
+      if (this.genStatus) p.set('status', this.genStatus);
+      if (this.genQuery) p.set('q', this.genQuery);
+      // 默认**不显示**历史记录（当时没做用量统计、没有金额）—— 否则一屏都是「—」，看不出重点。
+      // 勾上就全都有，保证「所有生成都有记录」这条仍然成立。
+      if (this.genIncludeHistory) p.set('include_history', '1');
+      return p;
+    },
+
+    async loadGenerations() {
+      if (!this.genStart || !this.genEnd) return;
+      this.genError = '';
+      this.genLoading = true;
+      const url = '/api/platform/stats/generations?' + this.genFilterParams().toString();
+      // 自己发请求而不是走 api()：后端还没重启时，这个新路径会落到 SPA 兜底上返回 **HTML**
+      // （HTTP 200 + text/html），api() 的 res.json() 直接抛错 → 只剩一句「加载失败」。
+      let res = null;
+      let status = 0;
+      let isJson = false;
+      try {
+        const r = await fetch(url, { credentials: 'same-origin' });
+        status = r.status;
+        isJson = (r.headers.get('content-type') || '').includes('application/json');
+        if (isJson) res = await r.json();
+      } catch (e) {
+        this.genLoading = false;
+        this.genError = '请求失败：' + (e?.message || e);
+        this.genData = { rows: [], total: 0, summary: {}, billSummary: [] };
+        return;
+      }
+      this.genLoading = false;
+      if (!res?.ok) {
+        this.genError = (!isJson || status === 404)
+          ? '统计接口尚未生效 —— Portal 还在跑旧版本代码，需要重启一次 Portal（不是浏览器刷新能解决的）'
+          : ('加载失败 HTTP ' + status + (res?.error ? '：' + res.error : ''));
+        this.genData = { rows: [], total: 0, summary: {}, billSummary: [] };
+        return;
+      }
+      this.genData = {
+        rows: res.rows || [],
+        total: res.total || 0,
+        summary: res.summary || {},
+        billSummary: res.bill_summary || [],
+      };
+      this.genNote = res.price_note || '';
+    },
+
+    genResetAndLoad() {
+      this.genPage = 1;
+      this.loadGenerations();
+    },
+
+    setGenPage(n) {
+      const page = Number(n);
+      if (!Number.isFinite(page)) return;
+      this.genPage = Math.max(1, Math.min(Math.round(page), this.genTotalPages()));
+      this.genJump = this.genPage;
+      this.loadGenerations();
+    },
+
+    genTotalPages() {
+      return Math.max(1, Math.ceil((this.genData.total || 0) / (this.genPageSize || 50)));
+    },
+
+    genStatusText(s) {
+      return { succeeded: '成功', failed: '失败', running: '生成中', submitted: '已提交',
+               cancelled: '已取消', pending: '排队中',
+               // 飞书任务停在等人决策的状态（成片可能已生成，等确认）
+               waiting_approval: '待审批', waiting_review: '待确认',
+               interrupted: '被打断', partial: '部分成功' }[s] || (s || '—');
+    },
+
+    genProviderLabel(row) {
+      return String(row?.provider_label || row?.provider || '').trim() || '—';
+    },
+
+    // 总览里的「按应用」拆分：飞书任务被 seedance 挤到后面几页时，一眼能看出有没有记上
+    genAppBreakdown() {
+      const apps = (this.genData.summary || {}).apps || {};
+      return Object.entries(apps)
+        .sort((a, b) => b[1] - a[1])
+        .map(([app, n]) => this.appLabel(app) + ' ' + this.fmtTokens(n));
+    },
+
+    genPromptBrief(row) {
+      // 不在 JS 里截断：列宽 + CSS 两行截断负责展示，title 属性里放全文（鼠标悬停可看）。
+      return String(row?.title || '').replace(/\s+/g, ' ').trim() || '—';
+    },
+
+    genUserOptions() {
+      return (this.users || []).map((u) => u && u.username).filter(Boolean);
+    },
+
+    genAppOptions() {
+      const known = ['seedance', 'nano-banana', 'volcengine-portrait', 'dreamina',
+                     'drama-pipeline', 'infinite-canvas', 'feishu-generation-agent',
+                     'director', 'previz'];
+      return [...new Set([...known, ...Object.keys(this.appsMeta || {})])];
+    },
+
+    async exportGenerations() {
+      if (!this.genStart || !this.genEnd) return;
+      this.genExporting = true;
+      try {
+        const url = '/api/platform/stats/generations/export?' + this.genFilterParams().toString();
+        const r = await fetch(url, { credentials: 'same-origin' });
+        if (!r.ok) {
+          window.portalToast('导出失败 HTTP ' + r.status, 'danger');
+          return;
+        }
+        const blob = await r.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objUrl;
+        a.download = `generations-${this.genStart}-${this.genEnd}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+      } catch (e) {
+        window.portalToast('导出失败: ' + (e?.message || e), 'danger');
+      } finally {
+        this.genExporting = false;
+      }
+    },
+
+    // 按「日期 × 计费项」汇总，字段与方舟控制台「消费明细」对齐，便于和账单对账
+    async exportGenerationsSummary() {
+      if (!this.genStart || !this.genEnd) return;
+      this.genSummaryExporting = true;
+      try {
+        const url = '/api/platform/stats/generations/summary.csv?' + this.genFilterParams().toString();
+        const r = await fetch(url, { credentials: 'same-origin' });
+        if (!r.ok) {
+          window.portalToast('导出失败 HTTP ' + r.status, 'danger');
+          return;
+        }
+        const blob = await r.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objUrl;
+        a.download = `usage-summary-${this.genStart}-${this.genEnd}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+      } catch (e) {
+        window.portalToast('导出失败: ' + (e?.message || e), 'danger');
+      } finally {
+        this.genSummaryExporting = false;
+      }
+    },
+
+    // 金额为 null = 认不出单价（本地/Chiyun 通道或未知模型）→ 显示「—」，绝不猜
+    fmtMoney(v) {
+      if (v === null || v === undefined || v === '') return '—';
+      const n = Number(v);
+      if (!isFinite(n)) return '—';
+      return '¥' + (Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2));
+    },
+
+    fmtUsage(row) {
+      const kind = String(row?.kind || '');
+      const parts = [];
+      if (Number(row?.images)) parts.push(row.images + ' 张');
+      if (Number(row?.tokens)) parts.push(Number(row.tokens).toLocaleString('en-US') + ' token');
+      if (Number(row?.seconds) && kind === 'video') parts.push(row.seconds + 's');
+      return parts.join(' · ') || '—';
+    },
+
+    genModelLabel(row) {
+      return row?.price_family || row?.model || '—';
+    },
+
+    genTaskId(row) {
+      const ids = row?.task_ids;
+      if (Array.isArray(ids) && ids.length) return ids[0];
+      return row?.job_id || '—';
+    },
+
+    fmtUnitPrice(row) {
+      const v = row?.unit_price;
+      if (v === null || v === undefined) return '—';
+      return String(v) + (row?.unit === 'CNY/张' ? ' 元/张' : ' 元/百万');
+    },
+
+    genRangeSummary() {
+      const s = this.genData?.summary || {};
+      if (!s.count) return '';
+      const bits = [`${s.count} 次生成`, `用量 ${Number(s.tokens || 0).toLocaleString('en-US')} token`];
+      if (s.priced_count) bits.push(`金额 ${this.fmtMoney(s.amount)}`);
+      if (s.unpriced_count) bits.push(`${s.unpriced_count} 条无单价`);
+      return bits.join(' · ');
     },
 
     setHistoryDays(n) {
