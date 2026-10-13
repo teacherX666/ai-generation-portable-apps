@@ -1,0 +1,59 @@
+# 04 · 完整输出示例与自检清单
+
+## 完整 3 段输出示例
+
+以下为一个完整 3 段示例（30 秒爽剧剧本中截取段1、段3 和段4），展示分隔符、格式、气闸缓冲法和所有写法规范（注：段2已省略，因此气闸缓冲法仅从段3→段4衔接处开始演示；实际输出中除首段外每段均需气闸缓冲）：
+
+> **Speaker ID 全局固定分配（关键）**：本示例全片 **旁白 = `(S1)`**（中年男声，off-screen voiceover）、**女主 = `(S2)`**（段4 实开口，her own on-screen character voice，lips moving in sync）、男主在本示例未开口故不分配。注意：旁白在段1、段3 始终是 `(S1)`，女主在段4 实开口是 `(S2)`——**绝不在不同段落把同一个 `(S1)` 又给旁白又给角色**，否则 H3 会把旁白误判给画面里唯一的同性别角色，导致角色动唇念出画外音。每个 voiceover 块后必须声明 on-screen 角色 `lips remain completely closed`；角色实开口必须标注 `own on-screen character voice`。
+
+```
+## 段1（对应成片 00:00–00:08）— 极致打压
+& 8 & 
+integrated_multimodal_description: [Shot 1] Live-action, cinematic, a wide establishing shot reveals the cavernous lobby of a顶级 conglomerate headquarters — polished black marble floors reflecting overhead crystal chandeliers, fluted gold-trimmed columns rising to a coffered ceiling, and a massive backlit sign reading "天海集团" mounted on the far wall. The camera holds a static shot for two seconds, establishing the oppressive grandeur of the space, then pushes in with large amplitude at slow speed toward the center of the lobby where the Male Lead — short black hair, clean-shaven, a plain heather-gray cotton T-shirt, dark indigo blue denim jeans, and brown leather lace-up shoes — stands alone with his hands relaxed at his sides, his expression calm and unreadable, his weight shifted slightly onto his right leg. The chandelier light catches the subtle texture of his gray T-shirt. He does not look around; his gaze rests at a fixed middle distance. His chest rises and falls with slow, even breathing. [Shot 2] At 00:04.000, the camera cuts to a medium close-up of the Male Lead's face in three-quarter profile. The shallow depth of field blurs the chandeliers behind him into soft golden bokeh. A middle-aged male voice with a thin, nasal, disdainful timbre, speaking at a clipped, impatient rate (S1), says in an off-screen voiceover: <d>[Chinese] 就你穿这身破烂也敢进我们天海集团？赶紧滚！弄脏了地板你赔得起吗？保安！</d> while the Male Lead's lips remain completely closed. The Male Lead does not flinch; the corner of his mouth twitches upward into a faint, cold smirk. His eyes narrow almost imperceptibly. The camera holds the static shot on his face as the echo of the off-screen voice fades into the cavernous silence of the lobby.
+
+overall_soundscape: A low, cavernous lobby reverberation fills the space beneath the crystal chandeliers. The Male Lead's slow, measured breathing is barely audible. The off-screen nasal voice bounces off the marble walls and columns, its echo lingering for a full second before dissolving into silence. Distant, muffled traffic hum seeps through the revolving glass doors at the entrance.
+
+non_diegetic_music: A sparse, mocking soundscape of detuned toy-piano plinks and discordant pizzicato strings plays at a slow, irregular tempo, deliberately evoking a carnival-of-the-absurd atmosphere. Occasional low-frequency rumbles swell and recede like approaching thunder, building subliminal tension without releasing it. The pattern continues from the opening frame and holds through the end of the segment.
+
+===
+
+## 段3（对应成片 00:08–00:15）— 王牌降临
+& 7 & 
+integrated_multimodal_description: [Shot 1] Live-action, cinematic, a low-angle wide shot from just inside the lobby entrance. The massive revolving glass doors are violently pushed open, sending a gust of wind that ripples across the polished marble floor. The Female Lead — long flowing silver-white hair that swings with each stride, over-ear headphones with a matte-black finish resting around her neck, a heather-gray knit cardigan layered over a black hoodie, a black pleated skirt, black thigh-high knit socks, and black leather Mary Jane shoes — strides forward into the lobby with a long, confident, near-runway gait. Her silver hair catches the chandelier light and throws prismatic highlights across her shoulders. The camera pushes in with small amplitude at slow speed as she closes the distance toward the lobby's center, her footsteps ringing with metronomic precision on the marble. Two uniformed security guards flanking the entrance visibly stumble two steps backward; one guard's peaked cap slides forward on his head and he clutches it with one hand. The Female Lead does not slow, does not glance sideways at them; her ice-blue eyes lock forward toward the center of the lobby. [Shot 2] At 00:03.500, the camera cuts to a tight over-the-shoulder view framed past the Female Lead's cascading silver hair, looking back toward the entrance she just came through. The revolving doors are still slowly spinning from the force of her entry. A middle-aged male voice with a thin, nasal timbre that has instantly shifted to a sugary, sycophantic register, speaking at a rapid, fawning rate (S1), says in an off-screen voiceover: <d>[Chinese] 哎哟，大小姐，您怎么亲自来了？这里有个要饭的，我马上轰他走……</d> while no on-screen character's lips move. The Female Lead continues walking forward without turning her head, her expression unchanged — cold, focused, unreadable. The camera holds the static shot as her silver hair fills the left third of the frame, the lobby's gold-trimmed columns and the "天海集团" sign visible in soft focus behind her.
+
+overall_soundscape: The heavy glass revolving doors produce a deep, resonant thud as they are forced open, followed by a sharp gust of wind that rustles loose papers on a nearby reception desk. The Female Lead's confident footsteps echo crisply and rhythmically across the black marble, each step producing a sharp heel-click. Uniform fabric rustles as the two guards stumble backward, while a faint high-frequency whine from the chandelier lights hums beneath everything. The off-screen sycophantic voice reverberates against the stone walls, its echo trailing off behind the pounding score.
+
+non_diegetic_music: At 00:00.000 the mocking toy-piano soundscape from the previous segment is abruptly cut and replaced by a full-force trap / heavy-bass electronic pattern at roughly 130 BPM. The drop hits on frame one with a pulverizing 808 sub-bass sustained note, layered over crisp, snapping hi-hats running in sixteenth-note rolls, aggressive supersaw synth stabs that punctuate the Female Lead's every step, and a driving four-on-the-floor kick drum. Beat-synced impact hits land on the door-thrust and on the first footstep inside the lobby, and the energy remains at maximum through the entire segment with no dynamic reduction.
+
+===
+
+## 段4（对应成片 00:15–00:24）— 身份曝光：鞠躬 + 台词
+& 9 & 
+integrated_multimodal_description: [Shot 1] Live-action, cinematic, a low-angle wide shot matching the exact composition of the previous segment's final frame — the Female Lead's silver hair fills the left third of the frame, the "天海集团" sign and gold-trimmed columns visible in soft focus behind her. The camera holds a static shot for two seconds. During this buffer period, the Female Lead's chest rises and falls with one slow, deliberate breath; her weight shifts almost imperceptibly from her left foot to her right; her ice-blue eyes track sideways toward a point ahead of her — all micro-movements, no dialogue, no camera motion. At 00:02.000, the camera begins to truck right with small amplitude at slow speed, pivoting to reveal a medium two-shot in profile: the Female Lead — long flowing silver hair, over-ear headphones with matte-black finish around her neck, heather-gray knit cardigan over a black hoodie, black pleated skirt, black thigh-high knit socks, black leather Mary Jane shoes — now standing directly before the Male Lead — short black hair, plain heather-gray cotton T-shirt, dark indigo blue denim jeans, brown leather lace-up shoes — who remains motionless with his hands at his sides, his expression still carrying the faint cold smirk from the previous segment. The shallow depth of field blurs the chandeliers behind them into warm golden bokeh. [Shot 2] At 00:04.500, the camera cuts to a medium close-up from the Male Lead's perspective, looking up at the Female Lead from roughly chest height. The Female Lead lifts both hands smoothly, unclasps the headphones from her neck, and holds them at her side with her right hand. She then bends forward into a precise ninety-degree bow — her silver hair falls straight down past her face like a silver curtain, her cardigan shifts forward on her shoulders, and the pleats of her skirt fan slightly outward. Holding the bow perfectly still, a clear, resonant female voice with a sharply respectful, measured delivery and unwavering pitch (S2), her own on-screen character voice, lips moving clearly in sync, delivers in Chinese: <d>[Chinese] 零号！天海集团百分之百的股权已经收购完毕。请您指示！</d> Her final word reverberates once across the vast lobby. [Shot 3] At 00:07.000, the camera cuts to a close-up of the Male Lead's face in three-quarter profile, the same framing as segment 1's Shot 2. His faint smirk has vanished; his eyes have widened by a fraction, then narrowed to sharp, blade-like slits. The chandelier light hardens the planes of his face. His jaw tightens. He is perfectly still for one beat, then slowly raises his right hand and brushes an invisible speck of dust from the shoulder of his gray T-shirt — a gesture of absolute, casual contempt. The camera holds the static shot on his transformed expression as the segment ends.
+
+overall_soundscape: The Female Lead's footsteps slow to a halt on the marble with two final, deliberate heel-clicks, and the headphones produce a soft plastic creak as they are unclasped and lifted from her neck. Her bow produces a faint rustle of knit fabric and the whisper of her silver hair brushing against the cardigan, while her voice reverberates strongly and cleanly against the stone walls, the echo of "指示" lingering for nearly two full seconds. The Male Lead's T-shirt fabric produces a soft cotton whisper as he brushes his shoulder, then a deep, cavernous silence falls over the lobby between the end of her line and the beginning of his movement. Distant elevator chimes ring once somewhere deep in the building.
+
+non_diegetic_music: The trap / heavy-bass electronic pattern continues at roughly 130 BPM from the previous segment, but during the two-second airlock buffer the hi-hats thin out to half-time and the supersaw stabs drop out, leaving only the sustained 808 sub-bass pulse and the kick drum. When the Female Lead begins her bow at roughly 00:04.500, the hi-hats return at full sixteenth-note density but are mixed lower, creating space for the dialogue. A single beat-synced impact — a deep bass-drop layered with a reversed-cymbal swell — lands precisely on the word "零号", and during the Male Lead's close-up at 00:07.000, all melodic elements strip away, leaving only a single sustained sub-bass drone and one tick of a hi-hat on his shoulder-brushing gesture, as if the entire building is holding its breath.
+```
+
+## 输出前自检清单
+
+在输出全部段落后，逐项确认：
+
+- [ ] 每段都是独立可生成的完整短视频提示词（含 3 个必需字段）
+- [ ] 段间用 `===` 分隔，最后一段末尾无多余 `===`
+- [ ] 每段首次出现人物时完整描述了外观，且描述在跨段间一致
+- [ ] 每段 Shot 1 开场建立了环境细节和光照条件
+- [ ] 说话者首次出现时提供了完整身份信息（类型/年龄/性别/音色/语速等）
+- [ ] 画外音使用 `says in an off-screen voiceover` 且标注嘴唇闭合
+- [ ] 全片 Speaker ID 全局统一：同一说话者跨所有段落恒定同一 ID（如旁白恒 `(S1)`、女主恒 `(S2)`、男主恒 `(S3)`），绝不按段重置；旁白与同性别角色靠音色描述区分，voiceover 后必带 lips-closed 约束，角色实开口必带 own on-screen character voice
+- [ ] BGM 跨段演化有明确衔接说明
+- [ ] 所有台词用 `<d>[语言] ...</d>` 包裹，保留原文
+- [ ] 画外音人物全程不出镜
+- [ ] 场内可见文字用英文双引号包裹，保留原文
+- [ ] 每段内所有镜头都标注了时间戳（首镜除外）
+- [ ] 镜头运动包含运动类型 + 幅度 + 速度三个维度（后两项在有意义时添加）
+- [ ] 每段正文之前单独一行包含 `& 时长整数 & ` 格式的时长标注，且时长在 5–15 秒范围内
+- [ ] 段数和段长与剧本总时长一致，每段在 5–15 秒之间
+- [ ] 全英文部分（描述、音效、BGM）语法通顺、无歧义
+- [ ] 除首段外，每段开头前 2 秒采用「气闸缓冲法」：保持上一段结尾构图 + 微小运动（呼吸/重心转移/视线改变），无对话，之后再切入新场景

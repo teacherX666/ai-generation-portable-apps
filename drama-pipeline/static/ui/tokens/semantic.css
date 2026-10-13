@@ -1,0 +1,20 @@
+/* Semantic aliases are the stable API for new UI code. */
+:root {
+  --ui-bg-canvas: var(--ui-color-canvas);
+  --ui-bg-surface: var(--ui-color-surface);
+  --ui-bg-subtle: var(--ui-color-surface-soft);
+  --ui-bg-sunken: var(--ui-color-surface-sunken);
+  --ui-border-default: var(--ui-color-border);
+  --ui-border-strong: var(--ui-color-border-strong);
+  --ui-text-primary: var(--ui-color-text);
+  --ui-text-secondary: var(--ui-color-text-secondary);
+  --ui-text-muted: var(--ui-color-text-muted);
+  --ui-bg-strong: var(--ui-color-strong);
+  --ui-bg-strong-hover: var(--ui-color-strong-hover);
+  --ui-border-on-strong: var(--ui-color-strong-border);
+  --ui-text-on-strong: var(--ui-color-on-strong);
+  --ui-action-primary: var(--ui-color-brand);
+  --ui-action-primary-hover: var(--ui-color-brand-hover);
+  --ui-action-primary-soft: var(--ui-color-brand-soft);
+  --ui-focus-ring: 0 0 0 3px var(--ui-color-brand-ring);
+}

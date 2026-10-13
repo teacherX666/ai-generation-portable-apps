@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 短剧自动化全流程</title>
+<link rel="stylesheet" href="ui/portal-ui-core.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="ui-page dp-page">
+  <header class="dp-topbar ui-toolbar ui-toolbar--wrap">
+    <div class="ui-toolbar__group">
+      <h1 class="ui-heading">AI 短剧自动化全流程</h1>
+      <span class="ui-caption">概念锚定 → 角色圣经 → 世界观 → 分场大纲 → 剧本 → 角色资产 → 表演设计 → 视频提示词</span>
+    </div>
+    <div class="ui-toolbar__group">
+      <span id="dp-llm" class="ui-badge ui-badge--neutral">大模型：检测中…</span>
+      <span id="dp-local" class="ui-badge ui-badge--neutral">本地出片：检测中…</span>
+      <button type="button" class="ui-btn ui-btn--secondary ui-btn--sm" id="dp-skills-btn">技能库</button>
+    </div>
+  </header>
+
+  <div class="dp-body">
+    <aside class="ui-sidebar dp-side">
+      <section class="ui-panel">
+        <div class="ui-panel__header"><h2 class="ui-heading">新建运行</h2></div>
+        <div class="ui-panel__body">
+          <label class="ui-field" for="dp-topic">
+            <span class="ui-field__label">项目主题 / 一句话想法 / 剧本片段</span>
+            <textarea id="dp-topic" class="ui-textarea" rows="5"
+              placeholder="例：外卖小哥意外获得读心术，靠一句真话翻盘豪门家宴"></textarea>
+          </label>
+
+          <label class="ui-field dp-mt" for="dp-mode">
+            <span class="ui-field__label">成片模式</span>
+            <select id="dp-mode" class="ui-select"></select>
+          </label>
+
+          <div class="ui-field dp-mt">
+            <span class="ui-field__label">阶段（默认全跑）</span>
+            <div class="dp-checks" id="dp-stage-checks"></div>
+          </div>
+
+          <div class="dp-row dp-mt">
+            <button type="button" class="ui-btn ui-btn--primary" id="dp-start">开始全流程</button>
+            <button type="button" class="ui-btn ui-btn--ghost ui-btn--sm" id="dp-select-all">全不选</button>
+          </div>
+          <p class="ui-note ui-note--danger dp-mt" id="dp-new-err"></p>
+        </div>
+      </section>
+
+      <section class="ui-panel">
+        <div class="ui-panel__header"><h2 class="ui-heading">运行记录</h2></div>
+        <div class="ui-panel__body" id="dp-runs">
+          <div class="ui-empty ui-empty--compact">暂无运行</div>
+        </div>
+      </section>
+    </aside>
+
+    <main class="ui-main dp-main">
+      <div id="dp-view"></div>
+
+      <section class="ui-panel" id="dp-skills-card" hidden>
+        <div class="ui-panel__header">
+          <h2 class="ui-heading">技能库</h2>
+          <span class="ui-caption" id="dp-skills-count"></span>
+        </div>
+        <div class="ui-panel__body" id="dp-skills"></div>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+/*
+ * Portal UI Core — primitive tokens
+ *
+ * Keep these values aligned with the existing Portal design tokens. This file
+ * is intentionally dependency-free so it can be copied into any iframe app.
+ */
+:root {
+  color-scheme: light;
+
+  --ui-color-canvas: #f3f6fa;
+  --ui-color-surface: #ffffff;
+  --ui-color-surface-soft: #f8fafc;
+  --ui-color-surface-sunken: #eef2f7;
+  --ui-color-border: #d9e0ea;
+  --ui-color-border-strong: #c3ccd9;
+  --ui-color-text: #172033;
+  --ui-color-text-secondary: #465267;
+  --ui-color-text-muted: #687386;
+  --ui-color-strong: #1e293b;
+  --ui-color-strong-hover: #334155;
+  --ui-color-strong-border: #475569;
+  --ui-color-on-strong: #e2e8f0;
+
+  --ui-color-brand: #235fd6;
+  --ui-color-brand-hover: #194fb8;
+  --ui-color-brand-soft: #eef5ff;
+  --ui-color-brand-ring: rgba(35, 95, 214, 0.22);
+
+  --ui-color-success: #10b981;
+  --ui-color-success-soft: #dcfce7;
+  --ui-color-success-text: #047857;
+  --ui-color-danger: #ef4444;
+  --ui-color-danger-soft: #fee2e2;
+  --ui-color-danger-text: #b91c1c;
+  --ui-color-warning: #f59e0b;
+  --ui-color-warning-soft: #fef3c7;
+  --ui-color-warning-text: #92400e;
+  --ui-color-info-soft: #e0f2fe;
+  --ui-color-info-text: #0369a1;
+
+  --ui-radius-sm: 4px;
+  --ui-radius-md: 6px;
+  --ui-radius-lg: 10px;
+  --ui-radius-pill: 999px;
+
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
+
+  --ui-shadow-sm: 0 1px 2px rgba(20, 32, 51, 0.05);
+  --ui-shadow-md: 0 8px 22px rgba(20, 32, 51, 0.08);
+  --ui-shadow-lg: 0 24px 60px rgba(20, 32, 51, 0.12);
+
+  --ui-font-family: Inter, ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ui-font-size-xs: 11px;
+  --ui-font-size-sm: 12px;
+  --ui-font-size-base: 13px;
+  --ui-font-size-md: 15px;
+  --ui-font-size-lg: 20px;
+  --ui-font-size-xl: 26px;
+  --ui-font-weight-medium: 600;
+  --ui-font-weight-bold: 720;
+
+  --ui-motion-fast: 0.12s ease;
+  --ui-motion-base: 0.15s ease;
+
+  --ui-z-sticky: 100;
+  --ui-z-dropdown: 500;
+  --ui-z-modal: 1000;
+  --ui-z-toast: 2000;
+}

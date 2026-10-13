@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "_note": "AI 短剧自动化全流程 · 技能登记表。file 相对本目录。stage 字段把技能挂到 pipeline/stages.py 的 8 个阶段上；不挂阶段的技能是旁路/工具，UI 里单独列出。",
+  "skills": [
+    {
+      "id": "suifeng-workflow",
+      "title": "AI随风 · AI 影视弹性工作流（8 阶段总纲，V1.3-Lite）",
+      "file": "free/AI随风-AI影视弹性工作流-精简版-20260831.md",
+      "role": "总纲：一人一 AI 剧组的完整方法论与阶段路由",
+      "stages": ["concept", "character_bible", "worldview", "outline", "script", "assets", "performance", "video_prompts"]
+    },
+    {
+      "id": "script-to-storyboard-v3",
+      "title": "剧本转工业级分镜脚本 V3（Seedance 2.0 专用）",
+      "file": "free/剧本转工业级分镜脚本V3 (20260518).txt",
+      "role": "把剧本拆成场景/角色/道具三类资产 + 可执行分镜脚本与视频提示词",
+      "stages": ["script", "assets", "video_prompts"]
+    },
+    {
+      "id": "h3-ref2va-optimizer",
+      "title": "H3 Ref2VA Optimizer（精简版 V1.8）",
+      "file": "free/h3-ref2va-optimizer-精简版.md",
+      "role": "MiniMax H3 全参考模式提示词优化：英文标签+中文叙述、镜头几何锁、去背景污染",
+      "stages": ["video_prompts"]
+    },
+    {
+      "id": "h3-script-video-prompter",
+      "title": "H3 Script Video Prompter（V1.4）",
+      "file": "free/h3-script-video-prompter-精简版.md",
+      "role": "剧本转 H3 直出提示词：切分规则 / 输出格式 / 一致性气闸 / 审片回路",
+      "stages": ["script", "video_prompts"]
+    },
+    {
+      "id": "h3-json-director",
+      "title": "H3 JSON Director",
+      "file": "free/h3-json-director-精简版.md",
+      "role": "以 JSON 结构驱动 H3 导演参数",
+      "stages": ["video_prompts"]
+    },
+    {
+      "id": "minimax-h3-video-prompter",
+      "title": "MiniMax H3 Video Prompter",
+      "file": "free/minimax-h3-video-prompter-精简版.md",
+      "role": "通用 H3 视频提示词撰写",
+      "stages": ["video_prompts"]
+    },
+    {
+      "id": "h3-official-prompt-writing",
+      "title": "MiniMax 官方 · H3 Prompt Writing",
+      "file": "extracted/minimax-h3-official/MiniMax-H3-official-skills/h3-prompt-writing/SKILL.md",
+      "role": "官方 H3 提示词写作基线（含 base-en / ref-en 参考）",
+      "stages": ["video_prompts"]
+    },
+    {
+      "id": "h3-official-3d-animation",
+      "title": "MiniMax 官方 · 3D 动画短剧生成器（中文版）",
+      "file": "extracted/minimax-h3-official/MiniMax-H3-official-skills/3d-animation-short-generator/SKILL.cn.md",
+      "role": "官方短剧流水线：分镜表规范、QC 清单、模型选择、降级策略",
+      "stages": ["outline", "performance", "video_prompts"]
+    },
+    {
+      "id": "h3-script-video-prompter-full",
+      "title": "H3 循环工作流专用提示词技能（完整包 V1.4）",
+      "file": "extracted/h3-script-video-prompter/h3-script-video-prompter/SKILL.md",
+      "role": "含 5 份 references：切分规则 / 输出格式 / 一致性气闸 / 示例清单 / 审片回路",
+      "stages": ["video_prompts"]
+    },
+    {
+      "id": "novel-to-wanxiang-storyboard",
+      "title": "小说转万象分镜脚本生成器 V5.1",
+      "file": "free/novel-to-wanxiang-storyboard-精简版.md",
+      "role": "小说 → 万象可导入七字段分镜脚本（固定 4 宫格 / 每镜 12 秒）",
+      "stages": ["outline", "script"]
+    },
+    {
+      "id": "novel-to-wanxiang-h3",
+      "title": "小说转万象 → H3 提示词",
+      "file": "free/novel-to-wanxiang-h3-精简版.md",
+      "role": "小说直接落到 H3 六段式优化 JSON",
+      "stages": ["video_prompts"]
+    },
+    {
+      "id": "realistic-character-prompt",
+      "title": "人物真实感提示词生成",
+      "file": "free/realistic-character-prompt-精简版.md",
+      "role": "角色/人物资产提示词，保证跨镜一致性",
+      "stages": ["character_bible", "assets"]
+    },
+    {
+      "id": "fight-prompt-master",
+      "title": "全能打斗提示词大师 V0.2",
+      "file": "free/fight-prompt-master-精简版-V0.2-0904.md",
+      "role": "打斗场面提示词方法论",
+      "stages": ["performance", "video_prompts"]
+    },
+    {
+      "id": "seedance-2.5-fight-prompter",
+      "title": "Seedance 2.5 打斗提示词",
+      "file": "free/seedance-2.5-fight-prompter-精简版.md",
+      "role": "Seedance 2.5 的刚体打斗/特效写法",
+      "stages": ["performance", "video_prompts"]
+    },
+    {
+      "id": "fight-fx-anchor-prompter",
+      "title": "打斗特效锚定提示词（含 SKILL + 公式 + 词库 + 脚本）",
+      "file": "extracted/fight-fx-anchor-prompter/fight-fx-anchor-prompter/SKILL.md",
+      "role": "打斗/特效镜头锚定：fx-formula、fx-vocabulary、engine-formats",
+      "stages": ["performance", "video_prompts"]
+    },
+    {
+      "id": "knowledge-video-director",
+      "title": "知识类视频导演",
+      "file": "free/knowledge-video-director-精简版0902.md",
+      "role": "解说/知识类长视频的结构与节奏",
+      "stages": ["concept", "outline"]
+    },
+    {
+      "id": "viral-video-prompt-engine",
+      "title": "爆款视频提示词引擎",
+      "file": "free/viral-video-prompt-engine-精简版.md",
+      "role": "钩子/爽点/爆款结构前置设计",
+      "stages": ["concept"]
+    },
+    {
+      "id": "douyin-reverse-prompt",
+      "title": "爆款视频自动下载反推",
+      "file": "free/douyin-reverse-prompt-精简版.md",
+      "role": "旁路：从已发布爆款反推提示词",
+      "stages": []
+    },
+    {
+      "id": "reelbench-video-shots",
+      "title": "ReelBench · 拉片分析（video-shots）",
+      "file": "extracted/reelbench-skills/reelbench-skills/skills/video-shots/SKILL.md",
+      "role": "旁路：逐镜拉片，产出 shots.json 与报告",
+      "stages": []
+    },
+    {
+      "id": "reelbench-video-sync",
+      "title": "ReelBench · 合成（video-sync）",
+      "file": "extracted/reelbench-skills/reelbench-skills/skills/video-sync/SKILL.md",
+      "role": "旁路：分镜与音轨对齐合成",
+      "stages": []
+    },
+    {
+      "id": "skill-deck-builder",
+      "title": "技能卡生成器 V1.5",
+      "file": "free/skill-deck-builder-精简版-V1.5.md",
+      "role": "工具：把这套方法论做成可分发技能卡",
+      "stages": []
+    },
+    {
+      "id": "comfyui-rob-startup-fix",
+      "title": "ComfyUI 启动修复",
+      "file": "free/comfyui-rob-startup-fix-精简版.md",
+      "role": "运维：本地出图后端起不来时排障",
+      "stages": []
+    },
+    {
+      "id": "win-fan-noise-triage",
+      "title": "Windows 风扇噪音排查",
+      "file": "free/win-fan-noise-triage-精简版.md",
+      "role": "运维：渲染机噪音/负载排查",
+      "stages": []
+    }
+  ]
+}

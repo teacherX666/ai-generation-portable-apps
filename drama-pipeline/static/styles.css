@@ -1,0 +1,275 @@
+/* AI 短剧自动化全流程 —— 只写「布局」，颜色/圆角/间距/字号一律用
+   shared-ui 的语义 token（ui/portal-ui-core.css）。组件外观（面板/按钮/
+   表单/徽标/空态/事件区）全部复用共享的 .ui-* 类，本文件不重造控件。 */
+
+[hidden] { display: none !important; }
+
+/* ── 骨架：顶栏 + 左侧栏 + 主区 ───────────────────────────────── */
+
+.dp-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 100vh;
+  background: var(--ui-bg-canvas);
+}
+
+.dp-topbar {
+  flex: 0 0 auto;
+  background: var(--ui-bg-surface);
+  border: 0;
+  border-bottom: 1px solid var(--ui-border-default);
+  border-radius: 0;
+}
+
+.dp-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dp-side {
+  flex: 0 0 340px;
+  padding: var(--ui-space-4);
+}
+
+.dp-main {
+  padding: var(--ui-space-4);
+}
+
+/* 面板之间的统一间距 */
+.dp-side > .ui-panel + .ui-panel,
+#dp-view > .ui-panel + .ui-panel,
+.dp-main > #dp-view + .ui-panel {
+  margin-top: var(--ui-space-4);
+}
+
+.dp-mt { margin-top: var(--ui-space-3); }
+
+.dp-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+}
+
+/* ── 新建运行：阶段勾选 ──────────────────────────────────────── */
+
+.dp-checks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--ui-space-2);
+}
+
+.dp-checks label {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  color: var(--ui-text-secondary);
+  font-size: var(--ui-font-size-sm);
+  cursor: pointer;
+}
+
+.dp-checks input {
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--ui-action-primary);
+}
+
+/* ── 运行记录 ────────────────────────────────────────────────── */
+
+.dp-run {
+  display: grid;
+  gap: 2px;
+  padding: var(--ui-space-2) var(--ui-space-3);
+  background: var(--ui-bg-surface);
+  border: 1px solid var(--ui-border-default);
+  border-radius: var(--ui-radius-md);
+  cursor: pointer;
+  transition: background var(--ui-motion-fast), border-color var(--ui-motion-fast);
+}
+
+.dp-run + .dp-run { margin-top: var(--ui-space-2); }
+
+.dp-run:hover {
+  background: var(--ui-bg-subtle);
+  border-color: var(--ui-border-strong);
+}
+
+.dp-run.is-active {
+  background: var(--ui-action-primary-soft);
+  border-color: var(--ui-action-primary);
+}
+
+.dp-run__topic {
+  overflow: hidden;
+  color: var(--ui-text-primary);
+  font-size: var(--ui-font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dp-run__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--ui-space-2);
+  color: var(--ui-text-muted);
+  font-size: var(--ui-font-size-xs);
+}
+
+/* ── 阶段步进条 ──────────────────────────────────────────────── */
+
+.dp-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+  margin: var(--ui-space-3) 0;
+}
+
+.dp-step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  min-height: 32px;
+  padding: 0 var(--ui-space-3);
+  color: var(--ui-text-secondary);
+  background: var(--ui-bg-surface);
+  border: 1px solid var(--ui-border-default);
+  border-radius: var(--ui-radius-pill);
+  font-size: var(--ui-font-size-sm);
+  transition: background var(--ui-motion-fast), border-color var(--ui-motion-fast);
+}
+
+.dp-step:hover {
+  background: var(--ui-bg-subtle);
+  border-color: var(--ui-border-strong);
+}
+
+.dp-step.is-active {
+  color: var(--ui-action-primary);
+  background: var(--ui-action-primary-soft);
+  border-color: var(--ui-action-primary);
+}
+
+/* ── 产物编辑区 ──────────────────────────────────────────────── */
+
+.dp-artifact {
+  min-height: 420px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+  font-size: var(--ui-font-size-sm);
+  line-height: 1.65;
+}
+
+/* ── 事件区（复用共享的 job-status-card 事件排版） ───────────── */
+
+.dp-events {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: var(--ui-space-3);
+  background: var(--ui-bg-subtle);
+  border: 1px solid var(--ui-border-default);
+  border-left: 3px solid var(--ui-action-primary);
+  border-radius: var(--ui-radius-lg);
+}
+
+/* ── 技能库列表 ──────────────────────────────────────────────── */
+
+.dp-skill {
+  padding: var(--ui-space-3) 0;
+  border-bottom: 1px solid var(--ui-border-default);
+}
+
+.dp-skill:first-child { padding-top: 0; }
+.dp-skill:last-child { padding-bottom: 0; border-bottom: 0; }
+
+.dp-skill__title {
+  color: var(--ui-text-primary);
+  font-size: var(--ui-font-size-base);
+  font-weight: var(--ui-font-weight-medium);
+}
+
+.dp-skill__path {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+}
+
+.dp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-1);
+  margin-top: var(--ui-space-1);
+}
+
+/* ── 出片（本地 MiniMax H3） ─────────────────────────────────── */
+
+.dp-shots {
+  display: grid;
+  gap: var(--ui-space-3);
+}
+
+.dp-shot {
+  display: grid;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-3);
+  background: var(--ui-bg-surface);
+  border: 1px solid var(--ui-border-default);
+  border-radius: var(--ui-radius-lg);
+}
+
+.dp-shot__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+}
+
+.dp-shot__no {
+  color: var(--ui-action-primary);
+  font-weight: var(--ui-font-weight-bold);
+}
+
+.dp-shot__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ui-text-secondary);
+  font-size: var(--ui-font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dp-shot__prompt {
+  min-height: 76px;
+  font-size: var(--ui-font-size-sm);
+}
+
+.dp-shot__video {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  background: var(--ui-bg-sunken);
+  border: 1px solid var(--ui-border-default);
+  border-radius: var(--ui-radius-md);
+}
+
+.dp-select--sm {
+  width: auto;
+  min-width: 132px;
+  min-height: 30px;
+  padding-inline: var(--ui-space-2);
+  font-size: var(--ui-font-size-sm);
+}
+
+.dp-shot__pick { cursor: pointer; }
+
+/* ── 窄屏 ────────────────────────────────────────────────────── */
+
+@media (max-width: 820px) {
+  .dp-body { flex-direction: column; }
+  .dp-side {
+    flex: 0 0 auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--ui-border-default);
+  }
+  .dp-checks { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniMax H3 官方 Skills 使用说明 · 9 大视频创作神器</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: #f5f6fa; color: #2b2f36; line-height: 1.75; font-size: 16px;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 0 16px 60px; }
+
+  /* 头部 */
+  .hero {
+    background: linear-gradient(135deg, #1c1e26 0%, #2d2a4a 55%, #4a3a7a 100%);
+    color: #fff; padding: 48px 24px 40px; border-radius: 0 0 28px 28px;
+    position: relative; overflow: hidden;
+  }
+  .hero::after {
+    content: ""; position: absolute; right: -60px; top: -60px; width: 220px; height: 220px;
+    background: radial-gradient(circle, rgba(139,109,255,.35), transparent 70%); border-radius: 50%;
+  }
+  .hero .badge {
+    display: inline-block; font-size: 12px; letter-spacing: 2px; padding: 4px 12px;
+    border: 1px solid rgba(255,255,255,.4); border-radius: 999px; margin-bottom: 16px; opacity: .9;
+  }
+  .hero h1 { font-size: 26px; line-height: 1.4; font-weight: 700; }
+  .hero p.sub { margin-top: 12px; font-size: 14px; opacity: .82; }
+  .hero .stats { display: flex; gap: 12px; margin-top: 24px; }
+  .hero .stat {
+    flex: 1; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16);
+    border-radius: 14px; padding: 12px 8px; text-align: center; backdrop-filter: blur(4px);
+  }
+  .hero .stat b { display: block; font-size: 22px; }
+  .hero .stat span { font-size: 12px; opacity: .8; }
+
+  /* 章节标题 */
+  h2.sec {
+    font-size: 19px; margin: 36px 4px 16px; display: flex; align-items: center; gap: 8px;
+  }
+  h2.sec::before { content: ""; width: 4px; height: 18px; border-radius: 2px; background: #6c5ce7; }
+
+  /* 简介段落 */
+  .intro { background: #fff; border-radius: 16px; padding: 18px; font-size: 15px; color: #4a4f58; box-shadow: 0 2px 10px rgba(30,30,60,.05); }
+  .intro b { color: #2b2f36; }
+
+  /* Skill 卡片 */
+  .card {
+    background: #fff; border-radius: 18px; padding: 20px; margin-bottom: 16px;
+    box-shadow: 0 2px 12px rgba(30,30,60,.06); border: 1px solid #eef0f5;
+  }
+  .card .top { display: flex; align-items: flex-start; gap: 12px; }
+  .card .icon {
+    flex: none; width: 46px; height: 46px; border-radius: 13px; display: flex;
+    align-items: center; justify-content: center; font-size: 22px; color: #fff;
+  }
+  .card h3 { font-size: 17px; line-height: 1.4; }
+  .card .en { font-size: 12px; color: #9aa0ab; font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+  .card .tags { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag {
+    font-size: 11px; padding: 2px 9px; border-radius: 999px;
+    background: #f0eeff; color: #6c5ce7; border: 1px solid #e2dcff;
+  }
+  .tag.ver { background: #eef7f0; color: #2e9e5b; border-color: #d5ecdd; }
+  .tag.lang { background: #fff4e5; color: #d9822b; border-color: #ffe3c2; }
+  .card .desc { margin-top: 12px; font-size: 14.5px; color: #4a4f58; }
+  .card .use {
+    margin-top: 12px; background: #f8f9fc; border-radius: 12px; padding: 12px 14px; font-size: 13.5px;
+  }
+  .card .use .label { font-size: 12px; color: #9aa0ab; margin-bottom: 4px; }
+  .card .use code {
+    font-family: ui-monospace, Consolas, monospace; font-size: 13px; color: #6c5ce7;
+    background: #f0eeff; padding: 1px 6px; border-radius: 6px;
+  }
+  .card .not { margin-top: 10px; font-size: 12.5px; color: #9aa0ab; }
+  .card .not b { color: #c0392b; font-weight: 600; }
+
+  /* 步骤 */
+  .steps { counter-reset: s; }
+  .step {
+    display: flex; gap: 12px; background: #fff; border-radius: 14px; padding: 14px 16px;
+    margin-bottom: 10px; box-shadow: 0 2px 8px rgba(30,30,60,.05); font-size: 14.5px;
+  }
+  .step::before {
+    counter-increment: s; content: counter(s); flex: none; width: 24px; height: 24px;
+    background: #6c5ce7; color: #fff; border-radius: 50%; font-size: 13px;
+    display: flex; align-items: center; justify-content: center; margin-top: 2px;
+  }
+  .step code { font-family: ui-monospace, Consolas, monospace; background: #f0eeff; color: #6c5ce7; padding: 1px 6px; border-radius: 6px; font-size: 13px; word-break: break-all; }
+
+  /* 提示框 */
+  .tip {
+    background: #fffbf2; border: 1px solid #ffe9c2; border-radius: 14px;
+    padding: 14px 16px; font-size: 13.5px; color: #7a5b1e; margin-bottom: 10px;
+  }
+  .tip b { color: #b97a1a; }
+
+  /* 页脚 */
+  .footer { text-align: center; margin-top: 40px; font-size: 12px; color: #9aa0ab; }
+  .footer a { color: #6c5ce7; text-decoration: none; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="badge">MiniMax 官方出品</div>
+  <h1>MiniMax H3 官方 Skills<br>9 大 AI 视频创作神器</h1>
+  <p class="sub">来自 MiniMax-AI 官方仓库的提示词工程技能包：1 个 H3 提示词编写器 + 8 个风格化视频生成器，覆盖动画、广告、MV、科普解说全场景。</p>
+  <div class="stats">
+    <div class="stat"><b>9</b><span>官方 Skills</span></div>
+    <div class="stat"><b>8</b><span>中文版支持</span></div>
+    <div class="stat"><b>5</b><span>H3 生成模式</span></div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <h2 class="sec">这是什么？</h2>
+  <div class="intro">
+    这是 <b>MiniMax 官方</b>在 GitHub 开源的 Skills 技能包，配合 <b>MiniMax H3 视频生成模型</b>使用。每个 Skill 都是一套经过官方调优的<b>提示词工程流程</b>——你只需要用大白话描述创意，Skill 会自动完成卖点提炼、分镜规划、节拍设计、音画同步等专业工作，输出可直接喂给视频模型的标准化提示词。<br><br>
+    <b>核心亮点：</b>① 官方出品、持续维护；② 8 个风格类 Skill 内置中文版说明（SKILL.cn.md）；③ 支持 T2VA / I2VA / FL2VA / L2VA / Ref2VA 五种 H3 生成模式。
+  </div>
+
+  <h2 class="sec">核心：H3 提示词编写器</h2>
+  <div class="card">
+    <div class="top">
+      <div class="icon" style="background:linear-gradient(135deg,#6c5ce7,#9b7bff)">✍️</div>
+      <div>
+        <h3>H3 提示词编写器</h3>
+        <div class="en">h3-prompt-writing</div>
+      </div>
+    </div>
+    <div class="tags">
+      <span class="tag">提示词工程</span><span class="tag lang">仅英文</span>
+    </div>
+    <div class="desc">H3 模型的「翻译官」。把多模态请求改写为 H3 标准提示词结构（integrated_multimodal_description / overall_soundscape / non_diegetic_music），支持文生视频、图生视频、首尾帧、尾帧反推、全参考五种模式，自动对齐关键帧并定义图/视/音引用标签。</div>
+    <div class="use">
+      <div class="label">这样说就能触发</div>
+      “用 H3 写一个猫咪在雨天窗台的视频提示词” · “帮我把这段创意转成 <code>Ref2VA</code> 格式”
+    </div>
+  </div>
+
+  <h2 class="sec">8 大风格化视频生成器</h2>
+
+  <div class="card">
+    <div class="top">
+      <div class="icon" style="background:linear-gradient(135deg,#4a7dff,#6aa5ff)">🎬</div>
+      <div>
+        <h3>3D 动画短片生成器</h3>
+        <div class="en">3d-animation-short-generator</div>
+      </div>
+    </div>
+    <div class="tags"><span class="tag">动画</span><span class="tag ver">v0.5.4</span></div>
+    <div class="desc">从一个故事创意出发，走完完整制作流程：项目简报 → 故事大纲 → 角色与环境卡片 → 标准化分镜 → 故事板 → 逐镜头生成 → 合成 → BGM 匹配 → 终审。强调角色一致性与场景连续性，适合端到端叙事动画。</div>
+    <div class="use">
+      <div class="label">这样说就能触发</div>
+      “帮我做一个 3D 动画短片：小机器人寻找丢失的星星”
+    </div>
+    <div class="not"><b>不适合：</b>单张图片、简单剪辑、真人写实风格。</div>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <div class="icon" style="background:linear-gradient(135deg,#e05b8a,#ff8fab)">📣</div>
+      <div>
+        <h3>品牌宣传短片生成器</h3>
+        <div class="en">brand-promo-video-generator</div>
+      </div>
+    </div>
+    <div class="tags"><span class="tag">商业广告</span><span class="tag ver">v0.1.9</span></div>
+    <div class="desc">为品牌、产品、网站、App、店铺或个人项目制作宣传片。自动组织品牌素材、做事实核验、选叙事方向、规划节拍与镜头，生成图像/视频/配音/音乐并完成交付前审核。适合发布会、网站展示、社交推广。</div>
+    <div class="use">
+      <div class="label">这样说就能触发</div>
+      “给我的咖啡店做一支 15 秒品牌宣传短片”
+    </div>
+    <div class="not"><b>注意：</b>不支持未经授权模仿真实品牌标识或虚构产品宣称。</div>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <div class="icon" style="background:linear-gradient(135deg,#2bc48a,#5ee0b0)">🎮</div>
+      <div>
+        <h3>双人游戏开场视频生成器</h3>
+        <div class="en">co-op-game-intro-generator</div>
+      </div>
+    </div>
+    <div class="tags"><span class="tag">创意实验</span><span class="tag ver">v0.1.5</span></div>
+    <div class="desc">创建双人合作游戏的菜单或开场动画。锁定角色身份特征，先生成待确认的菜单预览图（配色、按钮、图标、字体），确认后再重建角色、UI 文案和事件时序，输出最终视频。适合游戏概念展示和社交内容。</div>
+    <div class="use">
+      <div class="label">这样说就能触发</div>
+      “做一个双人合作游戏开场，玩家叫阿伟和小美，像素风”
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <div class="icon" style="background:linear-gradient(135deg,#f39c3d,#ffc46b)">🖊️</div>
+      <div>
+        <h3>手绘实拍融合视频生成器</h3>
+        <div class="en">handdrawn-live-video-generator</div>
+      </div>
+    </div>
+    <div class="tags"><span class="tag">创意实验</span><span class="tag ver">v1.0.2</span></div>
+    <div class="desc">把粗糙发光的手绘动画「放进」真人实拍空间：设计连续变形、逃跑路线和延迟手持追踪运镜，输出可复用的 15 秒 16:9 超现实视频提示词。单场景创意短片的利器。</div>
+    <div class="use">
+      <div class="label">这样说就能触发</div>
+      “做一个手绘小怪兽从办公桌逃跑的实拍融合视频”
+    </div>
+    <div class="not"><b>不适合：</b>精致 CG、恐怖惊吓、毛绒角色、多场景切换。</div>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <div class="icon" style="background:linear-gradient(135deg,#3fb8c9,#6fd6e3)">🛍️</div>
+      <div>
+        <h3>极简产品广告生成器</h3>
+        <div class="en">minimalist-product-ad-generator</div>
+      </div>
+    </div>
+    <div class="tags"><span class="tag">商业广告</span><span class="tag ver">v0.5.6</span></div>
+    <div class="desc">把产品图片 + 广告需求变成极简风产品广告短片：确认格式与产品变体、提炼卖点、撰写英文广告文案、规划踩点排版与分镜。电商推广和新品发布的得力助手。</div>
+    <div class="use">
+      <div class="label">这样说就能触发</div>
+      “用这张耳机产品图做一支极简风广告，突出降噪”
+    </div>
+    <div class="not"><b>不适合：</b>KOC 口播广告、一般剪辑、复杂屏幕演示。</div>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <div class="icon" style="background:linear-gradient(135deg,#e74c3c,#ff7b6b)">🎵</div>
+      <div>
+        <h3>音乐 MV 动态字幕生成器</h3>
+        <div class="en">music-video-subtitle-generator</div>
+      </div>
+    </div>
+    <div class="tags"><span class="tag">音频音乐</span><span class="tag ver">v0.6.6</span></div>
+    <div class="desc">面向音乐人和社媒剪辑者：分析节拍与人声时序，设计随节拍律动的空间歌词排版，把长作品拆解为可衔接的连贯镜头。输出 MV 概念、镜头提示词、歌词排版方案和拼接指南。</div>
+    <div class="use">
+      <div class="label">这样说就能触发</div>
+      “根据这首歌的歌词和节拍，帮我设计 MV 分镜和动态字幕”
+    </div>
+    <div class="not"><b>不适合：</b>普通字幕校对、照搬已有 IP、纯手工后期。</div>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <div class="icon" style="background:linear-gradient(135deg,#9b59b6,#c08ad6)">✂️</div>
+      <div>
+        <h3>纸拼贴讲解动画生成器</h3>
+        <div class="en">paper-collage-explainer-generator</div>
+      </div>
+    </div>
+    <div class="tags"><span class="tag">教育</span><span class="tag ver">v0.3.9</span></div>
+    <div class="desc">给旁白、知识点、观点或抽象主题赋予纸质拼贴的视觉语言：提取含义 → 提出视觉隐喻 → 制定制作计划与分镜 → 生成半调拼贴静帧 → 制作带纸张运动和触感音效的定格动画。默认保留拼贴音效，不主动加 BGM/配音/字幕。</div>
+    <div class="use">
+      <div class="label">这样说就能触发</div>
+      “用纸拼贴风格讲解‘复利效应’，做一支解说视频”
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <div class="icon" style="background:linear-gradient(135deg,#27ae60,#55cf8a)">📦</div>
+      <div>
+        <h3>纸艺定格科普视频生成器</h3>
+        <div class="en">papercraft-stop-motion-explainer</div>
+      </div>
+    </div>
+    <div class="tags"><span class="tag">教育</span><span class="tag ver">v0.6.5</span></div>
+    <div class="desc">用手工纸艺的触感视觉讲解科学、教育或通识知识：提取学习目标 → 设计纸艺角色、分层立体场景和道具 → 规划分镜、运镜、转场与音效，输出可投入制作的纸艺定格解说包。最适合剪纸、立体书、分层透视模型和微缩定格。</div>
+    <div class="use">
+      <div class="label">这样说就能触发</div>
+      “用纸艺定格动画讲解‘光合作用’，面向小学生”
+    </div>
+  </div>
+
+  <h2 class="sec">安装方法</h2>
+  <div class="steps">
+    <div class="step">下载分享包并解压，得到 9 个 skill 文件夹。</div>
+    <div class="step">把整个文件夹复制到 AI 助手的 skills 目录（WorkBuddy 用户复制到 <code>C:\Users\你的用户名\.workbuddy\skills\</code>）。</div>
+    <div class="step">开启新会话，直接用大白话描述需求即可自动触发对应 Skill。</div>
+  </div>
+  <div class="tip">
+    <b>官方安装方式：</b>也可以通过 skills CLI 一键安装全部——<br>
+    <code style="font-family:ui-monospace,Consolas,monospace;font-size:13px;word-break:break-all;">npx skills add https://github.com/MiniMax-AI/MiniMax-H3 --skill '*'</code>
+  </div>
+
+  <h2 class="sec">使用小贴士</h2>
+  <div class="tip"><b>中英双语：</b>8 个风格类 Skill 自带中文版说明（SKILL.cn.md），中文提问也能正常工作；仅「H3 提示词编写器」目前只有英文版，但它输出的提示词本就需要英文。</div>
+  <div class="tip"><b>确认机制：</b>多个 Skill 采用「先出预览 → 你确认 → 再生成」的两步流程，看到预览图后记得回复确认意见，成品质量会明显更好。</div>
+  <div class="tip"><b>持续更新：</b>官方仍在积极维护（WIP），想获取最新版本可访问 GitHub 仓库重新拉取覆盖。</div>
+
+  <div class="footer">
+    来源：MiniMax-AI 官方仓库<br>
+    <a href="https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills">github.com/MiniMax-AI/MiniMax-H3/tree/main/skills</a><br>
+    整理日期：2026-08-06 · 仅供学习交流
+  </div>
+
+</div>
+</body>
+</html>

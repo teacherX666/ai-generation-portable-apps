@@ -1,0 +1,17 @@
+# 渲染产物默认不进版本控制（每次 render 都能重新生成）；
+# demo-report/ 是例外——它是仓库里唯一的「成品长什么样」的实物，特意留着
+*-report.html
+frames/
+sheets/
+!demo-report/**
+!demo-report-en/**
+!demo-sync/**
+# 中文全片的合成产物 41MB，太大，本地看就行，不进仓库
+demo-sync/demo-video-sync.mp4
+panels/
+
+# 面板调参台：临时工具，随时能重新生成
+panel-lab.html
+
+.DS_Store
+node_modules/
