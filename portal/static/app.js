@@ -1952,10 +1952,11 @@ function StatsApp() {
     },
 
     genStatusText(s) {
+      // 注意：**不要把飞书的工作流状态（waiting_approval / waiting_review）映射进来** ——
+      // 「待审批 / 待确认」在用量记录里没有意义。后端已按「生成是否真的发生 + 方舟任务状态」
+      // 归一成 成功/失败/部分成功（2026-10-13 用户反馈：所有飞书任务都被误标成待确认）。
       return { succeeded: '成功', failed: '失败', running: '生成中', submitted: '已提交',
                cancelled: '已取消', pending: '排队中',
-               // 飞书任务停在等人决策的状态（成片可能已生成，等确认）
-               waiting_approval: '待审批', waiting_review: '待确认',
                interrupted: '被打断', partial: '部分成功' }[s] || (s || '—');
     },
 

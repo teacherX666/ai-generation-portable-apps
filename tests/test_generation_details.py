@@ -1056,6 +1056,23 @@ class GenerationApiTests(unittest.TestCase):
         self.assertLess(len(slim), 24)
         self.assertNotIn("计费族", slim)
 
+    def test_feishu_workflow_status_is_not_used_as_usage_status(self):
+        """飞书的「等工作流确认」不是用量语义：waiting_review 必须归一成「成功」。
+
+        2026-10-13 用户反馈：所有飞书任务都被误标成「待确认」（因为直接把飞书的
+        run status 当成了用量记录的状态）。
+        """
+        f = self.mod.feishu_usage_status
+        self.assertEqual(f("waiting_review"), "succeeded")
+        self.assertEqual(f("done"), "succeeded")
+        self.assertEqual(f("failed"), "failed")
+        self.assertEqual(f("partial"), "partial")
+        # 从未知状态 + 有产物 → 成功（有片子就是生成成功了）
+        self.assertEqual(f("weird_state", True), "succeeded")
+        # 任何输入都不能吐出「待确认」这类工作流字样
+        for raw in ("waiting_review", "done", "failed", "partial", "weird_state"):
+            self.assertNotIn("waiting_review", f(raw))
+
     def test_xlsx_export_is_valid_workbook_with_widths(self):
         """xlsx 导出：合法 zip 结构 + 我们自己定的列宽 + 冻结表头 + 自动筛选 + 数字列是真数字。
 

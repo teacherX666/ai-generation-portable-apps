@@ -421,12 +421,26 @@ def _apply_ark_usage(rows: list[dict]) -> int:
         model = ""
         resolution = ""
         has_input = False
+        task_statuses: list[str] = []
         for task_id in ids:
             info = index[task_id]
             tokens += int(info.get("tokens") or 0)
             model = model or str(info.get("model") or "")
             resolution = resolution or str(info.get("resolution") or "")
             has_input = has_input or bool(info.get("has_input_video"))
+            task_statuses.append(str(info.get("status") or "").lower())
+        # 状态以**方舟任务**为准（生成结果的权威来源）：全成功=成功，全失败=失败，混合=部分成功。
+        # 不能用飞书自己的工作流状态 —— 那会说成「待确认」（2026-10-13 用户反馈）。
+        if task_statuses:
+            ok = sum(1 for s in task_statuses if s == "succeeded")
+            bad = sum(1 for s in task_statuses if s in ("failed", "canceled", "cancelled", "expired"))
+            if ok and not bad:
+                row["status"] = "succeeded"
+            elif bad and not ok:
+                row["status"] = "failed"
+            elif ok and bad:
+                row["status"] = "partial"
+            # 其余（running/queued）保持上游状态不动
         row["tokens"] = tokens
         row["model"] = str(row.get("model") or "") or model
         # 补上模型后，供应商也该跟着变（飞书任务实际上就是走方舟 key 出的片）
@@ -1621,6 +1635,23 @@ _FEISHU_PRE_GENERATION = {"created", "queued", "pending", "running", "waiting_ap
                           "approving", "planning"}
 # 失败但**一件产物都没有** = 没有发生有效生成，不计数；失败但有产物 = 部分成功，计数。
 _FEISHU_FAILED_NO_OUTPUT = {"failed", "cancelled", "canceled", "timed_out", "expired"}
+# 飞书的**工作流**状态 ≠ 生成结果。waiting_review 的含义是「片子已生成、等人在飞书里确认」，
+# 对「用量记录」而言就是成功（2026-10-13 用户反馈：所有飞书任务都被标成「待确认」，
+# 而那个状态在用量语义里根本不该存在）。
+_FEISHU_STATUS_DONE = {"done", "waiting_review", "succeeded", "completed", "finished"}
+
+
+def feishu_usage_status(feishu_status: str, has_results: bool = False) -> str:
+    """把飞书的工作流状态翻成**用量口径**的状态：成功 / 失败 / 部分成功。"""
+    s = str(feishu_status or "").lower()
+    if s in _FEISHU_STATUS_DONE:
+        return "succeeded"
+    if s == "partial":
+        return "partial"
+    if s in _FEISHU_FAILED_NO_OUTPUT:
+        return "failed"
+    # 认不出来的：有产物就算成功，否则原样带出去（宁可显示原始值，也不硬塞一个错状态）
+    return "succeeded" if has_results else (s or "succeeded")
 
 
 def pricing_table() -> dict[str, Any]:
@@ -4157,7 +4188,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "tokens": 0, "unit_price": None, "unit": "",
                     "amount": None, "currency": "CNY",
                     "price_source": "untracked", "price_family": "",
-                    "status": str(rec.get("status") or ""),
+                    "status": feishu_usage_status(status, bool(results)),
+                    "source_status": str(rec.get("status") or ""),   # 飞书原始工作流状态，仅用于排查
                     "tracked": False,
                     # 飞书 Agent 存着方舟任务号：拿它去方舟换真实 usage（token / 档位 / 金额）
                     "provider_task_ids": [str(t) for t in (rec.get("provider_task_ids") or [])][:40],
