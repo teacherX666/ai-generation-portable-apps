@@ -1786,11 +1786,38 @@ _BILLING_SEEDREAM_SIZE = {
 # ── 明细/汇总导出的列与取值口径（2026-10-13）─────────────────────────────────
 # 用户反馈两件事：① 表头是英文看不懂；② 提示词里带换行，在 Excel 里一条记录折成多行、表格错位。
 # 所以表头统一中文、**所有文本值把换行折成空格**（保证一条记录一行）。
-# 默认导出的列（**精简版**：2026-10-13 用户反馈「一行记录特别宽」——24 列横向拉太开，
-# 去掉纯内部/可由别的列推出的字段：日期(生成时间里已有)、供应商代码、计价单位塞进「单位」、
-# 币种(全 CNY)、计费族、生成次数、我方任务编号(用上游任务号)、价格来源。
-# 原始 24 列仍在 GENERATION_EXPORT_COLUMNS_FULL，需要完整口径时用 ?full=1。
+# 导出列：**默认给全量 24 列**（用户 2026-10-13 明确「不要减少我的数据」）。
+# 精简版（17 列）保留但改成 opt-in：?slim=1。
+# 排列顺序讲究：短而常用的列在前（时间/用户/模型/用量/单价/金额…），
+# 又长又少用的往后放（提示词、上游任务号在最后），这样打开表格不用横向滚就能看到用量与金额。
 GENERATION_EXPORT_COLUMNS: list[tuple[str, str]] = [
+    ("time", "生成时间"),
+    ("date", "日期"),
+    ("username", "用户"),
+    ("app", "应用"),
+    ("model", "模型"),
+    ("provider_label", "供应商"),
+    ("status", "状态"),
+    ("tokens", "用量(tokens)"),
+    ("unit_price", "单价"),
+    ("unit", "计价单位"),
+    ("amount", "金额"),
+    ("currency", "币种"),
+    ("resolution", "分辨率"),
+    ("has_input_video", "含输入视频"),
+    ("price_family", "计费族"),
+    ("runs", "生成次数"),
+    ("images", "图片数"),
+    ("seconds", "时长(秒)"),
+    ("kind", "产物类型"),
+    ("price_source", "价格来源"),
+    ("provider", "供应商代码"),
+    ("job_id", "任务编号"),
+    ("task_ids", "上游任务号"),
+    ("title", "提示词"),
+]
+# 精简版（一行别太宽时用）：?slim=1。去掉纯内部/可推出的列。
+GENERATION_EXPORT_COLUMNS_SLIM: list[tuple[str, str]] = [
     ("time", "生成时间"),
     ("username", "用户"),
     ("app", "应用"),
@@ -1809,33 +1836,6 @@ GENERATION_EXPORT_COLUMNS: list[tuple[str, str]] = [
     ("title", "提示词"),
     ("task_ids", "上游任务号"),
 ]
-# 完整版（对账用：与方舟账单同口径的计费族/计费项、价格来源、我方任务编号都在）
-GENERATION_EXPORT_COLUMNS_FULL: list[tuple[str, str]] = [
-    ("time", "生成时间"),
-    ("date", "日期"),
-    ("username", "用户"),
-    ("app", "应用模块"),
-    ("model", "模型"),
-    ("provider_label", "供应商"),
-    ("status", "状态"),
-    ("tokens", "用量(tokens)"),
-    ("unit_price", "单价"),
-    ("unit", "计价单位"),
-    ("amount", "金额"),
-    ("currency", "币种"),
-    ("resolution", "分辨率"),
-    ("has_input_video", "含输入视频"),
-    ("price_family", "计费族"),
-    ("runs", "生成次数"),
-    ("images", "图片数"),
-    ("seconds", "时长(秒)"),
-    ("title", "提示词"),
-    ("job_id", "任务编号"),
-    ("task_ids", "上游任务号"),
-    ("kind", "产物类型"),
-    ("price_source", "价格来源"),
-    ("provider", "供应商代码"),
-]
 _EXPORT_STATUS_CN = {
     "succeeded": "成功", "failed": "失败", "running": "生成中", "submitted": "已提交",
     "cancelled": "已取消", "pending": "排队中", "interrupted": "被打断",
@@ -1846,11 +1846,6 @@ _EXPORT_KIND_CN = {"image": "图片", "video": "视频", "agent": "飞书任务"
 
 def export_cell(field: str, value) -> str:
     """一个导出单元格：中文口径 + 换行折成空格（一个记录一行，Excel 里不折行）。"""
-    if field == "app":
-        # 导出让用户看得懂的中文模块名（apps.json 的 display_name），取不到就退回 key
-        spec = (APPS.get(str(value)) or {}).get("spec")
-        name = getattr(spec, "display_name", None)
-        return str(name or value or "")
     if field == "task_ids":
         return "|".join(value or []) if not isinstance(value, str) else value
     if field == "status":
@@ -4338,10 +4333,10 @@ class Handler(SimpleHTTPRequestHandler):
         is_admin = auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"
         rows = self._generation_rows_merged(start, end, user, is_admin, self._generation_filters())
         buf = io.StringIO()
-        # 默认精简列（一行别太宽）；对账要完整口径时加 ?full=1
+        # 默认全量 24 列；想要窄一点的行用 ?slim=1
         qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-        want_full = str(qs.get("full", ["0"])[0]).lower() in ("1", "true", "yes")
-        cols = GENERATION_EXPORT_COLUMNS_FULL if want_full else GENERATION_EXPORT_COLUMNS
+        want_slim = str(qs.get("slim", ["0"])[0]).lower() in ("1", "true", "yes")
+        cols = GENERATION_EXPORT_COLUMNS_SLIM if want_slim else GENERATION_EXPORT_COLUMNS
         writer = csv.writer(buf)
         writer.writerow([label for _, label in cols])
         for row in rows:

@@ -1038,29 +1038,22 @@ class GenerationApiTests(unittest.TestCase):
         self.assertEqual(self.mod.export_cell("has_input_video", None), "")
         self.assertEqual(self.mod.export_cell("task_ids", ["cgt-1", "cgt-2"]), "cgt-1|cgt-2")
 
-    def test_csv_export_default_is_slim_and_full_opt_in(self):
-        """默认导出要瘦（一行别太宽）：用中文模块名、去掉纯内部列；?full=1 才给全量 24 列。"""
+    def test_csv_export_default_keeps_all_columns_and_slim_is_opt_in(self):
+        """默认必须是全量 24 列（用户：不要减少我的数据）；窄版只能通过 ?slim=1 主动选。"""
         h = self._handler("/api/platform/stats/generations/export?start=2026-10-12&end=2026-10-12")
         self.mod.Handler._platform_stats_generations_export(h, {"username": "admin", "role": "admin"})
-        slim = h.wfile.getvalue().decode("utf-8-sig").splitlines()[0].split(",")
-        self.assertLessEqual(len(slim), 18)
-        for col in ("应用", "用量(tokens)", "单价", "金额", "提示词", "上游任务号"):
-            self.assertIn(col, slim)
-        for dropped in ("日期", "供应商代码", "价格来源", "计费族", "币种", "应用模块"):
-            self.assertNotIn(dropped, slim)
+        default_cols = h.wfile.getvalue().decode("utf-8-sig").splitlines()[0].split(",")
+        self.assertEqual(len(default_cols), 24)
+        for col in ("日期", "计费族", "价格来源", "供应商代码", "任务编号", "上游任务号", "提示词"):
+            self.assertIn(col, default_cols)
+        # 常用列在前、又长又少用的在后（提示词在最后，避免打开就要横向滚）
+        self.assertEqual(default_cols[-1], "提示词")
 
-        h2 = self._handler("/api/platform/stats/generations/export?start=2026-10-12&end=2026-10-12&full=1")
+        h2 = self._handler("/api/platform/stats/generations/export?start=2026-10-12&end=2026-10-12&slim=1")
         self.mod.Handler._platform_stats_generations_export(h2, {"username": "admin", "role": "admin"})
-        full = h2.wfile.getvalue().decode("utf-8-sig").splitlines()[0].split(",")
-        self.assertEqual(len(full), 24)
-        for col in ("日期", "计费族", "价格来源", "供应商代码", "任务编号"):
-            self.assertIn(col, full)
-
-    def test_export_cell_uses_chinese_app_display_name(self):
-        """应用列要给中文模块名（apps.json 的 display_name），不是 seedance 这种 key。"""
-        name = self.mod.export_cell("app", "seedance")
-        self.assertTrue(name)
-        self.assertNotEqual(name, "seedance")
+        slim = h2.wfile.getvalue().decode("utf-8-sig").splitlines()[0].split(",")
+        self.assertLess(len(slim), 24)
+        self.assertNotIn("计费族", slim)
 
     def test_csv_export_has_exactly_one_line_per_record(self):
         """一条记录恰好一行：提示词里的换行必须已折成空格，否则 Excel 里会错位。"""
