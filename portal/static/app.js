@@ -1601,6 +1601,9 @@ function StatsApp() {
     genExporting: false,
     genXlsxExporting: false,
     genSummaryExporting: false,
+    // 远端来源（另一台同款平台）的同步状态；sources 为空时界面不显示这几件东西
+    genRemote: { sources: [], total_rows: 0, last_sync_ts: null, interval_minutes: 10, result: null },
+    genSyncing: false,
     genNote: '',
     // Admin-only: company-wide volcengine-portrait key (no plaintext returned)
     portraitKey: {
@@ -1652,6 +1655,7 @@ function StatsApp() {
       this.loadPlatformStatus();
       this.loadHistory();
       this.loadGenerations();
+      this.loadRemoteStatus();   // 远端来源（另一台同款平台）的同步状态
       if (this.isAdmin) {
         this.loadUsers();
         this.loadSignupStatus();
@@ -1963,8 +1967,51 @@ function StatsApp() {
                interrupted: '被打断', partial: '部分成功' }[s] || (s || '—');
     },
 
-    genProviderLabel(row) {
-      return String(row?.provider_label || row?.provider || '').trim() || '—';
+    // ── 远端来源（另一台同款平台，如 192.168.30.56）───────────────
+    // 数据由后端定时拉取（默认 10 分钟）落到本机，这里只负责显示状态与手动触发一次。
+    async loadRemoteStatus() {
+      const r = await api('/api/platform/remote-sources');
+      if (r && r.ok) this.genRemote = { ...this.genRemote, ...r };
+    },
+    genHasRemote() {
+      // 「来源」列只在真有远端记录时才出现，免得给只看本机的用户加一列
+      return (this.genData.rows || []).some((r) => !!r.source);
+    },
+    genRemoteSummary() {
+      const parts = (this.genRemote.sources || [])
+        .filter((s) => s.enabled !== false)
+        .map((s) => `${s.name} ${s.rows || 0} 条`);
+      return parts.length ? ' + ' + parts.join(' + ') : '';
+    },
+    genRemoteError() {
+      const res = this.genRemote.result || {};
+      return Object.entries(res)
+        .filter(([, v]) => v && v.ok === false && !v.skipped)
+        .map(([k, v]) => `${k}: ${v.error || '失败'}`)
+        .join('；');
+    },
+    genClock(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts * 1000);
+      const p = (n) => String(n).padStart(2, '0');
+      return `${p(d.getHours())}:${p(d.getMinutes())}`;
+    },
+    async syncRemoteNow() {
+      this.genSyncing = true;
+      try {
+        const r = await api('/api/platform/remote-sources/sync', 'POST');
+        this.genRemote = { ...this.genRemote, ...(r || {}) };
+        if (r && r.ok) window.portalToast('同步完成', 'success');
+        else window.portalToast('同步有问题：' + (this.genRemoteError() || '见详情'), 'danger');
+        await this.loadGenerations();
+      } catch (e) {
+        window.portalToast('同步失败: ' + (e?.message || e), 'danger');
+      } finally {
+        this.genSyncing = false;
+      }
+    },
+
+    genProviderLabel(row) {      return String(row?.provider_label || row?.provider || '').trim() || '—';
     },
 
     // 总览里的「按应用」拆分：飞书任务被 seedance 挤到后面几页时，一眼能看出有没有记上

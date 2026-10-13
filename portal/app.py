@@ -52,6 +52,7 @@ STATIC_DIR = ROOT / "static"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import daily_report as _daily_report_module
+import remote_sources
 import xlsx_export
 from cat_skins.experiment import CatExperimentService
 from cat_skins.concepts import CatConceptStore
@@ -1824,6 +1825,7 @@ _BILLING_SEEDREAM_SIZE = {
 # 又长又少用的往后放（提示词、上游任务号在最后），这样打开表格不用横向滚就能看到用量与金额。
 GENERATION_EXPORT_COLUMNS: list[tuple[str, str]] = [
     ("time", "生成时间"),
+    ("source", "来源"),
     ("date", "日期"),
     ("username", "用户"),
     ("app", "应用"),
@@ -1851,6 +1853,7 @@ GENERATION_EXPORT_COLUMNS: list[tuple[str, str]] = [
 # 精简版（一行别太宽时用）：?slim=1。去掉纯内部/可推出的列。
 GENERATION_EXPORT_COLUMNS_SLIM: list[tuple[str, str]] = [
     ("time", "生成时间"),
+    ("source", "来源"),
     ("username", "用户"),
     ("app", "应用"),
     ("model", "模型"),
@@ -1881,7 +1884,7 @@ _EXPORT_KIND_CN = {"image": "图片", "video": "视频", "agent": "飞书任务"
 # 打开后要么全按默认窄列截断、要么「最适合列宽」把 200 字的提示词列拉成一条。
 # xlsx 由我们把宽度定死：常用的窄、模型与任务号中等、提示词给 60 字宽（一行能看个大概）。
 GENERATION_EXPORT_WIDTHS: dict[str, float] = {
-    "time": 20, "date": 12, "username": 10, "app": 16, "model": 30, "provider_label": 12,
+    "time": 20, "source": 16, "date": 12, "username": 10, "app": 16, "model": 30, "provider_label": 12,
     "status": 9, "tokens": 13, "unit_price": 10, "unit": 15, "amount": 10, "currency": 8,
     "resolution": 10, "has_input_video": 12, "price_family": 18, "runs": 9, "images": 8,
     "seconds": 10, "kind": 10, "price_source": 13, "provider": 14, "job_id": 34,
@@ -1893,6 +1896,9 @@ GENERATION_EXPORT_NUMERIC = {"tokens", "unit_price", "amount", "runs", "images",
 
 def export_cell(field: str, value) -> str:
     """一个导出单元格：中文口径 + 换行折成空格（一个记录一行，Excel 里不折行）。"""
+    if field == "source":
+        # 本机记录没有 source 字段 → 显示「本机」，远端显示来源名（如 服务器B(30.56)）
+        return str(value or "本机")
     if field == "task_ids":
         return "|".join(value or []) if not isinstance(value, str) else value
     if field == "status":
@@ -2065,6 +2071,7 @@ class UsageTracker:
         self._flush_thread.start()
         threading.Thread(target=self._job_poll_loop, daemon=True).start()
         threading.Thread(target=self._auto_backup_loop, daemon=True).start()
+        threading.Thread(target=self._remote_sync_loop, daemon=True).start()
 
     @staticmethod
     def _empty_data() -> dict[str, Any]:
@@ -2185,6 +2192,34 @@ class UsageTracker:
             self._flush_now()
         except Exception:
             pass
+
+    def _remote_sync_loop(self):
+        """定时把「另一台同款平台」的按次明细拉进本机（用户 2026-10-13 需求：两边记录进同一张表）。
+
+        失败**只影响该来源**：remote_sources.sync_all() 内部保留上次数据并返回错误，
+        这里再兜一层 try —— 对面挂了绝不能让本机统计页或启动流程受影响。
+        """
+        if self._stop_flush.wait(30):          # 启动后缓一下，别和启动流程抢资源
+            return
+        while True:
+            interval = remote_sources.DEFAULT_INTERVAL_MIN
+            try:
+                cfg = remote_sources.load_config()
+                interval = max(1, int(cfg.get("interval_minutes") or remote_sources.DEFAULT_INTERVAL_MIN))
+            except Exception:
+                pass
+            try:
+                for name, info in (remote_sources.sync_all() or {}).items():
+                    if info.get("skipped"):
+                        continue
+                    if info.get("ok"):
+                        print(f"  [remote] {name}: 同步 {info.get('count')} 条", flush=True)
+                    else:
+                        print(f"  [remote] {name}: 同步失败（保留上次数据）{info.get('error')}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [remote] sync loop error: {exc}", flush=True)
+            if self._stop_flush.wait(max(60, interval * 60)):
+                return
 
     def _auto_backup_loop(self):
         """定期备份：usage.json.bak 同步 + history.json 按天留快照。
@@ -3549,6 +3584,10 @@ class Handler(SimpleHTTPRequestHandler):
             self._platform_stats_generations_export(user)
         elif path == "/api/platform/stats/generations/export.xlsx":
             self._platform_stats_generations_export_xlsx(user)
+        elif path == "/api/platform/remote-sources":
+            self._remote_sources_status(user)
+        elif path == "/api/platform/remote-sources/sync":
+            self._remote_sources_sync(user)
         elif path == "/api/platform/stats/generations/summary.csv":
             self._platform_stats_generations_summary_export(user)
         elif path == "/api/platform/queue":
@@ -4269,6 +4308,20 @@ class Handler(SimpleHTTPRequestHandler):
         have = {str(r.get("job_id") or "") for r in ours if r.get("job_id")}
         extra = [r for r in self._feishu_generation_rows(start, end, is_admin, user.get("username", ""))
                  if str(r.get("job_id") or "") not in have]
+        # 另一台同款平台的记录（remote_sources 定时拉取，落 state/remote_generations.jsonl）。
+        # 用 (来源 + 任务号) 去重：两边的 job_id 空间互不相干，绝不能只按 job_id 去重。
+        try:
+            for row in remote_sources.all_remote_rows():
+                day = str(row.get("date") or "")
+                if day and (day < start or day > end):
+                    continue
+                key = f"{row.get('source')}:{row.get('job_id')}"
+                if key in have:
+                    continue
+                have.add(key)
+                extra.append(row)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [usage] remote rows load failed: {exc}", flush=True)
         # 再把创作记录里「明细没有的」历史生成补进来 —— 目标是「所有生成都有记录」
         # （默认不加：它们没有用量数字，勾上「包含历史记录」才显示）
         if self._include_history_flag():
@@ -4441,6 +4494,28 @@ class Handler(SimpleHTTPRequestHandler):
         self._cors_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    def _remote_sources_status(self, user: dict):
+        """远端来源（另一台同款平台）的同步状态。管理员看全部，普通用户也能看到「来源」是否存在。"""
+        try:
+            snap = remote_sources.status_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            self._json(200, {"ok": False, "error": str(exc), "sources": []})
+            return
+        self._json(200, {"ok": True, **snap})
+
+    def _remote_sources_sync(self, user: dict):
+        """立刻同步一次（管理员）。用于「等不及 10 分钟」的场合。"""
+        if not (auth.has_permission(user, "view_stats_all") or user.get("role") == "admin"):
+            self._json(403, {"ok": False, "error": "forbidden"})
+            return
+        try:
+            result = remote_sources.sync_all(force=True)
+        except Exception as exc:  # noqa: BLE001
+            self._json(200, {"ok": False, "error": str(exc)})
+            return
+        ok = all(bool(v.get("ok")) for v in result.values()) if result else True
+        self._json(200, {"ok": ok, "result": result, **remote_sources.status_snapshot()})
 
     @staticmethod
     def _bill_summary_rows(rows: list[dict]) -> list[dict]:

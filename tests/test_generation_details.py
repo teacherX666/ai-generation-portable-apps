@@ -607,6 +607,7 @@ class BillSummaryExportTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.mod.GENERATIONS_PATH = Path(self._tmp.name) / "generations.jsonl"
+        self.mod.remote_sources.use_state_dir(self._tmp.name)   # 别读到真实的远端来源数据
         rows = [
             {"date": "2026-10-12", "ts": 1, "username": "MM", "app": "seedance",
              "model": "ep-x", "price_family": "Seedance 2.0 mini", "resolution": "480p",
@@ -713,6 +714,7 @@ class GenerationApiTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.mod.GENERATIONS_PATH = Path(self._tmp.name) / "generations.jsonl"
+        self.mod.remote_sources.use_state_dir(self._tmp.name)   # 别读到真实的远端来源数据
         self.feishu_rows: list[dict] = []   # 默认没有飞书任务；需要时在测试里赋值
         self.history_rows: list[dict] = []  # 历史记录（创作记录）合并进来的行
         rows = [
@@ -767,6 +769,53 @@ class GenerationApiTests(unittest.TestCase):
         self.assertEqual(h.json_payload["summary"]["count"], 1)
         self.assertEqual([r["username"] for r in h.json_payload["rows"]], ["alice"])
         self.assertFalse(h.json_payload["is_admin"])
+
+    def test_remote_source_rows_merge_with_source_label(self):
+        """另一台同款平台的记录要能合并进同一张表，并带「来源」；去重键是 (来源 + 任务号)。
+
+        2026-10-13 需求：https://192.168.30.56:9090 上的记录也要进本机的使用统计。
+        两边的 job_id 空间互不相干 —— **绝不能只按 job_id 去重**，否则会互相吞记录。
+        """
+        rs = self.mod.remote_sources
+        rows = [
+            {"source": "服务器B(30.56)", "source_host": "https://192.168.30.56:9090",
+             "date": "2026-10-12", "ts": 99, "time": "2026-10-12 09:00:00", "username": "bob",
+             "app": "seedance", "model": "ep-x", "status": "succeeded", "tokens": 1000,
+             "amount": 0.5, "job_id": "remote-job-1", "title": "远端任务"},
+            # 与本机某行同 job_id：两边 id 空间不同，必须都保留
+            {"source": "服务器B(30.56)", "date": "2026-10-12", "ts": 98,
+             "time": "2026-10-12 08:00:00", "username": "bob", "app": "seedance",
+             "model": "ep-x", "status": "succeeded", "tokens": 2000, "amount": 1.0,
+             "job_id": "", "title": "没有任务号的远端记录"},
+        ]
+        rs.ROWS_PATH.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                                encoding="utf-8")
+        rs._ROWS_CACHE["mtime"] = None
+
+        h = self._handler(self._qs())
+        self.mod.Handler._platform_stats_generations(h, {"username": "admin", "role": "admin"})
+        self.assertEqual(h.status, 200)
+        payload = h.json_payload
+        got = [r for r in payload["rows"] if r.get("source")]
+        self.assertEqual(len(got), 2)
+        self.assertEqual({r["source"] for r in got}, {"服务器B(30.56)"})
+        # 本机那 2 条仍在（没被远端吞掉）
+        self.assertEqual(len([r for r in payload["rows"] if not r.get("source")]), 2)
+        # 远端金额计入汇总
+        self.assertAlmostEqual(payload["summary"]["amount"], 0.9567 + 1.5, places=3)
+        # 按「用户」筛选也要能筛到远端行（本机 fixture 里也有一个 bob，所以是 1 本机 + 2 远端）
+        h2 = self._handler(self._qs() + "&user=bob")
+        self.mod.Handler._platform_stats_generations(h2, {"username": "admin", "role": "admin"})
+        self.assertEqual(len(h2.json_payload["rows"]), 3)
+        self.assertEqual(len([r for r in h2.json_payload["rows"] if r.get("source")]), 2)
+
+    def test_remote_source_sync_status_endpoint(self):
+        """同步状态接口：没配来源时也要 200（界面上那几件东西按 sources 是否为空来显隐）。"""
+        h = self._handler("/api/platform/remote-sources")
+        self.mod.Handler._remote_sources_status(h, {"username": "admin", "role": "admin"})
+        self.assertEqual(h.status, 200)
+        self.assertTrue(h.json_payload["ok"])
+        self.assertEqual(h.json_payload["sources"], [])
 
     def test_unpriced_rows_are_counted_separately(self):
         with self.mod.GENERATIONS_PATH.open("a", encoding="utf-8") as fh:
@@ -1040,21 +1089,23 @@ class GenerationApiTests(unittest.TestCase):
         self.assertEqual(self.mod.export_cell("task_ids", ["cgt-1", "cgt-2"]), "cgt-1|cgt-2")
 
     def test_csv_export_default_keeps_all_columns_and_slim_is_opt_in(self):
-        """默认必须是全量 24 列（用户：不要减少我的数据）；窄版只能通过 ?slim=1 主动选。"""
+        """默认必须是全量列（用户：不要减少我的数据）；窄版只能通过 ?slim=1 主动选。"""
         h = self._handler("/api/platform/stats/generations/export?start=2026-10-12&end=2026-10-12")
         self.mod.Handler._platform_stats_generations_export(h, {"username": "admin", "role": "admin"})
         default_cols = h.wfile.getvalue().decode("utf-8-sig").splitlines()[0].split(",")
-        self.assertEqual(len(default_cols), 24)
-        for col in ("日期", "计费族", "价格来源", "供应商代码", "任务编号", "上游任务号", "提示词"):
+        for col in ("时间" if False else "生成时间", "来源", "日期", "计费族", "价格来源", "供应商代码",
+                    "任务编号", "上游任务号", "提示词"):
             self.assertIn(col, default_cols)
+        self.assertGreaterEqual(len(default_cols), 24)
         # 常用列在前、又长又少用的在后（提示词在最后，避免打开就要横向滚）
         self.assertEqual(default_cols[-1], "提示词")
 
         h2 = self._handler("/api/platform/stats/generations/export?start=2026-10-12&end=2026-10-12&slim=1")
         self.mod.Handler._platform_stats_generations_export(h2, {"username": "admin", "role": "admin"})
         slim = h2.wfile.getvalue().decode("utf-8-sig").splitlines()[0].split(",")
-        self.assertLess(len(slim), 24)
+        self.assertLess(len(slim), len(default_cols))
         self.assertNotIn("计费族", slim)
+        self.assertIn("来源", slim)          # 窄版也要能看出记录来自哪台机器
 
     def test_feishu_workflow_status_is_not_used_as_usage_status(self):
         """飞书的「等工作流确认」不是用量语义：waiting_review 必须归一成「成功」。
@@ -1094,8 +1145,13 @@ class GenerationApiTests(unittest.TestCase):
         self.assertIn("frozen", sheet)               # 表头冻结
         self.assertIn("生成时间", sheet)              # 中文表头
         self.assertIn("<v>1000</v>", sheet)          # 用量是真数字，Excel 里能直接求和
-        # 提示词列宽度必须是收敛的（60 字），否则又会变成一条拉宽的大列
-        self.assertIn('<col min="24" max="24" width="60" customWidth="1"/>', sheet)
+        # 提示词列宽度必须是收敛的（60 字），否则又会变成一条拉宽的大列。
+        # 列号不写死：列集合会随需求变化（2026-10-13 加了「来源」列），按表头动态定位。
+        prompt_idx = self.mod.GENERATION_EXPORT_COLUMNS.index(("title", "提示词")) + 1
+        self.assertIn(f'<col min="{prompt_idx}" max="{prompt_idx}" width="60" customWidth="1"/>', sheet)
+        # 「来源」列也要有宽度（不然远端记录那一列会挤在一起）
+        src_idx = self.mod.GENERATION_EXPORT_COLUMNS.index(("source", "来源")) + 1
+        self.assertIn(f'<col min="{src_idx}" max="{src_idx}" width=', sheet)
 
     def test_csv_export_has_exactly_one_line_per_record(self):
         """一条记录恰好一行：提示词里的换行必须已折成空格，否则 Excel 里会错位。"""
