@@ -3572,6 +3572,12 @@ class Handler(SimpleHTTPRequestHandler):
         user = self._require_auth(path)
         if not user:
             return
+        # 「中心」转发（2026-10-14 用户口径）：本机配了 center 就说明「统一存放点是另一台」，
+        # 使用统计的所有查询直接转发过去 —— 两台机器看到同一份数据。
+        # 只对管理员转发（普通用户看本机自己的记录，避免越权看到别人）；中心不可达则回退本机。
+        if path.startswith("/api/platform/stats") or path == "/api/platform/remote-sources":
+            if str(user.get("role") or "") == "admin" and self._forward_stats_to_center():
+                return
         if path == "/api/platform/status":
             self._platform_status(user)
         elif path == "/api/platform/stats":
@@ -4067,6 +4073,51 @@ class Handler(SimpleHTTPRequestHandler):
             apps_info.append(info)
         self._json(200, {"ok": True, "lan_ip": lan_ip, "portal_port": PORTAL_PORT,
                          "disk_free_gb": disk_free_gb, "local_gateway": local_gateway.snapshot(timeout=0.8), "apps": apps_info})
+
+    def _forward_stats_to_center(self) -> bool:
+        """把当前这次「使用统计」查询转发到中心，成功返回 True（响应已写完）。
+
+        - 本机就是中心（URL 指向自己）→ 返回 False，绝不自己转给自己（会死循环）；
+        - 任何失败都返回 False → 调用方继续走本机数据（中心挂了不能让人什么都看不到）。
+        """
+        try:
+            cfg = remote_sources.center_config()
+        except Exception:  # noqa: BLE001
+            return False
+        if not cfg:
+            return False
+        host = (urllib.parse.urlsplit(str(cfg.get("base_url") or "")).hostname or "").lower()
+        if not host:
+            return False
+        local = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+        try:
+            local.add(str(get_lan_ip()).lower())
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            local.add(socket.gethostname().lower())
+        except Exception:  # noqa: BLE001
+            pass
+        if host in local:
+            return False                     # 中心就是本机 → 按本机数据处理
+        parts = urllib.parse.urlsplit(self.path)
+        target = parts.path + (("?" + parts.query) if parts.query else "")
+        try:
+            status, body, ctype = remote_sources.center_request(target)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [center] forward failed: {str(exc)[:160]}", flush=True)
+            return False
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", ctype or "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Stats-From", "center")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        return True
 
     def _platform_stats(self, user: dict):
         stats = tracker.get_stats(username=user["username"], role=user["role"])

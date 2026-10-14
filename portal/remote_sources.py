@@ -285,3 +285,65 @@ def status_snapshot() -> dict:
         "total_rows": len(rows),
         "last_sync_ts": last_ts,
     }
+
+
+# ---------------------------------------------------------------------------
+# 「中心」转发（2026-10-14 用户口径：A 唯一存放两台的记录，B 的统计页去问 A）
+# ---------------------------------------------------------------------------
+
+def center_config() -> dict:
+    """读取「中心」配置；没配返回 {}。
+
+    配置写在 portal/state/remote_sources.json（本机文件、gitignored）：
+
+        {
+          "local_label": "服务器B",
+          "sources": [],
+          "center": { "url": "https://192.168.30.116:9090",
+                      "username": "center", "password": "……" }
+        }
+
+    配了 center 的机器 = 不自己存汇总，使用统计的查询全部转发到中心那台。
+    """
+    try:
+        cfg = load_config()
+    except Exception:  # noqa: BLE001
+        return {}
+    c = cfg.get("center") or {}
+    url = str(c.get("url") or "").strip()
+    user = str(c.get("username") or "").strip()
+    if not url or not user:
+        return {}
+    return {"name": "center", "base_url": url, "username": user,
+            "password": str(c.get("password") or ""), "enabled": True}
+
+
+def center_enabled() -> bool:
+    return bool(center_config())
+
+
+def center_request(path_with_query: str, timeout: int = 180) -> tuple[int, bytes, str]:
+    """把一次使用统计查询转发到中心，返回 (status, body, content_type)。
+
+    - token 复用 login_source 的缓存（401 会自动重登一次）；
+    - **任何失败都抛异常**，调用方负责回退到本机数据（中心挂了不能让人看不到东西）。
+    """
+    c = center_config()
+    if not c:
+        raise RuntimeError("center not configured")
+    token = login_source(c)
+    req = urllib.request.Request(str(c["base_url"]).rstrip("/") + path_with_query)
+    req.add_header("X-Session", token)
+    req.add_header("Accept", "*/*")
+    with urllib.request.urlopen(req, context=_CTX, timeout=timeout) as resp:
+        body = resp.read()
+        ctype = str(resp.headers.get("Content-Type") or "")
+        return resp.status, body, ctype
+
+
+def center_status() -> dict:
+    """给界面/排查用：当前是否配置了中心。"""
+    c = center_config()
+    if not c:
+        return {"enabled": False}
+    return {"enabled": True, "url": c["base_url"], "username": c["username"]}
