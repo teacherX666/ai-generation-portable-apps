@@ -1228,7 +1228,7 @@
             {{ genSummaryExporting ? '导出中…' : '导出汇总 CSV（对账）' }}
           </button>
           <span class="pager-info" v-if="(genRemote.sources || []).length" style="margin-left:6px">
-            来源：{{ genRemote.local_label || '服务器A' }}{{ genRemoteSummary() }} ·
+            <span v-if="genRemote.center && genRemote.center.enabled" style="color:#235fd6">数据来自中心 {{ genRemote.center.url }} · </span>来源：{{ genRemote.local_label || '服务器A' }}{{ genRemoteSummary() }} ·
             {{ genRemote.last_sync_ts ? ('上次同步 ' + genClock(genRemote.last_sync_ts)) : '尚未同步' }}
             <span v-if="genRemoteError()" style="color:#b42318"> · {{ genRemoteError() }}</span>
           </span>

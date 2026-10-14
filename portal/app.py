@@ -4573,7 +4573,8 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self._json(200, {"ok": False, "error": str(exc), "sources": []})
             return
-        self._json(200, {"ok": True, "local_label": remote_sources.local_label(), **snap})
+        self._json(200, {"ok": True, "local_label": remote_sources.local_label(),
+                         "center": remote_sources.center_status(), **snap})
 
     def _remote_sources_sync(self, user: dict):
         """立刻同步一次（管理员）。用于「等不及 10 分钟」的场合。"""
