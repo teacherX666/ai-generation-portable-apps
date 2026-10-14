@@ -162,6 +162,23 @@ def test_resolve_python_ignores_configured_path_that_does_not_exist(
     assert green_screen.resolve_python(str(missing)) == green_screen._KNOWN_PYTHONS[0]
 
 
+def test_tool_never_drops_audio() -> None:
+    """回归守卫：归一工具**不许丢音轨**。
+
+    2026-10-14 事故：工具第一版写死了 `-an`，于是**所有绿幕视频变无声**（用户报
+    「为什么泡沫爆炸没有声音」）。视频提示词里明确要了音效，交付的却是静音片。
+    这条守卫盯两件事：不许出现 `-an`；必须把原片音轨复制过来，并保留
+    「原片有声而输出没有 → 拒绝交付」的不变量。
+    """
+    tool = (
+        Path(__file__).resolve().parents[2] / "tools" / "flatten_green_screen.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"-an"' not in tool, "归一工具又写死了 -an —— 会把音轨整条丢掉"
+    assert '"-c:a"' in tool and '"copy"' in tool, "必须把原片音轨原样复制过来"
+    assert "audio_streams" in tool, "必须保留「原片有声而输出没有 → 拒绝交付」的不变量"
+
+
 def test_video_transform_only_for_green_screen_video(tmp_path: Path) -> None:
     """接线守门：只有「开关开 + 绿幕镜头」的视频任务才挂 transform。"""
     from feishu_generation_agent.graph.nodes import _video_transform_for_task

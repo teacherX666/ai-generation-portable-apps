@@ -111,19 +111,35 @@ def flatten(frames: np.ndarray, color: tuple[int, int, int], min_area_ratio: flo
     return out
 
 
-def write_video(frames: np.ndarray, path: Path, fps: float) -> None:
+def write_video(
+    frames: np.ndarray, path: Path, fps: float, source: Path | None = None
+) -> None:
+    """写归一后的视频。**必须把原片音轨带过去**（`source` 给定时 `-c:a copy` 原样复制）。
+
+    2026-10-14 事故：第一版写死了 `-an`，于是**所有绿幕视频的音轨被整条丢掉** ——
+    用户报「为什么泡沫爆炸没有声音」。视频提示词明确要了音效（「每颗泡沫破裂时伴一声
+    清脆的『啵』」），结果交付的是无声片。**任何重编码步骤都要显式保留音频**。
+    """
     height, width = frames.shape[1], frames.shape[2]
-    proc = subprocess.Popen(
-        [FFMPEG, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
-         "-s", f"{width}x{height}", "-r", str(fps), "-i", "-",
-         "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "16",
-         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path)],
-        stdin=subprocess.PIPE,
-    )
+    command = [
+        FFMPEG, "-v", "error", "-y",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
+        "-r", str(fps), "-i", "-",
+    ]
+    if source is not None:
+        # 原片作为第二路输入：只取它的音轨，**不重编码**（`-c:a copy`）。
+        command += ["-i", str(source), "-map", "0:v", "-map", "1:a?", "-c:a", "copy", "-shortest"]
+    command += [
+        "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path),
+    ]
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE)
     assert proc.stdin is not None
     proc.stdin.write(frames.astype(np.uint8).tobytes())
     proc.stdin.close()
     proc.wait()
+    if proc.returncode != 0:
+        raise SystemExit(f"写视频失败 returncode={proc.returncode}")
 
 
 def green_stats(frame: np.ndarray, min_area_ratio: float) -> dict:
@@ -151,6 +167,16 @@ def save_preview(before: np.ndarray, after: np.ndarray, index: int, path: Path) 
     canvas.save(path)
 
 
+def audio_streams(path: Path) -> int:
+    """这个文件有几条音轨。"""
+    completed = subprocess.run(
+        [FFPROBE, "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    return len([line for line in completed.stdout.splitlines() if line.strip()])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("video")
@@ -174,8 +200,15 @@ def main() -> int:
     flattened = flatten(frames, color, args.min_area_ratio)
     print("归一后绿幕统计：", green_stats(flattened[sample], args.min_area_ratio))
 
-    write_video(flattened, target, fps)
-    print(f"输出：{target}  {target.stat().st_size/1024/1024:.2f}MB")
+    write_video(flattened, target, fps, source=source)
+    print(f"输出：{target}  {target.stat().st_size/1024/1024:.2f}MB（音轨沿用原片）")
+
+    # 不变量：**后处理绝不能静默丢音轨**（2026-10-14 事故：第一版写死 `-an`，绿幕视频
+    # 全部变无声，用户报「为什么泡沫爆炸没有声音」）。原片有声而输出没有 → 非零退出，
+    # 调用方（`integrations/green_screen.flatten_video_bytes`）会看到失败并**保留原片**。
+    if audio_streams(source) and not audio_streams(target):
+        print("错误：原片有音轨但归一后没有 —— 拒绝交付，调用方应保留原片", file=sys.stderr)
+        return 2
 
     preview_dir = Path(args.preview_dir) if args.preview_dir else target.parent
     for index in (frames.shape[0] // 2, sample):
