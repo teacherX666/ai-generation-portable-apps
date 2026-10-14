@@ -1897,8 +1897,14 @@ GENERATION_EXPORT_NUMERIC = {"tokens", "unit_price", "amount", "runs", "images",
 def export_cell(field: str, value) -> str:
     """一个导出单元格：中文口径 + 换行折成空格（一个记录一行，Excel 里不折行）。"""
     if field == "source":
-        # 本机记录没有 source 字段 → 显示「服务器A」，远端显示来源名（如 服务器B）
-        return str(value or "服务器A")
+        # 本机记录没有 source 字段 → 显示本机标签（可配：remote_sources.json 的 local_label，
+        # 默认「服务器A」；同步到另一台机器时把它改成那台的名字，例如「服务器B」）
+        if value:
+            return str(value)
+        try:
+            return str(remote_sources.load_config().get("local_label") or "服务器A")
+        except Exception:  # noqa: BLE001
+            return "服务器A"
     if field == "task_ids":
         return "|".join(value or []) if not isinstance(value, str) else value
     if field == "status":
@@ -4504,7 +4510,7 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self._json(200, {"ok": False, "error": str(exc), "sources": []})
             return
-        self._json(200, {"ok": True, **snap})
+        self._json(200, {"ok": True, "local_label": remote_sources.local_label(), **snap})
 
     def _remote_sources_sync(self, user: dict):
         """立刻同步一次（管理员）。用于「等不及 10 分钟」的场合。"""

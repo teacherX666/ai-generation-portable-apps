@@ -77,6 +77,18 @@ def use_state_dir(path) -> None:
     _ROWS_CACHE["rows"] = []
 
 
+def local_label() -> str:
+    """本机在「来源」列里显示的名字（默认服务器A）。
+
+    同步到另一台机器时，在那台的 portal/state/remote_sources.json 里写
+    `"local_label": "服务器B"` 即可 —— 否则两台都会把自己标成服务器A。
+    """
+    try:
+        return str(load_config().get("local_label") or "服务器A")
+    except Exception:  # noqa: BLE001
+        return "服务器A"
+
+
 def load_config() -> dict:
     """读配置；文件不存在时返回内置默认（指向 192.168.30.56，但 enabled=false）。"""
     if CONFIG_PATH.exists():
