@@ -356,9 +356,14 @@
             <div class="hist-media" :class="it.kind">
               <img v-if="it.kind==='image' && it.thumb_url" :src="'/' + it.app + it.thumb_url" loading="lazy" @error="histMediaError(it, $event)">
               <template v-else-if="it.kind==='video' && it.thumb_url">
-                <!-- 服务端抽帧缩略图盖在 <video> 上；抽帧失败时隐藏 img 露出 video 首帧 -->
-                <video :src="'/' + it.app + it.thumb_url" preload="metadata" muted playsinline @error="histMediaError(it, $event)"></video>
-                <img class="hist-thumb-frame" :src="thumbFor(it)" loading="lazy" @error="$event.target.style.display='none'">
+                <!-- ⚠️ 这里**不要**再挂 `<video :src="整段视频" preload="metadata">`：
+                     thumb_url 指向的是全片，浏览器会真的把 16~23MB 拉下来 ——
+                     实测一屏 20 张卡片就下载 313MB，页面 6 秒以上（2026-10-13 用户报「加载慢」）。
+                     视频改到「点开详情」时才加载（那时只加载一个文件）。 -->
+                <img v-if="!histThumbBroken[it.app + ':' + it.job_id]"
+                     class="hist-thumb-frame" :src="thumbFor(it)" loading="lazy"
+                     @error="histThumbFail(it)">
+                <div v-else class="hist-media-empty">视频（抽帧失败，点开可看）</div>
               </template>
               <div v-else class="hist-media-empty">{{ it.kind==='agent' ? '飞书任务 Agent' : (it.status==='failed' ? '无产出' : (it.status==='done' ? '无预览' : '生成中')) }}</div>
               <span class="hist-kind" :class="it.kind">{{ it.kind==='video' ? '视频' : (it.kind==='agent' ? 'Agent' : '图片') }}</span>
@@ -938,7 +943,10 @@
         <div class="job-grid">
           <div v-for="j in vpPageItems" :key="j.job_id" class="job-tile" :data-status="j.status || ''" @click="openVpJobDetail(j)">
             <div class="job-tile-media">
-              <video v-if="j.first && !j.first.broken && j.first.isVideo" :src="appPath + j.first.url" preload="metadata" muted playsinline title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)"></video>
+              <!-- 视频预览用服务端抽帧的 <img>，**不要**挂 <video src=整片>：
+                   人像 /api/download 不支持 Range → 每次预览都要下整段 20MB 视频，
+                   一屏 19 张卡片就是 331MB（2026-10-13 用户报「加载慢」的根因）。 -->
+              <img v-if="j.first && !j.first.broken && j.first.isVideo" :src="vpThumbUrl(j)" alt="产出预览" title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)">
               <img v-else-if="j.first && !j.first.broken" :src="appPath + j.first.url" alt="产出预览" title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)">
               <span v-else-if="j.expired" class="job-tile-ph" title="产出文件已过期（保留 14 天后自动清理）">🗑</span>
                <span v-else-if="j.status==='failed' || j.status==='failure'" class="job-tile-ph">❌</span>

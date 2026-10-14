@@ -3082,10 +3082,46 @@ class Handler(SimpleHTTPRequestHandler):
 
         super().do_GET()
 
+    @staticmethod
+    def _parse_range(range_header: str, size: int) -> tuple[int, int]:
+        spec = range_header[len("bytes="):].split(",", 1)[0].strip()
+        if not spec or "-" not in spec:
+            raise ValueError("invalid range")
+        start_s, end_s = spec.split("-", 1)
+        if start_s == "":
+            try:
+                length = int(end_s)
+            except ValueError:
+                length = 0
+            length = max(0, min(length, size))
+            return (size - length, size - 1) if length > 0 else (0, size - 1)
+        try:
+            start = int(start_s)
+        except ValueError:
+            start = 0
+        start = max(0, min(start, size - 1))
+        if end_s == "":
+            return (start, size - 1)
+        try:
+            end = int(end_s)
+        except ValueError:
+            end = size - 1
+        end = max(start, min(end, size - 1))
+        return (start, end)
+
     def _serve_file(self, fpath):
+        """带 **Range（206）** 的文件响应。
+
+        2026-10-13 修：原来只有 ETag/304、没有 Range，`<video preload=metadata>`（只想拿
+        moov 原子）和 Portal 的抽帧（ffmpeg 想只读几 KB）都会**收到整个文件** ——
+        人像产物 17~23MB，一屏 19 张卡片就是 331MB、页面 7 秒+（用户报「加载慢」的根因）。
+        seedance/dreamina 早就有 Range，这里补齐同一套。
+        """
         st = fpath.stat()
         etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
-        if self.headers.get("If-None-Match", "") == etag:
+        ctype = mimetypes.guess_type(fpath.name)[0] or "application/octet-stream"
+        range_header = self.headers.get("Range", "")
+        if self.headers.get("If-None-Match", "") == etag and not range_header:
             self.send_response(304)
             self.send_header("ETag", etag)
             self.send_header("Cache-Control", "private, max-age=3600")
@@ -3093,9 +3129,42 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             return
+        if range_header.startswith("bytes="):
+            try:
+                start, end = self._parse_range(range_header, st.st_size)
+            except ValueError:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{st.st_size}")
+                self.end_headers()
+                return
+            self.send_response(206)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", f'attachment; filename="{fpath.name}"')
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Range", f"bytes {start}-{end}/{st.st_size}")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "private, max-age=3600")
+            if CORS:
+                self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                with fpath.open("rb") as f:
+                    f.seek(start)
+                    remaining = end - start + 1
+                    while remaining > 0:
+                        chunk = f.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            return
         self.send_response(200)
-        self.send_header("Content-Type", mimetypes.guess_type(fpath.name)[0] or "application/octet-stream")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Disposition", f'attachment; filename="{fpath.name}"')
+        self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(st.st_size))
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "private, max-age=3600")
@@ -3103,7 +3172,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         try:
-            self.wfile.write(fpath.read_bytes())
+            with fpath.open("rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
