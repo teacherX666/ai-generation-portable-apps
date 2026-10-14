@@ -938,7 +938,10 @@
         <div class="job-grid">
           <div v-for="j in vpPageItems" :key="j.job_id" class="job-tile" :data-status="j.status || ''" @click="openVpJobDetail(j)">
             <div class="job-tile-media">
-              <video v-if="j.first && !j.first.broken && j.first.isVideo" :src="appPath + j.first.url" preload="metadata" muted playsinline title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)"></video>
+              <!-- 视频预览用服务端抽帧的 <img>，**不要**挂 <video src=整片>：
+                   人像 /api/download 不支持 Range → 每次预览都要下整段 20MB 视频，
+                   一屏 19 张卡片就是 331MB（2026-10-13 用户报「加载慢」的根因）。 -->
+              <img v-if="j.first && !j.first.broken && j.first.isVideo" :src="vpThumbUrl(j)" alt="产出预览" title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)">
               <img v-else-if="j.first && !j.first.broken" :src="appPath + j.first.url" alt="产出预览" title="点开预览" @click.stop="openVpJobPreview(j)" @error="onVpMediaError($event, j)">
               <span v-else-if="j.expired" class="job-tile-ph" title="产出文件已过期（保留 14 天后自动清理）">🗑</span>
                <span v-else-if="j.status==='failed' || j.status==='failure'" class="job-tile-ph">❌</span>

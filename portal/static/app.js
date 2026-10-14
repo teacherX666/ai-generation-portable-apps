@@ -3594,6 +3594,14 @@ function VolcenginePortraitApp() {
       if (j.first) j.first.broken = true;
       j.expired = true;
     },
+    // 人像任务卡片的**视频预览必须走服务端抽帧**，不能直接挂 <video src=整片>：
+    // 人像的 /api/download 不支持 Range（实测请求 1KB 却回整个 20MB 文件），
+    // 一屏 19 张卡片就是 331MB、页面 7 秒+（2026-10-13 用户报「加载慢」的根因）。
+    vpThumbUrl(j) {
+      const u = (j && j.first && j.first.url) || '';
+      if (!u) return '';
+      return '/api/platform/thumb?app=volcengine-portrait&url=' + encodeURIComponent(u);
+    },
 
     // Retry a failed task from the persisted history: restore its params into
     // the form and resubmit. (volcengine-portrait has no backend retry
