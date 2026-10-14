@@ -4319,6 +4319,7 @@ class Handler(SimpleHTTPRequestHandler):
         # 另一台同款平台的记录（remote_sources 定时拉取，落 state/remote_generations.jsonl）。
         # 用 (来源 + 任务号) 去重：两边的 job_id 空间互不相干，绝不能只按 job_id 去重。
         try:
+            remote_rows: list[dict] = []
             for row in remote_sources.all_remote_rows():
                 day = str(row.get("date") or "")
                 if day and (day < start or day > end):
@@ -4327,7 +4328,18 @@ class Handler(SimpleHTTPRequestHandler):
                 if key in have:
                     continue
                 have.add(key)
+                remote_rows.append(row)
                 extra.append(row)
+            # 远端「本机应用」的 token 由对方自己算就行，但**飞书那条链路对方算不出来**：
+            # 飞书 Agent 提交任务用的是**本机(服务器A)的方舟账号**（2026-10-14 实测：B 的飞书
+            # 任务号 `cgt-…` 在本机账号里能查到、在 B 自己的账号里查不到）→ 所以 B 侧
+            # provider_task_ids 拿得到、token 恒为 0。这里用本机账号给远端行补一次 usage 与
+            # 金额（价格同走本机定价表，钱的去向一致）。查不到的行原样不动，不影响其它字段。
+            if remote_rows:
+                try:
+                    _apply_ark_usage(remote_rows)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  [usage] remote ark enrich failed: {exc}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"  [usage] remote rows load failed: {exc}", flush=True)
         # 再把创作记录里「明细没有的」历史生成补进来 —— 目标是「所有生成都有记录」
