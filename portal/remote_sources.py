@@ -80,9 +80,12 @@ def use_state_dir(path) -> None:
 def local_label() -> str:
     """本机在「来源」列里显示的名字（默认服务器A）。
 
-    同步到另一台机器时，在那台的 portal/state/remote_sources.json 里写
-    `"local_label": "服务器B"` 即可 —— 否则两台都会把自己标成服务器A。
+    取值优先级：环境变量 `DSH_LOCAL_LABEL` → 配置文件 `local_label` → "服务器A"。
+    新机器迁移时**设环境变量最省事**（不用手改 JSON，跟着启动脚本走）。
     """
+    env = str(os.environ.get("DSH_LOCAL_LABEL") or "").strip()
+    if env:
+        return env
     try:
         return str(load_config().get("local_label") or "服务器A")
     except Exception:  # noqa: BLE001
@@ -305,6 +308,13 @@ def center_config() -> dict:
 
     配了 center 的机器 = 不自己存汇总，使用统计的查询全部转发到中心那台。
     """
+    # 环境变量优先：迁移新机器时只改启动脚本，不用碰任何 JSON
+    env_url = str(os.environ.get("DSH_CENTER_URL") or "").strip()
+    env_user = str(os.environ.get("DSH_CENTER_USER") or "").strip()
+    if env_url and env_user:
+        return {"name": "center", "base_url": env_url, "username": env_user,
+                "password": str(os.environ.get("DSH_CENTER_PASSWORD") or ""),
+                "enabled": True}
     try:
         cfg = load_config()
     except Exception:  # noqa: BLE001

@@ -134,3 +134,5 @@ feishu-generation-agent/_diag_probe/
 drama-pipeline/state/
 drama-pipeline/skills/free/*.zip
 
+# 迁移包（git bundle 产物，随时可重新生成）
+_migration/
