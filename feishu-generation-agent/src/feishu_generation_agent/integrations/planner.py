@@ -1016,6 +1016,70 @@ def _storyboard_requirements(
     return requirements
 
 
+#: 需要抠图的绿幕镜头必须写成**物理约束**（2026-10-13 用户报：
+#: 「刮奶油的视频的绿幕会出现阴影等影响抠图的东西，怎么在以后的生成视频里避免」）。
+#:
+#: 实测那条 run（`7753b768`）提示词里已经写了「露出干净通透的纯净绿幕」「绿幕干净通透
+#: 无杂色」—— 照样出阴影。原因：**「纯净/干净/无杂色」是风格形容词，模型把它当色调，
+#: 不当几何/光照约束**；而绿幕在模型眼里就是一块**被场景光照亮、会接住主体投影**的表面，
+#: 于是自带明暗渐变、暗角、投影、噪点纹理 —— 抠图就出灰边/毛边。
+#: 要压住它只能把话说成物理事实：不参与光照、整片同一色值、影子不落在上面。
+_GREEN_SCREEN_WORDS = ("绿幕", "抠图")
+_GREEN_SCREEN_CONSTRAINT = (
+    "绿幕按纯色背板处理、不参与场景光照：整片同一色值（约 #00B140），"
+    "中心与四角完全一致，无明暗渐变、无暗角、无噪点、无褶皱或布料纹理；"
+    "手、刮刀等主体的影子不得落在绿幕上，绿幕区域不出现任何投影、暗部或环境光遮蔽；"
+    "绿幕与主体轮廓之间边界干净清晰、绿幕不溢色到主体边缘"
+)
+#: 已经带物理约束的判据（命中其一就不再追加，避免每轮越写越长）。
+_GREEN_SCREEN_MARKERS = (
+    "同一色值",
+    "无明暗渐变",
+    "影子不得落在绿幕",
+    "不参与场景光照",
+)
+#: 单镜头视频的时间轴行写法：`1—8s：…` / `2-5秒：…`（**没有「镜头N」**）。
+#: 2026-10-13 实测：刮奶油/刮雪那两条都是这种写法，只认 `_SHOT_MARKER` 会把约束
+#: 补到【一句话概述】上，而模型主要照时间轴那段生成。
+_TIMELINE_LINE = re.compile(r"^\s*\d+\s*[—\-–~～]\s*\d+\s*(?:秒|s)\s*[：:]")
+
+
+def _ensure_green_screen_constraints(payload: dict[str, Any]) -> None:
+    """出现绿幕/抠图时，把「纯色绿幕」补成物理约束（就地改 prompt，幂等）。
+
+    补在**提到绿幕的镜头句尾**（模型主要照镜头段生成）；没有镜头提到就补在第一条
+    提到绿幕的句子上。已经带物理约束的提示词不动。
+    长度守卫：补完超过 `SEEDANCE_PROMPT_MAX_CHARS` 就**不补**（宁可不补，也不能因为
+    修复把提示词推到校验不通过）。
+    """
+    for task in payload.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        prompt = str(task.get("prompt") or "")
+        if not prompt or not any(word in prompt for word in _GREEN_SCREEN_WORDS):
+            continue
+        if any(marker in prompt for marker in _GREEN_SCREEN_MARKERS):
+            continue
+        lines = prompt.split("\n")
+        shot_rows = [
+            index
+            for index, line in enumerate(lines)
+            if "绿幕" in line
+            and (_SHOT_MARKER.search(line) or _TIMELINE_LINE.match(line.strip()))
+        ]
+        rows = shot_rows or [
+            index for index, line in enumerate(lines) if "绿幕" in line
+        ]
+        if not rows:
+            continue
+        row = rows[0]
+        patched = f"{lines[row].rstrip('。')}。{_GREEN_SCREEN_CONSTRAINT}。"
+        candidate = "\n".join([*lines[:row], patched, *lines[row + 1 :]])
+        if len(candidate) > SEEDANCE_PROMPT_MAX_CHARS:
+            continue
+        task["prompt"] = candidate
+
+
 def _append_duration_segmentation_hints(payload: dict[str, Any]) -> None:
     """②-a-2：给「长时长但只写了一整段时间轴」的视频任务补一条非阻塞提示。
 
@@ -2191,6 +2255,9 @@ class DeepSeekPlanner:
             _exclude_unused_references(payload, document)
             # ②-a-2：长时长单镜头只写了一整段时间轴时补一条**非阻塞**提示。
             _append_duration_segmentation_hints(payload)
+            # ②-a-3：绿幕/抠图镜头必须写成**物理约束**（纯色、不参与光照、影子不落在
+            # 绿幕上）—— 风格形容词拦不住模型给绿幕加渐变/投影（2026-10-13 用户报）。
+            _ensure_green_screen_constraints(payload)
             return [
                 *normalization_issues,
                 *validate_plan(

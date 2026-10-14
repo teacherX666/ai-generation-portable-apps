@@ -111,6 +111,11 @@ from feishu_generation_agent.integrations.rag_prompt_optimizer import (
     fetch_knowledge_rules,
     format_knowledge_context,
 )
+from feishu_generation_agent.integrations.green_screen import (
+    flatten_video_bytes,
+    is_green_screen_prompt,
+)
+from feishu_generation_agent.integrations.user_rules import user_rules_context
 from feishu_generation_agent.integrations.rework_prompt import (
     build_rework_prompt,
     fusion_requirements,
@@ -805,15 +810,24 @@ async def _knowledge_context_for_plan(
 
     实测真实文档 1.7k~7.6k 字符（最长约 23KB UTF-8），而 planner 本来就把
     document.text_view 全文当输入，所以这里直接用全文，不做截断。
+
+    2026-10-13 追加：**用户长期口径**（`user_rules.py` 自动沉淀的「他反复强调过的东西」）
+    也从这个通道喂进去 —— 这样「同一类问题被反复反馈」不会每次都从零开始。
+    两段都为空才返回空串。
     """
+    parts: list[str] = []
     rag_url = getattr(services.settings, "rag_preflight_url", None)
-    if not (isinstance(rag_url, str) and rag_url.strip()):
-        return ""
     text = getattr(document, "text_view", "") or ""
-    if not text.strip():
-        return ""
-    rules = await fetch_knowledge_rules(text, rag_url)
-    return format_knowledge_context(rules)
+    if isinstance(rag_url, str) and rag_url.strip() and text.strip():
+        rules = await fetch_knowledge_rules(text, rag_url)
+        parts.append(format_knowledge_context(rules))
+    # 长期口径与知识库**并列**（知识库没配也要生效）。刻意要求 settings 里**给到
+    # data_dir** 才读：没有 data_dir 的场合（单测里的假 services、别的部署形态）
+    # 不该去猜一个相对路径，否则会读到意料之外的文件。
+    data_dir = getattr(services.settings, "data_dir", None)
+    if data_dir:
+        parts.append(user_rules_context(data_dir))
+    return "\n\n".join(part for part in parts if part)
 
 
 def _planner_prompt_argument(
@@ -2720,6 +2734,25 @@ def _resize_image_bytes(content: bytes, variant: str | None) -> bytes | None:
     return buffer.getvalue()
 
 
+def _video_transform_for_task(
+    task: GenerationTask, services: GraphServices
+) -> Callable[[bytes], bytes | None] | None:
+    """绿幕/抠图镜头：**落盘前**把成片里的绿幕归一成同一纯色（2026-10-14）。
+
+    必须走 `transform`（而不是落盘后改写文件）：产物文件名恰好是 `{sha256}.{ext}`，
+    落盘后再改会破坏产物校验、任务被判 failed。
+
+    任一条件不满足就返回 None（= 保持原样）：开关关掉、不是绿幕镜头、跑不起来。
+    归一失败时 `flatten_video_bytes` 自己返回 None，同样保留原片。
+    """
+    settings = getattr(services, "settings", None)
+    if settings is None or not getattr(settings, "green_screen_flatten_enabled", False):
+        return None
+    if not is_green_screen_prompt(getattr(task, "prompt", "")):
+        return None
+    return lambda content: flatten_video_bytes(content, settings=settings)
+
+
 async def _materialize_submission(
     services: GraphServices,
     run_id: str,
@@ -2747,7 +2780,9 @@ async def _materialize_submission(
             kind=kind,
             transform=(
                 (lambda content: _resize_image_bytes(content, variant))
-                if variant
+                if (kind == "image" and variant)
+                else _video_transform_for_task(task, services)
+                if kind == "video"
                 else None
             ),
         )

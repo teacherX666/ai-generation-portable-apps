@@ -325,6 +325,32 @@ class GraphRuntime:
                 return artifacts
         return []
 
+    def _remember_requirements(self, text: str, *, doc: str = "") -> None:
+        """把用户这次说的话**自动沉淀**成长期口径（2026-10-13 用户：「没有记忆功能吗」）。
+
+        为什么要有：规划器每次规划都是一次性的，用户反馈给「铲」的口径不会带到
+        「钱袋子」—— 于是他同一类问题要反复说。这里在他每次提要求时就记下来，
+        同一件事说第二次自动升为长期口径，之后**每次规划都会带上**（见
+        `nodes._knowledge_context_for_plan`）。
+
+        写**共享桶**：规划跑在后台任务里时归属人可能是空的，写个人桶＝记了没人读。
+        任何失败都只记日志 —— 记忆是加分项，绝不能让这次返工失败。
+        """
+        try:
+            from feishu_generation_agent.integrations.user_rules import (
+                UserRuleStore,
+                split_requirement_items,
+            )
+
+            items = split_requirement_items(text)
+            if not items:
+                return
+            store = UserRuleStore(Path(self.settings.data_dir) / "user_rules.json")
+            for item in items:
+                store.record("", item, source="rework", doc=doc, shared=True)
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("沉淀用户长期口径失败", exc_info=True)
+
     async def _carried_rework_requirements(
         self,
         *,
@@ -580,6 +606,10 @@ class GraphRuntime:
                 # 没变（2026-09-24）。
                 selected_task_id_set = {task.task_id for task in approved_plan.tasks}
             feedback_text = (feedback or "").strip()
+            # 用户这次说的话先**自动沉淀**成长期口径（同一件事说第二次就长期生效）。
+            # 放在前面：哪怕后面没走成返工，他说过的话也已经记住了。
+            if feedback_text:
+                self._remember_requirements(feedback_text)
             # 正文到底有没有被改动（下面写事件时要如实回报）。
             # 2026-10-10「铲」任务：融合只往声音段塞了 4 个字、画面段一字未动，
             # 事件却说「已按本次返工要求改写提示词」—— 用户以为改了、其实没改。
@@ -2390,6 +2420,8 @@ class GraphRuntime:
         text = (feedback or "").strip()
         if not text:
             raise RunValidationError("请填写优化要求")
+        # 审批页的原地优化也是「用户说的话」→ 同样自动沉淀成长期口径。
+        self._remember_requirements(text)
         wanted = list(dict.fromkeys(task_ids or []))
         if not wanted:
             raise RunValidationError("请至少选择一条需要优化的任务")

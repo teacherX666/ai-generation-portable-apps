@@ -478,6 +478,49 @@ async def test_already_wedged_run_becomes_approvable_once_values_agree(
         await runtime.close()
 
 
+async def test_rework_feedback_is_remembered_as_long_term_rule(
+    fake_services: GraphServices,
+) -> None:
+    """用户在返工里说的话要**自动沉淀**成长期口径（2026-10-13：「没有记忆功能吗」）。
+
+    判别力：去掉 `clone_run_for_approval` 里的 `_remember_requirements` 调用，本条必红。
+    """
+    from pathlib import Path
+
+    from feishu_generation_agent.integrations.user_rules import (
+        SHARED_OWNER,
+        UserRuleStore,
+    )
+
+    runtime, _planner = await _runtime_at_approval(
+        fake_services,
+        fused=lambda base, reqs: base,
+        run_id="run-memory",
+        thread_id="thread-memory",
+    )
+    try:
+        await runtime.clone_run_for_approval(
+            "run-memory",
+            RequirementRequest(source_url=SOURCE_URL),
+            run_id="run-memory-clone",
+            thread_id="thread-memory-clone",
+            feedback="钱袋子底部的 UI 横条必须复现。结尾要回到游戏画面",
+        )
+        store = UserRuleStore(Path(fake_services.settings.data_dir) / "user_rules.json")
+        # 共享桶里本来就有产品级种子口径，这里只看**这次采集到的**。
+        remembered = [
+            rule.text
+            for rule in store.rules(SHARED_OWNER)
+            if rule.source == "rework"
+        ]
+        assert remembered == [
+            "钱袋子底部的 UI 横条必须复现",
+            "结尾要回到游戏画面",
+        ], remembered
+    finally:
+        await runtime.close()
+
+
 async def test_rerun_blocks_reused_prompt_with_stale_stated_duration(
     fake_services: GraphServices,
 ) -> None:
