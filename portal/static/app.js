@@ -3594,15 +3594,6 @@ function VolcenginePortraitApp() {
       if (j.first) j.first.broken = true;
       j.expired = true;
     },
-    // 人像任务卡片的**视频预览必须走服务端抽帧**，不能直接挂 `<video src=整片>`：
-    // 人像的 /api/download 不支持 Range（实测请求 1KB 却回整个 20MB 文件），
-    // 一屏 19 张卡片就是 331MB、页面 7 秒+（2026-10-13 用户报「加载慢」的根因）。
-    // 抽帧走 Portal 的 /api/platform/thumb（ffmpeg 抽一帧，按 app+url 永久缓存）。
-    vpThumbUrl(j) {
-      const u = (j && j.first && j.first.url) || '';
-      if (!u) return '';
-      return '/api/platform/thumb?app=volcengine-portrait&url=' + encodeURIComponent(u);
-    },
 
     // Retry a failed task from the persisted history: restore its params into
     // the form and resubmit. (volcengine-portrait has no backend retry
@@ -3657,13 +3648,6 @@ function HistoryApp() {
     // 卡片/弹窗自动落到「无预览」占位分支，下载按钮一并消失
     histMediaError(it, e) {
       if (it) it.thumb_url = '';
-    },
-    // 视频卡片的抽帧缩略图失败：只标这张卡「无预览」，**不清 thumb_url** ——
-    // 清掉的话点开详情也播不了（原来两者共用 histMediaError，会把详情一起弄坏）。
-    histThumbBroken: {},
-    histThumbFail(it) {
-      if (!it) return;
-      this.histThumbBroken[it.app + ':' + it.job_id] = true;
     },
     get totalPages() {
       return Math.max(1, Math.ceil(this.total / this.pageSize));
