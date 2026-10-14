@@ -48,9 +48,9 @@ Portal 收到 SIGTERM 会连带 SIGTERM 掉所有托管子应用（`portal/app.p
 
 ### 单测
 
-`tests/test_restart_resume.py`（14 条）+ 既有 `test_job_backlog_recovery.py`（6 条，含那条一直红的
-`test_started_job_marked_interrupted`，现在转绿）+ `test_restart_recovery_keeps_reference_media.py`
-（10 条）= **30 passed / 0 failed**。
+`tests/test_restart_resume.py`（16 条，含 2 条「正常路径不许被破坏」守卫）+ 既有
+`test_job_backlog_recovery.py`（6 条，含那条一直红的 `test_started_job_marked_interrupted`，
+现在转绿）+ `test_restart_recovery_keeps_reference_media.py`（10 条）= **32 passed / 0 failed**。
 
 关键判别力：`test_run_one_resume_never_posts`（断言上游调用序列里只有 GET）、
 `test_run_job_replays_done_runs_and_only_dispatches_rest`（回放的 tokens 必须原样计入、只对

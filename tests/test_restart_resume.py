@@ -278,7 +278,68 @@ def test_run_job_unknown_run_fails_without_resubmitting(tmp_path, monkeypatch):
     assert job.get("retryable") is True
 
 
-# ── 5. nano-banana 同款（async 可续跑 / 同步通道不盲投）─────────────────────
+# ── 6. 正常路径不许被这次改动破坏（提交链路照旧 POST + 落 submitted）────────
+
+def test_seedance_normal_path_still_posts_and_records_submitted(tmp_path, monkeypatch):
+    mod = _load_seedance()
+    _isolate(mod, tmp_path, monkeypatch)
+    job_id = "job-normal"
+    values = {"api_key": "ark-test", "provider": "volcengine",
+              "model": "doubao-seedance-2-5-260628", "prompt": "p", "duration": "5",
+              "poll_interval": "1", "output_dir": str(tmp_path / "outputs")}
+    _seed_job(mod, job_id, values)
+    calls = []
+    payloads = {
+        "POST": {"id": "cgt-normal"},
+        "GET": {"status": "succeeded", "content": {"video_url": "https://cdn.example/n.mp4"},
+                "duration": 5, "usage": {"total_tokens": 111}},
+    }
+
+    def fake_request_json(method, url, api_key, body=None, **kw):
+        calls.append(method)
+        # 提交那一刻，backlog 里必须先有 submitting 兜底标记
+        runs = mod._backlog_runs(mod._backlog_load().get(job_id))
+        if method == "POST":
+            assert (runs.get("1") or {}).get("phase") == mod.RUN_PHASE_SUBMITTING, runs
+        return dict(payloads[method])
+
+    monkeypatch.setattr(mod, "request_json", fake_request_json)
+    monkeypatch.setattr(mod, "download_video", lambda url, out_path: (out_path.parent.mkdir(parents=True, exist_ok=True),
+                                                                     out_path.write_bytes(b"V")))
+    result = mod.run_one(job_id, 1, values, {}, "ws1")
+
+    assert calls[0] == "POST" and calls.count("POST") == 1     # 正常路径照旧提交一次
+    assert result["tokens"] == 111
+    runs = mod._backlog_runs(mod._backlog_load().get(job_id))
+    assert runs["1"]["phase"] == mod.RUN_PHASE_SUBMITTED
+    assert runs["1"]["task_id"] == "cgt-normal"
+
+
+def test_nano_normal_path_completes_and_clears_backlog(tmp_path, monkeypatch):
+    """同步通道正常跑完：submitting → done → 终态清 backlog（重启时不会残留）。"""
+    mod = _load_nano()
+    _isolate(mod, tmp_path, monkeypatch)
+    monkeypatch.setattr(mod, "report_final_to_portal", lambda *a, **k: None)
+    job_id = "job-nb-normal"
+    values = {"api_key": "k", "provider": "t8star", "prompt": "p", "mode": "text2img",
+              "repeat_count": "1", "concurrency": "1",
+              "output_dir": str(tmp_path / "outputs")}
+    _seed_job(mod, job_id, values)
+    _activity(mod, "act-nb-normal", job_id, values)
+    monkeypatch.setattr(mod, "request_json",
+                        lambda method, url, api_key, body=None, **kw:
+                        {"data": [{"url": "https://cdn.example/a.png"}]})
+    monkeypatch.setattr(mod, "save_image_item",
+                        lambda item, out_dir, prefix, i: (str(item.get("url")),
+                                                          str(out_dir / f"{prefix}_{i}.png")))
+    mod.run_job(job_id, values, {}, activity_id="act-nb-normal", ws_id="ws1")
+
+    job = mod.JOBS[job_id]
+    assert job["status"] == "succeeded", job.get("errors")
+    assert job["done"] == 1
+    # 终态收尾必须清 backlog，否则下次重启还会按 run 状态恢复一遍
+    assert job_id not in mod._backlog_load()
+
 
 NANO_ASYNC_URL = "https://ai.t8star.org/v1/images/tasks/t8-1"
 
