@@ -3657,13 +3657,6 @@ function HistoryApp() {
     histMediaError(it, e) {
       if (it) it.thumb_url = '';
     },
-    // 视频卡片的抽帧缩略图失败：只标这张卡「无预览」，**不清 thumb_url** ——
-    // 清掉的话点开详情也播不了（原来两者共用 histMediaError，会把详情一起弄坏）。
-    histThumbBroken: {},
-    histThumbFail(it) {
-      if (!it) return;
-      this.histThumbBroken[it.app + ':' + it.job_id] = true;
-    },
     get totalPages() {
       return Math.max(1, Math.ceil(this.total / this.pageSize));
     },

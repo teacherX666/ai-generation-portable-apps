@@ -356,13 +356,9 @@
             <div class="hist-media" :class="it.kind">
               <img v-if="it.kind==='image' && it.thumb_url" :src="'/' + it.app + it.thumb_url" loading="lazy" @error="histMediaError(it, $event)">
               <template v-else-if="it.kind==='video' && it.thumb_url">
-                <!-- ⚠️ 这里不要再挂 `<video :src="整段视频" preload="metadata">`：
-                     thumb_url 指向全片，浏览器会把 16~23MB 真的拉下来（一屏 313MB）。
-                     视频改到点开详情时才加载。 -->
-                <img v-if="!histThumbBroken[it.app + ':' + it.job_id]"
-                     class="hist-thumb-frame" :src="thumbFor(it)" loading="lazy"
-                     @error="histThumbFail(it)">
-                <div v-else class="hist-media-empty">视频（抽帧失败，点开可看）</div>
+                <!-- 服务端抽帧缩略图盖在 <video> 上；抽帧失败时隐藏 img 露出 video 首帧 -->
+                <video :src="'/' + it.app + it.thumb_url" preload="metadata" muted playsinline @error="histMediaError(it, $event)"></video>
+                <img class="hist-thumb-frame" :src="thumbFor(it)" loading="lazy" @error="$event.target.style.display='none'">
               </template>
               <div v-else class="hist-media-empty">{{ it.kind==='agent' ? '飞书任务 Agent' : (it.status==='failed' ? '无产出' : (it.status==='done' ? '无预览' : '生成中')) }}</div>
               <span class="hist-kind" :class="it.kind">{{ it.kind==='video' ? '视频' : (it.kind==='agent' ? 'Agent' : '图片') }}</span>
