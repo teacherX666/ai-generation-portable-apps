@@ -1897,8 +1897,8 @@ GENERATION_EXPORT_NUMERIC = {"tokens", "unit_price", "amount", "runs", "images",
 def export_cell(field: str, value) -> str:
     """一个导出单元格：中文口径 + 换行折成空格（一个记录一行，Excel 里不折行）。"""
     if field == "source":
-        # 本机记录没有 source 字段 → 显示「本机」，远端显示来源名（如 服务器B(30.56)）
-        return str(value or "本机")
+        # 本机记录没有 source 字段 → 显示「服务器A」，远端显示来源名（如 服务器B）
+        return str(value or "服务器A")
     if field == "task_ids":
         return "|".join(value or []) if not isinstance(value, str) else value
     if field == "status":
