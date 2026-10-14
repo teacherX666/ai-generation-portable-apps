@@ -45,12 +45,10 @@ class Settings(BaseSettings):
     checkpoint_db_path: Path = Path("data/checkpoints.sqlite3")
     asset_library_db_path: Path = Path("data/asset-library.sqlite3")
     asset_library_dir: Path = Path("data/asset-library")
-    # 绿幕归一（2026-10-14）：提示词里提到「绿幕/抠图」的视频，落盘前把绿幕区域刷成
-    # 同一纯色 —— 模型会把绿幕当「被照亮的表面」画，自带阴影/渐变（实测绿通道只有 117 /
-    # 标准差 29.5），任何按标准绿设阈值的抠像都会失败；提示词物理约束也压不住。
-    # 归一用的脚本要 numpy+cv2（服务机 venv 没有，全局 Python312 有），所以走外部解释器：
-    # 与现有 ffmpeg 调用同一套路，失败就**保留原片**（绝不因为后处理把产物搞坏）。
-    green_screen_flatten_enabled: bool = True
+    # 绿幕归一（2026-10-14）：**默认关闭、已从流水线下线**（用户反馈「不准确、一直闪」，
+    # 且丢过音轨）。成片不再替用户改画面 —— 抠图交给剪辑软件的键控器。
+    # 想临时启用才把它设成 True（工具见 `tools/flatten_green_screen.py`）。
+    green_screen_flatten_enabled: bool = False
     #: 脚本路径（相对服务机工作目录；仓库内 `tools/flatten_green_screen.py`）。
     green_screen_flatten_script: Path = Path("tools/flatten_green_screen.py")
     #: 跑脚本的解释器；留空 = 自动探测（见 `integrations/green_screen.py`）。

@@ -111,10 +111,6 @@ from feishu_generation_agent.integrations.rag_prompt_optimizer import (
     fetch_knowledge_rules,
     format_knowledge_context,
 )
-from feishu_generation_agent.integrations.green_screen import (
-    flatten_video_bytes,
-    is_green_screen_prompt,
-)
 from feishu_generation_agent.integrations.user_rules import user_rules_context
 from feishu_generation_agent.integrations.rework_prompt import (
     build_rework_prompt,
@@ -2734,25 +2730,6 @@ def _resize_image_bytes(content: bytes, variant: str | None) -> bytes | None:
     return buffer.getvalue()
 
 
-def _video_transform_for_task(
-    task: GenerationTask, services: GraphServices
-) -> Callable[[bytes], bytes | None] | None:
-    """绿幕/抠图镜头：**落盘前**把成片里的绿幕归一成同一纯色（2026-10-14）。
-
-    必须走 `transform`（而不是落盘后改写文件）：产物文件名恰好是 `{sha256}.{ext}`，
-    落盘后再改会破坏产物校验、任务被判 failed。
-
-    任一条件不满足就返回 None（= 保持原样）：开关关掉、不是绿幕镜头、跑不起来。
-    归一失败时 `flatten_video_bytes` 自己返回 None，同样保留原片。
-    """
-    settings = getattr(services, "settings", None)
-    if settings is None or not getattr(settings, "green_screen_flatten_enabled", False):
-        return None
-    if not is_green_screen_prompt(getattr(task, "prompt", "")):
-        return None
-    return lambda content: flatten_video_bytes(content, settings=settings)
-
-
 async def _materialize_submission(
     services: GraphServices,
     run_id: str,
@@ -2781,8 +2758,6 @@ async def _materialize_submission(
             transform=(
                 (lambda content: _resize_image_bytes(content, variant))
                 if (kind == "image" and variant)
-                else _video_transform_for_task(task, services)
-                if kind == "video"
                 else None
             ),
         )

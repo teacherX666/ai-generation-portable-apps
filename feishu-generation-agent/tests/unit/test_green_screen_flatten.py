@@ -179,21 +179,24 @@ def test_tool_never_drops_audio() -> None:
     assert "audio_streams" in tool, "必须保留「原片有声而输出没有 → 拒绝交付」的不变量"
 
 
-def test_video_transform_only_for_green_screen_video(tmp_path: Path) -> None:
-    """接线守门：只有「开关开 + 绿幕镜头」的视频任务才挂 transform。"""
-    from feishu_generation_agent.graph.nodes import _video_transform_for_task
+def test_pipeline_no_longer_flattens_videos() -> None:
+    """**流水线不许再自动改成片**（2026-10-14 用户要求删除绿幕归一）。
 
-    settings = _settings(tmp_path)
-    services = SimpleNamespace(settings=settings)
+    用户实际用下来「不准确、一直闪」（每帧独立算连通域掩膜 → 边界跳动、背景在纯色与
+    原阴影绿之间闪），而且丢过音轨。抠图交给剪辑软件的键控器（choke/softness/spill
+    都是随时间平滑的），成片本身不该被后处理动。
 
-    green = SimpleNamespace(prompt="刮过处露出纯色绿幕")
-    plain = SimpleNamespace(prompt="小黄鸭在月夜小道上行走")
+    判别力：把 `flatten_video_bytes` 重新接回 `nodes` 的产物落盘路径，本条必红。
+    """
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "feishu_generation_agent"
+        / "graph"
+        / "nodes.py"
+    ).read_text(encoding="utf-8")
 
-    assert _video_transform_for_task(green, services) is not None
-    assert _video_transform_for_task(plain, services) is None
-    assert (
-        _video_transform_for_task(
-            green, SimpleNamespace(settings=SimpleNamespace(green_screen_flatten_enabled=False))
-        )
-        is None
-    ), "开关关掉时不许后处理"
+    assert "flatten_video_bytes" not in source, "流水线又接上了绿幕归一"
+    assert "_video_transform_for_task" not in source, "视频 transform 又回来了"
+    # 图片尺寸裁切仍在（那是按需求裁，不是替用户改画面风格）。
+    assert "_resize_image_bytes" in source
