@@ -169,7 +169,9 @@ def test_restart_recovery_keeps_reference_media(tmp_path, monkeypatch) -> None:
 
         captured: dict = {}
 
-        def _fake_run_job(job_id, values, files, activity_id, media_scope, _c=captured):
+        def _fake_run_job(job_id, values, files, activity_id, media_scope, _c=captured, **_kwargs):
+            # 2026-10-14 起 recover_backlog 还会传 kwargs={"recovery": plan}
+            # （断点续跑计划）—— 这个测试只关心素材与作用域，吞掉多余参数即可。
             _c.update(job_id=job_id, files=dict(files), media_scope=media_scope)
 
         monkeypatch.setattr(mod, "run_job", _fake_run_job)

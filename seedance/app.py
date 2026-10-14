@@ -1411,6 +1411,105 @@ def _backlog_remove_locked(job_id: str) -> None:
         _backlog_save(backlog)
 
 
+# ─────────────────────────────────────────────────────────────
+# 断点续跑（2026-10-14）：把「这个 run 已经向上游提交过」落盘。
+#
+# 上游（方舟）任务是异步的：我们进程死了，它在方舟那边继续跑、继续计费。
+# 旧恢复逻辑对 backlog 里每一条都重新 run_job → 同一件事付两次钱。
+# run 级状态写进 backlog[job_id]["runs"]["<index>"]，取值见下表：
+#   （无记录）= 尚未发起付费请求（本地模型永远停在这里）→ 重投安全、不花钱
+#   submitting = 付费 POST 在途/刚返回、task_id 还没落盘 → 状态未知，绝不自动重投
+#   submitted  = 已拿到 task_id + status_url → 重启后只 GET 状态续跑（0 元）
+#   done       = 已拿到结果（含 tokens）→ 重启后直接回放（0 网络调用）
+# 设计全文见 docs/restart-resume-design.md。
+# ─────────────────────────────────────────────────────────────
+RUN_PHASE_SUBMITTING = "submitting"
+RUN_PHASE_SUBMITTED = "submitted"
+RUN_PHASE_DONE = "done"
+
+
+class _RestartIndeterminate(Exception):
+    """重启时无法确认上游是否已计费（存量 backlog 条目 / run 状态残缺）。
+
+    与「参数找不回」区分开：这种任务是可以手动重试的，提示文案也不同。
+    """
+
+
+def _backlog_runs(meta: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    runs = (meta or {}).get("runs")
+    return runs if isinstance(runs, dict) else {}
+
+
+def _backlog_set_run_locked(job_id: str, index: int, **fields) -> None:
+    """记录单个 run 的续跑状态（按 index 合并，不动别的 run）。
+
+    调用方必须已持有 JOBS_LOCK —— 与 `_backlog_set_locked` 同一约定。
+    """
+    try:
+        key = str(int(index))
+    except (TypeError, ValueError):
+        return
+    backlog = _backlog_load()
+    entry = dict(backlog.get(job_id) or {})
+    runs = dict(_backlog_runs(entry))
+    runs[key] = {**(runs.get(key) or {}), **fields}
+    entry["runs"] = runs
+    backlog[job_id] = entry
+    _backlog_save(backlog)
+
+
+def _backlog_set_run(job_id: str, index: int, **fields) -> None:
+    """同上，自带锁（run_one 里不在锁内的调用点用）。"""
+    with JOBS_LOCK:
+        _backlog_set_run_locked(job_id, index, **fields)
+
+
+def _job_run_count(values: dict[str, Any]) -> int:
+    """复算一个作业会跑几个 run（与 run_job 的口径保持一致）。"""
+    try:
+        requested = max(1, min(20, int(values.get("repeat_count") or 1)))
+        concurrency = max(1, min(20, int(values.get("concurrency") or 1)))
+    except (TypeError, ValueError):
+        return 1
+    return max(requested, concurrency)
+
+
+def _resume_plan(job_id: str, values: dict[str, Any], runs: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """把 backlog 里的 run 状态翻成恢复计划。
+
+    返回 ``{"done": {i: result}, "resume": {i: {...}}, "unknown": {i: reason},
+    "resubmit": [i, ...]}``；**返回 None 表示「无法确认上游是否已计费」**
+    （存量条目：stage=started 但没有任何 run 记录）——调用方按中断处理，绝不自动重投。
+    """
+    if not runs:
+        return None
+    count = _job_run_count(values)
+    done: dict[int, dict[str, Any]] = {}
+    resume: dict[int, dict[str, Any]] = {}
+    unknown: dict[int, str] = {}
+    resubmit: list[int] = []
+    for index in range(1, count + 1):
+        rec = runs.get(str(index))
+        if not isinstance(rec, dict):
+            # 线程还没发起付费请求（云端 run 在 POST 之前会写 submitting）→ 重投不花钱
+            resubmit.append(index)
+            continue
+        phase = str(rec.get("phase") or "")
+        task_id = str(rec.get("task_id") or "")
+        status_url = str(rec.get("status_url") or "")
+        if phase == RUN_PHASE_DONE and isinstance(rec.get("result"), dict):
+            done[index] = rec["result"]
+        elif phase == RUN_PHASE_SUBMITTED and task_id and status_url:
+            resume[index] = {"task_id": task_id, "status_url": status_url}
+        else:
+            # submitting（POST 在途）/ submitted 但信息残缺 → 状态未确认
+            unknown[index] = (
+                f"Run {index}: 服务重启时这一路已向上游发起付费请求但状态未确认；"
+                "为避免重复计费**未自动重投**，请确认后点「重试」"
+            )
+    return {"done": done, "resume": resume, "unknown": unknown, "resubmit": resubmit}
+
+
 def _files_from_restore(
     restore: dict[str, Any], ws_id: str, username: str = ""
 ) -> dict[str, tuple[str, bytes]]:
@@ -1601,15 +1700,36 @@ def recover_backlog() -> tuple[int, int]:
                 if len(files) < media_total
                 else ""
             )
-            # 排队中/运行中统一语义（2026-09-09 用户确认）：
-            # 重启后原 job_id 重新入队、自动继续跑，活动记录保持 running——
-            # 重启前后用户无感。failed/succeeded 的任务由上方终态守卫保护。
-            # （重新执行会重跑生成，可能重复计费——用户明确选择无感优先。）
-
+            # ── 恢复语义（2026-10-14 用户改口径：token 优先）──────────────────
+            # queued（还没开跑）→ 照旧自动重新入队（本来就没计费，重投不花钱）。
+            # started（已开跑）→ 按 run 级续跑状态分流：submitted 只接回轮询、
+            #   done 直接回放、submitting 状态未确认则**绝不自动重投**；
+            #   存量条目（本功能上线前写的、没有任何 run 记录）无法判断是否已计费，
+            #   同样按「标记中断 + 可手动重试」处理。
+            # 这与本文件顶部的恢复说明一致：以前「started 也整条重投」让同一件事付两份钱。
+            stage = str(meta.get("stage") or "queued").lower()
+            runs = _backlog_runs(meta)
+            # 有 run 级记录就说明确实开跑过（即使 stage 因故还是 queued）——
+            # 这种情况必须走续跑分流，否则会整条重投（重复计费）。
+            started_job = stage == "started" or bool(runs)
+            plan: dict[str, Any] | None = None
+            plan_note = ""
+            if started_job:
+                plan = _resume_plan(job_id, values, runs)
+                if plan is None:
+                    raise _RestartIndeterminate(
+                        "存量任务，没有 run 级续跑记录，无法确认上游是否已计费"
+                    )
+                plan_note = (
+                    f"（续跑 {len(plan['resume'])} 路 / 回放 {len(plan['done'])} 路 / "
+                    f"重投 {len(plan['resubmit'])} 路 / 未确认不重投 {len(plan['unknown'])} 路）"
+                )
             with JOBS_LOCK:
                 JOBS[job_id] = {
-                    "id": job_id, "status": "queued", "events": [{"time": time.strftime("%H:%M:%S"),
-                                                                   "message": "服务重启后自动恢复入队" + media_note}],
+                    "id": job_id, "status": "queued",
+                    "events": [{"time": time.strftime("%H:%M:%S"),
+                                "message": ("服务重启后自动恢复入队" if plan is None else "服务重启后恢复续跑")
+                                           + media_note + plan_note}],
                     "results": [], "errors": [], "done": 0, "total": 0,
                     "duration": max(0, int(str(values.get("duration") or "0") or "0")),
                     "username": str(meta.get("username") or ""),
@@ -1626,7 +1746,8 @@ def recover_backlog() -> tuple[int, int]:
                     "provider": str(values.get("provider") or "").strip(),
                     "submitted_at": time.time(), "started_at": None, "finished_at": None,
                 }
-            thread = threading.Thread(target=run_job, args=(job_id, values, files, activity_id, media_scope), daemon=True)
+            thread = threading.Thread(target=run_job, args=(job_id, values, files, activity_id, media_scope),
+                                      kwargs={"recovery": plan}, daemon=True)
             thread.start()
             recovered += 1
         except Exception as exc:
@@ -1638,11 +1759,21 @@ def recover_backlog() -> tuple[int, int]:
             if not act:
                 dropped += 1
                 continue
+            # 「状态未确认」与「参数找不回」是两回事，提示必须分开写：
+            # 前者是可手动重试的（上游可能已经计费），后者只能重新填写。
+            if isinstance(exc, _RestartIndeterminate):
+                error_text = (
+                    "服务更新重启，任务中断；无法确认上游是否已计费，"
+                    "为避免重复计费**未自动重投**，请确认后点「重试」"
+                )
+            else:
+                error_text = "服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）"
             with JOBS_LOCK:
                 JOBS[job_id] = {
                     "id": job_id, "status": "failed",
-                    "events": [], "results": [],
-                    "errors": ["服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）"],
+                    "events": [{"time": time.strftime("%H:%M:%S"), "message": error_text}],
+                    "results": [],
+                    "errors": [error_text],
                     "done": 0, "total": 0, "duration": 0,
                     "username": str(meta.get("username") or ""),
                     "workspace_id": str(meta.get("ws_id") or "localhost"),
@@ -1653,11 +1784,12 @@ def recover_backlog() -> tuple[int, int]:
                     "model": str(act.get("model") or ""),
                     "provider": str(act.get("provider") or ""),
                     "submitted_at": time.time(), "started_at": None, "finished_at": time.time(),
+                    "retryable": True,
                 }
             update_activity(
                 activity_id,
                 status="failed",
-                error="服务更新重启，任务中断，且参数已无法找回（" + str(exc)[:80] + "）",
+                error=error_text,
                 finished_at=time.time(),
             )
             interrupted += 1
@@ -3372,7 +3504,7 @@ def _run_local_video(job_id: str, index: int, form: cgi.FieldStorage, form_value
     }
 
 
-def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], ws_id: str = "localhost") -> dict[str, Any]:
+def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], ws_id: str = "localhost", resume: dict[str, Any] | None = None) -> dict[str, Any]:
     class MemoryForm(dict):
         pass
 
@@ -3404,33 +3536,58 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
     create_url = f"{base_url}/contents/generations/tasks"
     if _job_cancel_requested(job_id):
         raise TaskCancelled("任务已取消。")
-    add_event(job_id, f"Run {index}: preparing payload")
-    request_host = form_values.get("_request_host") or None
-    notes: list[str] = []
-    payload = build_payload(form, api_key, base_url, index - 1, ws_id, request_host=request_host, notes=notes)
-    for note in notes:
-        add_event(job_id, f"Run {index}: {note}")
-    # 提交前不变量（2026-10-12）：声明了参考素材却一张都没挂上 → 写一条**可见**事件。
-    # 不管原因是什么（作用域错 / 文件被清理 / 恢复没重建回来），都不许再静默出无参考的片子。
-    attachment_warning = reference_attachment_warning(
-        declared_reference_fields(form), content_counts(payload)
-    )
-    if attachment_warning:
-        add_event(job_id, f"Run {index}: {attachment_warning}")
-    add_event(job_id, f"Run {index}: creating task ({content_counts(payload)})")
-    create_result = request_json("POST", create_url, api_key, payload)
-    task_id = create_result.get("id") or create_result.get("task_id")
-    if not task_id:
-        raise RuntimeError(f"No task id returned: {create_result}")
-    add_event(job_id, f"Run {index}: task {task_id}")
-    with JOBS_LOCK:
-        JOBS[job_id].setdefault("provider_tasks", []).append({
-            "task_id": task_id,
-            "base_url": base_url,
-            "api_key": api_key,
-        })
-
-    status_url = f"{create_url}/{task_id}"
+    resume = resume if isinstance(resume, dict) else {}
+    resume_task_id = str(resume.get("task_id") or "")
+    resume_status_url = str(resume.get("status_url") or "")
+    resumed = False
+    if resume_task_id and resume_status_url:
+        resumed = True
+        # 断点续跑（2026-10-14）：上游任务在我们进程之外继续跑，这里只接回轮询/下载，
+        # **绝不重新 POST**（重投 = 重复计费）。payload 与参考素材一并跳过 ——
+        # 素材后来被替换/清理掉也照样能把已付费的成片接回来。
+        task_id = resume_task_id
+        status_url = resume_status_url
+        base_url = status_url.split("/contents/generations/tasks/", 1)[0] or base_url
+        add_event(job_id, f"Run {index}: 续跑上游任务 {task_id}（服务重启，不重新提交）")
+        with JOBS_LOCK:
+            JOBS[job_id].setdefault("provider_tasks", []).append({
+                "task_id": task_id,
+                "base_url": base_url,
+                "api_key": api_key,
+            })
+    else:
+        add_event(job_id, f"Run {index}: preparing payload")
+        request_host = form_values.get("_request_host") or None
+        notes: list[str] = []
+        payload = build_payload(form, api_key, base_url, index - 1, ws_id, request_host=request_host, notes=notes)
+        for note in notes:
+            add_event(job_id, f"Run {index}: {note}")
+        # 提交前不变量（2026-10-12）：声明了参考素材却一张都没挂上 → 写一条**可见**事件。
+        # 不管原因是什么（作用域错 / 文件被清理 / 恢复没重建回来），都不许再静默出无参考的片子。
+        attachment_warning = reference_attachment_warning(
+            declared_reference_fields(form), content_counts(payload)
+        )
+        if attachment_warning:
+            add_event(job_id, f"Run {index}: {attachment_warning}")
+        # 付费请求之前先落一条 submitting：重启时凭它判断「状态未确认」，
+        # 从而**不盲投**（这一小段窗口里方舟可能已经接了单）。
+        _backlog_set_run(job_id, index, phase=RUN_PHASE_SUBMITTING,
+                         provider=provider, model=requested_model)
+        add_event(job_id, f"Run {index}: creating task ({content_counts(payload)})")
+        create_result = request_json("POST", create_url, api_key, payload)
+        task_id = create_result.get("id") or create_result.get("task_id")
+        if not task_id:
+            raise RuntimeError(f"No task id returned: {create_result}")
+        add_event(job_id, f"Run {index}: task {task_id}")
+        status_url = f"{create_url}/{task_id}"
+        _backlog_set_run(job_id, index, phase=RUN_PHASE_SUBMITTED,
+                         task_id=task_id, status_url=status_url)
+        with JOBS_LOCK:
+            JOBS[job_id].setdefault("provider_tasks", []).append({
+                "task_id": task_id,
+                "base_url": base_url,
+                "api_key": api_key,
+            })
     start = time.time()
     timeout = int(form_values.get("timeout") or 3600)
     poll_interval = int(form_values.get("poll_interval") or 10)
@@ -3442,7 +3599,21 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
             # 取消兜底：无法中止 Ark 侧在途请求（无 cancel API），
             # 本线程停止轮询；远端任务完成后其结果会被 Ark 丢弃（无人认领）。
             raise TaskCancelled("任务已取消。")
-        status_result = request_json("GET", status_url, api_key, timeout=60)
+        try:
+            status_result = request_json("GET", status_url, api_key, timeout=60)
+        except Exception as exc:
+            # 续跑专用：上游任务可能已过期/被清理。这里也不能退化成「重新提交」——
+            # 那正是重复计费。把话说清楚，让用户自己决定。
+            if resumed:
+                with JOBS_LOCK:
+                    # 前端只在 retryable 为真时给「重试」按钮；这条错误文案要求用户点它，
+                    # 就必须把按钮点亮（否则提示不可执行）。
+                    JOBS[job_id]["retryable"] = True
+                raise RuntimeError(
+                    f"续跑上游任务 {task_id} 失败（可能已过期或被清理）：{exc}；"
+                    "本次**没有重新提交**（避免重复计费），如需重跑请点「重试」"
+                ) from exc
+            raise
         status = normalize_status(status_result.get("status"))
         add_event(job_id, f"Run {index}: {status or 'unknown'}")
         if status not in TERMINAL_STATUSES:
@@ -3563,7 +3734,7 @@ def run_one(job_id: str, index: int, form_values: dict[str, Any], form_files: di
         }
 
 
-def run_one_with_fallback(job_id: str, index: int, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], ws_id: str = "localhost") -> dict[str, Any]:
+def run_one_with_fallback(job_id: str, index: int, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], ws_id: str = "localhost", resume: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run local first; only no-reference jobs may auto-fallback to Ark cloud.
 
     Reference media is never uploaded to cloud implicitly. The caller receives a
@@ -3573,9 +3744,9 @@ def run_one_with_fallback(job_id: str, index: int, form_values: dict[str, Any], 
     config, _ = load_provider_config()
     provider_cfg = (config.get("providers") or {}).get(provider) or {}
     if provider_cfg.get("api_style") != "comfyui_workflow":
-        return run_one(job_id, index, form_values, form_files, ws_id)
+        return run_one(job_id, index, form_values, form_files, ws_id, resume)
     try:
-        return run_one(job_id, index, form_values, form_files, ws_id)
+        return run_one(job_id, index, form_values, form_files, ws_id, resume)
     except TaskCancelled:
         raise
     except Exception as exc:
@@ -3597,7 +3768,7 @@ def run_one_with_fallback(job_id: str, index: int, form_values: dict[str, Any], 
         return run_one(job_id, index, fallback_values, form_files, ws_id)
 
 
-def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], activity_id: str | None = None, ws_id: str = "localhost") -> None:
+def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tuple[str, bytes]], activity_id: str | None = None, ws_id: str = "localhost", recovery: dict[str, Any] | None = None) -> None:
     try:
         # 排队期间被取消：直接置终态，不再启动任何 worker
         if _job_cancel_requested(job_id):
@@ -3623,11 +3794,48 @@ def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tupl
         # 已开跑：重启恢复策略从「自动重入队」切换为「标记中断可重试」
         with JOBS_LOCK:
             _backlog_set_locked(job_id, stage="started")
+        # ── 断点续跑（2026-10-14）────────────────────────────────────────
+        # recovery 是 recover_backlog 给出的恢复计划：
+        #   done    → 直接回放结果（0 网络调用、tokens 也照原样计）
+        #   unknown → 状态未确认，记账为失败但**不重投**（避免重复计费）
+        #   resume  → 只接回上游轮询（0 元），由 run_one 执行
+        # 只有「从未发起付费请求」的 index 才真正重新提交。
+        recovery = recovery if isinstance(recovery, dict) else {}
+        replay_done = {int(k): v for k, v in (recovery.get("done") or {}).items() if isinstance(v, dict)}
+        resume_map = {int(k): v for k, v in (recovery.get("resume") or {}).items() if isinstance(v, dict)}
+        unknown_map = {int(k): str(v) for k, v in (recovery.get("unknown") or {}).items()}
+        handled: set[int] = set()
+        for index in sorted(replay_done):
+            with JOBS_LOCK:
+                if JOBS[job_id].get("cancel_requested"):
+                    break
+                JOBS[job_id]["results"].append(replay_done[index])
+                JOBS[job_id]["done"] += 1
+                JOBS[job_id]["tokens"] = (int(JOBS[job_id].get("tokens") or 0)
+                                          + int(replay_done[index].get("tokens") or 0))
+            handled.add(index)
+        for index in sorted(unknown_map):
+            with JOBS_LOCK:
+                JOBS[job_id]["errors"].append(unknown_map[index])
+                JOBS[job_id]["done"] += 1
+                # 提示文案让用户「点重试」，那把按钮点亮（前端只看 retryable）
+                JOBS[job_id]["retryable"] = True
+            add_event(job_id, unknown_map[index])
+            handled.add(index)
+        if replay_done or unknown_map:
+            add_event(job_id, f"服务重启恢复：回放 {len(replay_done)} 个已完成 run、"
+                              f"{len(unknown_map)} 个状态未确认（未自动重投）")
+        if resume_map:
+            add_event(job_id, f"服务重启恢复：{len(resume_map)} 个 run 接回上游任务继续等待"
+                              "（不重新提交、不重复计费）")
+        pending_indices = [i for i in range(1, count + 1) if i not in handled]
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = [pool.submit(run_one_with_fallback, job_id, i, form_values, form_files, ws_id) for i in range(1, count + 1)]
+            futures = [pool.submit(run_one_with_fallback, job_id, i, form_values, form_files, ws_id,
+                                   resume_map.get(i)) for i in pending_indices]
             for future in concurrent.futures.as_completed(futures):
                 try:
                     result = future.result()
+                    index = int(result.get("index") or 0) if isinstance(result, dict) else 0
                     with JOBS_LOCK:
                         # 取消后（cancel_requested）完成的条目：丢弃结果不覆盖状态
                         if JOBS[job_id].get("cancel_requested"):
@@ -3637,6 +3845,9 @@ def run_job(job_id: str, form_values: dict[str, Any], form_files: dict[str, tupl
                         # token 按 run 累加：并发/多跑时每个 run 是独立的一次方舟任务。
                         JOBS[job_id]["tokens"] = (int(JOBS[job_id].get("tokens") or 0)
                                                   + int(result.get("tokens") or 0))
+                        # 结果落盘：再断一次就直接回放，既不再生成也不问上游（0 元）
+                        if index:
+                            _backlog_set_run_locked(job_id, index, phase=RUN_PHASE_DONE, result=result)
                 except TaskCancelled:
                     # 取消不是错误：不记 errors、不计 done
                     add_event(job_id, "Run cancelled")
