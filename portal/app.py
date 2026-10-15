@@ -422,6 +422,7 @@ def _apply_ark_usage(rows: list[dict]) -> int:
         model = ""
         resolution = ""
         has_input = False
+        seconds = 0
         task_statuses: list[str] = []
         for task_id in ids:
             info = index[task_id]
@@ -429,6 +430,9 @@ def _apply_ark_usage(rows: list[dict]) -> int:
             model = model or str(info.get("model") or "")
             resolution = resolution or str(info.get("resolution") or "")
             has_input = has_input or bool(info.get("has_input_video"))
+            # 时长取**最大**而不是求和：同一个飞书任务可能重试出多个方舟任务，
+            # 它们是同一件事的重跑，求和会把时长翻倍（用户 2026-10-15 报「飞书没有时长」）。
+            seconds = max(seconds, int(info.get("duration") or 0))
             task_statuses.append(str(info.get("status") or "").lower())
         # 状态以**方舟任务**为准（生成结果的权威来源）：全成功=成功，全失败=失败，混合=部分成功。
         # 不能用飞书自己的工作流状态 —— 那会说成「待确认」（2026-10-13 用户反馈）。
@@ -449,6 +453,9 @@ def _apply_ark_usage(rows: list[dict]) -> int:
         row["provider_detail"] = provider_detail("feishu-generation-agent", row["model"], "")
         row["resolution"] = str(row.get("resolution") or "") or resolution
         row["has_input_video"] = has_input
+        # 「用量」列的视频时长：飞书自己的 duration 字段恒为 0（实测），真实时长在方舟任务里
+        if seconds and str(row.get("kind") or "") == "video":
+            row["seconds"] = seconds
         quote = quote_generation(model=model or str(row.get("model") or ""),
                                  resolution=resolution, has_input_video=has_input,
                                  tokens=tokens, app=str(row.get("app") or ""))
@@ -2136,15 +2143,45 @@ class UsageTracker:
     def _write_to_disk(self, payload: str):
         """Atomic double-write: tmp → primary (rename), then copy primary → .bak.
         Runs OUTSIDE self._lock — payload is a pre-serialized snapshot string.
-        Long-term retention: do NOT prune any date keys here."""
+        Long-term retention: do NOT prune any date keys here.
+
+        2026-10-14 事故：这里原来用**固定 tmp 名** `usage.json.tmp`（多线程/多进程互相踩），
+        而且 `os.replace` 失败时只打 `{exc}` —— 线上日志里异常消息是**空的**
+        （`[usage] _save primary write failed:`），等于把唯一的线索也丢了。
+        本机另外三个应用（drama-pipeline / seedance / nano-banana）踩过同一个雷，修法一致：
+        ① tmp 名带 pid + 线程 id；② `os.replace` 失败**重试**（递增退避）；
+        ③ 记日志必须带**异常类型 + repr** —— 空消息也要能看出是哪种异常。
+        """
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp_path = USAGE_PATH.with_suffix(USAGE_PATH.suffix + ".tmp")
+        tmp_path = USAGE_PATH.with_name(
+            f"{USAGE_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
         bak_path = USAGE_PATH.with_suffix(USAGE_PATH.suffix + ".bak")
         try:
             tmp_path.write_text(payload, "utf-8")
-            os.replace(tmp_path, USAGE_PATH)
         except Exception as exc:
-            print(f"  [usage] _save primary write failed: {exc}", flush=True)
+            tmp_path.unlink(missing_ok=True)
+            print(
+                f"  [usage] tmp write failed: {type(exc).__name__}: {exc!r}",
+                flush=True,
+            )
+            return
+        last_exc: Exception | None = None
+        for attempt in range(6):
+            try:
+                os.replace(tmp_path, USAGE_PATH)
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(0.05 * (attempt + 1))
+        if last_exc is not None:
+            tmp_path.unlink(missing_ok=True)
+            print(
+                "  [usage] primary replace failed after retries: "
+                f"{type(last_exc).__name__}: {last_exc!r}",
+                flush=True,
+            )
             return
         # Refresh .bak (best-effort; failure here doesn't compromise primary)
         try:
@@ -2175,7 +2212,15 @@ class UsageTracker:
             try:
                 self._flush_now()
             except Exception as exc:
-                print(f"  [usage] flush loop error: {exc}", flush=True)
+                # 限流 + 带上异常类型：原来每 2 秒一行（30 行/分钟）把日志淹了，
+                # 而且只打 `{exc}`（线上是空消息）—— 排障时既看不到别的东西、也不知道是什么异常。
+                self._flush_failures = getattr(self, "_flush_failures", 0) + 1
+                if self._flush_failures <= 3 or self._flush_failures % 30 == 0:
+                    print(
+                        f"  [usage] flush loop error #{self._flush_failures}: "
+                        f"{type(exc).__name__}: {exc!r}",
+                        flush=True,
+                    )
         # Final drain on shutdown so nothing dirty is lost across restart.
         try:
             self._flush_now()
