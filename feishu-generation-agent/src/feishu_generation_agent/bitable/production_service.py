@@ -2,6 +2,7 @@ import logging
 from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -23,6 +24,30 @@ from feishu_generation_agent.storage.production_tasks import ProductionTaskStore
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class BindingNotFound(RunNotFound):
+    """**绑定行**不存在（`production_tasks` / `production_task_history` 里都没有）。
+
+    与「**运行**不存在」是两回事，调用方必须分开处理：绑定自己都没了的时候，
+    没有任何东西可以释放、也不该去改状态。以前两者共用 `RunNotFound`，于是
+    `_reconcile_bindings` 把「并发释放导致的绑定消失」也写成「失败：本地运行
+    记录不存在」，日志和用户看到的文案全都指错方向（2026-10-20）。
+    """
+
+
+#: 新建绑定到运行真正落库之间必须留出的宽限期（秒）。
+#:
+#: `claim()` / `rerun()` 都是**先写绑定、再建运行**；而任务列表与 active-runs
+#: 每 5 秒就被前端轮询一次（`web/static/app.js` 的 `RUN_WATCH_INTERVAL_MS`），
+#: 每次都走 `_reconcile_bindings` → `sync_once` → `get_run_view`，运行还没建出来
+#: 就必然 `RunNotFound`。2026-10-20 生产实锤：绑定 07:35:27 被判死，它自己的
+#: run 07:52:26 才落库（**晚 17 分钟**），另有三条倒挂 6~13 分钟。
+#:
+#: 同进程内主要靠 `_mark_creating` 的内存标记（精确、不限时）；这个宽限期兜的是
+#: **跨重启**那段（内存标记随进程消失，而启动时的 `resume_incomplete()` 会把运行
+#: 重建出来），以及时间戳解析不出来的极端情况。
+_RECONCILE_GRACE_SECONDS = 600
 
 
 _RELEASED_STATUSES = {
@@ -127,6 +152,9 @@ class ProductionBitableService:
         self._enabled_task_types = enabled_task_types
         self._schemas: dict[tuple[str, str], Any] = {}
         self._closed = False
+        #: 「绑定已落库、运行还没建出来」的 run_id。轮询期间靠它避免误杀绑定，
+        #: 详见 `_reconcile_bindings`。
+        self._creating_runs: set[str] = set()
 
     async def scan(self, category: str = "animation"):
         source = await self._prepared_source(category)
@@ -213,30 +241,59 @@ class ProductionBitableService:
             raise RunConflict("该生产表记录当前不可领取")
         if task.task_type not in self._enabled_task_types:
             raise RunConflict(f"{task.task_type or '未分类'}任务暂未启用")
-        binding = await self._store.claim(
-            source.location,
-            task,
-            run_id=str(uuid4()),
-            thread_id=str(uuid4()),
-            owner_user_id=owner_user_id,
-        )
-        if planning_prompt is None:
-            planning_prompt = build_planning_prompt_snapshot(
+        # run_id 在这里先生成，是为了**在绑定落库之前**就打上「正在创建」标记：
+        # 列表每 5 秒轮询一次就会走 `_reconcile_bindings`，绑定一旦可见而运行还没
+        # 建出来，就会被判死并解锁记录（→ 重复领取、重复计费的生成）。详见
+        # `_reconcile_bindings` 的说明。
+        pending_run_id = str(uuid4())
+        thread_id = str(uuid4())
+        self._mark_creating(pending_run_id)
+        try:
+            binding = await self._store.claim(
+                source.location,
+                task,
+                run_id=pending_run_id,
+                thread_id=thread_id,
                 owner_user_id=owner_user_id,
-                source="prime",
-                version=0,
-                prompt_text=planner_system_prompt(),
             )
-        with self._runtime_owner_scope(owner_user_id):
-            run_id = await self._runtime.start_run(
-                RequirementRequest(
-                    source_url=binding.source_url,
-                    trigger_type="production_bitable",
-                    planning_prompt=planning_prompt,
-                ),
-                run_id=binding.run_id,
-                thread_id=binding.thread_id,
-            )
+            if planning_prompt is None:
+                planning_prompt = build_planning_prompt_snapshot(
+                    owner_user_id=owner_user_id,
+                    source="prime",
+                    version=0,
+                    prompt_text=planner_system_prompt(),
+                )
+            with self._runtime_owner_scope(owner_user_id):
+                try:
+                    run_id = await self._runtime.start_run(
+                        RequirementRequest(
+                            source_url=binding.source_url,
+                            trigger_type="production_bitable",
+                            planning_prompt=planning_prompt,
+                        ),
+                        run_id=binding.run_id,
+                        thread_id=binding.thread_id,
+                    )
+                except Exception:
+                    # 2026-10-15 用户报「多维表格运行不存在，我重试怎么还失败，出bug了？」。
+                    # 根因就在这一处：绑定**先**落库（claim 里生成了 run_id），**再**去
+                    # `start_run` 建运行 —— 后者一抛异常（服务重启 / 上游失败 / RunConflict），
+                    # 绑定就留在库里、对应 run 从未创建 → 之后 `_reconcile_bindings` 把它标成
+                    # 「失败：本地运行记录不存在」并锁死，用户**永远重试不了** ✗。
+                    # 实测指纹：binding run=`fe698799`（runs 表里不存在），**同一秒**真正的
+                    # run 是 `37757a6c`。
+                    # 修法：建运行失败就把绑定**释放回可领取**（release 置 active=0），
+                    # 用户可以再点「开始分析」，而不是卡在一条死记录上。
+                    await self._store.release(
+                        binding.run_id,
+                        status=TableTaskStatus.FAILED,
+                        last_error="本地运行未能创建，已释放，可重新领取",
+                        owner_user_id=owner_user_id,
+                    )
+                    raise
+        finally:
+            # 无论成功失败都必须摘掉，否则这个 run_id 会永远占着「正在创建」。
+            self._unmark_creating(pending_run_id)
         # 新尝试已经真的产生了，这时候才按窗口归档（见 auto_archive_overflow）。
         await self._auto_archive_best_effort(owner_user_id, record_id)
         return run_id
@@ -261,27 +318,104 @@ class ProductionBitableService:
             owner_user_id=owner_user_id,
         )
 
+    # ---------------------------------------------------------------- #
+    # 「正在创建」标记：绑定已经落库、而运行还没建出来的那段窗口
+    # ---------------------------------------------------------------- #
+    def _pending_creations(self) -> set[str]:
+        """惰性取集合 —— 测试里大量用 `__new__` 构造实例，不能假定 `__init__` 跑过。"""
+        pending = getattr(self, "_creating_runs", None)
+        if pending is None:
+            pending = set()
+            self._creating_runs = pending
+        return pending
+
+    def _mark_creating(self, run_id: str) -> None:
+        """在**绑定落库之前**打上：轮询会走 `_reconcile_bindings`，这条缝必须堵住。"""
+        self._pending_creations().add(run_id)
+
+    def _unmark_creating(self, run_id: str) -> None:
+        self._pending_creations().discard(run_id)
+
+    def _creation_in_flight(self, run_id: str) -> bool:
+        return run_id in self._pending_creations()
+
+    @staticmethod
+    def _binding_age_seconds(binding: Any) -> float | None:
+        """绑定距上次落库多少秒；解析不出来返回 None（调用方按「保守」处理）。"""
+        stamp = getattr(binding, "updated_at", None) or getattr(
+            binding, "created_at", None
+        )
+        if not stamp:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - parsed).total_seconds()
+
     async def _reconcile_bindings(self, bindings) -> None:
-        """把绑定状态跟运行时对齐；单条失败不能拖垮整个列表。"""
+        """把绑定状态跟运行时对齐；单条失败不能拖垮整个列表。
+
+        **运行还不存在 ≠ 这条绑定已经死了。** `claim()` / `rerun()` 都是先写绑定、
+        再建运行；而前端看到「处理中」会每 5 秒盯守一次，每次都走这里 —— 克隆还没
+        把运行建出来时 `get_run_view` 必然 `RunNotFound`。以前这里立刻把绑定
+        `release` 成「失败：本地运行记录不存在」，有两个后果（2026-10-20）：
+
+        ① 用户眼前是一次**必然失败**的重跑（实测绑定比自己的 run 早 6~17 分钟被判死）；
+        ② 更贵的是 `release` 顺手把 `active` 置 0，等于**把记录解锁** —— 用户能立刻
+           再领一次，同一记录在几分钟内堆出多个 run，也就是**重复计费的生成**。
+
+        所以判死前必须确认它真的没救了：正在创建中（`_creation_in_flight`）直接跳过；
+        年龄没过 `_RECONCILE_GRACE_SECONDS` 的也跳过（跨重启场景，
+        `resume_incomplete()` 会在启动时把运行重建出来）。只有过了宽限期、运行
+        仍然不存在，才释放成**可重新领取**。
+        """
         for binding in bindings:
             try:
                 await self.sync_once(
                     binding.run_id,
                     owner_user_id=binding.owner_user_id,
                 )
+            except BindingNotFound:
+                # 绑定自己没了（并发释放 / 被归档）：没有可释放的东西，也不该改状态。
+                continue
             except RunNotFound:
+                if self._creation_in_flight(binding.run_id):
+                    # 正在创建。克隆一次可能跑十几分钟（返工融合要调多模态模型，
+                    # 实测超时重试 6~17 分钟），这期间运行本来就取不到。
+                    continue
+                age = self._binding_age_seconds(binding)
+                if age is None or age < _RECONCILE_GRACE_SECONDS:
+                    # 跨重启：内存标记随进程消失，而启动时的 resume_incomplete()
+                    # 会重建运行 —— 宽限期内先不动它。时间戳解析不出来时同样保守
+                    # 放行：宁可让它多挂一会儿，也不能误杀绑定把记录解锁。
+                    continue
                 try:
                     await self._store.release(
                         binding.run_id,
                         status=TableTaskStatus.FAILED,
-                        last_error="本地运行记录不存在",
+                        last_error="本地运行记录不存在，绑定已释放，可重新领取",
                         owner_user_id=binding.owner_user_id,
                     )
                 except Exception:
-                    pass
-            except Exception:
+                    _LOGGER.warning(
+                        "reconcile: failed to release dead binding %s",
+                        binding.run_id,
+                        exc_info=True,
+                    )
+            except Exception as exc:
                 # A transient runtime/provider error must not prevent the task
-                # list from loading.  Keep the last persisted status for now.
+                # list from loading.  Keep the last persisted status for now ——
+                # 但必须留痕：以前这里是**静默** continue，徽章会一直停在领取那
+                # 一刻的「处理中」，出问题时日志里一个字都查不到（2026-10-20）。
+                _LOGGER.warning(
+                    "reconcile: binding %s kept status %s (%r)",
+                    binding.run_id,
+                    binding.status,
+                    exc,
+                )
                 continue
 
     async def recent_runs(self, *, owner_user_id: str = "prime-local"):
@@ -684,55 +818,64 @@ class ProductionBitableService:
             maker_name=source.maker_name,
             snapshot=source.snapshot,
         )
-        rerun = await self._store.claim(
-            source.source_location,
-            task,
-            run_id=str(uuid4()),
-            thread_id=str(uuid4()),
-            owner_user_id=owner_user_id,
-        )
+        # 同 `claim()`：run_id 先生成，好在绑定落库**之前**打上「正在创建」标记。
+        # 重跑尤其需要 —— `clone_run_for_approval` 要调多模态融合，实测能跑
+        # 6~17 分钟，这段窗口里任何一次列表轮询都会走 `_reconcile_bindings`。
+        pending_run_id = str(uuid4())
+        thread_id = str(uuid4())
+        self._mark_creating(pending_run_id)
         try:
-            with self._runtime_owner_scope(owner_user_id):
-                clone_kwargs = {
-                    "run_id": rerun.run_id,
-                    "thread_id": rerun.thread_id,
-                }
-                if task_ids is not None:
-                    clone_kwargs["task_ids"] = task_ids
-                if feedback is not None:
-                    clone_kwargs["feedback"] = feedback
-                if duration is not None:
-                    # ②-b（2026-10-10）：本次时长。与上一版计划不同时，克隆分支不会把
-                    # 提示词原样保留（会置 blocking_issues 让人在审批页看到原因）。
-                    clone_kwargs["duration"] = duration
-                new_run_id = await self._runtime.clone_run_for_approval(
-                    run_id,
-                    RequirementRequest(
-                        source_url=rerun.source_url,
-                        trigger_type="production_bitable",
-                    ),
-                    **clone_kwargs,
-                )
-                if auto_approve:
-                    await self._runtime.resume_run(
-                        new_run_id,
-                        ApprovalDecision(
-                            action="approve",
-                            selected_task_ids=list(task_ids or []),
-                        ),
-                    )
-            # 重跑是一次**新尝试**，同样按窗口归档（放在 try 外面：归档失败不该
-            # 触发上面那段「重跑初始化失败」的回收）。
-            await self._auto_archive_best_effort(owner_user_id, source.record_id)
-            return new_run_id
-        except Exception:
-            await self._store.release(
-                rerun.run_id,
-                status=TableTaskStatus.FAILED,
-                last_error="重跑初始化失败",
+            rerun = await self._store.claim(
+                source.source_location,
+                task,
+                run_id=pending_run_id,
+                thread_id=thread_id,
                 owner_user_id=owner_user_id,
             )
-            raise
+            try:
+                with self._runtime_owner_scope(owner_user_id):
+                    clone_kwargs = {
+                        "run_id": rerun.run_id,
+                        "thread_id": rerun.thread_id,
+                    }
+                    if task_ids is not None:
+                        clone_kwargs["task_ids"] = task_ids
+                    if feedback is not None:
+                        clone_kwargs["feedback"] = feedback
+                    if duration is not None:
+                        # ②-b（2026-10-10）：本次时长。与上一版计划不同时，克隆分支不会把
+                        # 提示词原样保留（会置 blocking_issues 让人在审批页看到原因）。
+                        clone_kwargs["duration"] = duration
+                    new_run_id = await self._runtime.clone_run_for_approval(
+                        run_id,
+                        RequirementRequest(
+                            source_url=rerun.source_url,
+                            trigger_type="production_bitable",
+                        ),
+                        **clone_kwargs,
+                    )
+                    if auto_approve:
+                        await self._runtime.resume_run(
+                            new_run_id,
+                            ApprovalDecision(
+                                action="approve",
+                                selected_task_ids=list(task_ids or []),
+                            ),
+                        )
+                # 重跑是一次**新尝试**，同样按窗口归档（放在 try 外面：归档失败不该
+                # 触发上面那段「重跑初始化失败」的回收）。
+                await self._auto_archive_best_effort(owner_user_id, source.record_id)
+                return new_run_id
+            except Exception:
+                await self._store.release(
+                    rerun.run_id,
+                    status=TableTaskStatus.FAILED,
+                    last_error="重跑初始化失败，绑定已释放，可重新领取",
+                    owner_user_id=owner_user_id,
+                )
+                raise
+        finally:
+            self._unmark_creating(pending_run_id)
 
     async def sync_once(
         self, run_id: str, *, owner_user_id: str | None = None
@@ -741,7 +884,9 @@ class ProductionBitableService:
             run_id, owner_user_id=owner_user_id
         )
         if binding is None:
-            raise RunNotFound("多维表格运行不存在")
+            # 绑定行不存在 ≠ 运行不存在。`_reconcile_bindings` 靠这个区分来决定
+            # 「有没有东西要释放」（2026-10-20）。
+            raise BindingNotFound("多维表格绑定不存在")
         with self._runtime_owner_scope(binding.owner_user_id):
             view = await self._runtime.get_run_view(run_id)
         runtime_status = view.get("status")
