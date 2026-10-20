@@ -879,6 +879,35 @@ async def ingest_source(
         document = _document_for_checkpoint(
             await services.document_source.ingest(request)
         )
+        # 参考图去水印（2026-10-20 用户口径：「规划成功后先把右边界面显示出来，然后提示
+        # 正在去水印，对应参考图给出前端反馈」）——
+        # **不在入库里等它** ✗：这里只**起一个后台任务**，规划与界面立刻继续；
+        # 后台逐张清洗并把状态写进 `outputs/runs/<run_id>/watermark-cleanup.json`，
+        # 运行视图把它带给前端（每张图旁边显示"去水印中…/已去水印/未检测到水印/保留原图"），
+        # 参考图缩略图接口一旦拿到清洗版就直接显示干净的那张。
+        # 提交前执行层还会**兜底**洗一次（幂等：已洗过直接复用 `-nowm` 文件）。
+        if getattr(services.settings, "reference_watermark_cleanup_enabled", False):
+            try:
+                from feishu_generation_agent.integrations.reference_watermark_clean import (
+                    cleanup_assets_in_background,
+                )
+
+                asyncio.create_task(
+                    cleanup_assets_in_background(
+                        list(document.media_assets),
+                        run_id=state.get("run_id", "unknown-run"),
+                        outputs_dir=services.settings.outputs_dir,
+                        # 每张图一次图片模型调用、实测 73~90 秒；并发张数可配
+                        # （默认 3），上游限流时把它调小。
+                        concurrency=getattr(
+                            services.settings,
+                            "reference_watermark_cleanup_concurrency",
+                            None,
+                        ),
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning("参考图去水印后台任务启动失败，按原图继续", exc_info=True)
         document_json = _json_model(document)
         return {
             "status": "running",
@@ -1341,6 +1370,21 @@ def _default_video_model_key(services: GraphServices) -> str:
     )
     return resolved if resolved in VIDEO_MODEL_BY_KEY else DEFAULT_VIDEO_MODEL_KEY
 
+def _audit_can_be_skipped(services: GraphServices, plan: TaskPlan) -> bool:
+    """`audit_mode=auto` 且计划本身干净时，跳过审计。
+
+    2026-10-15：用户问「能根治吗」——「规划十分钟」的一半来自审计（实测 5 分钟）。
+    审计是**建议项、不拦审批**，计划没有任何告警时再审没有收益。默认不开
+    （`audit_mode=always`），保持既有行为与既有测试契约。
+    """
+    mode = str(getattr(services.settings, "audit_mode", "always")).strip().lower()
+    if mode != "auto":
+        return False
+    if plan.warnings:
+        return False
+    return not any(task.blocking_issues for task in plan.tasks)
+
+
 async def audit_plan(
     state: AgentState,
     config: RunnableConfig,
@@ -1353,7 +1397,39 @@ async def audit_plan(
             state.get("normalized_document")
         )
         plan = TaskPlan.model_validate(_draft_plan(state))
-        report = await services.planner.audit(document, plan)
+        # `audit_mode=auto`：计划没有告警/阻断项时跳过审计（省 1~3 分钟）。
+        # 默认 `always` 保持既有行为与既有测试契约，用户需要提速时用环境变量开启。
+        if _audit_can_be_skipped(services, plan):
+            return {
+                "audit_report": {
+                    "issues": ["审计已跳过：计划无告警（audit_mode=auto）"],
+                    "corrections_required": False,
+                }
+            }
+        try:
+            report = await services.planner.audit(document, plan)
+        except AgentError as exc:
+            # 2026-10-15 用户报「拯救香水依旧规划十几分钟，依旧执行失败」。
+            # 实测 run `37757a6c`：09:18:54 规划开始 → 09:23:39 完成（4.8 分）→
+            # 09:23:39 审计开始 → 09:28:39 `audit_plan/failed (transient_error;
+            # operation=audit; cause=APITimeoutError)` —— **规划 + 审计两次大调用串行
+            # 各 300 秒**，合计近 10 分钟，最后还因为**审计**超时把整条 run 判死。
+            # 审计在本仓库的定位是**建议项（不拦审批）**，所以超时/瞬态错误一律
+            # **降级为"跳过审计"并把原因写进报告**，让流程继续走到待审批；
+            # 只有确定性错误（校验类）照旧抛。
+            if exc.detail.category is ErrorCategory.VALIDATION:
+                raise
+            _LOGGER.warning(
+                "审计失败已跳过（不阻断规划）task=%s cause=%s",
+                plan.tasks[0].task_id if plan.tasks else "-",
+                exc.detail.message,
+            )
+            return {
+                "audit_report": {
+                    "issues": [f"审计已跳过：{exc.detail.message}"],
+                    "corrections_required": False,
+                }
+            }
         return {"audit_report": _json_model(report)}
 
     return await _run_node(state, "audit_plan", services, operation)
@@ -4136,6 +4212,19 @@ _VIDEO_REJECTION_MARKERS = (
     "invalid_media",
     "input media detect failed",
     "media detect failed",
+    # 2026-10-15 用户报「生成失败：Bad Request …（poll_invalidparameter）」——
+    # 转述通道（赤云/方舟转发）有时**不给参数细节**，只有一句 `Bad Request` + request id，
+    # 上面所有判据词一个都不命中 → `_video_rejection_reason` 返回 None →
+    # **修复梯子根本不启动、任务直接判死**（实测：同文档 12s 纯图片那条成功，
+    # 22s + 参考视频那条连失败两次，一次 `invalid_media`、一次光秃秃的 `Bad Request`）。
+    #
+    # 判据放宽是有边界的：这些词只在**带了参考视频**时才会走到这里
+    # （`_video_rejection_reason` 开头就要求存在 video/* 素材），而梯子本身有界且
+    # 第一级就是 `trim_video`（`libx264 + aac` 重编码）—— 正好把 HEVC / HE-AAC /
+    # 体积 / 时长这几类上游拒绝一并修掉。**宁可让它试着修一次，也不要原样判死。**
+    "bad request",
+    "invalidparameter",
+    "poll_invalidparameter",
 )
 
 #: 「这次拒绝是**体积/编码**问题」的判据（只有压缩/转码能解决，裁短与抽帧都不行）。
@@ -4211,6 +4300,129 @@ def _video_rejection_reason(
     return first_line[:200]
 
 
+def _upstream_text_rejection_reason(
+    text: str | None,
+    assets: list[MediaAsset],
+) -> str | None:
+    """**轮询阶段**返回的失败文本，是不是「参考视频被上游拒绝」（可按素材修复）。
+
+    2026-10-15：用户报 `invalid_media …（poll_invalidparameter）`，查下来修复梯子
+    **这一步都没跑**。原因是结构性的 —— 方舟的失败几乎都是**异步**的（任务先被接受，
+    处理中才失败：`submit` 成功、`poll` 返回 failed），而梯子只挂在 `submit` 的
+    `except` 上。于是**任何素材类拒绝都永远修不了**：体积超限、编码不符、时长超限
+    全都在轮询阶段才暴露。
+
+    这里把同一批判据词（`_VIDEO_REJECTION_MARKERS`）用在**文本**上，让轮询失败也能
+    进梯子。判据边界与异常版一致：**只有素材里真的带视频**才认
+    （否则「上游报了个 400」会被误当成参考视频问题、白跑一遍转码）。
+    """
+    if not any(str(asset.mime_type).startswith("video/") for asset in assets):
+        return None
+    if not isinstance(text, str) or not text.strip():
+        return None
+    lowered = text.lower()
+    if not any(marker.lower() in lowered for marker in _VIDEO_REJECTION_MARKERS):
+        return None
+    return text.strip().splitlines()[0][:200]
+
+
+async def _clean_media_assets(
+    services: GraphServices,
+    run_id: str,
+    assets: list[MediaAsset],
+) -> list[MediaAsset]:
+    """把带水印的**参考图**洗一遍，返回替换后的素材列表（原图不动）。
+
+    2026-10-19 用户口径：「我要的就是这个效果」——即**审批页上显示的就已经是干净的那张**。
+    所以清洗放在**素材入库之后、规划之前**（`ingest_source`）：这样规划、审批页、提交
+    全都拿到清洗版，而你的**原图仍在运行记录里可追溯**。
+
+    三道护栏（治 2026-10-10 撤掉时的两个毛病：无条件跑 / 静默改原图）：
+    ① 保真护栏（与原图逐像素比对，差异超标就保留原图）；② 原图永不改动（另存 `-nowm`）；
+    ③ 台账写进任务事件（可见）。
+
+    2026-10-20：改成**受控并发**。以前是串行 `for`，而每张图要跑一次图片模型
+    （实测 73~90 秒）—— 参考图一多，提交前这段兜底就把生成拖住十几分钟。
+    每张图互相独立，用信号量限流即可；结果按**原顺序**返回（下游按下标引用素材）。
+    """
+    from hashlib import sha256
+
+    from feishu_generation_agent.integrations.reference_watermark_clean import (
+        clean_reference_image,
+        has_overlay_watermark,
+    )
+
+    concurrency = max(
+        1,
+        int(
+            getattr(
+                services.settings,
+                "reference_watermark_cleanup_concurrency",
+                3,
+            )
+            or 1
+        ),
+    )
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def clean_one(asset: MediaAsset) -> MediaAsset:
+        async with semaphore:
+            if not str(asset.mime_type).startswith("image/"):
+                return asset
+            path = Path(asset.local_path)
+            if not path.is_file() or "-nowm" in path.stem:
+                return asset                      # 已经洗过的不重复跑
+            # 与后台那条路径同款：检测是纯 Python 逐像素循环，丢线程别占事件循环。
+            if not await asyncio.to_thread(has_overlay_watermark, path):
+                return asset
+            record = await clean_reference_image(path, asset_id=asset.asset_id)
+            if not record.adopted or record.cleaned is None:
+                # 只有**真的检测到叠加水印**时才留痕（"没水印、没处理"不写事件 ——
+                # 既不刷屏，也不破坏"每个节点 started/completed 成对"的既有契约，
+                # 审批图测试就是严格断言这个事件流的）。
+                if record.cleaned is not None or "未检测到" not in record.reason:
+                    await _safe_event(
+                        services, run_id, f"参考图 {asset.asset_id} 水印清洗：{record.reason}"
+                    )
+                return asset
+            data = record.cleaned.read_bytes()
+            await _safe_event(
+                services,
+                run_id,
+                f"参考图 {asset.asset_id} 已去水印（{record.reason}；原图保留：{path.name}）",
+            )
+            return asset.model_copy(
+                update={
+                    "local_path": record.cleaned,
+                    "size": len(data),
+                    "sha256": sha256(data).hexdigest(),
+                }
+            )
+
+    # `gather` 保序：返回顺序与入参一致，下游按下标引用素材不会错位。
+    return list(await asyncio.gather(*(clean_one(asset) for asset in assets)))
+
+
+async def _safe_event(services: GraphServices, run_id: str, summary: str) -> None:
+    """写一条可见事件；事件写失败绝不影响主流程。"""
+    try:
+        await services.repository.append_event(
+            run_id, "ingest_source", "running", summary
+        )
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("写事件失败：%s", summary, exc_info=True)
+
+
+async def _clean_reference_watermarks(
+    services: GraphServices,
+    run_id: str,
+    task: GenerationTask,
+    assets: list[MediaAsset],
+) -> list[MediaAsset]:
+    """提交前的**兜底**清洗（素材入库时已经洗过；这里只处理历史/克隆运行）。"""
+    return await _clean_media_assets(services, run_id, assets)
+
+
 async def _execute_one_task(
     services: GraphServices,
     run_id: str,
@@ -4222,6 +4434,20 @@ async def _execute_one_task(
 ) -> tuple[ExecutionRecord, list[Artifact]]:
     task_fingerprint = _task_fingerprint(task)
     provider, generator = await _generator_for_task(run_id, task, services)
+    # 参考图去水印（2026-10-19 用户口径：重做这个功能，但把"改掉原图"的问题堵死）。
+    #
+    # 背景：成片上的第三方水印**只有一个来源 = 模型照抄参考图上的水印**（接口水印
+    # 早已 `watermark=False`，实测参考图里带「豆包AI生成」等 → 成片复现）。
+    # 2026-10-10 曾撤掉过同类功能，原因是它**无条件跑 + 静默替换用户原图**，清洗版与实物
+    # 不一致时用户看不见也拦不住。本次重做加了三道护栏：
+    #   ① 事后**保真护栏**：清洗版与原图逐像素比对，差异超阈值就**保留原图**；
+    #   ② **原图永不改动**：清洗版另存 `-nowm.png`，只替换"这次提交用的副本"；
+    #   ③ **台账可见**：把处理结果写进任务事件（哪张、差异多少、是否采用、原图在哪）。
+    if getattr(services.settings, "reference_watermark_cleanup_enabled", False):
+        try:
+            assets = await _clean_reference_watermarks(services, run_id, task, assets)
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("参考图去水印前置步骤失败，按原图继续", exc_info=True)
     if preflight is not None and _generator_accepts_video_references(generator):
         # **主动预检**（2026-10-10 新增）：参考视频的**体积 / 编码**超过这条通道
         # 实际能收的范围时，**在提交之前**修好。
@@ -4535,6 +4761,33 @@ async def _execute_one_task(
             )
         status = submission.status.lower()
         if status not in _SUCCESS_PROVIDER_STATUSES:
+            # 2026-10-15：**轮询阶段**的失败以前直接判死，判据与修复梯子完全没机会看一眼
+            # （方舟的失败几乎都在轮询才暴露）。这里补上与提交阶段一致的处理：
+            # 认出「参考视频被拒」就交给梯子（压缩 → 裁短 → 抽帧），并留下可见事件。
+            if degrade is not None:
+                rejection_reason = _upstream_text_rejection_reason(
+                    getattr(submission, "error_message", None), assets
+                )
+                if rejection_reason is not None:
+                    degraded = await degrade(
+                        task,
+                        rejection_reason,
+                        getattr(generator, "reference_video_max_seconds", None),
+                        getattr(generator, "reference_video_max_bytes", None),
+                    )
+                    if degraded is not None:
+                        degraded_task, degraded_assets = degraded
+                        await services.repository.delete_task_operations(
+                            run_id, task.task_id
+                        )
+                        return await _execute_one_task(
+                            services,
+                            run_id,
+                            degraded_task,
+                            degraded_assets,
+                            degrade=degrade,
+                            preflight=preflight,
+                        )
             phase = status if status in {"cancelled", "expired"} else "failed"
             return await _finish_submit_phase(
                 services, run_id, task, provider, operation, phase,

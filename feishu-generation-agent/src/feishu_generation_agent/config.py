@@ -55,6 +55,39 @@ class Settings(BaseSettings):
     green_screen_flatten_python: str = ""
     #: 目标纯色（标准抠像绿）。
     green_screen_target_color: str = "00B140"
+    #: 规划后的「审计」调用模式（2026-10-15 新增，用于根治「规划十分钟」）。
+    #:
+    #: * `always`（默认，保持既有行为）：每次都跑审计。
+    #: * `auto`：计划**没有 warnings / blocking_issues** 时跳过审计 —— 审计在本仓库
+    #:   的定位是**建议项（不拦审批）**，干净的计划再花 1~3 分钟去审没有收益。
+    #:
+    #: 背景：实测 run `37757a6c`「规划 4.8 分 + 审计 5.0 分 = 9.8 分」，最后还因为审计
+    #: 超时（`operation=audit; cause=APITimeoutError`）把整条 run 判死。审计超时/瞬态
+    #: 错误现在一律**降级为跳过**（见 `graph/nodes.py::audit_plan`）；想再省掉常规那
+    #: 1~3 分钟，就把这里设成 `auto`（`.env`：`AUDIT_MODE=auto`）。
+    audit_mode: Literal["always", "auto"] = "always"
+    #: 参考图**去水印**前置步骤（2026-10-19 用户要求重做）。
+    #:
+    #: 背景：成片上的第三方水印**只有一个来源 = 模型照抄参考图上的水印**（接口层的
+    #: `watermark` 早已为 False）。2026-10-10 曾撤掉过同类功能，因为它**无条件跑 +
+    #: 静默替换用户原图**，清洗版与实物不一致时用户看不见也拦不住。
+    #:
+    #: 现在重做并加了三道护栏（见 `integrations/reference_watermark_clean.py`）：
+    #: ① 事后**保真护栏**（与原图逐像素比对，差异超标就保留原图）；
+    #: ② **原图永不改动**（清洗版另存 `-nowm.png`，只替换这次提交用的副本）；
+    #: ③ **台账可见**（任务事件里写明哪张洗过、差异多少、原图在哪）。
+    #: 默认**开**（用户要的就是"生成时避免水印"）；`.env`：`REFERENCE_WATERMARK_CLEANUP_ENABLED=false` 可关。
+    reference_watermark_cleanup_enabled: bool = True
+    #: 参考图去水印的**并发张数**（2026-10-20）。
+    #:
+    #: 背景：清洗是"一张图一次图片模型调用"，实测**每张 73~90 秒**（生产事件时间差），
+    #: 而实现是一个串行 `for` 循环 —— 10 张图就是 12~15 分钟，用户体感"图片一多就特别慢"。
+    #: 每张图是**互相独立**的作业（本机 nano-banana 每个 job 自己一个线程池，多 job 天然
+    #: 并行），所以只差一个受控并发。
+    #:
+    #: 默认 3：够把 10 张压到 ~4 分钟，又不会把上游（火山方舟 Seedream）撞出 429。
+    #: 想更快可以调大，遇到限流就调小；`.env`：`REFERENCE_WATERMARK_CLEANUP_CONCURRENCY=4`。
+    reference_watermark_cleanup_concurrency: int = 3
     # 服务机 LAN IP 每周变动，禁止在代码里硬编码；默认动态探测本机 LAN IP
     # （_lan_base_url，探测失败回退 127.0.0.1），部署时可通过 .env 覆盖。
     asset_base_url: str = Field(default_factory=lambda: _lan_base_url())
