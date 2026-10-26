@@ -9,18 +9,33 @@
 <link rel="stylesheet" href="/ui/portal-ui-core.css">
 <style>
 /* 登录发生在认证之前，因此这里必须保留一套可独立工作的最小样式。
-   即使共享 UI Core 因网络或认证配置暂时不可用，页面也不能退化成裸 HTML。 */
+   即使共享 UI Core 因网络或认证配置暂时不可用，页面也不能退化成裸 HTML。
+   ⚠️ 2026-10-26 深色模式实测踩到的坑：这层兜底**只能声明原语**（--ui-color-*），
+   别名（--ui-bg-* / --ui-text-* / --ui-action-*）一律用 var() 指过去。
+   原先把别名写成字面量，等于用同权重、更靠后的 :root 把浅色**钉死** ——
+   深色主题覆盖了原语也没用（登录页在深色下整页发白，按钮还会变成深字配深蓝底）。
+   现在：深色主题（:root[data-theme="dark"]，权重更高）能正常盖上原语；
+   共享样式加载失败时，这套兜底依然完整可用。 */
 :root{
-  --ui-bg-canvas:#f3f6fa;
-  --ui-bg-surface:#fff;
-  --ui-bg-sunken:#eef2f7;
-  --ui-text-primary:#172033;
-  --ui-text-secondary:#475569;
-  --ui-text-muted:#748196;
-  --ui-border-default:#d7dee8;
-  --ui-action-primary:#235fd6;
-  --ui-action-primary-hover:#184fbf;
+  --ui-color-canvas:#f3f6fa;
+  --ui-color-surface:#fff;
+  --ui-color-surface-sunken:#eef2f7;
+  --ui-color-text:#172033;
+  --ui-color-text-secondary:#475569;
+  --ui-color-text-muted:#748196;
+  --ui-color-border:#d7dee8;
+  --ui-color-brand:#235fd6;
+  --ui-color-brand-hover:#184fbf;
   --ui-color-danger-text:#b42318;
+  --ui-bg-canvas:var(--ui-color-canvas);
+  --ui-bg-surface:var(--ui-color-surface);
+  --ui-bg-sunken:var(--ui-color-surface-sunken);
+  --ui-text-primary:var(--ui-color-text);
+  --ui-text-secondary:var(--ui-color-text-secondary);
+  --ui-text-muted:var(--ui-color-text-muted);
+  --ui-border-default:var(--ui-color-border);
+  --ui-action-primary:var(--ui-color-brand);
+  --ui-action-primary-hover:var(--ui-color-brand-hover);
   --ui-font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   --ui-font-size-base:13px;
   --ui-font-size-md:15px;
@@ -28,7 +43,7 @@
   --ui-font-weight-medium:600;
   --ui-font-weight-bold:700;
   --ui-radius-md:8px;
-  --ui-focus-ring:0 0 0 3px rgba(35,95,214,.16);
+  --ui-focus-ring:0 0 0 3px var(--ui-color-brand-ring,rgba(35,95,214,.16));
 }
 *,*::before,*::after{box-sizing:border-box}
 html,body{margin:0;min-height:100%}
@@ -41,7 +56,7 @@ label{display:block;font-size:var(--ui-font-size-base);color:var(--ui-text-secon
 label span{display:block;margin-bottom:4px}
 input[type=text],input[type=password]{width:100%;min-height:36px;padding:0 12px;background:var(--ui-bg-surface);border:1px solid var(--ui-border-default);border-radius:var(--ui-radius-md);color:var(--ui-text-primary);font-size:var(--ui-font-size-md);outline:none}
 input:focus{border-color:var(--ui-action-primary);box-shadow:var(--ui-focus-ring)}
-button{width:100%;min-height:38px;padding:0 14px;background:var(--ui-action-primary);color:#fff;border:1px solid var(--ui-action-primary);border-radius:var(--ui-radius-md);font-size:var(--ui-font-size-base);font-weight:var(--ui-font-weight-medium);cursor:pointer;margin-top:8px}
+button{width:100%;min-height:38px;padding:0 14px;background:var(--ui-action-primary);color:var(--ui-color-on-accent,#fff);border:1px solid var(--ui-action-primary);border-radius:var(--ui-radius-md);font-size:var(--ui-font-size-base);font-weight:var(--ui-font-weight-medium);cursor:pointer;margin-top:8px}
 button:hover{background:var(--ui-action-primary-hover);border-color:var(--ui-action-primary-hover)}
 button:disabled{background:var(--ui-bg-sunken);border-color:var(--ui-border-default);color:var(--ui-text-muted);cursor:default}
 .err{color:var(--ui-color-danger-text);font-size:var(--ui-font-size-base);margin-top:12px;text-align:center;min-height:20px}

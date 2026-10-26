@@ -303,6 +303,13 @@
 
 对 iframe 子应用：在 `iframe.contentDocument` 里跑同一套审计。**这套脚本是这一轮所有"0 违规"结论的来源**，不是肉眼看的。
 
+审计脚本已入库：**`_diag/audit_dark_mode.js`** —— 在 9090 页面控制台整段粘贴即可复跑（或由 Agent 用浏览器工具执行），返回每个文档浅/深两轮的违规明细与浅色孤岛清单。文件头写清了三个背景解析的坑（透明祖先、渐变整页底、属性选择器里的颜色字符串）与判据。
+
+#### 登录页：一处真 bug（审计逼出来的）
+
+第 1 期扫完全站后又去审了**唯一没覆盖的登录页**，抓到：`login.html` 的行内兜底把**语义别名**写成了字面量（`--ui-bg-canvas:#f3f6fa` 等），而它在共享样式表**之后**、同权重 —— 等于把浅色钉死：深色主题覆盖了原语也没用，**登录页在深色下整页发白**。改成"只声明原语 + 别名用 `var()` 串过去"后：暗色 body `#101419`、卡片 `#171c23`、按钮深墨配品牌青（7.69:1）、输入框深底浅字，**0 违规 0 孤岛**；浅色逐字不变。
+`test_ui_core_structure.mjs` 里那条守卫也一并改成守"原语 + 别名链"，并加一条 `doesNotMatch`：**登录页兜底不得再把语义别名写成字面量**。
+
 ### 5.5 变量守门（`tests/test_theme_variables.mjs`）
 
 各应用样式表里**没有兜底**的 `var(--x)` 引用，必须在"该文件自己 ∪ 同目录应用样式表 ∪ `shared-ui/tokens/*`"里有定义。深色模式全靠变量翻转，**变量名写错/忘了加 token 时 CSS 不报错**，只会静默变成 `inherit`/透明 —— 这是本轮最容易漏的一类回归（实测就抓到过 `--surface-raised` 需要新加 token）。口径：`var(--x, 兜底)` 自带兜底，不算问题；JS 运行时写入的变量（拖拽位移 `--tx/--ty`、量高度的 `--portal-header-height` 等）在允许清单里。
@@ -320,11 +327,27 @@
 | 误伤统计/反代 | 不触碰 `portal/app.py` 的 `_proxy`/记账路径；改动集中在 `*.css` 与 `static/*.js`；实施后按仓库红线**单独复核一次统计链路** |
 | 回滚 | 改动集中在 CSS + 少量前端 JS；`data-theme` 不存在时**就是现在的外观** ⇒ 单模块 revert 即回浅色；顶栏开关也可整体隐藏而不影响其它功能 |
 
-## 7. 影响面清单
+## 7. 影响面清单（实施后按实际更新）
 
-- **新增（4）**：`shared-ui/theme-boot.js`、`shared-ui/tokens/theme-dark.css`、`portal/static/topbar-tools.js`、本设计文档。
-- **修改（约 26）**：§2.3 的 12 个入口页、`shared-ui/portal-ui-core.css`（+1 行）、`shared-ui/sync-ui.sh`（多复制 1 个文件 + 新增 2 个目标目录）、`portal/static/styles.css`、`portal/static/free-creation/styles.css`、`portal/static/effects.js`（摘掉建按钮那段）、6 个子应用 `styles.css`（seedance / nano-banana / dreamina / volcengine-portrait / rag-assistant / drama-pipeline / feishu / previz）。
-- **新增测试（3）**：§5.1 / §5.2 / §5.3。
+实际改动 **93 个文件、+3911 / −852**（提交 `b840ed2`）：
+
+- **新增（8）**：`shared-ui/theme-boot.js`、`shared-ui/tokens/theme-dark.css`、`portal/static/topbar-tools.js`、`_diag/audit_dark_mode.js`、4 个护栏测试（guards / contrast / toggle / variables）、本设计文档（更早一次提交）。
+- **机制（3）**：`shared-ui/portal-ui-core.css`（+1 行 `@import`）、`shared-ui/tokens/{core,semantic}.css`、`shared-ui/styles/components.css`（19 处硬编码色收成 token）、`shared-ui/sync-ui.sh`。
+- **分发副本（51）**：9 个目标 × `ui/` 下的 `portal-ui-core.css` / `theme-boot.js` / `tokens/{core,semantic,theme-dark}.css` / `styles/components.css`；`previz/static/ui/` 是整目录新建（它原来不引 ui-core，第 1 期只为 boot 建了这份）。
+- **Portal（9）**：`index.html` / `login.html` / `styles.css` / `effects.js` / `topbar-tools.js` / `app.js` / `js/portal-rag-interceptor.js` / `free-creation/index.html` / `free-creation/styles.css`。
+- **子应用（12）**：seedance、nano-banana、dreamina、previz、rag-assistant、drama-pipeline、volcengine-portrait、feishu 的入口页与样式表。
+- **测试（6）**：上述 4 个新护栏 + `test_ui_core_structure.mjs`（改成守语义、补登录页守卫）+ `test_token_section.mjs`（修内联 CSS 函数误报）。
+
+## 9. 已知欠账（登记未改，别误当遗漏）
+
+| 项 | 现状 | 为什么没改 |
+|---|---|---|
+| 浅色下 5 组对比度欠账（白字 on `#10b981` 2.54、on `#f59e0b` 2.15 等） | `test_theme_contrast.mjs` 里**显式豁免**并注明原因 | 你定的硬要求是"浅色零变化"，不能借提对比度顺手改浅色；要治得单独开一次浅色可读性调整 |
+| 深色下 `--muted` 在浅色主题里 4.42:1（差 0.08） | 同上，属既有值 | 同上 |
+| previz 的 2 处"浅字配亮蓝按钮" | 它本身就是暗色 3D 工作台（`:root` 全深色），第 1 期未改造 | 与主题无关，是它自己的既有配色 |
+| 无限画布内部（antd / Tailwind / 画布） | 第 2 期 | Vite 构建产物，要改源码重 build；第 1 期只保底（外框跟随 + 它自带的引导脚本） |
+| 实心成功徽章浅色对比度 2.8 → 2.54 | 统一到 `--success` 的副作用 | 两者都低于 AA，属上面那族既有欠账 |
+
 
 ## 8. 实施前需再确认的小决策（都有默认值，不阻塞）
 

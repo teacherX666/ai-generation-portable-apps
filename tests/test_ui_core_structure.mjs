@@ -38,7 +38,11 @@ const portal = read('portal/static/index.html');
 const login = read('portal/static/login.html');
 const portalBackend = read('portal/app.py');
 assert.match(login, /href="\/ui\/portal-ui-core\.css"/, 'Login should use the shared UI Core when it is available');
-assert.match(login, /--ui-bg-canvas:\s*#f3f6fa[\s\S]*?\.login-card\s*\{[^}]*background:\s*var\(--ui-bg-surface\)[^}]*border:/s, 'Login must keep a complete inline fallback before authentication');
+// 2026-10-26 深色模式：这层兜底原来把**别名**写成字面量（`--ui-bg-canvas:#f3f6fa`），
+// 用同权重更靠后的 :root 把浅色钉死 —— 深色主题覆盖了原语也没用，登录页在深色下整页发白。
+// 现在只声明原语、别名用 var() 指过去（断言随之改成守"原语 + 别名链"）。
+assert.match(login, /--ui-color-canvas:\s*#f3f6fa[\s\S]*?--ui-bg-canvas:\s*var\(--ui-color-canvas\)[\s\S]*?\.login-card\s*\{[^}]*background:\s*var\(--ui-bg-surface\)[^}]*border:/s, 'Login must keep a complete inline fallback before authentication');
+assert.doesNotMatch(login, /--ui-bg-canvas:\s*#/, '登录页兜底不得把语义别名写成字面量（会压住深色主题）');
 assert.match(portalBackend, /_AUTH_EXEMPT_PREFIXES\s*=\s*\("\/ui\/",\)/, 'Shared login styles must be publicly readable before authentication');
 assert.match(portalBackend, /path\.startswith\(_AUTH_EXEMPT_PREFIXES\)/, 'Portal GET dispatch must honor the public UI style prefix');
 const tabNames = [...portal.matchAll(/<button\b[^>]*class="[^"]*app-tab[^"]*"[^>]*data-tab="([^"]+)"/g)].map((match) => match[1]);
