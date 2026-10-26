@@ -27,6 +27,9 @@ const APP_FILES = [
   ['portal/static/styles.css', []],
   ['portal/static/free-creation/styles.css', []],
   ['portal/static/index.html', ['portal/static/styles.css']],
+  // dino.js 是"JS 注入样式"那条路（猫咪衣柜/实验室彩蛋）：它不走样式表，CSS 回填与
+  // 常规扫描都覆盖不到，2026-10-26 实测它整块是浅色（深色下白斑）。定义域算上 portal 样式表。
+  ['portal/static/dino.js', ['portal/static/styles.css']],
   ['seedance/static/styles.css', []],
   ['nano-banana/static/styles.css', []],
   ['dreamina/static/styles.css', []],
