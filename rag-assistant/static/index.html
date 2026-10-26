@@ -4,15 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>报错问答助手</title>
+  <script src="ui/theme-boot.js?v=20261026-dark"></script>
   <link rel="stylesheet" href="ui/portal-ui-core.css">
   <style>
     :root {
       color-scheme: light;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
-      --page-bg: #f3f6fa; --surface: #ffffff; --border: #d9e0ea;
-      --text: #172033; --muted: #687386; --accent: #235fd6; --accent-hover: #194fb8;
-      --danger-soft: #fee2e2; --danger-text: #b91c1c;
-      --radius-md: 6px; --shadow-focus: 0 0 0 3px rgba(35, 95, 214, 0.22);
+      --page-bg: var(--ui-bg-canvas); --surface: var(--ui-bg-surface); --border: var(--ui-border-default);
+      --text: var(--ui-text-primary); --muted: var(--ui-text-muted); --accent: var(--ui-action-primary); --accent-hover: var(--ui-action-primary-hover);
+      --danger-soft: var(--ui-color-danger-soft); --danger-text: var(--ui-color-danger-text);
+      --radius-md: 6px; --shadow-focus: var(--ui-focus-ring);
       --font-size-sm: 12px; --font-size-base: 13px; --font-size-md: 15px;
       --font-weight-medium: 600; --font-weight-bold: 720;
     }
@@ -22,20 +23,20 @@
     header { flex-shrink: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 20px; font-size: var(--font-size-md); font-weight: var(--font-weight-bold); }
     main { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
     .msg { max-width: 78%; padding: 10px 14px; border-radius: var(--radius-md); line-height: 1.65; white-space: pre-wrap; font-size: var(--font-size-base); }
-    .msg.q { align-self: flex-end; background: var(--ui-action-primary, var(--accent)); color: #fff; }
+    .msg.q { align-self: flex-end; background: var(--ui-action-primary, var(--accent)); color: var(--ui-color-on-accent); }
     .msg.a { align-self: flex-start; background: var(--ui-bg-surface, var(--surface)); border: 1px solid var(--ui-border-default, var(--border)); color: var(--ui-text-primary, var(--text)); }
     .msg.a.err { background: var(--ui-color-danger-soft, var(--danger-soft)); border-color: #fca5a5; color: var(--ui-color-danger-text, var(--danger-text)); }
     .answer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-    .answer-label { color: var(--ui-text-secondary, #465267); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
-    .copy-answer { min-height: 26px; padding: 0 9px; color: #172033; background: #fff; border-color: #cbd5e1; font-size: var(--font-size-sm); }
-    .copy-answer:hover:not(:disabled) { color: #172033; background: #eef2f7; border-color: #94a3b8; }
+    .answer-label { color: var(--ui-text-secondary, var(--text-secondary)); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
+    .copy-answer { min-height: 26px; padding: 0 9px; color: var(--text); background: var(--surface); border-color: var(--border-strong); font-size: var(--font-size-sm); }
+    .copy-answer:hover:not(:disabled) { color: var(--text); background: var(--surface-sunken); border-color: var(--muted); }
     .copy-answer.is-copied { color: var(--ui-color-success-text, #047857); border-color: #bbf7d0; background: var(--ui-color-success-soft, #dcfce7); }
     .msg img { max-width: 220px; max-height: 160px; border-radius: var(--radius-md); display: block; margin-top: 6px; }
     .msg .note { margin-top: 8px; font-size: var(--font-size-sm); color: var(--muted); }
     .answer-layout { display: grid; gap: 10px; }
     .answer-section { padding-top: 8px; border-top: 1px solid var(--ui-border-default, var(--border)); }
     .answer-section:first-child { padding-top: 0; border-top: 0; }
-    .answer-section-title { margin-bottom: 4px; color: var(--ui-text-secondary, #465267); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
+    .answer-section-title { margin-bottom: 4px; color: var(--ui-text-secondary, var(--text-secondary)); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
     .answer-section-body { color: inherit; }
     .msg strong { font-weight: 700; }
     .msg code { background: var(--ui-bg-subtle, #eef2f7); padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
@@ -48,14 +49,14 @@
     .row { display: flex; gap: 10px; }
     textarea { flex: 1; resize: none; height: 44px; padding: 11px 12px; border-radius: var(--radius-md); border: 1px solid var(--ui-border-default, var(--border)); background: var(--ui-bg-surface, var(--surface)); color: var(--ui-text-primary, var(--text)); font-size: var(--font-size-base); font-family: inherit; }
     textarea:focus { border-color: var(--accent); box-shadow: var(--shadow-focus); outline: none; }
-    button { min-height: 34px; padding: 0 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-secondary, #465267); font-size: var(--font-size-base); cursor: pointer; }
-    button.primary { border: none; background: var(--accent); color: #fff; font-weight: var(--font-weight-medium); }
+    button { min-height: 34px; padding: 0 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-secondary, var(--text-secondary)); font-size: var(--font-size-base); cursor: pointer; }
+    button.primary { border: none; background: var(--accent); color: var(--ui-color-on-accent); font-weight: var(--font-weight-medium); }
     button.primary:hover { background: var(--accent-hover); }
     button:disabled { opacity: .5; cursor: not-allowed; }
     ::-webkit-scrollbar { width: 12px; height: 12px; }
-    ::-webkit-scrollbar-track { background: #eef2f7; }
-    ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 6px; }
-    ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+    ::-webkit-scrollbar-track { background: var(--surface-sunken); }
+    ::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 6px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
     @media (max-width: 640px) {
       main { padding: 12px; }
       footer { padding: 8px 12px; }

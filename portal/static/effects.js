@@ -22,7 +22,6 @@
   var lastMoveAt = 0;
   var enabled = localStorage.getItem(FX_KEY) === 'on';
   var dpr = Math.max(1, Math.min(1.5, window.devicePixelRatio || 1));
-  var paintToggle = null;
 
   function resize() {
     if (!canvas || !ctx) return;
@@ -111,31 +110,27 @@
     removeCanvas();
   }
 
-  function makeToggle() {
-    var btn = document.createElement('button');
-    btn.id = '_fxTrailToggle';
-    btn.type = 'button';
-    btn.textContent = '*';
-    function paint() {
-      btn.title = enabled ? 'Mouse trail: on (click to turn off)' : 'Mouse trail: off (click to turn on)';
-      btn.style.cssText =
-        'font-size:12px;line-height:1;padding:3px 8px;border-radius:5px;cursor:pointer;' +
-        'background:transparent;color:' + (enabled ? '#e2e8f0' : '#64748b') + ';' +
-        'border:1px solid ' + (enabled ? '#475569' : '#334155') + ';' +
-        'opacity:' + (enabled ? '1' : '0.6') + ';transition:opacity .15s,color .15s;';
-    }
-    paintToggle = paint;
-    btn.addEventListener('click', function () {
-      enabled = !enabled;
+  /** 供顶栏按钮（`topbar-tools.js`）调用：切/读拖尾开关，状态照旧落在 localStorage。
+   *  2026-10-26：按钮的**外观**搬到 `topbar-tools.js`（与深色模式那对按钮统一设计），
+   *  这里只保留"拖尾本身"的逻辑，不再自己造按钮。 */
+  function setEnabled(next) {
+    next = Boolean(next);
+    if (next === enabled) return enabled;
+    enabled = next;
+    try {
       localStorage.setItem(FX_KEY, enabled ? 'on' : 'off');
-      if (enabled) enableTrail(); else disableTrail();
-      paint();
-    });
-    paint();
-    var controls = document.querySelector('.portal-bar > div:last-child');
-    if (controls) controls.insertBefore(btn, controls.firstChild);
-    else (document.body || document.documentElement).appendChild(btn);
+    } catch (error) {
+      /* 存不下就只在本次会话生效 */
+    }
+    if (enabled) enableTrail(); else disableTrail();
+    return enabled;
   }
+
+  window.__portalFxTrail = {
+    isEnabled: function () { return enabled; },
+    setEnabled: setEnabled,
+    toggle: function () { return setEnabled(!enabled); }
+  };
 
   function init() {
     window.addEventListener('storage', function (e) {
@@ -144,13 +139,11 @@
       if (next === enabled) return;
       enabled = next;
       if (enabled) enableTrail(); else disableTrail();
-      if (paintToggle) paintToggle();
     });
     window.addEventListener('resize', function () { if (canvas) resize(); }, { passive: true });
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) stop();
     });
-    makeToggle();
     if (enabled) enableTrail();
   }
 

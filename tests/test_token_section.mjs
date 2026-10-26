@@ -141,10 +141,16 @@ for (const spec of SECTIONS) {
   const section = indexHtml.slice(sectionStart, end);
 
   // 只认「名字紧跟 (」的调用形式；不吞 v-for="x in (...)"/v-if="a (b)" 里的 Vue 关键字。
+  //
+  // 2026-10-26 深色模式：内联 style 里的 **CSS 函数**（`color:var(--muted)`）也会命中
+  // `名字(`，被误判成"模板引用了不存在的组件方法"。静态 `style="…"` 是纯 CSS、不经过 Vue
+  // 求值，先把它剥掉再扫；`:style="…"`（带冒号）是**绑定**，里面真的可能有 `appColor(app)`
+  // 这类组件方法，必须保留扫描。
+  const scanned = section.replace(/(?<!:)\bstyle="[^"]*"/g, 'style=""');
   const referenced = new Set();
   const callRe = /(\.?)([A-Za-z_$][\w$]*)\(/g;
   let m;
-  while ((m = callRe.exec(section)) !== null) {
+  while ((m = callRe.exec(scanned)) !== null) {
     if (m[1] === ".") continue;
     if (JS_BUILTINS.has(m[2])) continue;
     referenced.add(m[2]);

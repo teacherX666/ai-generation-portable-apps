@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light">
   <title>自由创作</title>
-  <link rel="stylesheet" href="./styles.css?v=20260921-history-scroll">
+  <script src="/ui/theme-boot.js?v=20261026-dark"></script>
+  <link rel="stylesheet" href="./styles.css?v=20261015-draft-mode">
 </head>
 <body>
   <div class="fc-shell" id="fc-shell">
@@ -62,7 +63,7 @@
             <div class="fc-preview-corner"><button class="fc-history-pill" id="history-toggle" type="button" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg><span>查看历史记录</span><svg class="fc-chevron" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></button></div>
           </div>
           <div class="fc-history-strip" id="history-strip" aria-hidden="true"></div>
-          <div class="fc-preview-actions"><button class="fc-secondary-button" id="download-latest" type="button" disabled><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg>下载结果</button><button class="fc-primary-button" id="refine-latest" type="button"><svg viewBox="0 0 24 24"><path d="m12 3-1.9 5.1L5 10l5.1 1.9L12 17l1.9-5.1L19 10l-5.1-1.9Z"/><path d="M5 19h14"/></svg>继续修改</button></div>
+          <div class="fc-preview-actions"><button class="fc-secondary-button" id="draft-finalize" type="button" hidden><svg viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m22 8-6 4 6 4Z"/></svg><span id="draft-finalize-label">用这条样片出成片</span></button><button class="fc-secondary-button" id="download-latest" type="button" disabled><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg>下载结果</button><button class="fc-primary-button" id="refine-latest" type="button"><svg viewBox="0 0 24 24"><path d="m12 3-1.9 5.1L5 10l5.1 1.9L12 17l1.9-5.1L19 10l-5.1-1.9Z"/><path d="M5 19h14"/></svg>继续修改</button></div>
         </section>
         <section class="fc-composer" id="composer">
           <div class="fc-composer-glow" aria-hidden="true"></div>
@@ -111,6 +112,6 @@
   </template>
   <template id="archived-template"><article class="fc-conversation-item is-archived"><span class="fc-conversation-symbol"><svg viewBox="0 0 24 24"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg></span><span class="fc-conversation-copy"><strong></strong><small></small></span><button class="fc-restore" type="button" aria-label="恢复这条归档">恢复</button><button class="fc-delete-archived" type="button" aria-label="删除这条归档" title="删除"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg></button></article></template>
   <template id="history-template"><button class="fc-history-card" type="button"><span class="fc-history-thumb"></span><span class="fc-history-copy"><strong></strong><small></small></span></button></template>
-  <script src="./app.js?v=20260921-watermark" defer></script>
+  <script src="./app.js?v=20261015-draft-mode" defer></script>
 </body>
 </html>

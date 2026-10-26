@@ -112,7 +112,7 @@
 
       const desc = document.createElement('p');
       desc.textContent = '当前提示词可能违反以下规则：';
-      desc.style.cssText = 'margin:0 0 10px;font-size:13px;color:#475569;';
+      desc.style.cssText = 'margin:0 0 10px;font-size:13px;color:var(--text-secondary);';
 
       const list = document.createElement('ul');
       list.style.cssText = 'margin:0 0 12px;padding-left:18px;font-size:13px;line-height:1.6;color:#172033;';

@@ -664,7 +664,7 @@ function DreaminaApp() {
             const friendly = job.status === 'cancelled' ? '任务已取消，输入和参数已保留。' : (friendlyDmError(job.error) || '生成失败');
             html += `<div class="ui-job-status-card__error">${escHtml(friendly)}</div>`;
             if (job.error && friendly !== job.error) {
-              html += `<details style="margin:8px 0;font-size:12px;color:#697386"><summary style="cursor:pointer">查看原始报错</summary><pre style="white-space:pre-wrap;margin:6px 0 0;padding:8px;background:#fff1f0;border-radius:6px;color:#b42318">${escHtml(String(job.error).slice(0, 300))}</pre></details>`;
+              html += `<details style="margin:8px 0;font-size:12px;color:var(--muted)"><summary style="cursor:pointer">查看原始报错</summary><pre style="white-space:pre-wrap;margin:6px 0 0;padding:8px;background:#fff1f0;border-radius:6px;color:#b42318">${escHtml(String(job.error).slice(0, 300))}</pre></details>`;
             }
           }
           if (!['completed', 'failed', 'cancelled', 'canceled'].includes(job.status)) {
@@ -2208,13 +2208,17 @@ function StatsApp() {
 
     appColor(app) {
       const meta = this.appsMeta[app];
-      if (meta && meta.color) return meta.color;
-      return {
+      const raw = (meta && meta.color) || {
         'seedance': '#2563eb',
         'nano-banana': '#10b981',
         'dreamina': '#a855f7',
         'volcengine-portrait': '#f59e0b',
       }[app] || '#64748b';
+      // 2026-10-26 深色模式：这些都是"饱和中深色"，直接当文字色在深底上只有 2.6~4.4:1
+      // （实测 stats 里的 Seedance/Dreamina 标签）。用 light-dark() 按 color-scheme 选：
+      // 浅色仍是 apps.json 里的原值（外观零变化），深色提亮一档（混白 60%，实测 6.2~10.8:1）。
+      // 这样**以后 apps.json 新增应用也自动跟着深色**，不用再补一份 token 表。
+      return `light-dark(${raw}, color-mix(in srgb, ${raw} 60%, white))`;
     },
 
     appLabel(app) {

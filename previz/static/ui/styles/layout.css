@@ -1,0 +1,44 @@
+.ui-page { min-height: 100vh; background: var(--ui-bg-canvas); }
+.ui-shell { display: flex; min-height: 100vh; flex-direction: column; overflow: hidden; }
+.ui-shell__header { flex: 0 0 auto; }
+.ui-shell__footer { flex: 0 0 auto; }
+.ui-shell__body { display: flex; min-height: 0; flex: 1 1 auto; overflow: hidden; }
+.ui-portal-content { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; }
+.ui-portal-content > .tab-panel { display: none; flex: 0 0 auto; width: 100%; min-width: 0; min-height: 0; }
+.ui-portal-content > .tab-panel[hidden] { display: none !important; }
+.ui-portal-content > .tab-panel.active { display: block; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; }
+.ui-portal-content > .tab-panel.iframe-panel.active { display: flex; flex: 1 1 auto; flex-direction: column; overflow: hidden; }
+.ui-portal-content iframe.portal-iframe { display: block; flex: 1 1 auto; width: 100%; height: auto; min-height: 0; border: 0; }
+.ui-workbench.workspace { min-height: 0; }
+.ui-sidebar.sidebar { min-height: 0; }
+.ui-sidebar { flex: 0 0 280px; min-height: 0; overflow: auto; background: var(--ui-bg-surface); border-right: 1px solid var(--ui-border-default); }
+.ui-main { min-width: 0; min-height: 0; flex: 1 1 auto; overflow: auto; }
+.ui-workbench:not(.workspace):not(.app) { display: grid; min-height: 100%; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); gap: var(--ui-space-4); padding: var(--ui-space-4); }
+/* Existing workbench CSS owns its grid and padding. These aliases only add
+   semantic hooks and must not turn a two-column app into nested panels. */
+.app.ui-workbench { padding: 0; gap: 0; }
+.ui-workbench__input, .ui-workbench__output { min-width: 0; min-height: 0; }
+.ui-console { display: grid; min-height: 100%; grid-template-rows: auto auto minmax(0, 1fr); gap: var(--ui-space-4); padding: var(--ui-space-4); }
+.ui-admin-page { min-width: 0; min-height: 100%; max-width: 1120px; margin: 0 auto; padding: var(--ui-space-6); overflow: visible; }
+.ui-admin-page--narrow { max-width: 920px; }
+.ui-admin-page__section { margin-bottom: var(--ui-space-4); }
+.ui-admin-page__section:last-child { margin-bottom: 0; }
+.ui-admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--ui-space-4); }
+.ui-admin-grid--wide { grid-template-columns: minmax(0, 1fr) minmax(280px, 1.35fr); }
+.ui-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ui-space-4); margin-bottom: var(--ui-space-5); }
+.ui-page-header__title { margin: 0; color: var(--ui-text-primary); font-size: var(--ui-font-size-lg); font-weight: var(--ui-font-weight-bold); }
+.ui-page-header__desc { margin: var(--ui-space-1) 0 0; color: var(--ui-text-muted); font-size: var(--ui-font-size-sm); }
+.ui-stack { display: flex; flex-direction: column; gap: var(--ui-space-3); }
+.ui-inline { display: flex; align-items: center; gap: var(--ui-space-2); }
+.ui-split { display: flex; align-items: center; justify-content: space-between; gap: var(--ui-space-3); }
+@media (max-width: 900px) {
+  .ui-workbench:not(.workspace):not(.app) { grid-template-columns: 1fr; }
+  .ui-sidebar { flex-basis: 220px; }
+  .ui-admin-page { padding: var(--ui-space-4); }
+  .ui-admin-grid--wide { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 680px) {
+  .ui-page-header { flex-direction: column; }
+  .ui-admin-page { padding: var(--ui-space-4); }
+}

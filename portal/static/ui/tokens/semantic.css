@@ -4,6 +4,7 @@
   --ui-bg-surface: var(--ui-color-surface);
   --ui-bg-subtle: var(--ui-color-surface-soft);
   --ui-bg-sunken: var(--ui-color-surface-sunken);
+  --ui-bg-raised: var(--ui-color-surface-raised);
   --ui-border-default: var(--ui-color-border);
   --ui-border-strong: var(--ui-color-border-strong);
   --ui-text-primary: var(--ui-color-text);

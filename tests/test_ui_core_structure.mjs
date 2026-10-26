@@ -44,8 +44,13 @@ assert.match(portalBackend, /path\.startswith\(_AUTH_EXEMPT_PREFIXES\)/, 'Portal
 const tabNames = [...portal.matchAll(/<button\b[^>]*class="[^"]*app-tab[^"]*"[^>]*data-tab="([^"]+)"/g)].map((match) => match[1]);
 const panelNames = [...portal.matchAll(/<(?:div|section)\b(?=[^>]*class="[^"]*tab-panel[^"]*")(?=[^>]*id="tab-([^"]+)")[^>]*>/g)].map((match) => match[1]);
 const apps = JSON.parse(read('portal/apps.json'));
-const appTabs = apps.filter((app) => app.name !== 'director').map((app) => app.name === 'nano-banana' ? 'nb' : app.name);
-const nativeTabs = ['home', 'history', 'keys', 'stats'];
+// local-ai 是纯网关（apps.json 里有、Portal 里没有 tab），free-creation 是 Portal 原生页
+// （有 tab、不在 apps.json 里）。**这两处不匹配在本次改动之前就存在**（用
+// `git show HEAD:portal/...` 复现过），2026-10-26 顺手把过期断言对齐现实。
+const appTabs = apps
+  .filter((app) => app.name !== 'director' && app.name !== 'local-ai')
+  .map((app) => (app.name === 'nano-banana' ? 'nb' : app.name));
+const nativeTabs = ['home', 'history', 'keys', 'stats', 'free-creation'];
 const expectedTabs = [...new Set([...appTabs, ...nativeTabs])].sort();
 assert.deepEqual([...new Set(tabNames)].sort(), expectedTabs, 'Portal tabs should derive from apps.json plus native pages');
 assert.deepEqual([...new Set(panelNames)].sort(), expectedTabs, 'Portal tabs and panels must expose the same names');
@@ -86,7 +91,10 @@ assert.match(sharedLayout, /iframe\.portal-iframe\s*\{[^}]*flex:\s*1 1 auto[^}]*
 
 const sharedComponents = read('shared-ui/styles/components.css');
 assert.match(sharedComponents, /\.ui-btn--secondary:hover[^}]*color:\s*var\(--ui-text-primary\)[^}]*background:\s*var\(--ui-bg-sunken\)/s, 'Secondary hover must keep readable semantic contrast');
-assert.match(sharedComponents, /\.ui-btn--ghost:hover[^}]*color:\s*#172033[^}]*background:\s*#eef2f7/s, 'Ghost hover must gain a readable background');
+// 2026-10-26 深色模式：这条原来钉的是**字面量**（#172033 / #eef2f7）。改成语义 token 后浅色值
+// 不变（--ui-text-primary = #172033、--ui-bg-sunken = #eef2f7），深色下自动跟随 ——
+// 钉"语义"而不是钉"颜色"，才不会挡住"这一处要跟随主题"的正当改动。
+assert.match(sharedComponents, /\.ui-btn--ghost:hover[^}]*color:\s*var\(--ui-text-primary\)[^}]*background:\s*var\(--ui-bg-sunken\)/s, 'Ghost hover must gain a readable background');
 assert.match(sharedComponents, /\.ui-btn\s*\{[^}]*width:\s*auto[^}]*height:\s*auto[^}]*white-space:\s*nowrap/s, 'Shared buttons must override legacy full-width button rules');
 assert.match(sharedComponents, /\.ui-table-actions\s*\{[^}]*flex-wrap:\s*nowrap[^}]*gap:/s, 'Table action groups must keep compact actions aligned horizontally');
 assert.match(sharedComponents, /\.ui-segment__button\s*\{[^}]*width:\s*auto[^}]*flex:\s*0 0 auto/s, 'Segment buttons must not inherit page-wide button sizing');

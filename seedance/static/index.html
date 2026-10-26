@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Seedance</title>
+  <script src="ui/theme-boot.js?v=20261026-dark"></script>
   <link rel="stylesheet" href="ui/portal-ui-core.css?v=20260910-fix7-datadriven">
-  <link rel="stylesheet" href="styles.css?v=20260917-multi-preview">
+  <link rel="stylesheet" href="styles.css?v=20261019-draft-mode">
   <script src="vendor/petite-vue.iife.js"></script>
 </head>
 <body class="ui-page">
@@ -64,8 +65,12 @@
                 <option value="reference">参考生视频（默认）</option>
                 <option value="extend">视频延长（ratio 自动锁 adaptive）</option>
                 <option value="edit">视频编辑（ratio=adaptive, duration=-1）</option>
+                <option value="draft">样片模式（480P 草稿 → 1080P 成片）</option>
               </select>
             </label>
+            <!-- 样片模式开关：后端按表单里的 draft 决定给方舟下发 draft=true。
+                 放在 form 里让 FormData 自动带上（petite-vue 的 :value 绑定）。 -->
+            <input type="hidden" name="draft" :value="taskMode === 'draft' ? '1' : ''">
             <div class="grid2">
               <label>时长（秒）<input name="duration" type="number" min="-1" max="15" value="12"></label>
               <label>分辨率
@@ -87,6 +92,14 @@
             <p class="hint" v-if="taskMode === 'edit'" style="color:#b45309">
               <strong>视频编辑</strong>：ratio 必须为 <code>adaptive</code>、duration 必须为 <code>-1</code>（即由模型自动决定时长，均已锁定）。
               请在参考素材里加入待编辑的视频，提示词描述编辑操作（删除/替换/增加/局部重绘等）。
+            </p>
+            <p class="hint" v-if="taskMode === 'draft'" style="color:#b45309">
+              <strong>样片模式</strong>：先用 <strong>480P</strong> 低成本出一版样片（分辨率已锁定 480P），
+              跑完会自动弹出<strong>样片预览窗口</strong>；在窗口里点「继续生成」即基于这条样片出
+              <strong>1080P</strong> 正式成片 —— 提示词、参考素材、时长、比例、种子与有声设置
+              全部沿用样片，只把分辨率提到 1080P。<strong>两段独立计费</strong>：官方价格表 5 秒 16:9、
+              无参考视频时 480P 约 ¥3.36、<strong>1080P 约 ¥18.71</strong>（带参考视频更贵）。
+              仅 Seedance 2.5 支持；想再回到那个窗口，直接点任务列表里带 <strong>样片</strong> 角标的卡片即可。
             </p>
             <div class="grid2">
               <label>比例
@@ -208,7 +221,7 @@
                 <span>取消 {{ activityCounts.cancelled || 0 }}</span>
               </div>
               <div class="activity-records">
-                <div v-for="r in activityRecords" :key="r.id" class="act-item" @click="showDetail(r.id)">
+                <div v-for="r in activityRecords" :key="r.id" class="act-item" @click="openActivityRecord(r)">
                   <span class="act-status" :class="r.status">{{ r.status }}</span>
                   <span class="act-time">{{ (r.created_at||'').slice(5,16) }}</span>
                   <span v-if="r.username" style="font-size:11px;color:#697386;margin-left:6px">@{{ r.username }}</span>
@@ -250,7 +263,7 @@
 
   <script src="model-capabilities.js"></script>
   <script src="job-cards.js"></script>
-  <script src="app.js?v=20260917-multi-preview"></script>
+  <script src="app.js?v=20261020-card-resolve"></script>
   <script src="effects.js?v=20260910-fx-perf"></script>
 </body>
 </html>

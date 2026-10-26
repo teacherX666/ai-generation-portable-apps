@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RedCraft 🐟</title>
   <link rel="icon" type="image/png" href="/ui/brand/favicon.png">
+  <script src="/ui/theme-boot.js?v=20261026-dark"></script>
   <link rel="stylesheet" href="/ui/portal-ui-core.css?v=20260909-ui">
   <link rel="stylesheet" href="/styles.css?v=20260911-cancel-state-fixed">
 </head>
@@ -672,9 +673,9 @@
           <div class="dm-zoom-foot">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
               <span v-if="dmZoom.status" :class="'status-badge ' + dmZoom.status">{{ dmZoom.status }}</span>
-              <span v-if="dmZoom.meta" style="font-size:11px;color:#64748b">{{ dmZoom.meta }}</span>
+              <span v-if="dmZoom.meta" style="font-size:11px;color:var(--muted)">{{ dmZoom.meta }}</span>
             </div>
-            <div v-if="dmZoom.prompt" style="font-size:12px;color:#475569;margin-top:6px;max-height:110px;overflow:auto;white-space:pre-wrap">{{ dmZoom.prompt }}</div>
+            <div v-if="dmZoom.prompt" style="font-size:12px;color:var(--text-secondary);margin-top:6px;max-height:110px;overflow:auto;white-space:pre-wrap">{{ dmZoom.prompt }}</div>
             <div id="dm-zoom-actions" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
             <div id="dm-zoom-logs"></div>
           </div>
@@ -721,11 +722,11 @@
               <button @click="createGroup()" :disabled="creatingGroup" class="ui-btn ui-btn--sm ui-btn--primary">{{ creatingGroup ? '创建中...' : '创建' }}</button>
               <button @click="showCreateGroup=false" class="ui-btn ui-btn--sm ui-btn--ghost">取消</button>
             </div>
-            <p v-if="groupId" style="color:#22c55e;font-size:12px;margin:0 0 8px">组 ID: {{ groupId }}</p>
+            <p v-if="groupId" style="color:light-dark(#22c55e, #4ade80);font-size:12px;margin:0 0 8px">组 ID: {{ groupId }}</p>
             <div v-if="assetGroupId" class="row" style="margin-bottom:8px;align-items:center">
-              <span style="font-size:12px;color:#64748b;flex-shrink:0">组名:</span>
+              <span style="font-size:12px;color:var(--muted);flex-shrink:0">组名:</span>
               <input v-if="renamingGroup" v-model="renameGroupName" @keyup.enter="saveGroupRename()" @keyup.escape="renamingGroup=false" style="flex:1;font-size:12px;padding:4px 6px" :placeholder="groupNameFor(assetGroupId)">
-              <span v-else style="font-size:12px;color:#334155;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ groupNameFor(assetGroupId) }}</span>
+              <span v-else style="font-size:12px;color:var(--text-secondary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ groupNameFor(assetGroupId) }}</span>
               <div v-if="renamingGroup" style="display:flex;gap:6px;align-items:center">
                 <button @click="saveGroupRename()" :disabled="renamingSaving" class="ui-btn ui-btn--sm ui-btn--primary">{{ renamingSaving ? '...' : '保存' }}</button>
                 <button @click="renamingGroup=false" class="ui-btn ui-btn--sm ui-btn--ghost">取消</button>
@@ -737,13 +738,13 @@
               <button @click="uploadAsset()" :disabled="uploading" class="ui-btn ui-btn--sm ui-btn--primary">{{ uploading ? '上传中...' : '上传素材' }}</button>
               <button v-if="!uploading && selectedFile" @click="selectedFile=''; document.getElementById('vp-file').value=''" class="ui-btn ui-btn--sm ui-btn--ghost">取消</button>
             </div>
-            <p v-if="selectedFile" style="font-size:12px;color:#94a3b8;margin:0 0 8px">已选: {{ selectedFile }}</p>
+            <p v-if="selectedFile" style="font-size:12px;color:var(--muted);margin:0 0 8px">已选: {{ selectedFile }}</p>
             <p v-if="uploadMsg" :style="{fontSize:'12px',margin:'0 0 8px',color:uploadError?'#ef4444':'#22c55e'}">{{ uploadMsg }}</p>
             <input type="file" id="vp-file" accept="image/*,video/*" style="display:none" @change="onFileSelect()">
             <!-- 资产网格 -->
-            <p style="font-size:11px;color:#64748b;margin:0 0 8px">点击卡片设为「图1」；点 ⤢ 放大预览；点「＋ 附加」加入图2、图3…。可把文件拖进本卡片快速上传。</p>
-            <div v-if="assets.length===0" style="color:#64748b;font-size:12px;padding:14px 0">暂无人像资产：选择已有组，或新建组后上传素材；真人素材在火山方舟控制台录入后自动出现。</div>
-            <div v-if="assets.filter(a=>a.status==='failed').length" style="font-size:12px;color:#dc2626;margin:0 0 8px">
+            <p style="font-size:11px;color:var(--muted);margin:0 0 8px">点击卡片设为「图1」；点 ⤢ 放大预览；点「＋ 附加」加入图2、图3…。可把文件拖进本卡片快速上传。</p>
+            <div v-if="assets.length===0" style="color:var(--muted);font-size:12px;padding:14px 0">暂无人像资产：选择已有组，或新建组后上传素材；真人素材在火山方舟控制台录入后自动出现。</div>
+            <div v-if="assets.filter(a=>a.status==='failed').length" style="font-size:12px;color:light-dark(#dc2626, #f87171);margin:0 0 8px">
               ⚠️ 本组有 {{ assets.filter(a=>a.status==='failed').length }} 个失效资产（已标红，无法选用）。素材状态由方舟侧决定，删除后重新上传可恢复。
             </div>
             <div class="asset-grid" v-if="assets.length">
@@ -773,33 +774,33 @@
                   <button v-if="renamingAssetId !== a.asset_id" @click.stop="startRenameAsset(a)" class="ui-btn ui-btn--ghost" style="min-height:0;padding:0 6px;font-size:11px" title="重命名">✎</button>
                   <button v-if="renamingAssetId === a.asset_id" @click.stop="saveAssetRename(a.asset_id)" class="ui-btn ui-btn--sm ui-btn--primary" style="min-height:0;padding:0 8px;font-size:11px">保存</button>
                   <button v-if="renamingAssetId === a.asset_id" @click.stop="renamingAssetId=''" class="ui-btn ui-btn--ghost" style="min-height:0;padding:0 6px;font-size:11px">取消</button>
-                  <button v-if="renamingAssetId !== a.asset_id" @click.stop="deleteAsset(a.asset_id)" class="ui-btn ui-btn--ghost" style="min-height:0;padding:0 6px;font-size:11px;color:#dc2626" title="删除">🗑</button>
+                  <button v-if="renamingAssetId !== a.asset_id" @click.stop="deleteAsset(a.asset_id)" class="ui-btn ui-btn--ghost" style="min-height:0;padding:0 6px;font-size:11px;color:light-dark(#dc2626, #f87171)" title="删除">🗑</button>
                 </div>
               </div>
             </div>
             <!-- 管理员：批量清理（折叠） -->
             <div v-if="isAdmin">
               <div class="row" style="margin-top:10px;border-top:1px dashed #e2e8f0;padding-top:8px;align-items:center">
-                <span style="font-size:12px;color:#92400e;flex:1">🧹 批量清理旧素材组（管理员）：删除指定日期之前的 AIGC 组及其内部资产</span>
+                <span style="font-size:12px;color:light-dark(#92400e, #fbbf24);flex:1">🧹 批量清理旧素材组（管理员）：删除指定日期之前的 AIGC 组及其内部资产</span>
                 <button @click="showPurge=!showPurge" class="ui-btn ui-btn--sm ui-btn--warning-outline">{{ showPurge ? '收起 ▴' : '展开 ▾' }}</button>
               </div>
               <div v-if="showPurge">
                 <div class="row" style="margin:8px 0;align-items:center;gap:8px">
-                  <label class="ui-date-field" style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:12px;color:#78350f">保留日期
+                  <label class="ui-date-field" style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:12px;color:light-dark(#78350f, #fbbf24)">保留日期
                     <input type="date" v-model="purge.beforeDate" style="min-height:30px;padding:0 8px">
                   </label>
                   <button @click="previewPurge()" :disabled="purge.running || !purge.beforeDate" class="ui-btn ui-btn--sm ui-btn--warning-outline">
                     {{ purge.running && !purge.dryRun && !purge.lastResult ? '扫描中...' : '预览待删' }}
                   </button>
                 </div>
-                <div v-if="purge.errorMsg" style="color:#dc2626;font-size:12px;margin-top:6px">{{ purge.errorMsg }}</div>
+                <div v-if="purge.errorMsg" style="color:light-dark(#dc2626, #f87171);font-size:12px;margin-top:6px">{{ purge.errorMsg }}</div>
                 <div v-if="purge.dryRun" style="margin-top:8px;padding:8px;background:#fff;border:1px solid #fbbf24;border-radius:4px">
-                  <div style="font-size:12px;color:#78350f;margin-bottom:6px">
+                  <div style="font-size:12px;color:light-dark(#78350f, #fbbf24);margin-bottom:6px">
                     扫描到 {{ purge.dryRun.total_scanned }} 个组，将删除
                     <strong>{{ purge.dryRun.matched }}</strong> 个组
                     （跳过 {{ purge.dryRun.skipped_non_matching_id }} 个不符合命名规则的组）：
                   </div>
-                  <ul style="max-height:180px;overflow:auto;font-size:11px;color:#334155;margin:0;padding-left:16px">
+                  <ul style="max-height:180px;overflow:auto;font-size:11px;color:var(--text-secondary);margin:0;padding-left:16px">
                     <li v-for="c in purge.dryRun.candidates">
                       {{ c.date }} · {{ c.name || '(无名)' }} · {{ c.group_id }} · <em>{{ c.asset_count }} 资产</em>
                     </li>
@@ -810,7 +811,7 @@
                 </div>
                 <div v-if="purge.lastResult" style="margin-top:8px;padding:8px;background:#dcfce7;border:1px solid #22c55e;border-radius:4px;font-size:12px;color:#166534">
                   ✓ 清理完成：删除了 {{ purge.lastResult.groups_deleted }} 个组，{{ purge.lastResult.assets_deleted }} 个资产。
-                  <span v-if="purge.lastResult.errors && purge.lastResult.errors.length" style="color:#dc2626">
+                  <span v-if="purge.lastResult.errors && purge.lastResult.errors.length" style="color:light-dark(#dc2626, #f87171)">
                     有 {{ purge.lastResult.errors.length }} 个错误（查看日志）
                   </span>
                 </div>
@@ -821,23 +822,23 @@
         <div>
           <section class="card" id="vp-generate">
             <h2>4. 生成视频</h2>
-            <label>图1 资产 <span style="font-size:11px;color:#94a3b8">（云端必填；本地模式可留空；点击左侧资产卡片即可选择）</span>
+            <label>图1 资产 <span style="font-size:11px;color:var(--muted)">（云端必填；本地模式可留空；点击左侧资产卡片即可选择）</span>
               <div class="fig1-row" style="margin-top:4px">
                 <div class="fig1-thumb" v-if="fig1Asset" @click.stop="openZoom(fig1Asset)" title="点开放大预览">
                   <video v-if="fig1Asset.asset_type==='Video' && fig1Asset.url" :src="fig1Asset.url" preload="metadata" muted playsinline></video>
                   <img v-else-if="fig1Asset.url" :src="fig1Asset.url" @error="$event.target.style.display='none'" alt="图1 预览">
                   <span v-if="!fig1Asset.url" class="asset-thumb-ph">🖼</span>
                 </div>
-                <div class="fig1-thumb" v-else style="cursor:default;color:#94a3b8;font-size:20px"><span>🖼</span></div>
+                <div class="fig1-thumb" v-else style="cursor:default;color:var(--muted);font-size:20px"><span>🖼</span></div>
                 <div style="flex:1;min-width:0">
                   <div v-if="genAssetId" style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ assetNameFor(genAssetId) }}</div>
-                  <div v-else style="font-size:12px;color:#94a3b8">尚未选择——点击左侧「人像资产库」里的卡片</div>
+                  <div v-else style="font-size:12px;color:var(--muted)">尚未选择——点击左侧「人像资产库」里的卡片</div>
                   <div v-if="genAssetId" style="font-size:11px;color:#3b82f6">作为「图1」引用: asset://{{ genAssetId }}</div>
                 </div>
                 <button v-if="genAssetId" @click="clearFig1()" class="ui-btn ui-btn--sm ui-btn--ghost">换一个</button>
               </div>
             </label>
-            <label style="margin-top:10px">附加资产 <span style="font-size:11px;color:#94a3b8">（可选；在左侧资产卡片点「＋ 附加」加入，按顺序作为图2、图3、...）</span>
+            <label style="margin-top:10px">附加资产 <span style="font-size:11px;color:var(--muted)">（可选；在左侧资产卡片点「＋ 附加」加入，按顺序作为图2、图3、...）</span>
               <div v-if="extraAssetIds.length" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px">
                 <span v-for="aid in extraAssetIds" :key="aid"
                       style="background:#dbeafe;border:1px solid #3b82f6;border-radius:12px;padding:2px 8px;font-size:12px;color:#1e40af;display:inline-flex;align-items:center;gap:4px">
@@ -845,9 +846,9 @@
                   <button @click="removeExtraAsset(aid)" class="ui-btn ui-btn--ghost" style="min-height:0;width:auto;height:auto;padding:0 6px;border:none;background:transparent;color:#1e40af;font-size:16px;line-height:1">×</button>
                 </span>
               </div>
-              <div v-else style="margin-top:4px;font-size:12px;color:#94a3b8">在左侧资产卡片点「＋ 附加」添加</div>
+              <div v-else style="margin-top:4px;font-size:12px;color:var(--muted)">在左侧资产卡片点「＋ 附加」添加</div>
             </label>
-            <label style="margin-top:10px">上传参考图 <span style="font-size:11px;color:#94a3b8">（可选，会附加在所有选中资产之后）</span>
+            <label style="margin-top:10px">上传参考图 <span style="font-size:11px;color:var(--muted)">（可选，会附加在所有选中资产之后）</span>
               <div class="row" style="margin-top:4px">
                 <input type="file" id="vp-extra-files" accept="image/*,video/*,audio/*" multiple style="display:none" @change="onExtraFilesSelect()">
                 <button @click="document.getElementById('vp-extra-files').click()" class="ui-btn ui-btn--secondary">选择参考图/视频/音频</button>
@@ -857,7 +858,7 @@
             <div v-if="extraFiles.length" class="extra-files-preview">
               <div v-for="(f, idx) in extraFiles" class="extra-file-item">
                 <img v-if="f.preview" :src="f.preview" class="extra-file-thumb" alt="预览">
-                <span v-else class="extra-file-thumb" style="display:inline-flex;align-items:center;justify-content:center;background:#e2e8f0;color:#475569;font-size:11px">{{ (f.mime_type || '').startsWith('video/') ? '视频' : (f.mime_type || '').startsWith('audio/') ? '音频' : '文件' }}</span>
+                <span v-else class="extra-file-thumb" style="display:inline-flex;align-items:center;justify-content:center;background:var(--border);color:var(--text-secondary);font-size:11px">{{ (f.mime_type || '').startsWith('video/') ? '视频' : (f.mime_type || '').startsWith('audio/') ? '音频' : '文件' }}</span>
                 <span class="extra-file-name">{{ f.name }}</span>
                 <button @click="removeExtraFile(idx)" class="ui-btn ui-btn--sm ui-btn--danger" style="min-height:0;width:auto;height:auto;padding:0 6px;font-size:11px;line-height:1">✕</button>
               </div>
@@ -872,9 +873,9 @@
                 </option>
               </select>
             </label>
-            <p v-if="modelSummary" class="hint" style="margin:4px 0 6px;color:#475569">{{ modelSummary }}</p>
-            <p v-if="modelHint" class="hint" style="margin:4px 0 6px;color:#b45309">{{ modelHint }}</p>
-            <p v-if="!localReady" class="hint" style="margin:4px 0 6px;color:#b45309">未检测到本地 AI Port，当前仅提供云端模型。</p>
+            <p v-if="modelSummary" class="hint" style="margin:4px 0 6px;color:var(--text-secondary)">{{ modelSummary }}</p>
+            <p v-if="modelHint" class="hint" style="margin:4px 0 6px;color:light-dark(#b45309, #fbbf24)">{{ modelHint }}</p>
+            <p v-if="!localReady" class="hint" style="margin:4px 0 6px;color:light-dark(#b45309, #fbbf24)">未检测到本地 AI Port，当前仅提供云端模型。</p>
             <p v-if="isLocalModel(model)" class="hint" style="margin:4px 0 6px;color:#0f766e">本地模型使用海螺 H3 全参考生成，任务类型将按参考生视频处理。</p>
             <label style="margin-top:8px">任务类型
               <select v-model="taskMode" @change="changeTaskMode()">
@@ -886,10 +887,10 @@
             <p class="hint" v-if="taskMode === 'reference'" style="margin:4px 0 6px">
               <strong>参考生视频</strong>：ratio 与 duration 均可自定义。
             </p>
-            <p class="hint" v-if="taskMode === 'extend'" style="margin:4px 0 6px;color:#b45309">
+            <p class="hint" v-if="taskMode === 'extend'" style="margin:4px 0 6px;color:light-dark(#b45309, #fbbf24)">
               <strong>视频延长</strong>：ratio 锁 adaptive；duration 可自定义。参考素材需包含待延长的视频。
             </p>
-            <p class="hint" v-if="taskMode === 'edit'" style="margin:4px 0 6px;color:#b45309">
+            <p class="hint" v-if="taskMode === 'edit'" style="margin:4px 0 6px;color:light-dark(#b45309, #fbbf24)">
               <strong>视频编辑</strong>：ratio=adaptive、duration=-1（即由模型自动决定时长，均锁定）。参考素材需包含待编辑的视频。
             </p>
             <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:8px">
@@ -911,19 +912,19 @@
               必须时长 -1 + 比例 adaptive；<strong>视频延长</strong>（「续写、向前/向后延长」）必须比例 adaptive；
               <strong>首帧/首尾帧</strong>也必须比例 adaptive。普通参考生视频填正常秒数即可。
             </p>
-            <p v-if="statusText && !submitting && statusText !== '空闲'" class="hint" style="margin-top:6px;color:#b45309">{{ statusText }}</p>
+            <p v-if="statusText && !submitting && statusText !== '空闲'" class="hint" style="margin-top:6px;color:light-dark(#b45309, #fbbf24)">{{ statusText }}</p>
             <div class="row" style="margin-top:8px;gap:8px">
               <button @click="createJob()" :disabled="submitting" class="ui-btn ui-btn--primary" style="flex:1">
                 {{ submitting ? statusText : '开始生成' }}
               </button>
               <button @click="restoreDefaultConfig()" class="ui-btn ui-btn--ghost">恢复默认设置</button>
             </div>
-            <div style="margin-top:12px;padding-top:10px;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b">
+            <div style="margin-top:12px;padding-top:10px;border-top:1px solid #e2e8f0;font-size:12px;color:var(--muted)">
               <div class="row" style="align-items:center">
                 <!-- 输出目录改为只读展示:Portal 模式下结果统一存服务机
                      outputs/<用户名>/<日期>/,不再允许远程用户改路径(改了也
                      只落服务机、导致散落)。保留只读显示让用户知道存在哪。 -->
-                <span>保存位置: <code style="font-size:11px;color:#334155;background:#f1f5f9;padding:2px 6px;border-radius:3px">服务器 outputs/{{ '{用户名}/{日期}' }}</code></span>
+                <span>保存位置: <code style="font-size:11px;color:var(--text-secondary);background:var(--surface-raised);padding:2px 6px;border-radius:3px">服务器 outputs/{{ '{用户名}/{日期}' }}</code></span>
               </div>
             </div>
           </section>
@@ -932,7 +933,7 @@
 
       <section class="card">
         <h2>生成历史 <button @click="loadJobs()" class="ui-btn ui-btn--sm ui-btn--ghost" style="margin-left:8px">刷新</button></h2>
-        <div v-if="vpHistory.length===0" style="color:#64748b;font-size:12px">暂无生成记录</div>
+        <div v-if="vpHistory.length===0" style="color:var(--muted);font-size:12px">暂无生成记录</div>
         <!-- 任务矩阵（2026-09-09 对齐 seedance/nano）：一格一任务，整格点开详情，缩略图点开放大。
              分页渲染 vpPageItems（每页 20 个），防止大量 video 缩略图同时挂载卡顿。 -->
         <div class="job-grid">
@@ -1021,22 +1022,22 @@
             {{ debugVisible ? '隐藏' : '显示' }}调试记录
           </button>
           <button @click="clearDebugLogs()" class="ui-btn ui-btn--sm ui-btn--danger" style="margin-left:6px">清空</button>
-          <span style="font-size:11px;color:#64748b;margin-left:8px">{{ debugLogs.length }} 条</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:8px">{{ debugLogs.length }} 条</span>
         </h2>
         <div v-if="debugVisible" style="max-height:300px;overflow-y:auto;font-family:monospace;font-size:11px;margin-top:8px">
-          <div v-if="debugLogs.length===0" style="color:#64748b;padding:8px">暂无调试记录</div>
+          <div v-if="debugLogs.length===0" style="color:var(--muted);padding:8px">暂无调试记录</div>
           <div v-for="(log, i) in debugLogs" style="padding:6px 0;border-bottom:1px solid #f1f5f9">
             <div style="display:flex;gap:8px;align-items:center">
-              <span style="color:#94a3b8">{{ log.time }}</span>
+              <span style="color:var(--muted)">{{ log.time }}</span>
               <span style="color:#2563eb;font-weight:600">{{ log.method }}</span>
               <span :style="{color:log.status>=200&&log.status<300?'#16a34a':log.status>0?'#dc2626':'#d97706'}">{{ log.status || 'ERR' }}</span>
-              <span style="color:#64748b;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ log.url }}</span>
+              <span style="color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ log.url }}</span>
             </div>
             <details style="margin-top:2px">
-              <summary style="color:#94a3b8;cursor:pointer;font-size:10px">Request / Response</summary>
+              <summary style="color:var(--muted);cursor:pointer;font-size:10px">Request / Response</summary>
               <div style="margin-top:4px;white-space:pre-wrap;word-break:break-all">
                 <div v-if="log.reqBody" style="color:#7c3aed;margin-bottom:4px"><strong>Req:</strong> {{ log.reqBody }}</div>
-                <div style="color:#64748b"><strong>Res:</strong> {{ log.respBody }}</div>
+                <div style="color:var(--muted)"><strong>Res:</strong> {{ log.respBody }}</div>
               </div>
             </details>
           </div>
@@ -1116,14 +1117,14 @@
             </label>
           </div>
         </div>
-        <p style="font-size:11px;color:#697386;margin:8px 0 0">
+        <p style="font-size:11px;color:var(--muted);margin:8px 0 0">
           统计区间内<b>每一次生成记一条</b>：走方舟（按 token 计费）的任务带用量与金额，
           其余通道上游不返回用量就如实留空。{{ isAdmin ? '管理员可见全部用户' : '仅可见自己' }}。
         </p>
         <p v-if="genAppBreakdown().length" style="font-size:12px;margin:6px 0 0">
-          <span style="color:#697386">按应用：</span>{{ genAppBreakdown().join(' · ') }}
+          <span style="color:var(--muted)">按应用：</span>{{ genAppBreakdown().join(' · ') }}
         </p>
-        <p v-if="(genData.summary || {}).unpriced_count" style="font-size:11px;color:#b45309;margin:6px 0 0">
+        <p v-if="(genData.summary || {}).unpriced_count" style="font-size:11px;color:light-dark(#b45309, #fbbf24);margin:6px 0 0">
           其中 {{ genData.summary.unpriced_count }} 条没有金额：历史记录当时未做用量统计（时间和产物准确、数字留空），
           或该通道上游不返回用量。<b>它们不计入上面的 token 与金额合计</b>，所以合计只会偏少、不会虚高。
         </p>
@@ -1134,7 +1135,7 @@
           <div class="stats-card"><span>涉及用户</span><strong>{{ (genData.summary || {}).users || 0 }}</strong></div>
         </div>
         <p v-if="genError" style="color:#f87171;font-size:12px;margin:8px 0 0">{{ genError }}</p>
-        <p v-if="genNote" style="font-size:11px;color:#697386;margin:8px 0 0">{{ genNote }}</p>
+        <p v-if="genNote" style="font-size:11px;color:var(--muted);margin:8px 0 0">{{ genNote }}</p>
       </section>
 
       <section class="stats-panel ui-panel ui-admin-page__section">
@@ -1193,8 +1194,8 @@
             </tbody>
           </table>
         </div>
-        <p v-else-if="genLoading" style="color:#697386;font-size:12px">正在加载…</p>
-        <p v-else style="color:#697386;font-size:12px">该条件下没有记录</p>
+        <p v-else-if="genLoading" style="color:var(--muted);font-size:12px">正在加载…</p>
+        <p v-else style="color:var(--muted);font-size:12px">该条件下没有记录</p>
         <div class="pager" v-if="genData.total > 0">
           <button type="button" class="ui-btn" :disabled="genPage <= 1 || genLoading"
                   @click="setGenPage(genPage - 1)">上一页</button>
@@ -1230,7 +1231,7 @@
           <span class="pager-info" v-if="(genRemote.sources || []).length" style="margin-left:6px">
             <span v-if="genRemote.center && genRemote.center.enabled" style="color:#235fd6">数据来自中心 {{ genRemote.center.url }} · </span>来源：{{ genRemote.local_label || '服务器A' }}{{ genRemoteSummary() }} ·
             {{ genRemote.last_sync_ts ? ('上次同步 ' + genClock(genRemote.last_sync_ts)) : '尚未同步' }}
-            <span v-if="genRemoteError()" style="color:#b42318"> · {{ genRemoteError() }}</span>
+            <span v-if="genRemoteError()" style="color:light-dark(#b42318, #f87171)"> · {{ genRemoteError() }}</span>
           </span>
           <button type="button" v-if="(genRemote.sources || []).length" @click="syncRemoteNow()" :disabled="genSyncing"
                   class="admin-secondary-action ui-btn ui-btn--strong ui-btn--sm"
@@ -1247,9 +1248,9 @@
             <thead>
               <tr>
                 <th>消费日期</th><th>模型</th><th>计费项</th><th>次数</th>
-                <th>用量<br><small style="font-weight:400;color:#94a3b8">千tokens</small></th>
-                <th>单价<br><small style="font-weight:400;color:#94a3b8">元/千tokens</small></th>
-                <th>金额<br><small style="font-weight:400;color:#94a3b8">元</small></th>
+                <th>用量<br><small style="font-weight:400;color:var(--muted)">千tokens</small></th>
+                <th>单价<br><small style="font-weight:400;color:var(--muted)">元/千tokens</small></th>
+                <th>金额<br><small style="font-weight:400;color:var(--muted)">元</small></th>
                 <th>备注</th>
               </tr>
             </thead>
@@ -1267,7 +1268,7 @@
             </tbody>
           </table>
         </div>
-        <p v-else style="color:#697386;font-size:12px">该条件下没有可汇总的记录</p>
+        <p v-else style="color:var(--muted);font-size:12px">该条件下没有可汇总的记录</p>
       </section>
 
       <details class="stats-fold">
@@ -1276,7 +1277,7 @@
         <section class="stats-panel ui-panel ui-admin-page__section">
           <h2>按用户趋势</h2>
           <div class="trend-controls">
-            <span style="font-size:12px;color:#94a3b8;margin-right:10px">区间</span>
+            <span style="font-size:12px;color:var(--muted);margin-right:10px">区间</span>
             <button type="button" :class="{ active: historyDays === 7 }" @click="setHistoryDays(7)">最近 7 天</button>
             <button type="button" :class="{ active: historyDays === 30 }" @click="setHistoryDays(30)">最近 30 天</button>
             <button type="button" :class="{ active: historyDays === 90 }" @click="setHistoryDays(90)">最近 90 天</button>
@@ -1296,7 +1297,7 @@
               <span class="trend-total">总 {{ sumSeries(pickAppValues(stats[app], app)) }} {{ appUnit(app) }}</span>
             </span>
           </div>
-          <p v-if="!Object.keys(history.users).length" style="color:#697386;font-size:12px">暂无趋势数据</p>
+          <p v-if="!Object.keys(history.users).length" style="color:var(--muted);font-size:12px">暂无趋势数据</p>
         </section>
   
         </div>
@@ -1358,7 +1359,7 @@
                   </div>
                 </td>
               </tr>
-              <tr v-if="!users.length"><td colspan="4" style="color:#697386;text-align:center">加载中...</td></tr>
+              <tr v-if="!users.length"><td colspan="4" style="color:var(--muted);text-align:center">加载中...</td></tr>
             </tbody>
           </table></div>
         </section>
@@ -1395,22 +1396,22 @@
   
         <section class="stats-panel ui-panel ui-admin-page__section" v-if="isAdmin">
           <h2>飞书日报</h2>
-          <p style="font-size:12px;color:#94a3b8;margin:0 0 10px">每天到点自动把昨日 Portal 使用数据推送到飞书群机器人。管理员可预览/立即发送。</p>
+          <p style="font-size:12px;color:var(--muted);margin:0 0 10px">每天到点自动把昨日 Portal 使用数据推送到飞书群机器人。管理员可预览/立即发送。</p>
           <div class="ui-form-grid ui-form-grid--settings">
             <label class="ui-form-grid__wide">
-              <div style="font-size:12px;color:#94a3b8">Webhook URL</div>
+              <div style="font-size:12px;color:var(--muted)">Webhook URL</div>
               <input v-model="feishu.webhook_url" :placeholder="feishu._webhookPresent ? ('已配置 ' + feishu._webhookHint + ' (留空不修改)') : 'https://open.feishu.cn/open-apis/bot/v2/hook/...'" style="width:100%">
             </label>
             <label>
-              <div style="font-size:12px;color:#94a3b8">签名 secret (可选)</div>
+              <div style="font-size:12px;color:var(--muted)">签名 secret (可选)</div>
               <input type="password" autocomplete="off" v-model="feishu.sign_secret" :placeholder="feishu._secretPresent ? '已配置(留空不修改)' : ''" style="width:100%">
             </label>
             <label>
-              <div style="font-size:12px;color:#94a3b8">触发时间</div>
+              <div style="font-size:12px;color:var(--muted)">触发时间</div>
               <input v-model="feishu.schedule_time" placeholder="09:05" style="width:100%">
             </label>
             <label>
-              <div style="font-size:12px;color:#94a3b8">Portal 基础 URL</div>
+              <div style="font-size:12px;color:var(--muted)">Portal 基础 URL</div>
               <input v-model="feishu.portal_base_url" placeholder="https://192.168.x.x:9091" style="width:100%">
             </label>
             <label class="ui-switch-field">
@@ -1626,6 +1627,7 @@
   <script src="/js/portal-module-registry.js"></script>
   <script src="/js/portal-rag-interceptor.js"></script>
   <script src="/effects.js?v=20260910-fx-perf"></script>
+  <script src="/topbar-tools.js?v=20261026-dark"></script>
   <script src="/dino.js"></script>
 <script>
 (function () {

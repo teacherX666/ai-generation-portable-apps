@@ -11,6 +11,9 @@
   --ui-color-surface: #ffffff;
   --ui-color-surface-soft: #f8fafc;
   --ui-color-surface-sunken: #eef2f7;
+  /* 比 surface 再"抬一档"的中性面：缩略图占位、小按钮、hover 态（Portal 里原有 5 处 #f1f5f9）。
+     它和 sunken 在浅色下是两个不同的值，所以必须是**独立 token** —— 按 §3.7 铁律不许合并取近似。 */
+  --ui-color-surface-raised: #f1f5f9;
   --ui-color-border: #d9e0ea;
   --ui-color-border-strong: #c3ccd9;
   --ui-color-text: #172033;
@@ -26,6 +29,11 @@
   --ui-color-brand-soft: #eef5ff;
   --ui-color-brand-ring: rgba(35, 95, 214, 0.22);
 
+  /* 用在「亮色强调底」上的文字色：primary / success / danger / warning-outline 实心按钮，
+     以及 secondary 之外的实心交互面。浅色下就是白字（与引入本 token 之前逐字一致）；
+     深色下换成深墨 —— 亮底配白字会读不出来（见 theme-dark.css）。 */
+  --ui-color-on-accent: #ffffff;
+
   --ui-color-success: #10b981;
   --ui-color-success-soft: #dcfce7;
   --ui-color-success-text: #047857;
@@ -37,6 +45,13 @@
   --ui-color-warning-text: #92400e;
   --ui-color-info-soft: #e0f2fe;
   --ui-color-info-text: #0369a1;
+
+  /* 状态「软底」的 1px 描边（卡片 / banner / alert / chip / danger-zone）。
+     浅色下的值就是原先散落在 components.css 里的那一批淡色字面量。 */
+  --ui-color-success-border: #bbf7d0;
+  --ui-color-danger-border: #fecaca;
+  --ui-color-warning-border: #fde68a;
+  --ui-color-info-border: #bae6fd;
 
   --ui-radius-sm: 4px;
   --ui-radius-md: 6px;

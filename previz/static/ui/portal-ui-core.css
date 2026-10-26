@@ -1,0 +1,11 @@
+/* Browser-native distribution entrypoint. No npm/build step required. */
+@import url("tokens/core.css");
+@import url("tokens/semantic.css");
+@import url("tokens/legacy-aliases.css");
+/* 深色主题：只覆盖原语，语义别名与组件样式自动跟着变。
+   生效条件是 <html data-theme="dark">（见 ui/theme-boot.js）。 */
+@import url("tokens/theme-dark.css");
+@import url("styles/reset.css");
+@import url("styles/layout.css");
+@import url("styles/components.css");
+@import url("styles/accessibility.css");

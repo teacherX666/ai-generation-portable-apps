@@ -1,0 +1,5 @@
+.ui-visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
+.ui-scroll { min-height: 0; overflow: auto; scrollbar-color: #94a3b8 #eef2f7; scrollbar-width: thin; }
+.ui-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.ui-scroll::-webkit-scrollbar-track { background: #eef2f7; }
+.ui-scroll::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 5px; }

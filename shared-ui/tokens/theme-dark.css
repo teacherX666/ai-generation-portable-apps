@@ -1,0 +1,78 @@
+/*
+ * Portal UI Core — dark theme (P-A 冷灰蓝)
+ *
+ * 唯一新增的配色源：只覆盖原语（`--ui-color-*` 与阴影），语义别名（`--ui-bg-*` 等）
+ * 自动跟着变，组件样式（`ui-*` 类）一行不用动。
+ *
+ * 生效条件：`<html data-theme="dark">`（由 `ui/theme-boot.js` 在首帧前写入）。
+ * 取值口径与出处见 `docs/2026-10-26-dark-mode-design.md` §3.6：
+ * 对比度已实算，正文 15.02 / 次要 10.36 / 状态文字 7.73~8.60，全部 ≥ 4.5:1。
+ *
+ * ⚠️ 加/改这个文件里的任何值，都要同步跑
+ * `tests/frontend/theme_contrast.test.cjs`（跌破底线会红）和
+ * `tests/frontend/dark_mode_guards.test.cjs`（少覆盖一个 token 会红）。
+ */
+:root[data-theme="dark"] {
+  /* 告诉浏览器这是深色：原生滚动条 / 日期选择器 / 下拉 / 复选框 / 自动填充
+     全部自动跟着变。这一行省掉几百行手写样式。 */
+  color-scheme: dark;
+
+  /* ── 画布与表面 ───────────────────────────────────────────── */
+  --ui-color-canvas: #101419;
+  --ui-color-surface: #171c23;
+  --ui-color-surface-soft: #1d242c;
+  --ui-color-surface-sunken: #0c1014;
+  --ui-color-surface-raised: #202832;
+
+  /* ── 边框 ─────────────────────────────────────────────────── */
+  --ui-color-border: #262e38;
+  --ui-color-border-strong: #3a4553;
+
+  /* ── 文字 ─────────────────────────────────────────────────── */
+  --ui-color-text: #e4e8ed;
+  --ui-color-text-secondary: #c3cad3;
+  --ui-color-text-muted: #9aa4b0;
+
+  /* ── 强调（深色）按钮
+     语义是"最显眼的中性按钮"，浅色下是深底浅字。暗色里取「抬升表面 + 强边框」，
+     刻意**不**做成纯白底反色按钮 —— 那会让整站出现大面积高亮块。 */
+  --ui-color-strong: #232c37;
+  --ui-color-strong-hover: #2c3644;
+  --ui-color-strong-border: #3d4a5a;
+  --ui-color-on-strong: #e4e8ed;
+
+  /* ── 品牌 ─────────────────────────────────────────────────── */
+  --ui-color-brand: #58bcd8;
+  --ui-color-brand-hover: #74cbe3;
+  --ui-color-brand-soft: #14303a;
+  --ui-color-brand-ring: rgba(88, 188, 216, 0.3);
+
+  /* ── 状态 ─────────────────────────────────────────────────── */
+  --ui-color-success: #5fbe8b;
+  --ui-color-success-soft: #162c21;
+  --ui-color-success-text: #7fd3a5;
+  --ui-color-danger: #f0857c;
+  --ui-color-danger-soft: #35201e;
+  --ui-color-danger-text: #f4a49c;
+  --ui-color-warning: #dfa84e;
+  --ui-color-warning-soft: #322717;
+  --ui-color-warning-text: #e9c179;
+  --ui-color-info-soft: #14303a;
+  --ui-color-info-text: #7fc9e2;
+
+  /* ── 亮色强调底上的文字：深墨
+     深色主题里所有"强调底"都是**亮**的（#58bcd8 / #5fbe8b / #f0857c / #dfa84e），
+     配白字全部读不出来。同一个深墨在这四种底上都有 7.35~10.89 的对比度（实测见 §3.6）。 */
+  --ui-color-on-accent: #101419;
+
+  /* ── 状态软底的描边：比软底本身亮一档，才能在深色里看出边界 ── */
+  --ui-color-success-border: #26543d;
+  --ui-color-danger-border: #553230;
+  --ui-color-warning-border: #5c4722;
+  --ui-color-info-border: #1f4f5e;
+
+  /* ── 阴影：深底上浅阴影看不见，改成更实的黑 ────────────────── */
+  --ui-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --ui-shadow-md: 0 8px 22px rgba(0, 0, 0, 0.5);
+  --ui-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
