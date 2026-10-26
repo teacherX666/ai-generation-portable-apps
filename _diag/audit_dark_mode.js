@@ -24,6 +24,11 @@
  *   b) 整页底色常常是 `background-image: gradient`（飞书登录/工作区都是），此时按主题取一个
  *      代表色（深 #101419 / 浅 #f3f6fa），否则渐变页会出现成片假阳性；
  *   c) 属性选择器/内联 style 里的颜色字符串不算"自己声明的底色"。
+ *
+ * ⚠️⚠️ 顺序坑（2026-10-26 第二次踩）：**必须先注入 `*{transition:none}`，再切 data-theme**。
+ *   顺序反了的话，在自动化会话里（页签是隐藏态、过渡不推进）会读到**冻结的旧颜色** ——
+ *   实测飞书 `.recent-run`（`transition: background .15s`）被误判成"深色下还是浅底"，
+ *   一口气报出 20 条假违规。下面的 `runFor()` 已经是正确顺序（kill 在前、切主题在后）。
  */
 (async () => {
   const IFrameIds = []; // 例：['iframe-seedance', 'iframe-nb', 'iframe-feishu-generation-agent']
