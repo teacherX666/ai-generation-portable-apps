@@ -643,7 +643,7 @@ textarea { min-height: 100px; line-height: 1.5; }
   cursor: pointer;
   transition: all var(--transition-base);
 }
-.btn-cancel:hover { border-color: #d92d20; background: #fee4e2; }
+.btn-cancel:hover { border-color: #d92d20; background: var(--danger-soft); }
 .btn-cancel:active { transform: translateY(1px); }
 .btn-cancel:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn-retry {
@@ -977,7 +977,7 @@ button:disabled,
   cursor: pointer;
   transition: all var(--transition-base);
 }
-.btn-cancel:hover { border-color: #d92d20; background: #fee4e2; }
+.btn-cancel:hover { border-color: #d92d20; background: var(--danger-soft); }
 .btn-cancel:active { transform: translateY(1px); }
 .btn-cancel:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn-retry {

@@ -1087,7 +1087,7 @@ html, body { height: 100%; overflow: hidden; }
   cursor: pointer;
   white-space: nowrap;
 }
-.cancel-job-btn:hover { background: #fef3c7; }
+.cancel-job-btn:hover { background: var(--warning-soft); }
 
 
 /* 配置方案（保存/加载方案） */

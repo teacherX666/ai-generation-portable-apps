@@ -544,7 +544,7 @@ button {
   font-size: .78rem;
   background: #f6f8f7;
 }
-.task-style-preset:hover { background: #e8eeea; }
+.task-style-preset:hover { background: var(--brand-soft); }
 .task-notes { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .7rem; }
 .note { border-radius: 999px; padding: .25rem .5rem; font-size: .72rem; background: var(--ui-bg-sunken); }
 .note.blocking { color: var(--danger); background: #fdeae8; }

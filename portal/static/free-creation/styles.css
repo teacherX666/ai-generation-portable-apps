@@ -2183,11 +2183,14 @@ body,
 #stage.is-preview .fc-preview-frame { flex: 1 1 auto !important; min-height: 0 !important; }
 
 /* ============================================================================
-   深色模式层（2026-10-26 加入）
-   上面那层「白色工作台」用了 226 条 !important 把浅色写死；这里把**其中带颜色的规则**
-   逐条镜像成 [data-theme="dark"] 作用域下的深色版本（同文件、更靠后、选择器权重更高 → 赢）。
-   浅色一点没动：这些规则只在 <html data-theme="dark"> 时命中。
-   变量表见文件顶部 :root[data-theme="dark"]，色值映射表见 _work/_gen_free_creation_dark.mjs。
+   深色模式层（2026-10-26 加入，v2 生成）
+   这个应用的样式是**五层堆叠**、最后 500 行还用 226 条 !important 把浅色写死。
+   本层把"声明了浅色值"的规则逐条镜像成 [data-theme="dark"] 作用域下的深色版本：
+   同文件、更靠后、选择器权重更高 → 深浅切换时赢。
+   * **浅色一行未动**：这些规则只在 <html data-theme="dark"> 时命中；
+   * 纯品牌红/渐变/玻璃高光的规则**不镜像**（它们是内容，不是皮肤）；
+   * @media 里的规则保留原媒体查询上下文。
+   v1 只扫最后一层，漏了 10 条散在早期层的 hover（深色下悬停会露白），v2 改为全文件扫描。
    ============================================================================ */
 
 :root[data-theme="dark"] {
@@ -2205,6 +2208,375 @@ body,
   --shadow-xl: 0 30px 90px rgba(0, 0, 0, .55);
   --shadow-md: 0 14px 40px rgba(0, 0, 0, .4);
 }
+
+:root[data-theme="dark"] .fc-new-chat-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 10px; color: light-dark(#171c23, var(--text)); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 30%, transparent); }
+
+:root[data-theme="dark"] .fc-sidebar-footer p { margin: 8px 0 0; color: light-dark(#6f7282, #bec0c7); font-size: 10px; line-height: 1.55; }
+
+:root[data-theme="dark"] .fc-breadcrumb strong { max-width: 36vw; overflow: hidden; text-overflow: ellipsis; #171c23-space: nowrap; color: var(--text); font-weight: 560; }
+
+:root[data-theme="dark"] .fc-mode-option.is-active { color: light-dark(#171c23, var(--text)); }
+
+:root[data-theme="dark"] .fc-mode-slider { position: absolute; z-index: 1; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border: 1px solid rgba(255,255,255,.12); border-radius: 13px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 82%, #171c23 4%), var(--accent-2)); box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 28%, transparent); transition: transform .48s cubic-bezier(.2,.9,.2,1), background .45s ease; }
+
+:root[data-theme="dark"] .fc-composer textarea::placeholder { color: light-dark(#666978, #babcc2); }
+
+:root[data-theme="dark"] .fc-asset button:hover { color: light-dark(#171c23, var(--text)); background: rgba(255,255,255,.08); }
+
+:root[data-theme="dark"] .fc-bubble,
+:root[data-theme="dark"] .fc-send-button { position: relative; display: grid; place-items: center; width: 46px; height: 46px; border: 1px solid rgba(255,255,255,.16); border-radius: 50%; color: light-dark(#171c23, var(--text)); cursor: pointer; touch-action: none; user-select: none; transform: translate3d(var(--tx, 0), var(--ty, 0), 0) scale(var(--scale, 1)); transition: transform .48s cubic-bezier(.18,.9,.25,1.32), box-shadow .25s ease, filter .25s ease; }
+
+:root[data-theme="dark"] .fc-drop-overlay { position: absolute; inset: 0; z-index: 30; display: grid; place-items: center; border: 1px dashed color-mix(in srgb, var(--accent) 60%, #171c23); border-radius: var(--radius-xl); background: rgba(10,11,17,.91); backdrop-filter: blur(18px); pointer-events: none; }
+
+:root[data-theme="dark"] .fc-history-pill:hover { color: light-dark(#171c23, var(--text)); border-color: rgba(255,255,255,.28); transform: translateY(-1px); }
+
+:root[data-theme="dark"] .fc-primary-button { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 17px; border: 1px solid rgba(255,255,255,.16); border-radius: 15px; color: light-dark(#171c23, var(--text)); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 13px 34px color-mix(in srgb, var(--accent) 30%, transparent); cursor: pointer; font-size: 12px; font-weight: 600; transition: transform .25s ease, filter .25s ease; }
+
+:root[data-theme="dark"] .fc-model-mode button.is-active { color: light-dark(#171c23, var(--text)); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 78%, #171c23 4%), var(--accent-2)); box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 24%, transparent); }
+
+:root[data-theme="dark"] .fc-model-symbol { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; border-radius: 11px; color: light-dark(#171c23, var(--text)); background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 70%, #1d1e28), color-mix(in srgb, var(--accent-2) 72%, #1d1e28)); }
+
+:root[data-theme="dark"] .fc-param-option:hover { transform: translateY(-1px); color: light-dark(#171c23, var(--text)); }
+
+:root[data-theme="dark"] .fc-param-option.is-active { color: light-dark(#171c23, var(--text)); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: color-mix(in srgb, var(--accent) 14%, rgba(255,255,255,.03)); }
+
+:root[data-theme="dark"] .fc-param-number input { width: 100%; height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 11px; color: light-dark(#171c23, var(--text)); background: rgba(0,0,0,.18); }
+
+html[data-theme="dark"],
+:root[data-theme="dark"] body { background: #101419; color: var(--text); }
+
+:root[data-theme="dark"] .fc-sidebar { border-right-color: rgba(255,255,255,.09); background: rgba(252,252,253,.88); box-shadow: 8px 0 32px rgba(0,0,0,.24); }
+
+:root[data-theme="dark"] .fc-new-chat { border-color: rgba(255,255,255,.10); background: rgba(255,255,255,0.11); box-shadow: 0 5px 18px rgba(0,0,0,.26); }
+
+:root[data-theme="dark"] .fc-new-chat:hover { background: #171c23; border-color: rgba(30,32,45,.17); }
+
+:root[data-theme="dark"] .fc-new-chat kbd { color: var(--muted); background: #f1f2f5; }
+
+:root[data-theme="dark"] .fc-history-heading { color: var(--muted); }
+
+:root[data-theme="dark"] .fc-conversation-item:hover { background: rgba(255,255,255,.06); }
+
+:root[data-theme="dark"] .fc-conversation-item.is-active { border-color: color-mix(in srgb, var(--accent) 24%, rgba(255,255,255,.09)); background: color-mix(in srgb, var(--accent) 7%, #171c23); }
+
+:root[data-theme="dark"] .fc-conversation-symbol { border-color: rgba(255,255,255,.09); background: #171c23; color: light-dark(#6f7280, #bec0c6); box-shadow: 0 3px 10px rgba(35,40,60,.04); }
+
+:root[data-theme="dark"] .fc-sidebar-footer { border-top-color: rgba(255,255,255,.09); }
+
+:root[data-theme="dark"] .fc-menu-button,
+:root[data-theme="dark"] .fc-ghost-button,
+:root[data-theme="dark"] .fc-icon-button { border-color: rgba(255,255,255,.10); color: light-dark(#5d606c, #b6b7bd); background: rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,.28); }
+
+:root[data-theme="dark"] .fc-menu-button:hover,
+:root[data-theme="dark"] .fc-ghost-button:hover,
+:root[data-theme="dark"] .fc-icon-button:hover { color: var(--text); border-color: rgba(30,32,45,.2); background: #171c23; }
+
+:root[data-theme="dark"] .fc-top-mode-switch { width: 300px; padding: 3px; border-color: rgba(255,255,255,.10); background: rgba(255,255,255,0.12); box-shadow: 0 6px 20px rgba(0,0,0,.3); }
+
+:root[data-theme="dark"] .fc-top-mode-switch .fc-mode-option { min-height: 38px; color: var(--muted); }
+
+:root[data-theme="dark"] .fc-top-mode-switch .fc-mode-option.is-active { color: light-dark(#171c23, var(--text)); }
+
+:root[data-theme="dark"] .fc-top-mode-switch .fc-mode-slider { top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-color: rgba(255,255,255,0.13); box-shadow: 0 7px 18px color-mix(in srgb, var(--accent) 25%, transparent); }
+
+:root[data-theme="dark"] .fc-composer { box-shadow: 0 28px 80px rgba(0,0,0,.5), 0 1px 4px rgba(0,0,0,.28); }
+
+:root[data-theme="dark"] .fc-composer::before { background: rgba(255,255,255,0.06); backdrop-filter: blur(34px) saturate(155%); }
+
+:root[data-theme="dark"] .fc-composer textarea { color: var(--text); }
+
+:root[data-theme="dark"] .fc-asset { border-color: rgba(255,255,255,.10); background: rgba(248,248,250,.86); }
+
+:root[data-theme="dark"] .fc-asset-preview { background: #eef0f4; color: var(--muted); }
+
+:root[data-theme="dark"] .fc-asset button { color: light-dark(#7d808d, #c5c6cc); }
+
+:root[data-theme="dark"] .fc-asset button:hover { color: var(--text); background: rgba(30,32,45,.06); }
+
+:root[data-theme="dark"] .fc-param-chip { border-color: rgba(255,255,255,.10); background: rgba(255,255,255,0.13); }
+
+:root[data-theme="dark"] .fc-param-chip strong { color: light-dark(#565966, #b3b4ba); }
+
+:root[data-theme="dark"] .fc-bubble,
+:root[data-theme="dark"] .fc-send-button { border: 0; background: rgba(255,255,255,0.14); box-shadow: 0 10px 30px rgba(40,45,70,.13), inset 0 1px 0 rgba(255,255,255,0.06); backdrop-filter: blur(16px) saturate(180%); overflow: hidden; }
+
+:root[data-theme="dark"] .fc-bubble::after,
+:root[data-theme="dark"] .fc-send-button::after {
+  content: ""; position: absolute; inset: 1.4px; z-index: 1; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.06);
+  background:
+    radial-gradient(circle at 28% 20%, rgba(255,255,255,0.05), rgba(255,255,255,.36) 34%, transparent 58%),
+    linear-gradient(145deg, rgba(255,255,255,.06), rgba(255,255,255,.28));
+  box-shadow: inset 0 0 18px rgba(255,255,255,0.14);
+}
+
+:root[data-theme="dark"] .fc-bubble svg,
+:root[data-theme="dark"] .fc-send-button svg { position: relative; z-index: 3; color: light-dark(#252733, var(--text)); filter: drop-shadow(0 1px 2px rgba(255,255,255,0.13)); }
+
+:root[data-theme="dark"] .fc-bubble:hover::after,
+:root[data-theme="dark"] .fc-send-button:hover::after { background: radial-gradient(circle at 28% 20%, #171c23, rgba(255,255,255,0.14) 36%, rgba(255,255,255,.22)); }
+
+:root[data-theme="dark"] .fc-send-button::after { inset: 2px; background: radial-gradient(circle at 28% 20%, #171c23, rgba(255,255,255,0.14) 35%, rgba(255,255,255,.28)); }
+
+:root[data-theme="dark"] .fc-send-button:hover { box-shadow: 0 14px 38px rgba(40,45,70,.18), inset 0 1px 0 #171c23; }
+
+:root[data-theme="dark"] .fc-orbit-ring { border-color: rgba(0,0,0,.3); }
+
+:root[data-theme="dark"] .fc-preview-frame { border-color: rgba(255,255,255,.10); background: rgba(255,255,255,0.12); box-shadow: 0 24px 70px rgba(35,40,60,.13), 0 1px 4px rgba(0,0,0,.28); }
+
+:root[data-theme="dark"] .fc-preview-media { color: var(--muted); }
+
+:root[data-theme="dark"] .fc-history-pill { border-color: rgba(255,255,255,.10); color: light-dark(#666976, #babcc1); background: rgba(255,255,255,0.09); box-shadow: 0 7px 22px rgba(35,40,60,.07); }
+
+:root[data-theme="dark"] .fc-history-pill:hover { color: var(--text); border-color: rgba(30,32,45,.2); background: #171c23; }
+
+:root[data-theme="dark"] .fc-history-strip { border-color: rgba(255,255,255,.09); background: rgba(255,255,255,.06); box-shadow: 0 12px 36px rgba(35,40,60,.08); }
+
+:root[data-theme="dark"] .fc-history-card:hover,
+:root[data-theme="dark"] .fc-history-card.is-active { background: color-mix(in srgb, var(--accent) 5%, #171c23); border-color: color-mix(in srgb, var(--accent) 20%, rgba(255,255,255,.09)); }
+
+:root[data-theme="dark"] .fc-primary-button { border-color: rgba(255,255,255,0.11); box-shadow: 0 12px 34px color-mix(in srgb, var(--accent) 22%, transparent); }
+
+:root[data-theme="dark"] .fc-popover { border-color: rgba(255,255,255,.10); background: rgba(255,255,255,0.05); box-shadow: 0 30px 90px rgba(35,40,60,.17), 0 2px 8px rgba(0,0,0,.28); }
+
+:root[data-theme="dark"] .fc-popover header { border-bottom-color: rgba(255,255,255,.09); }
+
+:root[data-theme="dark"] .fc-model-mode { border-color: rgba(255,255,255,.09); background: rgba(244,245,248,.82); }
+
+:root[data-theme="dark"] .fc-model-option.is-active { background: color-mix(in srgb, var(--accent) 7%, #171c23); border-color: color-mix(in srgb, var(--accent) 20%, rgba(255,255,255,.08)); }
+
+:root[data-theme="dark"] .fc-model-badge { border-color: rgba(255,255,255,.10); color: var(--muted); background: rgba(255,255,255,0.14); }
+
+:root[data-theme="dark"] .fc-param-option { border-color: rgba(255,255,255,.10); color: var(--muted); background: rgba(247,248,250,.86); }
+
+:root[data-theme="dark"] .fc-param-option:hover { color: var(--text); background: #171c23; }
+
+:root[data-theme="dark"] .fc-param-option.is-active { color: color-mix(in srgb, var(--accent) 72%, var(--text)); border-color: color-mix(in srgb, var(--accent) 28%, rgba(255,255,255,.09)); background: color-mix(in srgb, var(--accent) 7%, #171c23); }
+
+:root[data-theme="dark"] .fc-param-number input { border-color: rgba(255,255,255,.10); color: var(--text); background: #171c23; }
+
+:root[data-theme="dark"] .fc-toast { border-color: rgba(255,255,255,.10); color: var(--muted-strong); background: rgba(255,255,255,0.05); box-shadow: 0 16px 46px rgba(0,0,0,.5); }
+
+:root[data-theme="dark"] .fc-toast.is-error { color: light-dark(#b42342, #dd9caa); border-color: rgba(225,29,72,.18); }
+
+:root[data-theme="dark"] .fc-drop-overlay { border-color: color-mix(in srgb, var(--accent) 46%, #cfd2dc); background: rgba(255,255,255,0.06); }
+
+:root[data-theme="dark"] .fc-drop-overlay strong { color: var(--text); }
+
+:root[data-theme="dark"] .fc-appbar {
+  position: relative;
+  z-index: 40;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 14px 0 16px;
+  border-bottom: 1px solid rgba(255,255,255,.09);
+  background: rgba(23,28,35,.92);
+  backdrop-filter: blur(22px) saturate(150%);
+}
+
+:root[data-theme="dark"] .fc-appbar .fc-mode-switch {
+  flex: 0 0 auto;
+  width: 214px;
+  padding: 3px;
+  border-color: rgba(255,255,255,.09);
+  background: #f1f2f5;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .fc-appbar .fc-mode-option.is-active { color: var(--text); }
+
+:root[data-theme="dark"] .fc-appbar .fc-mode-slider {
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(50% - 3px);
+  border-color: rgba(30,32,45,.06);
+  background: #171c23;
+  box-shadow: 0 2px 7px rgba(30,35,55,.09);
+}
+
+:root[data-theme="dark"] .fc-sidebar-toggle {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  color: light-dark(#656875, #babbc1);
+  background: transparent;
+  cursor: pointer;
+  transition: background .22s ease, color .22s ease, transform .4s cubic-bezier(.2,.9,.2,1);
+}
+
+:root[data-theme="dark"] .fc-sidebar-toggle:hover { color: var(--text); background: rgba(30,32,45,.055); }
+
+:root[data-theme="dark"] .fc-archive-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 0 9px; border: 0; border-radius: 10px; color: light-dark(#858896, #c8c9d0); background: transparent; cursor: pointer; font-size: 11px; text-align: left; }
+
+:root[data-theme="dark"] .fc-archive-toggle:hover { color: var(--text); background: rgba(30,32,45,.045); }
+
+:root[data-theme="dark"] .fc-conversation-more:hover { color: var(--text); background: rgba(30,32,45,.06); }
+
+:root[data-theme="dark"] .fc-conversation-menu { position: absolute; z-index: 50; top: 46px; right: 5px; display: grid; min-width: 108px; padding: 5px; border: 1px solid rgba(30,32,45,.1); border-radius: 11px; background: rgba(255,255,255,0.05); box-shadow: 0 14px 38px rgba(30,35,55,.14); }
+
+:root[data-theme="dark"] .fc-conversation-menu button { min-height: 30px; padding: 0 9px; border: 0; border-radius: 7px; color: light-dark(#565966, #b3b4ba); background: transparent; cursor: pointer; text-align: left; font-size: 11px; }
+
+:root[data-theme="dark"] .fc-conversation-menu button:hover { color: var(--text); background: var(--panel-strong); }
+
+:root[data-theme="dark"] .fc-conversation-rename { position: absolute; z-index: 3; left: 52px; right: 38px; top: 10px; height: 34px; padding: 0 9px; border: 1px solid rgba(30,32,45,.15); border-radius: 9px; color: var(--text); background: #171c23; }
+
+:root[data-theme="dark"] .fc-restore { margin-left: auto; min-height: 28px; padding: 0 8px; border: 1px solid rgba(255,255,255,.10); border-radius: 8px; color: light-dark(#666976, #babcc1); background: #171c23; cursor: pointer; font-size: 10px; }
+
+:root[data-theme="dark"] .fc-restore:hover { color: var(--text); border-color: rgba(30,32,45,.18); }
+
+:root[data-theme="dark"] .fc-bubble,
+:root[data-theme="dark"] .fc-send-button {
+  overflow: visible !important;
+  border: 1px solid rgba(30,32,45,.11) !important;
+  background: rgba(255,255,255,0.08) !important;
+  box-shadow: 0 5px 16px rgba(0,0,0,.3) !important;
+  backdrop-filter: blur(14px) saturate(130%) !important;
+}
+
+:root[data-theme="dark"] .fc-bubble:hover { transform: translate3d(var(--tx, 0), var(--ty, 0), 0) scale(1.04); background: #171c23 !important; border-color: rgba(30,32,45,.2) !important; box-shadow: 0 8px 22px rgba(35,40,60,.09) !important; }
+
+:root[data-theme="dark"] .fc-bubble svg { color: var(--muted-strong) !important; }
+
+:root[data-theme="dark"] .fc-send-button {
+  width: 42px !important; height: 42px !important;
+  border-color: var(--text) !important;
+  background: var(--text) !important;
+  box-shadow: 0 8px 22px rgba(20,22,30,.18) !important;
+}
+
+:root[data-theme="dark"] .fc-send-button svg { color: light-dark(#171c23, var(--text)) !important; }
+
+:root[data-theme="dark"] .fc-conversation-actions button:hover { color: var(--text); background: rgba(30,32,45,.06); }
+
+:root[data-theme="dark"] .fc-secondary-button { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 14px; border: 1px solid rgba(30,32,45,.11); border-radius: 12px; color: light-dark(#4f5260, #b0b1b7); background: rgba(255,255,255,0.08); box-shadow: 0 6px 18px rgba(0,0,0,.3); cursor: pointer; font-size: 11px; font-weight: 560; transition: transform .22s ease, color .22s ease, border-color .22s ease, background .22s ease; }
+
+:root[data-theme="dark"] .fc-secondary-button:hover { transform: translateY(-1px); color: var(--text); border-color: rgba(30,32,45,.19); background: #171c23; }
+
+:root[data-theme="dark"] /* Neutral composer: remove accent gradient border and glow */ .fc-composer {
+  padding: 0 !important;
+  border: 1px solid rgba(255,255,255,.10) !important;
+  background: #171c23 !important;
+  box-shadow: 0 18px 52px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.28) !important;
+}
+
+:root[data-theme="dark"] .fc-stage.is-preview .fc-composer {
+  background: #171c23 !important;
+}
+
+html[data-theme="dark"] { color-scheme: light; scrollbar-color: #c8cad1 #101419; }
+
+:root[data-theme="dark"] .fc-mode-slider { background: #171c23 !important; border: 1px solid rgba(255,255,255,.10) !important; box-shadow: 0 2px 7px rgba(30,35,55,.09) !important; }
+
+:root[data-theme="dark"] .fc-mode-option.is-active { color: var(--text) !important; }
+
+:root[data-theme="dark"] .fc-inline-upload { display: grid; place-items: center; width: 40px; height: 40px; margin-top: 4px; padding: 0; border: 1px solid rgba(255,255,255,.10); border-radius: 12px; color: light-dark(#5f6270, #b7b8bf); background: #171c23; box-shadow: 0 5px 16px rgba(0,0,0,.3); cursor: pointer; transition: transform .2s ease, border-color .2s ease, color .2s ease, background .2s ease; }
+
+:root[data-theme="dark"] .fc-inline-upload:hover { transform: translateY(-1px); color: var(--text); border-color: rgba(30,32,45,.2); background: #171c23; }
+
+:root[data-theme="dark"] .fc-toolbar-chip { display: inline-flex; align-items: center; gap: 7px; min-width: 0; min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,255,255,.10); border-radius: 12px; color: var(--muted-strong); background: rgba(255,255,255,0.08); box-shadow: 0 5px 16px rgba(0,0,0,.26); cursor: pointer; font-size: 11px; transition: transform .2s ease, border-color .2s ease, color .2s ease, background .2s ease; }
+
+:root[data-theme="dark"] .fc-toolbar-chip:hover { transform: translateY(-1px); color: var(--text); border-color: rgba(30,32,45,.2); background: #171c23; }
+
+:root[data-theme="dark"] .fc-composer-toolbar .fc-param-chip { padding: 0 7px; border: 0; background: transparent; #171c23-space: nowrap; }
+
+:root[data-theme="dark"] .fc-composer:focus-within {
+  border-color: rgba(30,32,45,.20) !important;
+  box-shadow: 0 18px 52px rgba(0,0,0,.4), 0 0 0 3px rgba(30,32,45,.045) !important;
+}
+
+:root[data-theme="dark"] .fc-appbar .fc-mode-switch {
+  background: rgba(255,255,255,0.12);
+  box-shadow: 0 8px 26px rgba(76,45,160,.08), inset 0 1px 0 rgba(255,255,255,0.06);
+  transition: background .55s ease, box-shadow .55s ease;
+}
+
+:root[data-theme="dark"] .fc-inline-upload {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 20%, rgba(255,255,255,.09));
+  background: color-mix(in srgb, var(--accent) 5%, #171c23);
+}
+
+:root[data-theme="dark"] .fc-inline-upload:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, rgba(255,255,255,.10));
+  background: color-mix(in srgb, var(--accent) 9%, #171c23);
+}
+
+:root[data-theme="dark"] .fc-toolbar-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 24%, rgba(255,255,255,.10));
+  box-shadow: 0 7px 20px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+:root[data-theme="dark"] /* Final composer shell and refined mode transition */ .fc-composer,
+:root[data-theme="dark"] .fc-stage.is-preview .fc-composer {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(30,32,45,.105) !important;
+  border-radius: 24px !important;
+  background: rgba(255,255,255,0.06) !important;
+  box-shadow: 0 22px 64px rgba(35,40,60,.13), 0 3px 12px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,0.05) !important;
+  backdrop-filter: blur(28px) saturate(155%) !important;
+  transition: width .65s cubic-bezier(.2,.9,.2,1), transform .65s cubic-bezier(.2,.9,.2,1), border-color .42s ease, box-shadow .48s ease !important;
+}
+
+:root[data-theme="dark"] .fc-composer:focus-within {
+  border-color: rgba(30,32,45,.18) !important;
+  box-shadow: 0 24px 68px rgba(35,40,60,.15), 0 0 0 3px rgba(255,255,255,.05), inset 0 1px 0 rgba(255,255,255,0.05) !important;
+}
+
+:root[data-theme="dark"] /* Restore the previous stable composer card exactly */ .fc-composer,
+:root[data-theme="dark"] .fc-stage.is-preview .fc-composer {
+  padding: 0 !important;
+  overflow: visible !important;
+  border: 1px solid rgba(255,255,255,.10) !important;
+  border-radius: 24px !important;
+  background: #171c23 !important;
+  box-shadow: 0 18px 52px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.28) !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-theme="dark"] .fc-composer:focus-within {
+  border-color: rgba(255,255,255,.16) !important;
+  box-shadow: 0 18px 52px rgba(0,0,0,.4), 0 0 0 3px rgba(255,255,255,.05) !important;
+}
+
+:root[data-theme="dark"] .fc-history-heading,
+:root[data-theme="dark"] .fc-conversation-copy small,
+:root[data-theme="dark"] .fc-sidebar-footer p { color: light-dark(#737687, #c0c1c9) !important; }
+
+:root[data-theme="dark"] .fc-appbar .fc-mode-option.is-active { color: light-dark(#171c23, var(--text)) !important; }
+
+:root[data-theme="dark"] .fc-composer textarea::placeholder { color: light-dark(#696c7a, #bcbdc3) !important; }
+
+:root[data-theme="dark"] .fc-inline-upload:hover,
+:root[data-theme="dark"] .fc-toolbar-chip:hover {
+  color: light-dark(#171c23, var(--text)) !important;
+  border-color: rgba(255,255,255,.17) !important;
+  background: rgba(255,255,255,.075) !important;
+}
+
+:root[data-theme="dark"] .fc-preview-media { color: var(--muted) !important; }
+
+:root[data-theme="dark"] .fc-history-thumb { background: #242631 !important; color: var(--muted) !important; }
+
+:root[data-theme="dark"] .fc-model-copy small { color: var(--muted) !important; }
+
+:root[data-theme="dark"] .fc-model-badge { border-color: rgba(255,255,255,.09) !important; color: var(--muted) !important; background: rgba(255,255,255,.035) !important; }
+
+:root[data-theme="dark"] .fc-param-option { border-color: rgba(255,255,255,.09) !important; color: var(--muted) !important; background: rgba(255,255,255,.035) !important; }
+
+:root[data-theme="dark"] .fc-param-option:hover { color: light-dark(#171c23, var(--text)) !important; background: rgba(255,255,255,.065) !important; }
+
+:root[data-theme="dark"] .fc-param-option.is-active { color: light-dark(#171c23, var(--text)) !important; border-color: color-mix(in srgb, var(--accent) 42%, rgba(255,255,255,.08)) !important; background: color-mix(in srgb, var(--accent) 15%, rgba(255,255,255,.025)) !important; }
 
 html[data-theme="dark"],
 :root[data-theme="dark"] body {
@@ -2244,6 +2616,10 @@ html[data-theme="dark"],
   background: color-mix(in srgb, var(--accent) 7%, #171c23) !important;
 }
 
+:root[data-theme="dark"] .fc-history-heading,
+:root[data-theme="dark"] .fc-conversation-copy small,
+:root[data-theme="dark"] .fc-sidebar-footer p { color: var(--muted) !important; }
+
 :root[data-theme="dark"] .fc-sidebar-footer { border-top-color: rgba(255,255,255,.09) !important; }
 
 :root[data-theme="dark"] .fc-appbar .fc-mode-switch {
@@ -2254,16 +2630,7 @@ html[data-theme="dark"],
 
 :root[data-theme="dark"] .fc-appbar .fc-mode-option { color: var(--muted) !important; }
 
-:root[data-theme="dark"] .fc-appbar .fc-mode-option.is-active { color: #171c23 !important; }
-
-:root[data-theme="dark"] .fc-appbar .fc-mode-slider {
-  background: linear-gradient(135deg, #7c3aed, #2563eb 72%, #d946ef) !important;
-  box-shadow: 0 7px 20px rgba(99,56,218,.25) !important;
-}
-
-:root[data-theme="dark"] .fc-shell[data-mode="image"] .fc-appbar .fc-mode-slider {
-  box-shadow: 0 7px 20px rgba(5,150,105,.23) !important;
-}
+:root[data-theme="dark"] .fc-appbar .fc-mode-option.is-active { color: light-dark(#171c23, var(--text)) !important; }
 
 :root[data-theme="dark"] .fc-composer,
 :root[data-theme="dark"] .fc-stage.is-preview .fc-composer {
@@ -2280,13 +2647,30 @@ html[data-theme="dark"],
 
 :root[data-theme="dark"] .fc-composer textarea { color: var(--text) !important; }
 
-:root[data-theme="dark"] .fc-composer textarea::placeholder { color: #a2a5b2 !important; }
+:root[data-theme="dark"] .fc-inline-upload,
+:root[data-theme="dark"] .fc-toolbar-chip {
+  color: var(--muted-strong) !important;
+  border-color: rgba(255,255,255,.10) !important;
+  background: rgba(255,255,255,0.08) !important;
+  box-shadow: 0 5px 16px rgba(0,0,0,.28) !important;
+}
 
 :root[data-theme="dark"] .fc-inline-upload {
   color: var(--accent) !important;
   border-color: color-mix(in srgb, var(--accent) 20%, rgba(255,255,255,.09)) !important;
   background: color-mix(in srgb, var(--accent) 5%, #171c23) !important;
 }
+
+:root[data-theme="dark"] .fc-inline-upload:hover,
+:root[data-theme="dark"] .fc-toolbar-chip:hover {
+  color: var(--text) !important;
+  border-color: color-mix(in srgb, var(--accent) 24%, rgba(255,255,255,.10)) !important;
+  background: #171c23 !important;
+}
+
+:root[data-theme="dark"] .fc-composer-toolbar .fc-param-chip strong { color: light-dark(#565966, #b3b4ba) !important; }
+
+:root[data-theme="dark"] .fc-composer-toolbar .fc-param-chip + .fc-param-chip { border-left-color: rgba(255,255,255,.10) !important; }
 
 :root[data-theme="dark"] .fc-preview-frame {
   border-color: rgba(255,255,255,.10) !important;
@@ -2296,9 +2680,29 @@ html[data-theme="dark"],
 
 :root[data-theme="dark"] .fc-preview-media { color: var(--muted) !important; }
 
+:root[data-theme="dark"] .fc-history-pill,
+:root[data-theme="dark"] .fc-secondary-button {
+  border-color: rgba(255,255,255,.10) !important;
+  color: light-dark(#666976, #babcc1) !important;
+  background: rgba(255,255,255,0.08) !important;
+  box-shadow: 0 7px 22px rgba(35,40,60,.07) !important;
+}
+
+:root[data-theme="dark"] .fc-history-strip {
+  border-color: rgba(255,255,255,.09) !important;
+  background: rgba(255,255,255,0.08) !important;
+  box-shadow: 0 12px 36px rgba(35,40,60,.08) !important;
+}
+
+:root[data-theme="dark"] .fc-history-card:hover,
+:root[data-theme="dark"] .fc-history-card.is-active {
+  background: color-mix(in srgb, var(--accent) 5%, #171c23) !important;
+  border-color: color-mix(in srgb, var(--accent) 20%, rgba(255,255,255,.09)) !important;
+}
+
 :root[data-theme="dark"] .fc-popover {
   border-color: rgba(255,255,255,.10) !important;
-  background: rgba(255,255,255,.97) !important;
+  background: rgba(255,255,255,0.05) !important;
   box-shadow: 0 30px 90px rgba(35,40,60,.17), 0 2px 8px rgba(0,0,0,.28) !important;
 }
 
@@ -2306,13 +2710,9 @@ html[data-theme="dark"],
 
 :root[data-theme="dark"] .fc-model-mode { border-color: rgba(255,255,255,.09) !important; background: rgba(244,245,248,.86) !important; }
 
-:root[data-theme="dark"] .fc-model-option:hover { background: rgba(30,32,45,.045) !important; }
-
 :root[data-theme="dark"] .fc-model-option.is-active { background: color-mix(in srgb, var(--accent) 7%, #171c23) !important; border-color: color-mix(in srgb, var(--accent) 20%, rgba(255,255,255,.08)) !important; }
 
-:root[data-theme="dark"] .fc-model-copy small { color: #8d909c !important; }
-
-:root[data-theme="dark"] .fc-model-badge { border-color: rgba(255,255,255,.10) !important; color: var(--muted) !important; background: rgba(255,255,255,.72) !important; }
+:root[data-theme="dark"] .fc-model-badge { border-color: rgba(255,255,255,.10) !important; color: var(--muted) !important; background: rgba(255,255,255,0.12) !important; }
 
 :root[data-theme="dark"] .fc-param-option { border-color: rgba(255,255,255,.10) !important; color: var(--muted) !important; background: rgba(247,248,250,.88) !important; }
 
@@ -2321,6 +2721,8 @@ html[data-theme="dark"],
 :root[data-theme="dark"] .fc-param-option.is-active { color: color-mix(in srgb, var(--accent) 72%, var(--text)) !important; border-color: color-mix(in srgb, var(--accent) 28%, rgba(255,255,255,.09)) !important; background: color-mix(in srgb, var(--accent) 7%, #171c23) !important; }
 
 :root[data-theme="dark"] .fc-param-number input { border-color: rgba(255,255,255,.10) !important; color: var(--text) !important; background: #171c23 !important; }
+
+:root[data-theme="dark"] .fc-toast { border-color: rgba(255,255,255,.10) !important; color: var(--muted-strong) !important; background: rgba(255,255,255,0.05) !important; box-shadow: 0 16px 46px rgba(0,0,0,.5) !important; }
 
 :root[data-theme="dark"] /* Final subtle gradient borders and responsive layout lock */ html,
 :root[data-theme="dark"] body,
@@ -2346,15 +2748,49 @@ html[data-theme="dark"],
   box-shadow: 0 18px 50px rgba(63,54,112,.11), 0 0 0 3px rgba(30,32,45,.025) !important;
 }
 
-:root[data-theme="dark"] .fc-inline-upload { color: #7457b7 !important; }
-
-:root[data-theme="dark"] .fc-appbar .fc-mode-slider {
-  background: linear-gradient(135deg, rgba(124,58,237,.86), rgba(99,102,241,.78) 68%, rgba(192,132,252,.78)) !important;
-  box-shadow: 0 6px 18px rgba(99,76,180,.16) !important;
+:root[data-theme="dark"] .fc-inline-upload,
+:root[data-theme="dark"] .fc-toolbar-chip {
+  border: 1px solid transparent !important;
+  color: light-dark(#625f72, #b8b7c0) !important;
+  background:
+    linear-gradient(#171c23, #171c23) padding-box,
+    linear-gradient(135deg, rgba(124,58,237,.18), rgba(37,99,235,.065), rgba(217,70,239,.11)) border-box !important;
+  box-shadow: 0 5px 16px rgba(78,62,139,.055) !important;
 }
 
-:root[data-theme="dark"] .fc-shell[data-mode="image"] .fc-appbar .fc-mode-slider::after {
-  background: linear-gradient(135deg, rgba(5,150,105,.82), rgba(101,163,13,.68) 68%, rgba(20,184,166,.70)) !important;
+:root[data-theme="dark"] .fc-inline-upload { color: light-dark(#7457b7, #c0b3df) !important; }
+
+:root[data-theme="dark"] .fc-inline-upload:hover,
+:root[data-theme="dark"] .fc-toolbar-chip:hover {
+  color: light-dark(#2f3040, var(--text)) !important;
+  background:
+    linear-gradient(#171c23, #171c23) padding-box,
+    linear-gradient(135deg, rgba(124,58,237,.30), rgba(37,99,235,.12), rgba(217,70,239,.20)) border-box !important;
+  box-shadow: 0 7px 21px rgba(78,62,139,.10) !important;
+}
+
+:root[data-theme="dark"] .fc-composer .fc-send-button {
+  border: 1px solid transparent !important;
+  color: light-dark(#58399f, #b4a6d4) !important;
+  background:
+    linear-gradient(135deg, rgba(139,92,246,.16), rgba(99,102,241,.09), rgba(192,132,252,.13)) padding-box,
+    linear-gradient(135deg, rgba(124,58,237,.34), rgba(99,102,241,.18), rgba(217,70,239,.24)) border-box !important;
+  box-shadow: 0 8px 22px rgba(93,72,165,.10), inset 0 1px 0 rgba(255,255,255,0.12) !important;
+}
+
+:root[data-theme="dark"] .fc-composer .fc-send-button span,
+:root[data-theme="dark"] .fc-composer .fc-send-button svg { color: light-dark(#58399f, #b4a6d4) !important; }
+
+:root[data-theme="dark"] .fc-composer .fc-send-button:hover {
+  color: light-dark(#4f3194, #b0a2cf) !important;
+  background:
+    linear-gradient(135deg, rgba(139,92,246,.21), rgba(99,102,241,.12), rgba(192,132,252,.17)) padding-box,
+    linear-gradient(135deg, rgba(124,58,237,.42), rgba(99,102,241,.24), rgba(217,70,239,.30)) border-box !important;
+  box-shadow: 0 11px 28px rgba(93,72,165,.14), inset 0 1px 0 rgba(255,255,255,0.11) !important;
+}
+
+:root[data-theme="dark"] #fc-shell button:focus-visible {
+  box-shadow: 0 0 0 2px rgba(255,255,255,.10) !important;
 }
 
 html[data-theme="dark"],
@@ -2366,19 +2802,19 @@ html[data-theme="dark"],
 
 :root[data-theme="dark"] .fc-appbar {
   border-bottom-color: rgba(255,255,255,.09) !important;
-  background: rgba(255,255,255,.94) !important;
+  background: rgba(255,255,255,0.06) !important;
   box-shadow: 0 7px 26px rgba(35,40,60,.04) !important;
 }
 
 :root[data-theme="dark"] .fc-sidebar {
   border-right-color: rgba(255,255,255,.09) !important;
-  background: rgba(255,255,255,.95) !important;
+  background: rgba(255,255,255,0.06) !important;
   box-shadow: 8px 0 32px rgba(35,40,60,.03) !important;
 }
 
 :root[data-theme="dark"] .fc-appbar .fc-mode-switch {
   border-color: rgba(255,255,255,.09) !important;
-  background: rgba(255,255,255,.9) !important;
+  background: rgba(255,255,255,0.07) !important;
   box-shadow: 0 6px 20px rgba(0,0,0,.3) !important;
 }
 
@@ -2386,12 +2822,8 @@ html[data-theme="dark"],
   color: var(--muted) !important;
 }
 
-:root[data-theme="dark"] .fc-appbar .fc-mode-option.is-active {
-  color: var(--soft-text) !important;
-}
-
 :root[data-theme="dark"] .fc-appbar .fc-mode-option.is-active .fc-mode-icon {
-  background: rgba(255,255,255,.72);
+  background: rgba(255,255,255,0.12);
 }
 
 :root[data-theme="dark"] .fc-appbar .fc-mode-slider {
@@ -2426,11 +2858,84 @@ html[data-theme="dark"],
     transform .65s cubic-bezier(.2,.9,.2,1) !important;
 }
 
-:root[data-theme="dark"] .fc-inline-upload svg,
-:root[data-theme="dark"] .fc-model-trigger > svg,
-:root[data-theme="dark"] .fc-params-trigger > svg {
+:root[data-theme="dark"] .fc-inline-upload,
+:root[data-theme="dark"] .fc-toolbar-chip {
+  border: 1px solid transparent !important;
+  color: light-dark(#5f6270, #b7b8bf) !important;
+  background:
+    linear-gradient(#171c23, #171c23) padding-box,
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--soft-a) 30%, #171c23),
+      color-mix(in srgb, var(--soft-b) 18%, #171c23)
+    ) border-box !important;
+  box-shadow: 0 5px 16px rgba(55,63,96,.055) !important;
+  transition:
+    color .32s ease,
+    border-color .32s ease,
+    background .52s ease,
+    box-shadow .32s ease,
+    transform .22s ease !important;
+}
+
+:root[data-theme="dark"] .fc-inline-upload:hover,
+:root[data-theme="dark"] .fc-toolbar-chip:hover {
   color: var(--soft-text) !important;
-  transition: color .52s ease !important;
+  border-color: transparent !important;
+  background:
+    linear-gradient(#171c23, #171c23) padding-box,
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--soft-a) 48%, #171c23),
+      color-mix(in srgb, var(--soft-b) 34%, #171c23)
+    ) border-box !important;
+  box-shadow: 0 7px 21px color-mix(in srgb, var(--soft-text) 10%, transparent) !important;
+}
+
+:root[data-theme="dark"] .fc-composer .fc-send-button {
+  border: 1px solid transparent !important;
+  color: var(--soft-text) !important;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--soft-a) 17%, #171c23),
+      color-mix(in srgb, var(--soft-b) 11%, #171c23)
+    ) padding-box,
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--soft-a) 54%, #171c23),
+      color-mix(in srgb, var(--soft-b) 40%, #171c23)
+    ) border-box !important;
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--soft-text) 11%, transparent), inset 0 1px 0 rgba(255,255,255,.06) !important;
+  transition:
+    color .42s ease,
+    background .6s cubic-bezier(.2,.9,.2,1),
+    box-shadow .34s ease,
+    transform .22s ease !important;
+}
+
+:root[data-theme="dark"] .fc-composer .fc-send-button:hover {
+  color: var(--soft-text) !important;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--soft-a) 24%, #171c23),
+      color-mix(in srgb, var(--soft-b) 16%, #171c23)
+    ) padding-box,
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--soft-a) 66%, #171c23),
+      color-mix(in srgb, var(--soft-b) 50%, #171c23)
+    ) border-box !important;
+  box-shadow: 0 11px 28px color-mix(in srgb, var(--soft-text) 15%, transparent), inset 0 1px 0 rgba(255,255,255,.06) !important;
+}
+
+:root[data-theme="dark"] #fc-shell button:focus-visible,
+:root[data-theme="dark"] .fc-inline-upload:focus-visible,
+:root[data-theme="dark"] .fc-toolbar-chip:focus-visible,
+:root[data-theme="dark"] .fc-composer .fc-send-button:focus-visible {
+  border-color: rgba(30,32,45,.22) !important;
+  box-shadow: 0 0 0 3px rgba(255,255,255,.09) !important;
 }
 
 :root[data-theme="dark"] .fc-composer:focus-within {
@@ -2442,17 +2947,6 @@ html[data-theme="dark"],
     box-shadow .18s ease,
     width .65s cubic-bezier(.2,.9,.2,1),
     transform .65s cubic-bezier(.2,.9,.2,1) !important;
-}
-
-:root[data-theme="dark"] .fc-composer textarea:focus,
-:root[data-theme="dark"] .fc-composer textarea:focus-visible {
-  box-shadow: none !important;
-}
-
-:root[data-theme="dark"] .fc-param-number input:focus,
-:root[data-theme="dark"] .fc-param-number input:focus-visible {
-  border-color: rgba(30,32,45,.24) !important;
-  box-shadow: 0 0 0 3px rgba(30,32,45,.06) !important;
 }
 
 :root[data-theme="dark"] /* v20 global mode tint and preview corner fix */ .fc-shell {
@@ -2478,7 +2972,7 @@ html[data-theme="dark"],
   background: linear-gradient(
     90deg,
     color-mix(in srgb, var(--soft-a) 18%, #171c23),
-    rgba(255,255,255,.96) 50%,
+    rgba(255,255,255,0.05) 50%,
     color-mix(in srgb, var(--soft-b) 14%, #171c23)
   ) !important;
   border-bottom-color: color-mix(in srgb, var(--soft-a) 17%, rgba(255,255,255,.08)) !important;
@@ -2507,14 +3001,10 @@ html[data-theme="dark"],
   background: color-mix(in srgb, var(--soft-a) 15%, #171c23) !important;
 }
 
-:root[data-theme="dark"] .fc-orbit-ring-b {
-  border-color: color-mix(in srgb, var(--soft-a) 30%, transparent);
-}
-
-:root[data-theme="dark"] .fc-orbit-core {
-  border-color: color-mix(in srgb, var(--soft-a) 44%, transparent);
-  background: color-mix(in srgb, var(--soft-a) 11%, transparent);
-  box-shadow: 0 0 90px color-mix(in srgb, var(--soft-a) 22%, transparent);
+:root[data-theme="dark"] .fc-history-pill,
+:root[data-theme="dark"] .fc-secondary-button {
+  border-color: color-mix(in srgb, var(--soft-a) 23%, rgba(255,255,255,.09)) !important;
+  transition: color .42s ease, border-color .42s ease, background .52s ease, box-shadow .34s ease, transform .22s ease !important;
 }
 
 :root[data-theme="dark"] .fc-preview-frame {
@@ -2533,20 +3023,13 @@ html[data-theme="dark"],
     linear-gradient(
       135deg,
       color-mix(in srgb, var(--soft-a) 43%, #171c23),
-      rgba(255,255,255,.92) 58%,
+      rgba(255,255,255,0.06) 58%,
       color-mix(in srgb, var(--soft-b) 34%, #171c23)
     ) border-box !important;
   box-shadow:
     0 24px 70px color-mix(in srgb, var(--soft-text) 13%, transparent),
     0 1px 4px rgba(0,0,0,.26) !important;
   transition: background .72s cubic-bezier(.2,.9,.2,1), box-shadow .42s ease;
-}
-
-:root[data-theme="dark"] .fc-preview-media img,
-:root[data-theme="dark"] .fc-preview-media video {
-  overflow: hidden;
-  border-radius: 14px;
-  background: #0c0d12;
 }
 
 :root[data-theme="dark"] /* Preview source state while continuing an edit */ .fc-preview-panel.is-editing .fc-preview-frame {
@@ -2574,33 +3057,26 @@ html[data-theme="dark"],
   letter-spacing: 0;
 }
 
-:root[data-theme="dark"] /* 生成中/排队中的「取消这次生成」按钮（用户 2026-09-21 要求可取消） */ /* 取消按钮：红色、固定在预览框右下角（用户 2026-09-21 要求） */ .fc-cancel-job { position: absolute; right: 14px; bottom: 14px; z-index: 3; padding: 7px 16px; border: 1px solid rgba(226,74,74,.85); border-radius: 999px; color: #171c23; background: rgba(198,54,54,.92); font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.3); transition: background .2s ease, transform .2s ease; }
+:root[data-theme="dark"] .fc-secondary-button.is-active {
+  color: var(--soft-text) !important;
+  border-color: color-mix(in srgb, var(--soft-a) 48%, #171c23) !important;
+  background: color-mix(in srgb, var(--soft-a) 12%, #171c23) !important;
+  box-shadow: 0 7px 22px color-mix(in srgb, var(--soft-text) 10%, transparent) !important;
+}
 
-:root[data-theme="dark"] .fc-cancel-job:hover { background: #e04b4b; transform: translateY(-1px); }
+:root[data-theme="dark"] /* 「视频编辑」静默返回原片时的标记（2026-09-22 用户反馈「完全就是返回的原视频」）。 后端用同帧像素差判定，产物与原片差 < 6/255（重编码噪声量级）就挂这个标记 —— 否则用户点开历史只会看到两条一模一样的视频，完全不知道哪条是"白跑了"。 */ .fc-history-copy .fc-noop-flag {
+  display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; #171c23-space: nowrap;
+  color: #d97706; font-size: 9px; font-weight: 600;
+}
 
-:root[data-theme="dark"] .fc-cancel-job:hover { border-color: rgba(220,90,90,.65); color: #ff8a8a; background: rgba(220,90,90,.12); }
+:root[data-theme="dark"] /* 生成中/排队中的「取消这次生成」按钮（用户 2026-09-21 要求可取消） */ /* 取消按钮：红色、固定在预览框右下角（用户 2026-09-21 要求） */ .fc-cancel-job { position: absolute; right: 14px; bottom: 14px; z-index: 3; padding: 7px 16px; border: 1px solid rgba(226,74,74,.85); border-radius: 999px; color: light-dark(#171c23, var(--text)); background: rgba(198,54,54,.92); font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.3); transition: background .2s ease, transform .2s ease; }
 
-:root[data-theme="dark"] .fc-loading-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: fc-dot 1s ease-in-out infinite; }
+:root[data-theme="dark"] .fc-send-button.is-running { background: #23242c !important; border: 0 !important; color: light-dark(#171c23, var(--text)) !important; box-shadow: 0 10px 26px rgba(0,0,0,.3) !important; }
 
-:root[data-theme="dark"] .fc-loading-dots span:nth-child(2) { animation-delay: .12s; background: var(--accent-2); }
+:root[data-theme="dark"] .fc-send-button.is-running svg { color: light-dark(#171c23, var(--text)) !important; filter: none !important; }
 
-:root[data-theme="dark"] .fc-loading-dots span:nth-child(3) { animation-delay: .24s; background: var(--accent-3); }
+:root[data-theme="dark"] .fc-archive-bulk button[data-danger]:hover { border-color: rgba(220,90,90,.6); color: light-dark(#e05656, #f1b3b3); background: rgba(220,90,90,.12); }
 
-:root[data-theme="dark"] .fc-loading-block strong { color: var(--text); font-size: 15px; }
+:root[data-theme="dark"] /* 挪到预留区上方，与展开的历史条不重叠 */ /* 归档卡片的「删除」按钮：和「恢复」并排，样式区分（危险操作用红色描边） */ /* 归档卡片的「删除」：只留垃圾桶图标，不要文字（用户 2026-09-21） */ .fc-delete-archived { display: grid; place-items: center; margin-left: 6px; width: 28px; height: 28px; padding: 0; border: 1px solid rgba(220,90,90,.45); border-radius: 8px; color: light-dark(#c0504f, #e3b0b0); background: #171c23; cursor: pointer; }
 
-:root[data-theme="dark"] .fc-loading-block .fc-progress-text { color: var(--muted); font-size: 12px; line-height: 1.7; }
 
-:root[data-theme="dark"] .fc-conversation-list::-webkit-scrollbar-track,
-:root[data-theme="dark"] .fc-archived-list::-webkit-scrollbar-track { background: rgba(154,158,170,.14); border-radius: 999px; }
-
-:root[data-theme="dark"] .fc-conversation-list::-webkit-scrollbar-thumb,
-:root[data-theme="dark"] .fc-archived-list::-webkit-scrollbar-thumb { background: rgba(154,158,170,.75); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
-
-:root[data-theme="dark"] .fc-conversation-list::-webkit-scrollbar-thumb:hover,
-:root[data-theme="dark"] .fc-archived-list::-webkit-scrollbar-thumb:hover { background: rgba(126,130,142,.95); background-clip: padding-box; }
-
-:root[data-theme="dark"] /* 挪到预留区上方，与展开的历史条不重叠 */ /* 归档卡片的「删除」按钮：和「恢复」并排，样式区分（危险操作用红色描边） */ /* 归档卡片的「删除」：只留垃圾桶图标，不要文字（用户 2026-09-21） */ .fc-delete-archived { display: grid; place-items: center; margin-left: 6px; width: 28px; height: 28px; padding: 0; border: 1px solid rgba(220,90,90,.45); border-radius: 8px; color: #c0504f; background: #171c23; cursor: pointer; }
-
-:root[data-theme="dark"] .fc-delete-archived svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-
-:root[data-theme="dark"] .fc-delete-archived:hover { border-color: rgba(220,90,90,.8); background: rgba(220,90,90,.1); }
