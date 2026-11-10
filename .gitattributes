@@ -1,0 +1,59 @@
+# 换行符统一策略
+# ================
+# 本仓库由 Windows 服务机与 macOS 机器共同维护，而 core.autocrlf=false 且此前没有本文件，
+# 于是同一份文件在不同机器上被写成 CRLF / LF / 混合三种形态，git 会把整个文件当成全新内容，
+# 合并时表现为「整文件冲突」。
+#
+# 2026-11-10 实测：交接合并时 9 个文件冲突，其中 3 个（web/app.py、nano-banana/static/app.js、
+# portal/app.py）在把三方内容统一成 LF 后**完全自动合并**；远端历史也有过 "restore line
+# endings" 的提交。故统一口径：仓库内与工作区一律 LF。
+#
+# 注：本项目的启动脚本（Start All.bat / *.command / *.ps1）实测均为 LF 且生产正常运行，
+# 因此不需要按平台区分 eol。
+* text=auto eol=lf
+
+# 二进制文件：显式声明，避免被当作文本做换行符转换或产生无意义的文本 diff
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.webp    binary
+*.gif     binary
+*.ico     binary
+*.bmp     binary
+*.heic    binary
+*.mp4     binary
+*.mov     binary
+*.webm    binary
+*.mp3     binary
+*.wav     binary
+*.m4a     binary
+*.zip     binary
+*.whl     binary
+*.tar     binary
+*.gz      binary
+*.pdf     binary
+*.sqlite3 binary
+*.so      binary
+*.dll     binary
+*.exe     binary
+*.pyd     binary
+
+# 明确按文本处理（便于 diff 的语言/配置类型）
+*.py      text
+*.js      text
+*.mjs     text
+*.cjs     text
+*.ts      text
+*.tsx     text
+*.css     text
+*.html    text
+*.json    text
+*.md      text
+*.txt     text
+*.yml     text
+*.yaml    text
+*.toml    text
+*.sh      text
+*.ps1     text
+*.bat     text
+*.command text
