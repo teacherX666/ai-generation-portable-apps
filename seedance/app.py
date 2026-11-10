@@ -848,6 +848,13 @@ VALUE_FIELDS = {
     #: 2026-09-22 修「视频编辑返回原视频」：不下发它时方舟只能靠提示词猜任务类型，
     #: 实测猜不出「视频编辑」→ 产物与原片逐帧一致（同帧差 3.9/255 ≈ 重编码噪声）。
     "omni_reference_task_type",
+    #: Seedance 2.5 样片模式（Draft，2026-10-15 接入）：
+    #:   draft=1        → 第一段，生成 480P 低成本样片
+    #:   draft_task_id  → 第二段，基于样片任务 ID 出正式成片
+    #: 官方口径：仅 2.5 支持；开启样片模式后**只允许 480p**（其他分辨率直接报错）；
+    #: 第二段里提示词/参考素材/随机种子/宽高比/时长由模型自动复用，只重新指定分辨率。
+    "draft",
+    "draft_task_id",
     "prompt",
 }
 
@@ -1003,6 +1010,21 @@ def model_capabilities(config: dict[str, Any], provider: str, model: str) -> dic
     }
 
 
+def model_supports_draft(config: dict[str, Any], provider: str, model: str) -> bool:
+    """该模型是否支持 Seedance 2.5 样片模式（Draft）。
+
+    能力声明写在 providers.json 的 `capabilities.draft`（目前只有
+    doubao-seedance-2-5-260628 为 true）—— 样片模式是 2.5 独有能力，
+    2.0 系列下发 `draft: true` 会被方舟拒（2026-10-15 接入口径）。
+    """
+    provider_cfg = (config.get("providers") or {}).get(provider) or {}
+    for item in (provider_cfg.get("models") or []):
+        if isinstance(item, dict) and str(item.get("id") or "") == model:
+            cap = item.get("capabilities") if isinstance(item.get("capabilities"), dict) else {}
+            return bool(cap.get("draft"))
+    return False
+
+
 def validate_model_capabilities(values: dict[str, Any], files: dict[str, tuple[str, bytes]]) -> None:
     del files
     config, _ = load_provider_config()
@@ -1036,6 +1058,23 @@ def validate_model_capabilities(values: dict[str, Any], files: dict[str, tuple[s
             lo, hi = caps["duration_range"]
             if duration < int(lo) or duration > int(hi):
                 problems.append("时长仅支持 " + str(lo) + "-" + str(hi) + " 秒")
+    #: 样片模式的能力前置校验：放到本地做，别等方舟异步报错（那时任务已经创建、
+    #: 用户要等一轮才知道自己选错了模型）。
+    wants_draft = parse_bool(values.get("draft")) or bool(str(values.get("draft_task_id") or "").strip())
+    if wants_draft and not model_supports_draft(config, provider, model):
+        label = str(selected.get("label") or model or "当前模型")
+        problems.append(
+            f"「{label}」不支持样片模式（仅 Seedance 2.5 支持），请改用 Seedance 2.5 或关闭样片模式"
+        )
+    #: 成片阶段的硬约束（官方 Step2 参数表）：`resolution` 必须传且仅支持 1080p。
+    #: 放在这里是为了**提交时就 400**，而不是建了作业再在 run 里失败 —— 用户少等一轮。
+    if str(values.get("draft_task_id") or "").strip():
+        final_resolution = str(values.get("resolution") or "").strip()
+        if final_resolution and final_resolution != "1080p":
+            problems.append(
+                f"基于样片生成成片时分辨率只能是 1080p（官方硬约束），收到 {final_resolution}；"
+                "要 720p 请直接重新生成，不要走样片模式"
+            )
     if problems:
         raise ValueError("；".join(problems))
 
@@ -1134,6 +1173,29 @@ def update_activity(activity_id: str | None, **updates: Any) -> None:
             return
 
 
+def values_are_draft(values: Any) -> bool:
+    """这组请求参数是不是「样片模式」（Seedance 2.5 Draft 第一段）。
+
+    前端 `isDraftJob()` 的 Python 镜像。**列表接口必须带上这个标志**：卡片是从
+    `/api/jobs`（为瘦身不下发 params）和 `/api/activity`（不下发 request）画出来的，
+    列表里没有 draft 的话，前端判不出样片 → 点卡片只会开普通详情弹窗，样片窗口
+    再也回不去（2026-10-20 用户：「如果一开始没决定用1080，后面没办法返回那个页面了」）。
+    """
+    if not isinstance(values, dict):
+        return False
+    raw = values.get("draft")
+    return str(raw).strip().lower() in {"1", "true", "on", "yes"}
+
+
+def activity_record_draft(item: dict[str, Any]) -> bool:
+    """活动记录（持久化历史）里这条是不是样片 —— request.values 与 restore.values 都看。"""
+    request = item.get("request") or {}
+    values = (request.get("parsed") or {}).get("values") or request.get("values") or {}
+    if values_are_draft(values):
+        return True
+    return values_are_draft((item.get("restore") or {}).get("values") or {})
+
+
 def activity_list(ws_id: str = "localhost", show_all: bool = False, username: str = "") -> dict[str, Any]:
     items = read_activity_log()
     if not show_all:
@@ -1189,6 +1251,8 @@ def activity_list(ws_id: str = "localhost", show_all: bool = False, username: st
             "attempt_count": len(item.get("attempts") or []),
             "first_url": first_url,
             "first_filename": first_filename,
+            #: 样片标志（见 values_are_draft 的说明）—— 卡片靠它决定点开是样片窗口还是详情。
+            "draft": activity_record_draft(item),
         })
     summary.reverse()
     return {"counts": counts, "records": summary}
@@ -2770,6 +2834,42 @@ def pad_image_to_ark_ratio(filename: str, blob: bytes) -> tuple[bytes, str]:
 
 
 def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index: int, ws_id: str = "localhost", request_host: str | None = None, notes: list[str] | None = None) -> dict[str, Any]:
+    #: 第二段：基于样片任务 ID 出正式成片（Seedance 2.5 样片模式，2026-10-15 接入）。
+    #:
+    #: 官方《Doubao Seedance 2.5 教程 · 样片模式 · Step2》的参数表（2026-10-16 更新版）：
+    #:   * 取值固定：`model` 必须与 Draft 阶段一致；`draft` 可不传/false；
+    #:     **`resolution` 必须传入且仅支持 `1080p`**（传别的同步报错 —— 实测原文：
+    #:     `the parameter resolution specified in the request is not valid for model
+    #:      doubao-seedance-2-5 in draft_task final stage; received: "720p"`）。
+    #:   * 自动复用、**禁止传入**：提示词、参考图片/视频/音频（「即使传入值与 Draft 阶段
+    #:     使用的一致，也会触发报错」）、时长、宽高比、随机种子、是否生成有声视频、任务类型。
+    #:   * 可重新指定：返回尾帧、输出格式、水印、服务等级、超时阈值、优先级、回调地址、用户标识。
+    #:
+    #: 所以这里**直接短路返回**：content 里只放 draft_task 一项 + resolution=1080p。
+    #: 素材一个都不再挂（挂素材会白跑一遍本地上传/TOS 预签名，还必然报错）。注意 id 必须是
+    #: Step1 返回的任务 `id`，**不是** upstreamTaskId（官方原文警告过这个坑）。
+    draft_task_id = get_field(form, "draft_task_id").strip()
+    if draft_task_id:
+        requested = get_field(form, "resolution").strip()
+        #: 刻意**不**把 720p 之类「就地改对」成 1080p：成片的分辨率直接决定计费档位，
+        #: 悄悄把用户要的 720p 抬成 1080p 等于悄悄加价。空值才补默认。
+        if requested and requested != "1080p":
+            raise RuntimeError(
+                f"基于样片生成成片时分辨率只能是 1080p（官方硬约束），收到 {requested!r}。"
+                "样片固定 480p、成片固定 1080p，中间档位做不了；要 720p 请直接重新生成，不要走样片模式。"
+            )
+        if notes is not None:
+            notes.append(
+                f"基于样片 {draft_task_id} 生成成片：提示词、参考素材、时长、比例、种子、有声设置"
+                "与任务类型全部沿用样片（官方规定自动复用、禁止重复传入），本次只指定分辨率 1080p。"
+            )
+        return {
+            "model": get_field(form, "custom_model").strip()
+            or get_field(form, "model", "doubao-seedance-2-5-260628"),
+            "content": [{"type": "draft_task", "draft_task": {"id": draft_task_id}}],
+            "resolution": "1080p",
+        }
+
     provider = get_field(form, "provider", "volcengine")
     prompt = replace_refs(get_field(form, "prompt").strip())
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -2880,6 +2980,18 @@ def build_payload(form: cgi.FieldStorage, api_key: str, base_url: str, run_index
                 notes.append(
                     f"首帧/首尾帧生成的比例由首帧图决定，已把 ratio 从 {original_ratio} 改为 adaptive。"
                 )
+        #: 样片模式（第一段）：下发 draft=true。官方硬约束 ——「开启样片模式后，仅支持
+        #: 生成 480p 分辨率的 Draft 视频（使用其他分辨率会报错）」。界面已经把分辨率锁成
+        #: 480p，这里是为手写 API 调用兜底：就地改写而不是让用户吃一个异步报错。
+        if parse_bool(get_field(form, "draft")):
+            if payload.get("resolution") != "480p":
+                original_resolution = payload.get("resolution")
+                payload["resolution"] = "480p"
+                if notes is not None:
+                    notes.append(
+                        f"样片模式只允许 480p，已把分辨率从 {original_resolution} 改为 480p。"
+                    )
+            payload["draft"] = True
     return payload
 
 
@@ -2936,7 +3048,10 @@ def apply_omni_task_type(form: "cgi.FieldStorage", payload: dict[str, Any],
 
 
 def content_counts(payload: dict[str, Any]) -> str:
-    counts = {"text": 0, "image_url": 0, "video_url": 0, "audio_url": 0}
+    #: draft_task 也要进计数：第二段的 content 里**只有** draft_task 一项，不显示它的话
+    #: 事件里会是一条吓人的 "creating task (text:0, image_url:0, video_url:0, audio_url:0)"，
+    #: 看起来像「参考素材全丢了」（2026-10-12 那次事故的指纹）。
+    counts = {"text": 0, "image_url": 0, "video_url": 0, "audio_url": 0, "draft_task": 0}
     for item in payload.get("content", []):
         if isinstance(item, dict):
             key = item.get("type")
@@ -4040,6 +4155,9 @@ class Handler(SimpleHTTPRequestHandler):
                         "job_id": jid,
                         "status": j.get("status", "pending"),
                         "model": j.get("model", ""),
+                        #: 样片标志：卡片从这里知道点开该进样片窗口还是普通详情。
+                        #: 列表刻意不下发整个 params（体积），但 **draft 这一个字段必须有**。
+                        "draft": values_are_draft(j.get("params") or {}),
                         "prompt": (j.get("params", {}).get("prompt") or j.get("prompt", ""))[:200],
                         "created_at": j.get("created_at", ""),
                         "submitted_at": j.get("submitted_at"),

@@ -214,6 +214,31 @@ class JobMetadataTests(unittest.TestCase):
         self.assertFalse(meta["has_input_video"])
         self.assertEqual(meta["media_fields"], [])
 
+    def test_empty_file_input_is_not_a_reference_video(self):
+        """**没选文件**的槽位不算「挂了参考视频」（2026-10-29 用户报单价档位不对）。
+
+        浏览器会把没选的文件输入也塞进 multipart，写成 `filename=""`；实测 seedance 的
+        表单里 ref_video_1..3 全在，值都是 `b''`。旧判据只看 `"filename=" in disposition`
+        → 每一次生成都被当成「有输入视频」，单价直接串到便宜那档（2.5 差 1.6 倍）。
+        """
+        ctype, body = self._multipart(
+            {"prompt": "一只猫", "model": "doubao-seedance-2-5-260628"},
+            {"ref_video_1": "", "ref_video_2": "", "ref_image_1": ""},
+        )
+        meta = self.mod.extract_job_metadata(ctype, body)
+        self.assertFalse(meta["has_input_video"], "空槽位不是参考视频")
+        self.assertEqual(meta["media_fields"], [], "一个都没真的传上来")
+
+    def test_empty_and_real_file_inputs_mix(self):
+        """空槽位 + 真文件混在一起时，只认真文件。"""
+        ctype, body = self._multipart(
+            {"prompt": "一只猫"},
+            {"ref_video_1": "", "ref_video_2": "real.mp4", "ref_video_3": ""},
+        )
+        meta = self.mod.extract_job_metadata(ctype, body)
+        self.assertTrue(meta["has_input_video"])
+        self.assertEqual(meta["media_fields"], ["ref_video_2"])
+
     def test_file_contents_are_never_captured(self):
         ctype, body = self._multipart({"prompt": "x"}, {"ref_video_1": "a.mp4"})
         meta = self.mod.extract_job_metadata(ctype, body)
@@ -937,6 +962,62 @@ class GenerationApiTests(unittest.TestCase):
         with mock.patch.object(self.mod, "ark_task_index", return_value={"cgt-x": {}}):
             self.assertEqual(self.mod._apply_ark_usage(rows), 0)
         self.assertIsNone(rows[0]["amount"])
+
+    def test_ark_usage_keeps_reference_flag_reported_by_feishu(self):
+        """飞书报上来的「挂了参考视频」不能被方舟侧的 False 覆盖（2026-10-29）。
+
+        方舟任务里根本没有这一位（`content` 是**输出**内容），所以索引里恒为 False；
+        旧代码 `has_input or info[...]` 从 False 起算，等于把飞书报的 True 洗掉。
+        """
+        index = {"cgt-a": {"tokens": 100000, "model": "doubao-seedance-2-5-260628",
+                           "resolution": "720p", "has_input_video": False, "duration": 4,
+                           "status": "succeeded"}}
+        rows = [{"app": "feishu-generation-agent", "tokens": 0, "amount": None,
+                 "price_source": "untracked", "has_input_video": True,
+                 "provider_task_ids": ["cgt-a"]}]
+        with mock.patch.object(self.mod, "ark_task_index", return_value=index):
+            self.mod._apply_ark_usage(rows)
+        self.assertAlmostEqual(rows[0]["amount"], 100000 / 1_000_000 * 40.29, places=4,
+                               msg="飞书说有参考视频 → 必须走「有输入视频」档")
+
+    # ── 方舟任务列表：权限不是 All 的 key 必须带 filter.model ──────────────────
+    def test_ark_index_falls_back_to_per_model_when_filter_required(self):
+        """方舟对非 All 权限的 key 强制 filter.model；不带就 400 —— 必须逐模型重查。
+
+        这一条是 2026-10-29 用户报「飞书 Agent（自带 key）计算不了费用」的根因：旧实现
+        第一页 400 → break → 索引恒空 → 飞书行的 token 与金额全部消失。
+        """
+        calls: list[str] = []
+
+        def fake_fetch(key, page, model=""):
+            calls.append(model)
+            if not model:
+                return None, True                      # 不带过滤 → 命中 filter.model 错误
+            if model == "doubao-seedance-2-5-260628":
+                return ([{"id": "cgt-a", "model": model, "resolution": "720p", "duration": 4,
+                          "status": "succeeded",
+                          "usage": {"total_tokens": 123456}}] if page == 1 else []), False
+            return [], False                           # 其它模型没任务
+
+        self.mod._ARK_TASKS_CACHE.update({"ts": 0.0, "data": {}, "ok": False})
+        with mock.patch.object(self.mod, "_ark_fetch_page", side_effect=fake_fetch), \
+                mock.patch.object(self.mod, "_read_json_key", return_value="ark-test"):
+            index = self.mod.ark_task_index()
+        self.assertIn("cgt-a", index, "逐模型重查后必须拿到任务")
+        self.assertEqual(index["cgt-a"]["tokens"], 123456)
+        self.assertIn("", calls, "先试过不带过滤")
+        self.assertIn("doubao-seedance-2-5-260628", calls, "再逐模型查")
+        self.assertTrue(self.mod._ARK_TASKS_CACHE["ok"])
+
+    def test_ark_index_keeps_last_good_data_when_lookup_fails(self):
+        """取不到时保留上一次的索引（宁可显示稍旧的用量，也不要一次失败全变「—」）。"""
+        self.mod._ARK_TASKS_CACHE.update(
+            {"ts": 0.0, "data": {"cgt-old": {"tokens": 1}}, "ok": True})
+        with mock.patch.object(self.mod, "_ark_fetch_page", return_value=(None, True)), \
+                mock.patch.object(self.mod, "_ark_scan_pages", return_value=({}, False)), \
+                mock.patch.object(self.mod, "_read_json_key", return_value="ark-test"):
+            index = self.mod.ark_task_index()
+        self.assertIn("cgt-old", index)
 
     # ── 所有生成都要有记录：把创作记录里缺的历史生成并进使用记录 ────────────────
     def _history_row(self, job_id="recovered-1", app="seedance", username="alice"):

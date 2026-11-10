@@ -139,6 +139,27 @@ async def test_analyze_artifacts_survives_analyzer_failure(tmp_path: Path) -> No
     assert "看片失败" in findings["reason"]
 
 
+async def test_analyze_artifacts_reason_carries_the_underlying_message(
+    tmp_path: Path,
+) -> None:
+    """失败原因必须可见 —— 只回 `看片失败：RuntimeError` 用户查不动（2026-10-21 事故）。
+
+    事故现场界面上就一句「看片失败：RuntimeError」，真因（方舟 400：
+    video_url 拉取超时）只躺在日志里。
+    """
+
+    class _Broken:
+        async def analyze_take(self, asset: MediaAsset) -> dict:
+            raise RuntimeError("参考视频分析请求失败：abc（HTTP 400：Timeout occurred…）")
+
+    findings = await analyze_artifacts(_Broken(), [_artifact(tmp_path)])
+
+    assert findings["available"] is False
+    assert "看片失败：RuntimeError" in findings["reason"]
+    assert "HTTP 400" in findings["reason"]
+    assert "Timeout occurred" in findings["reason"]
+
+
 async def test_analyze_artifacts_passes_requirement_prompt(tmp_path: Path) -> None:
     """审片要把当初的提示词一起给模型，否则抓不到「要求了但没做到」。"""
 

@@ -462,6 +462,14 @@ class ProductionBitableService:
             owner_user_id,
         )
 
+    async def known_run_ids(self, *, owner_user_id: str = "prime-local") -> set[str]:
+        """这个 owner 在生产表里有绑定（含历次尝试）的全部 run_id。
+
+        「任务记录」列表要用它做差集，把**没有绑定**的运行（左上角「生成计划」直接
+        分析文档建出来的）也补进列表 —— 见 `web/app.py::_direct_run_payloads`。
+        """
+        return await self._store.run_ids_for_owner(owner_user_id)
+
     async def record_runs(
         self,
         *,

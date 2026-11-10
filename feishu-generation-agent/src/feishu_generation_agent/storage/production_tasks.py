@@ -668,6 +668,29 @@ class ProductionTaskStore:
             await cursor.close()
         return {str(row["source_record_id"]) for row in rows}
 
+    async def run_ids_for_owner(self, owner_user_id: str) -> set[str]:
+        """该 owner 在两张生产表（当前绑定 + 历次尝试）里出现过的**全部** run_id。
+
+        用途：`runs` 表里还活着一批**没有多维表格绑定**的运行 —— 左上角「生成计划」
+        （直接分析需求文档）建出来的就是这种。它们以前在「任务记录」列表里完全看不到
+        （用户 2026-10-30 报「生成计划的任务怎么在下面历史里找不到」）。用这份集合
+        做差集，就能把这一类摘出来补进列表，见 `web/app.py::_direct_run_payloads`。
+
+        两张表都要查：绑定行只指向每条记录的**当前**一次运行，被重跑顶掉的旧运行
+        只留在 history 里 —— 漏查 history 会把那些运行误判成「直接分析」。
+        """
+        _validate_owner(owner_user_id)
+        async with self._lock:
+            cursor = await self._connection.execute(
+                """SELECT run_id FROM production_tasks WHERE owner_user_id = ?
+                   UNION
+                   SELECT run_id FROM production_task_history WHERE owner_user_id = ?""",
+                (owner_user_id, owner_user_id),
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+        return {str(row["run_id"]) for row in rows if row["run_id"]}
+
     async def set_status(
         self,
         run_id: str,

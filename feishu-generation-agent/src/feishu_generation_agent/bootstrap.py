@@ -62,6 +62,7 @@ from feishu_generation_agent.integrations.seedream import SeedreamImageGenerator
 from feishu_generation_agent.integrations.aiport import AiPortImageGenerator
 from feishu_generation_agent.integrations.aiport_video import AiPortVideoGenerator
 from feishu_generation_agent.integrations.public_media import (
+    PublicMediaHost,
     TosPublicMediaHost,
     UguuPublicMediaHost,
 )
@@ -69,6 +70,8 @@ from feishu_generation_agent.integrations.volcengine_portrait import (
     VolcengineAssetClient,
     VolcenginePortraitVideoGenerator,
 )
+from feishu_generation_agent.integrations.cleanup_scope import DeepSeekCleanupScopeProbe
+from feishu_generation_agent.integrations.image_facts import DeepSeekImageFacts
 from feishu_generation_agent.integrations.vision import ClaudeVisionAnalyzer
 from feishu_generation_agent.integrations.video_insight import DeepSeekVideoInsight
 from feishu_generation_agent.storage.files import FileStore
@@ -148,6 +151,48 @@ def runtime_is_configured(settings: Settings) -> bool:
             or capability_is_configured(settings, "legacy_delivery")
         )
     )
+
+
+def build_public_media_host(
+    settings: Settings,
+    http_client: httpx.AsyncClient,
+) -> PublicMediaHost:
+    """公开素材托管：**优先火山 TOS**（同区域预签名 URL），没配 TOS 凭据才退回 uguu.se。
+
+    **为什么必须优先 TOS**（2026-10-21 生产事故：「模型审片」一直
+    `看片失败：RuntimeError`）：
+
+    审片/参考视频分析都是「把成片读到内存 → 传到公开图床 → 把链接交给方舟
+    `chat/completions` 的 `video_url` → 方舟自己下载并理解」。用 uguu.se
+    （境外免费图床）时，**方舟侧拉取超时**，返回：
+
+        HTTP 400 InvalidParameter: Timeout occurred while processing video for
+        content[1]. Please verify that the video size is within acceptable limits
+        and the URL is reachable. (param=video_url)
+
+    实测同一段 21.2MB 成片、同一个 payload 形状：
+
+    * uguu.se 链接  → 400（上面那条）
+    * TOS 预签名链接 → **200**，模型正常输出了 `{summary, problems}`（prompt 8410 tokens）
+
+    所以全应用只用这一个构造函数；**别在别处再 `UguuPublicMediaHost(...)`** ——
+    那等于把链路又接回会超时的图床。TOS 预签名 URL 是匿名 HTTPS、有效期 12 小时，
+    方舟拉取不需要任何鉴权（Ark Files API 的 `Bearer` URL 才是取不到的，
+    两者不是一回事）。
+    """
+    if (
+        settings.volcengine_access_key is not None
+        and settings.volcengine_secret_key is not None
+        and settings.tos_bucket
+    ):
+        return TosPublicMediaHost(
+            http_client,
+            access_key=settings.volcengine_access_key.get_secret_value(),
+            secret_key=settings.volcengine_secret_key.get_secret_value(),
+            bucket=settings.tos_bucket,
+            region=settings.tos_region,
+        )
+    return UguuPublicMediaHost(http_client)
 
 
 def build_image_providers(
@@ -351,19 +396,8 @@ async def _open_application_services(
             settings.data_dir / "provider-results",
             max_item_bytes=settings.max_download_bytes,
         )
-        animation_media_host = UguuPublicMediaHost(provider_http)
-        if (
-            settings.volcengine_access_key is not None
-            and settings.volcengine_secret_key is not None
-            and settings.tos_bucket
-        ):
-            animation_media_host = TosPublicMediaHost(
-                provider_http,
-                access_key=settings.volcengine_access_key.get_secret_value(),
-                secret_key=settings.volcengine_secret_key.get_secret_value(),
-                bucket=settings.tos_bucket,
-                region=settings.tos_region,
-            )
+        public_media_host = build_public_media_host(settings, provider_http)
+        animation_media_host = public_media_host
         portrait_generator = None
         if capability_is_configured(settings, "portrait_generation"):
             portrait_store = await PortraitAssetStore.open(
@@ -374,7 +408,7 @@ async def _open_application_services(
                 access_key=settings.volcengine_access_key,
                 secret_key=settings.volcengine_secret_key,
                 project_name=settings.volcengine_project_name,
-                public_media_host=UguuPublicMediaHost(provider_http),
+                public_media_host=public_media_host,
                 store=portrait_store,
             )
             portrait_generator = VolcenginePortraitVideoGenerator(
@@ -383,7 +417,7 @@ async def _open_application_services(
                 base_url=settings.ark_base_url,
                 api_key=settings.ark_api_key,
                 model=settings.seedance_model,
-                public_media_host=UguuPublicMediaHost(provider_http),
+                public_media_host=public_media_host,
             )
         file_store = FileStore(
             settings.data_dir,
@@ -401,9 +435,15 @@ async def _open_application_services(
             # `DeepSeekPlanner` 给规划模型开了 thinking + reasoning_effort=high。
             # 实测正常规划要 88~175 秒，120 秒的单次超时太紧 —— 2026-09-23
             # 【宝石】ai片头需求文档1 连续两次卡在 120×3=360 秒预算上失败
-            # （operation=plan; cause=APITimeoutError）。给到 300 秒让慢调用跑完，
-            # 同时把重试从 2 次收到 1 次，最坏耗时锁在 2×300=600 秒而不是 900 秒。
-            max_retries=1,
+            # （operation=plan; cause=APITimeoutError）。给到 300 秒让慢调用跑完。
+            #
+            # 2026-10-15 用户报「重新规划十分钟了还不行」：查下来一条规划跑了 **13 分钟**
+            # （02:16:38 → 02:29:13 才进 waiting_approval）——因为 `max_retries=1`
+            # 让最坏耗时变成 **2×300=600 秒**，后面还有一次同量级的审计调用。
+            # **重试从 1 收到 0**：最坏锁在 300 秒（5 分钟）。慢调用超时后会**明确报错**、
+            # 用户可以立刻再点一次，而不是对着"规划中"干等十几分钟 ——
+            # 注释里的实测证据（正常 88~175 秒）说明 300 秒单次预算本来就够。
+            max_retries=0,
             timeout=300,
         )
         # 素材库打不开不该阻断整个 agent：图片模式退化成人工挂参考图。
@@ -588,9 +628,22 @@ async def _open_application_services(
                 base_url=settings.deepseek_base_url,
                 api_key=settings.deepseek_api_key,
                 model=settings.deepseek_model,
-                public_media_host=UguuPublicMediaHost(provider_http),
+                public_media_host=public_media_host,
             ),
-            public_media_host=UguuPublicMediaHost(provider_http),
+            # 方案 C（用户 2026-10-27）：一次**任务单纯**的读图调用 —— 同一个 DeepSeek
+            # 多模态模型，只喂图、只读图，产出可校验事实。多模态规划模式下，
+            # 规划器是在同一次调用里顺带读图的（它同时扛着 3.9 万字契约 + 文档），
+            # 实测会把「三个色区、每区上百颗小滴」概括成「三颗」。这里补一次专门读图，
+            # 事实既注入规划，也供 `_check_reference_facts_fidelity` 比对成片提示词。
+            image_facts=DeepSeekImageFacts(planner_model),
+            # 清洗范围探针（用户 2026-10-28）：清洗前先问同一个多模态模型"洗哪儿、哪儿不许动"，
+            # 治「重洗把我的字也洗掉了」。失败返回 None → 照常洗（用户口径：失败也能洗）。
+            cleanup_scope_probe=DeepSeekCleanupScopeProbe(
+                planner_model,
+                public_media_host=public_media_host,
+                data_dir=settings.data_dir,
+            ),
+            public_media_host=public_media_host,
             planner=DeepSeekPlanner(
                 planner_model,
                 max_output_count=settings.max_output_count,

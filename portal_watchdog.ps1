@@ -183,8 +183,20 @@ try {
                 Start-Sleep -Seconds $RestartDelaySeconds
             }
 
-            Set-Content -LiteralPath $ChildOutLog -Value "" -ErrorAction SilentlyContinue
-            Set-Content -LiteralPath $ChildErrLog -Value "" -ErrorAction SilentlyContinue
+            # 2026-10-29 incident: these two lines used to be bare `Set-Content` under
+            # `$ErrorActionPreference = "Stop"`. While Portal was STILL RUNNING it held
+            # portal.out.log open, so truncating threw "file in use by another process" ->
+            # the exception jumped straight to finally -> the watchdog exited instantly
+            # (log showed started then stopped, with no reason). Consequence: when another
+            # script killed Portal, no watchdog was left to bring it back -> site stayed down.
+            # Truncation is only cosmetic here; it must NEVER kill the watchdog.
+            try {
+                Set-Content -LiteralPath $ChildOutLog -Value "" -ErrorAction SilentlyContinue
+                Set-Content -LiteralPath $ChildErrLog -Value "" -ErrorAction SilentlyContinue
+            }
+            catch {
+                Write-WatchdogLog "could not truncate portal logs (ignored): $($_.Exception.Message)"
+            }
 
             try {
                 $child = Start-Process `
@@ -253,6 +265,12 @@ try {
 
         Start-Sleep -Seconds $HealthIntervalSeconds
     }
+}
+catch {
+    # 2026-10-29: there was no catch here before, so any exception went straight to
+    # finally which only logged "watchdog stopped" -- the cause was invisible
+    # (only "started" immediately followed by "stopped"). Always leave a reason now.
+    Write-WatchdogLog "watchdog crashed: $($_.Exception.GetType().Name): $($_.Exception.Message)"
 }
 finally {
     if ($null -ne $child -and -not $child.HasExited) {

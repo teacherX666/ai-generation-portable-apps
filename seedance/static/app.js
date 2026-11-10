@@ -31,6 +31,46 @@ function jobRequestValues(job, record) {
   return (job && (job.params || job.form)) || parsed.values || request.values || {};
 }
 
+//: 这条任务是不是「样片」（Seedance 2.5 样片模式的第一段）。
+//: 后端把 draft 原样存进 job.params（safe_params 只剥 api_key / 素材字段），活动记录
+//: 并入历史卡片后走 jobRequestValues 也拿得到 —— 所以刷新、重启、翻历史都能认出来。
+function isDraftJob(job) {
+  const values = jobRequestValues(job);
+  const raw = values.draft !== undefined ? values.draft : (job && job.draft);
+  return ['1', 'true', 'on', 'yes'].includes(String(raw == null ? '' : raw).trim().toLowerCase());
+}
+
+//: 「持久化活动记录」里这条是不是样片。
+//:
+//: 与内存任务不同：活动记录列表接口（/api/activity）为了瘦身**不下发** request / restore，
+//: 所以判它必须先把详情取回来（见 openActivityRecord）。两处都看：request.values 是创建时
+//: 写的（draft 在 VALUE_FIELDS 里，会被 summarize_values_files 原样带上），restore.values
+//: 是重启恢复用的权威副本。
+function activityRecordIsDraft(record) {
+  if (!record) return false;
+  const request = record.request || {};
+  const requestValues = ((request.parsed || {}).values) || request.values || {};
+  const restoreValues = (record.restore || {}).values || {};
+  const raw = requestValues.draft !== undefined ? requestValues.draft : restoreValues.draft;
+  return ['1', 'true', 'on', 'yes'].includes(String(raw == null ? '' : raw).trim().toLowerCase());
+}
+
+//: 样片任务的上游任务 id —— 第二段 `content[].draft_task.id` 必须填它。//: 结果里的 `task_id` 就是方舟返回的 `id`（官方特别提醒：**别填 upstreamTaskId**）。
+//: 并发生成时取第一条。
+function draftTaskIdOf(job) {
+  const results = (job && job.results) || (job && job.result && job.result.results) || [];
+  const hit = results.find((r) => r && r.task_id);
+  return hit ? String(hit.task_id) : '';
+}
+
+//: 一条任务的第一个产出（样片预览窗口要播它）。
+function firstResultOf(job) {
+  const results = (job && job.results) || (job && job.result && job.result.results) || [];
+  const hit = results.find((r) => r && (r.url || r.download_url));
+  if (!hit) return null;
+  return { url: APP_PATH + (hit.url || hit.download_url), filename: hit.filename || 'video.mp4' };
+}
+
 function mergeJobWithActivity(job, record) {
   const merged = Object.assign({}, job || {});
   if (!record) {
@@ -709,6 +749,10 @@ function providersFromConfig(providers) {
           resolutions: m.resolutions || null,
           ratios: m.ratios || null,
           defaults: m.defaults || null,
+          //: capabilities 必须透传：样片模式的能力声明（capabilities.draft）就挂在它下面，
+          //: 这里漏掉的话 buildUnifiedVideoModels 读到的永远是 undefined，
+          //: 表现是「所有模型都不支持样片模式」——能跑但功能整个失效（2026-10-19 真机抓到的）。
+          capabilities: m.capabilities || null,
         };
       }),
       hint: p.hint || '',
@@ -770,8 +814,22 @@ const FALLBACK_PROVIDERS = {
 // ============================================================
 // SEEDANCE APP FACTORY (PetiteVue data object)
 // ============================================================
-function canonicalVideoModelName(label, id) {
-  return String(label || id || '')
+//: 分辨率选项上的**价格提示**。
+//:
+//: 只标「价格高到会被随手选错」的档位，而且只在**明确知道价格**的模型上标 —— 不同模型同档
+//: 价位差很多，编一个数还不如不标。数据来自官方价格表（2026-10 抓取，5 秒 16:9、输入不含视频）：
+//:   doubao-seedance-2.5：480p ¥3.36 / 720p ¥7.56 / **1080p ¥18.71**
+//:   → 1080p 是 720p 的 2.5 倍，最值得提醒。
+//: 值（option.value）绝不改动 —— 后端按 providers.json 的枚举校验，改了会被判「分辨率不支持」。
+const RESOLUTION_PRICE_HINTS = {
+  'doubao-seedance-2-5-260628': { '1080p': '约 ¥19/5秒' },
+};
+function resolutionOptionLabel(modelId, value) {
+  const hint = (RESOLUTION_PRICE_HINTS[String(modelId || '')] || {})[String(value)];
+  return hint ? String(value) + '（' + hint + '）' : String(value);
+}
+
+function canonicalVideoModelName(label, id) {  return String(label || id || '')
     .replace(/[\s_-]+(?:480p|720p|1080p|4k)\s*$/i, '')
     .replace(/（免费）$/i, '')
     .replace(/\(free\)$/i, '')
@@ -800,6 +858,9 @@ function buildUnifiedVideoModels(providers, localReady) {
         local: local,
         disabled: !!model.disabled || (local && localReady === false),
         capabilities: caps || {},
+        //: 样片模式能力由 providers.json 的 capabilities.draft 声明（当前只有 Seedance 2.5）。
+        //: 这里直接读原始 model 对象：model-capabilities.js 只归一 duration/resolution/ratio。
+        draft: !!(model && model.capabilities && model.capabilities.draft),
       };
       if (!groups.has(groupKey)) {
         groups.set(groupKey, { key: groupKey, baseLabel: canonical, routes: [] });
@@ -836,6 +897,8 @@ function buildUnifiedVideoModels(providers, localReady) {
     entry.duration = durationMin != null && durationMax != null ? { min: durationMin, max: durationMax } : null;
     entry.local = localAvailable;
     entry.disabled = !available.length;
+    //: 只要有一条可用线路支持样片模式，这个统一模型条目就算支持（UI 据此决定能不能选「样片模式」）。
+    entry.draft = available.some(function (route) { return !!route.draft; });
     entry.providers = available.map(function (route) { return route.providerLabel || route.provider; }).filter(function (value, index, list) { return list.indexOf(value) === index; });
     entry.label = entry.baseLabel + (localAvailable ? '（本地免费）' : '');
     result.push(entry);
@@ -854,6 +917,23 @@ function routeForUnifiedVideoModel(entry, resolution) {
   });
   return exact || available[0];
 }
+//: 当前模型支不支持样片模式（Seedance 2.5 Draft）。
+//:
+//: 两个坑都在这里挡住：
+//:   ① `models.find(item => item.key === this.model)` 在 `this.model` 为空时会**匹配到第一个
+//:      条目**（`undefined === undefined`）—— 于是「没选中模型」会被误判成「选了一个不支持的
+//:      模型」，用户切样片模式就被莫名弹回。所以 key 为空时直接判「解析不出来」。
+//:   ② 有时候统一模型条目的 draft 拿不到（还没跑 applyModelLimits），但按线路解析出来的
+//:      activeRoute 上带着 draft —— 两个来源都看，任一命中就算支持。
+function modelSupportsDraft(app) {
+  const key = String((app && app.model) || '');
+  if (key) {
+    const entry = ((app && app.models) || []).find((item) => String(item.key || '') === key);
+    if (entry && entry.draft) return true;
+  }
+  return Boolean(app && app.activeRoute && app.activeRoute.draft);
+}
+
 function SeedanceApp() {
   const wid = workspaceId();
   const wsKey = 'seedance.workspace.' + wid;
@@ -962,6 +1042,8 @@ function SeedanceApp() {
       reference: { ratio: '16:9', duration: 12 },
       extend:    { ratio: 'adaptive', duration: 5 },
       edit:      { ratio: 'adaptive', duration: -1 },
+      //: 样片模式：ratio / duration 都不受特殊限制（官方只限制分辨率必须 480p）。
+      draft:     { ratio: '16:9', duration: 12 },
     },
 
     // Standalone-specific fields
@@ -1305,7 +1387,8 @@ function SeedanceApp() {
         for (const value of allowed) {
           const option = document.createElement('option');
           option.value = value;
-          option.textContent = value;
+          // 分辨率带价格提示（只给明确知道价位的模型/档位），ratio 一律原样。
+          option.textContent = name === 'resolution' ? resolutionOptionLabel(route.modelId || entry.key, value) : value;
           el.appendChild(option);
         }
         const keep = allowed.includes(previous) ? previous : allowed[0];
@@ -1322,11 +1405,37 @@ function SeedanceApp() {
       var providerNames = entry.providers && entry.providers.length ? entry.providers.join(' / ') : (route.providerLabel || route.provider);
       this.modelSummary = '可用供应商 ' + providerNames + '；当前线路 ' + (route.providerLabel || route.provider) + ' · ' + support.join('；') + '。';
       this.modelHint = hints.join('；');
+      // 换模型会按新能力重建分辨率选项 —— 样片模式的 480p 锁定必须在这之后再压一次。
+      this.syncDraftResolution();
+    },
+    // 样片模式把「分辨率」钉成 480P 并置灰。做法与「首尾帧锁 ratio」（syncFrameRatioLock）一致：
+    // 置灰只是视觉约束，而 **disabled 的控件不进 FormData**，所以 submit() 里还会显式
+    // data.set('resolution','480p')，否则这个字段会整个缺失。
+    // 离开样片模式时解锁；applyModelLimits() 每次按模型能力重建分辨率选项，末尾也会调本方法。
+    syncDraftResolution() {
+      const el = field('resolution');
+      if (!el) return;
+      if (this.taskMode === 'draft') {
+        if (![...el.options].some((o) => o.value === '480p')) {
+          // 模型能力里没有 480p 时临时补一个，避免这里静默失败成空值。
+          // （正常不会发生：样片模式只有 2.5 支持，而 2.5 声明里就有 480p。）
+          const added = new Option('480p', '480p');
+          added.dataset.draftAdded = '1';
+          el.appendChild(added);
+        }
+        if (el.value !== '480p') el.value = '480p';
+        el.disabled = true;
+      } else {
+        const added = [...el.options].find((o) => o.dataset && o.dataset.draftAdded === '1');
+        if (added) added.remove();
+        el.disabled = false;
+      }
     },
     // Called when the user picks a different task type. Ark 2.5 imposes:
     //   reference: ratio + duration are free
     //   extend:    ratio must be 'adaptive', duration is free
     //   edit:      ratio must be 'adaptive' AND duration must be -1
+    //   draft:     样片模式 —— 分辨率必须 480p（官方硬约束），ratio/duration 自由
     // Values are remembered per-mode so switching away and back restores what
     // the user typed. Session-only, no localStorage.
     changeTaskMode() {
@@ -1360,7 +1469,21 @@ function SeedanceApp() {
           : (Number.isFinite(target.duration) ? target.duration : 5);
         durationEl.value = String(wanted);
       }
+      // 样片模式：分辨率必须 480p（官方：开启样片模式只允许 480p，传别的直接报错）。
+      // 选到不支持样片模式的模型上时直接退回 reference 并说明原因。
+      if (to === 'draft') {
+        if (!modelSupportsDraft(this)) {
+          const entry = (this.models || []).find((item) => String(item.key || '') === String(this.model || ''));
+          this.taskMode = 'reference';
+          this.modelHint = '「' + ((entry && entry.label) || this.model || '当前模型') + '」不支持样片模式（仅 Seedance 2.5 支持），已切回参考生视频。';
+          this._prevTaskMode = 'reference';
+          this.syncDraftResolution();
+          syncFrameRatioLock();
+          return;
+        }
+      }
       this._prevTaskMode = to;
+      this.syncDraftResolution();
       // 切模式可能改写 ratio；若当前有首尾帧，重新锁回 adaptive
       syncFrameRatioLock();
       // Save the entering mode's values too, so a later switch reads current
@@ -1821,8 +1944,16 @@ function SeedanceApp() {
         v.preload = 'metadata';
         v.muted = true;
         v.playsInline = true;
-        v.title = '点开预览';
-        v.addEventListener('click', (e) => { e.stopPropagation(); openPreview('video', url, jobPreviewItems(j), 0); });
+        v.title = isDraftJob(j) ? '点开样片预览（可出 1080P 成片）' : '点开预览';
+        v.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          // 样片的缩略图与卡片走同一条路（进二级窗口）；普通任务维持原来的放大预览。
+          // 判据要先补详情（卡片快照没有 draft 字段），否则样片会被当成普通任务。
+          const current = tile._jobSnapshot || j;
+          const resolved = await this._resolveCardJob(current);
+          if (isDraftJob(resolved)) { await this.openDraftPreview(resolved); return; }
+          openPreview('video', url, jobPreviewItems(resolved), 0);
+        });
         // 产出文件可能已被 14 天清理策略删除：加载失败换过期占位
         v.addEventListener('error', () => {
           v.remove();
@@ -1857,6 +1988,14 @@ function SeedanceApp() {
       badge.className = 'job-tile-badge ' + jobDisplayStatus(j);
       badge.textContent = jobDisplayStatus(j) || '?';
       meta.appendChild(badge);
+      // 样片角标：让用户一眼看出这条是 480P 样片，点它进的是「样片预览 / 出成片」窗口。
+      if (isDraftJob(j)) {
+        const chip = document.createElement('span');
+        chip.className = 'job-tile-chip job-tile-chip--draft';
+        chip.textContent = '样片';
+        chip.title = '样片模式（480P 草稿）：点开可在窗口里生成 1080P 成片';
+        meta.appendChild(chip);
+      }
       const time = document.createElement('span');
       time.className = 'job-tile-time';
       time.textContent = formatJobTimestamp(j.created_at || j.started_at || j.submitted_at);
@@ -1916,7 +2055,13 @@ function SeedanceApp() {
       foot.appendChild(dt);
       tile.appendChild(foot);
 
-      tile.addEventListener('click', openCurrent);
+      tile.addEventListener('click', () => {
+        const current = tile._jobSnapshot || j;
+        // 样片卡片进二级窗口（预览 + 出成片），其余进通用详情。
+        // 注意走 _openCardJob：卡片快照里**没有** draft 字段（列表接口为瘦身不下发
+        // params），直接判会把样片当普通任务 → 再也回不到样片窗口。
+        this._openCardJob(current);
+      });
       return tile;
     },
 
@@ -2116,6 +2261,305 @@ function SeedanceApp() {
       this.eventsText = '';
       this._renderedJobId = null;
       this._clearTopicResultDom();
+    },
+
+    // ===== 样片模式（Seedance 2.5 Draft）二级窗口 =====
+    //
+    // 交互（用户 2026-10-19 定）：
+    //   1. 任务类型选「样片模式」→ 第一段出 480P 样片（draft=1，只 2.5 支持）；
+    //   2. 样片成功 → **自动弹出**这个二级窗口预览样片；
+    //   3. 窗口里点「继续生成」→ 第二段：只发 draft_task_id + resolution=1080p
+    //      （官方 Step2 参数表：提示词/素材/时长/比例/种子/有声/任务类型一律自动复用、禁止传入）；
+    //   4. 成片好了 → **窗口里的播放器直接换成 1080P 成片**（「把样片变为真片」）；
+    //   5. 事后想回到这个窗口 → 点任务列表里带「样片」角标的卡片（缩略图同理）。
+    _ensureDraftModal() {
+      let overlay = document.getElementById('sd-draft-preview');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'sd-draft-preview';
+        overlay.className = 'job-detail-backdrop';
+        overlay.hidden = true;
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) this.closeDraftPreview(); });
+        overlay.innerHTML =
+          '<div class="job-detail-box">' +
+          '  <div class="job-detail-head">' +
+          '    <span class="job-detail-title" id="sd-draft-title">样片预览（480P）</span>' +
+          '    <button type="button" class="job-detail-close" title="关闭">✕</button>' +
+          '  </div>' +
+          '  <div class="job-detail-body">' +
+          '    <video id="sd-draft-video" class="draft-video" controls playsinline preload="metadata"></video>' +
+          '    <p class="hint" id="sd-draft-note"></p>' +
+          '    <div class="rowButtons draft-actions">' +
+          '      <button type="button" id="sd-draft-finalize">继续生成（1080P 成片）</button>' +
+          '      <button type="button" id="sd-draft-download">⬇ 下载当前视频</button>' +
+          '    </div>' +
+          '    <p class="hint" id="sd-draft-status"></p>' +
+          '  </div>' +
+          '</div>';
+        overlay.querySelector('.job-detail-close').addEventListener('click', () => this.closeDraftPreview());
+        overlay.querySelector('#sd-draft-finalize').addEventListener('click', () => this.finalizeDraft());
+        overlay.querySelector('#sd-draft-download').addEventListener('click', () => {
+          const info = overlay._draft || {};
+          if (info.currentUrl) this._blobDownload(info.currentUrl, info.currentFilename || 'video.mp4');
+        });
+        document.body.appendChild(overlay);
+      }
+      return overlay;
+    },
+
+    closeDraftPreview() {
+      const overlay = document.getElementById('sd-draft-preview');
+      if (!overlay) return;
+      overlay.hidden = true;
+      // 让还在跑的成片轮询退出（关掉窗口不该继续空转）。
+      if (overlay._draft) overlay._draft.closed = true;
+    },
+
+    // 打开二级窗口。可以喂一条任务快照（卡片点进来），也可以只给 job_id。
+    async openDraftPreview(jobOrId) {
+      let job = jobOrId && typeof jobOrId === 'object' ? jobOrId : null;
+      const jobId = job ? (job.job_id || job.id) : String(jobOrId || '');
+      // 卡片快照可能来自活动记录（字段不齐）→ 拉一次权威详情，确保拿得到上游 task_id。
+      if (jobId) {
+        try {
+          const remote = await api(APP_PATH + '/api/jobs/' + encodeURIComponent(jobId));
+          if (remote && (remote.job_id || remote.id)) job = Object.assign({}, job || {}, remote);
+        } catch (e) { /* 用卡片快照兜底 */ }
+      }
+      if (!job) { this.statusText = '打不开样片预览：读不到这条任务。'; return; }
+      const overlay = this._ensureDraftModal();
+      // 换了一条样片 / 重新打开：让上一个还在轮询的 info 失效，避免野轮询。
+      if (overlay._draft) overlay._draft.closed = true;
+      const draftTaskId = draftTaskIdOf(job);
+      const first = firstResultOf(job);
+      const finalJob = this._finalJobForDraft(draftTaskId);
+      const shownFinal = finalJob ? firstResultOf(finalJob) : null;
+      const info = overlay._draft = {
+        jobId,
+        draftTaskId,
+        draftUrl: first ? first.url : '',
+        draftFilename: first ? first.filename : 'video.mp4',
+        currentUrl: '',
+        currentFilename: '',
+        finalJobId: finalJob ? (finalJob.job_id || finalJob.id) : '',
+        busy: false,
+        closed: false,
+      };
+
+      const video = overlay.querySelector('#sd-draft-video');
+      const title = overlay.querySelector('#sd-draft-title');
+      const note = overlay.querySelector('#sd-draft-note');
+      const status = overlay.querySelector('#sd-draft-status');
+      const finalizeBtn = overlay.querySelector('#sd-draft-finalize');
+      finalizeBtn.textContent = '继续生成（1080P 成片）';
+      finalizeBtn.disabled = false;
+
+      if (shownFinal) {
+        // 这条样片已经出过成片：直接显示成片态（仍允许再出一版）。
+        info.currentUrl = shownFinal.url;
+        info.currentFilename = shownFinal.filename;
+        title.textContent = '1080P 成片（这条样片已出片）';
+        video.src = shownFinal.url;
+        note.textContent = '这条样片的正式成片已经生成（1080P）。再点「继续生成」会基于同一条样片重出一版，会再计费一次。';
+        status.textContent = '成片任务 ' + info.finalJobId + ' · 也可在任务列表里下载';
+      } else if (first) {
+        info.currentUrl = first.url;
+        info.currentFilename = first.filename;
+        title.textContent = '样片预览（480P）';
+        video.src = first.url;
+        note.textContent = '这是低成本的 480P 样片，用来快速确认场景结构、构图、主体动作与节奏。确认没问题就点「继续生成」出 1080P 正式成片 —— 提示词、参考素材、时长、比例、种子与有声设置全部沿用这条样片，只把分辨率提到 1080P。成片按 1080P 档另计一次费（官方价格表：5 秒 16:9、无参考视频约 ¥18.71，带参考视频更贵）。';
+        if (draftTaskId) {
+          status.textContent = '样片任务 ' + draftTaskId + '（7 天内可以出成片）';
+        } else {
+          status.textContent = '⚠ 这条任务没拿到云端样片任务 ID，无法出成片（可能是历史记录缺字段）。';
+          finalizeBtn.disabled = true;
+        }
+      } else {
+        video.removeAttribute('src');
+        title.textContent = '样片预览（480P）';
+        note.textContent = '这条样片还没有产出，跑完再点进来。';
+        status.textContent = '';
+        finalizeBtn.disabled = true;
+      }
+      overlay.hidden = false;
+    },
+
+    // 活动记录（持久化历史）条目点击：
+    //   样片 → 进二级窗口（能就地出成片、看样片）；
+    //   其余 → 维持原来的「原始请求 / 执行过程」详情。
+    // 列表接口不下发 request/restore，所以这里先取一次详情再判类型（本地调用，几毫秒）。
+    async openActivityRecord(record) {
+      if (!record) return;
+      const activityId = record.id || record.activity_id;
+      let full = record;
+      try {
+        const detail = await api(APP_PATH + '/api/activity/' + encodeURIComponent(activityId));
+        if (detail && (detail.id || detail.activity_id)) full = Object.assign({}, record, detail);
+      } catch (e) { /* 详情取不到就按普通记录处理 */ }
+      if (activityRecordIsDraft(full)) {
+        // 组装成 job 形状喂给二级窗口：详情里的 result.results 带 task_id（第二段要用的那个），
+        // 列表条目只有首帧 URL。
+        const requestValues = ((full.request || {}).parsed || {}).values || (full.request || {}).values || {};
+        const restoreValues = (full.restore || {}).values || {};
+        //: 这里必须 await：openDraftPreview 自己还要拉一次任务详情，不 await 的话
+        //: 点击回调先返回、窗口还没建起来（测试就是这么抓到的）。
+        await this.openDraftPreview({
+          job_id: full.job_id || (full.result || {}).job_id || '',
+          status: full.status,
+          created_at: full.created_at,
+          title: full.title,
+          prompt: full.title || requestValues.prompt || restoreValues.prompt || '',
+          model: full.model || requestValues.model || '',
+          params: Object.keys(requestValues).length ? requestValues : restoreValues,
+          results: ((full.result || {}).results) || full.results || [],
+        });
+        return;
+      }
+      this.showDetail(activityId);
+    },
+
+    // 卡片点击的统一入口：**先确认它是不是样片**，再决定进二级窗口还是通用详情。
+    //
+    // 为什么不能直接 `isDraftJob(卡片)`：卡片来自任务列表 `/api/jobs`（为瘦身**不下发
+    // params**）或活动列表 `/api/activity`（不下发 request）—— 两者都没有 draft 字段，
+    // 于是判据恒为 false，点样片卡片只会打开普通详情弹窗，**样片窗口就再也回不去了**
+    //（2026-10-20 用户：「如果一开始没有决定用1080，后面没办法返回那个页面了」）。
+    // 所以缺信息时补取一次详情：先内存任务（含 params），再持久化活动记录（含 request.values）。
+    async _resolveCardJob(job) {
+      const values = jobRequestValues(job);
+      if (values && Object.prototype.hasOwnProperty.call(values, "draft")) return job;
+      const jobId = job && (job.job_id || job.id);
+      if (jobId) {
+        try {
+          const detail = await api(APP_PATH + "/api/jobs/" + encodeURIComponent(jobId));
+          if (detail && (detail.job_id || detail.id)) return Object.assign({}, job, detail);
+        } catch (e) { /* 任务可能已被重启/剪枝清掉，退回活动记录 */ }
+      }
+      const activityId = jobActivityId(job);
+      if (activityId) {
+        try {
+          const record = await api(APP_PATH + "/api/activity/" + encodeURIComponent(activityId));
+          if (record && (record.id || record.activity_id)) return Object.assign({}, job, record);
+        } catch (e) { /* 详情取不到就按普通卡片处理 */ }
+      }
+      return job;
+    },
+
+    async _openCardJob(job) {
+      const resolved = await this._resolveCardJob(job);
+      if (isDraftJob(resolved)) { await this.openDraftPreview(resolved); return; }
+      this.openJobDetail(
+        resolved.job_id || resolved.id,
+        jobActivityId(resolved),
+        resolved,
+      );
+    },
+
+    // 这条样片对应的成片（第二段任务）在不在当前任务列表里 —— 靠 params.draft_task_id 认。
+    _finalJobForDraft(draftTaskId) {
+      if (!draftTaskId) return null;
+      return (this.jobs || []).find((j) => {
+        const values = jobRequestValues(j);
+        return String(values.draft_task_id || '') === String(draftTaskId) && firstResultOf(j);
+      }) || null;
+    },
+
+    // 第二段：基于样片出 1080P 成片。窗口留着，成片好了直接把播放器换成真片。
+    async finalizeDraft() {
+      const overlay = document.getElementById('sd-draft-preview');
+      const info = overlay && overlay._draft;
+      if (!overlay || !info || info.busy) return;
+      const status = overlay.querySelector('#sd-draft-status');
+      const finalizeBtn = overlay.querySelector('#sd-draft-finalize');
+      if (!info.draftTaskId) {
+        status.textContent = '⚠ 没有样片任务 ID，无法出成片。';
+        return;
+      }
+      info.busy = true;
+      finalizeBtn.disabled = true;
+      const ws = this.activeTabId;
+      // 第二段**只发这些字段**：content 里只有 draft_task 一项 + 目标分辨率，其余由方舟自动复用。
+      // 素材一个都不带（带了必然报错：官方「禁止重复传入」）；duration 发 -1 让后端按方舟回报的
+      // 真实时长回填计费口径（第二段不指定时长）。
+      const data = new FormData();
+      data.set('provider', 'volcengine');
+      data.set('model', 'doubao-seedance-2-5-260628');
+      data.set('prompt', '基于样片生成正式成片');
+      data.set('draft_task_id', info.draftTaskId);
+      data.set('resolution', '1080p');
+      data.set('duration', '-1');
+      data.set('ratio', 'adaptive');
+      data.set('repeat_count', '1');
+      data.set('concurrency', '1');
+      let res = null;
+      try {
+        status.textContent = '正在提交成片任务…';
+        res = await api(APP_PATH + '/api/jobs', 'POST', data, ws);
+      } catch (e) {
+        status.textContent = '提交失败：' + ((e && e.message) ? e.message : e);
+        finalizeBtn.disabled = false;
+        info.busy = false;
+        return;
+      }
+      if (!res || res.error || !res.job_id) {
+        status.textContent = '提交失败：' + ((res && res.error) || '未知错误');
+        finalizeBtn.disabled = false;
+        info.busy = false;
+        return;
+      }
+      info.finalJobId = res.job_id;
+      info.currentUrl = '';
+      this.loadJobs();
+      status.textContent = '已提交，正在生成 1080P 成片…（任务 ' + res.job_id + '）窗口可以关掉，任务照常跑。';
+      let consecutiveFails = 0;
+      while (!info.closed) {
+        const r = await pollJobOnce(APP_PATH + '/api/jobs/' + encodeURIComponent(res.job_id), ws);
+        if (info.closed) break;
+        if (r.kind === 'gone') {
+          status.textContent = '读不到成片任务状态（可能已结束）——去任务列表里看结果。';
+          break;
+        }
+        if (r.kind === 'error') {
+          consecutiveFails += 1;
+          if (consecutiveFails >= 15) {
+            status.textContent = '状态刷新连续失败，已停止刷新；任务仍在后台跑。';
+            break;
+          }
+          await new Promise((x) => setTimeout(x, 2500));
+          continue;
+        }
+        consecutiveFails = 0;
+        const job = r.job || {};
+        const st = String(job.status || '').toLowerCase();
+        if (!TERMINAL_STATUSES.has(st)) {
+          status.textContent = '正在生成 1080P 成片…（' + ((job.done && job.total) ? (job.done + '/' + job.total) : (st || '运行中')) + '）窗口可以关掉，任务照常跑。';
+          await new Promise((x) => setTimeout(x, 2500));
+          continue;
+        }
+        if (['succeeded', 'success', 'completed'].includes(st)) {
+          const done = firstResultOf(job);
+          if (done) {
+            // 「把样片变为真片」：播放器直接换成 1080P 成片。
+            info.currentUrl = done.url;
+            info.currentFilename = done.filename;
+            overlay.querySelector('#sd-draft-video').src = done.url;
+            overlay.querySelector('#sd-draft-title').textContent = '1080P 成片';
+          }
+          status.textContent = '成片已完成（1080P）· 点「下载当前视频」取成片，或在任务列表里下载。';
+          finalizeBtn.textContent = '再出一版（1080P）';
+        } else {
+          const err = (job.errors || [])[0] || job.error || st;
+          status.textContent = '成片失败：' + String(err).slice(0, 200);
+        }
+        finalizeBtn.disabled = false;
+        info.busy = false;
+        this.loadJobs();
+        return;
+      }
+      // 用户中途关窗 / 换了另一条样片：退出循环，但任务继续跑。
+      info.busy = false;
+      finalizeBtn.disabled = false;
+      this.loadJobs();
     },
 
     _setupRealtimeEvents() {
@@ -2421,6 +2865,15 @@ function SeedanceApp() {
         alert(msg);
         return;
       }
+      // 样片模式只有 Seedance 2.5 支持；模型不支持就在本地拦下，别等方舟报错。
+      if (this.taskMode === 'draft' && !modelSupportsDraft(this)) {
+        const draftEntry = (this.models || []).find((item) => String(item.key || '') === String(this.model || ''));
+        const msg = '「' + ((draftEntry && draftEntry.label) || this.model || '当前模型') + '」不支持样片模式（仅 Seedance 2.5 支持），请改用 Seedance 2.5 或把任务类型切回参考生视频。';
+        setOwnerState('submitting', false);
+        setOwnerState('statusText', msg);
+        alert(msg);
+        return;
+      }
       // 首次提交时请求系统通知权限（用户手势内调用才有效）
       requestNotifyPermission();
       const submissionToken = (this._topicSubmissionSeq[ownerWorkspaceId] || 0) + 1;
@@ -2503,6 +2956,12 @@ function SeedanceApp() {
       // 首尾帧模式下「比例」被置灰，而 disabled 控件不进 FormData —— 显式补上，
       // 否则这个字段会整个缺失（后端虽会兜成 adaptive，但前端不该依赖它兜底）。
       if (frameRatioLocked()) data.set('ratio', 'adaptive');
+      // 样片模式同理：分辨率被置灰，且官方只允许 480p —— 两个字段都显式写一次。
+      // （draft 还有一个 hidden input 承载，这里再 set 一次是为了不依赖 DOM 绑定。）
+      if (this.taskMode === 'draft') {
+        data.set('draft', '1');
+        data.set('resolution', '480p');
+      }
       const selectedEntry = (this.models || []).find((item) => item.key === this.model);
       const resolutionEl = field('resolution');
       const route = routeForUnifiedVideoModel(selectedEntry, resolutionEl ? resolutionEl.value : '') || this.activeRoute;
@@ -2594,6 +3053,11 @@ function SeedanceApp() {
 
         if (TERMINAL_STATUSES.has((job.status || '').toLowerCase())) {
           notifyJobDone(jobId, job.status, '视频生成');
+          // 样片跑完**自动弹二级窗口**（用户 2026-10-19 要求：弹窗预览样片，点「继续生成」出成片）。
+          // 只在本主题仍在前台时弹，避免在别的主题里看任务时被一个窗口打断。
+          if (String(job.status || '').toLowerCase() === 'succeeded' && isDraftJob(job) && isActiveTab()) {
+            this.openDraftPreview(job);
+          }
           let deliveryNote = '';
           if (job.status === 'succeeded' && delivery?.dirHandle) {
             const saved = await this.saveToClient(job, delivery.dirHandle);

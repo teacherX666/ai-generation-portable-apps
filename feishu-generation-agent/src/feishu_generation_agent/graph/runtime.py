@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import os
 import re
 from collections.abc import Mapping
 from copy import deepcopy
@@ -50,6 +52,7 @@ from feishu_generation_agent.domain.reference_contract import (
     dangling_reference_mentions,
     duration_consistency_issues,
     reference_tokens,
+    refresh_duration_blocking_issues,
     remap_prompt_references,
 )
 from feishu_generation_agent.integrations.planner import (
@@ -81,6 +84,71 @@ from .nodes import _execution_units, approved_plan_from_state, base_task_id
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _read_watermark_cleanup(settings: Any, run_id: str) -> dict[str, Any]:
+    """读参考图去水印的后台进度台账（读不到返回空 dict）。
+
+    2026-10-20 用户口径：规划完先把界面显示出来、去水印在后台跑，**每张参考图要给前端反馈**。
+    台账由后台任务实时写（`integrations/reference_watermark_clean.py`），这里只读。
+    """
+    try:
+        from feishu_generation_agent.integrations.reference_watermark_clean import (
+            read_cleanup_status,
+        )
+
+        return read_cleanup_status(run_id, Path(settings.outputs_dir))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _adopted_cleanup_path(settings: Any, run_id: str, asset_id: str) -> Path | None:
+    """这张参考图**当前该用哪个清洗版**；`None` = 用原图。
+
+    2026-10-23 起判定交给 `reference_watermark_clean.effective_cleanup_path` —— 它会认
+    **用户的选择**（`decision`）：`cleaned` = 用户看过图、决定用清洗版（**即使护栏判了
+    `kept` 也照用**）；`original` = 用户决定用原图（即使护栏采用过也不用）；`auto` = 沿用
+    护栏判定。预览与**提交**必须走同一个判据，否则就是「审批页看到的那版 ≠ 真正提交的那版」。
+
+    ⚠️ **必须返回绝对路径**：台账里存的是 `data\\runs\\...-nowm.png` 这种**相对路径**
+    （`asset.local_path` 本身就是相对的，清洗版就写在它旁边）。下面是拿它跟
+    `data_dir`/`outputs_dir` 的**绝对**允许根做 `is_relative_to` 校验的 —— 相对路径永远
+    判否 → `break` → 抛「参考素材不存在」→ 缩略图 404。
+
+    用户 2026-10-20 现象就是这条：「我飞书模块去水印但是预览没了」——凡是
+    **已采用清洗版**的参考图，预览全空白（1 张没检测到水印的照旧正常，所以看着像"部分丢了"）。
+    """
+    from feishu_generation_agent.integrations.reference_watermark_clean import (
+        effective_cleanup_path,
+    )
+
+    entry = _read_watermark_cleanup(settings, run_id).get(asset_id) or {}
+    return effective_cleanup_path(entry)
+
+
+def _cleanup_version_path(
+    settings: Any, run_id: str, asset_id: str, version: int
+) -> Path | None:
+    """台账里**第 N 版**清洗版的路径（前端"来回切历史版本"用）。
+
+    ⚠️ **只认台账里记过的版本**：不接受调用方给任意路径 —— 否则就成了"拿 run 的权限
+    去读盘上任何文件"。（用户 2026-10-23 口径：重洗要保留历史版本、能来回对比。）
+    """
+    from feishu_generation_agent.integrations.reference_watermark_clean import (
+        resolve_cleaned_path,
+    )
+
+    entry = _read_watermark_cleanup(settings, run_id).get(asset_id) or {}
+    for item in entry.get("versions") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            if int(item.get("version") or 0) != int(version):
+                continue
+        except (TypeError, ValueError):
+            continue
+        return resolve_cleaned_path(item.get("path"))
+    return None
 
 
 def _artifact_shot_meta(
@@ -122,6 +190,34 @@ def _artifact_shot_meta(
     return order, meta
 
 
+def plan_has_reference_video(plan: Any) -> bool:
+    """计划里有没有**要提交给方舟的参考视频**（决定用哪一档单价）。
+
+    判据取两处、只要命中一处就算（都是提交侧真正会用的引用）：
+    * `tasks[].reference_plan[]` —— 规划器给每个素材的可用性判断，视频素材的 id 形如
+      `video-1`，role 为 `video`；
+    * `tasks[].reference_images[]` —— 提交时用的引用清单，role 为 `reference_video`
+      （本地新上传的素材 id 形如 `upload-<hash>`，靠 role 才认得出来）。
+
+    `usable=False` 的素材会被排除、不提交，所以不算数。
+    """
+    if not isinstance(plan, dict):
+        return False
+    for task in (plan.get("tasks") or []):
+        if not isinstance(task, dict):
+            continue
+        for asset in (task.get("reference_plan") or []):
+            if isinstance(asset, dict) and asset.get("usable") is not False:
+                if "video" in f"{asset.get('asset_id') or ''} {asset.get('role') or ''}".lower():
+                    return True
+        for ref in (task.get("reference_images") or []):
+            if not isinstance(ref, dict):
+                continue
+            if "video" in f"{ref.get('asset_id') or ''} {ref.get('role') or ''}".lower():
+                return True
+    return False
+
+
 class RunNotFound(LookupError):
     pass
 
@@ -134,69 +230,12 @@ class RunValidationError(ValueError):
     pass
 
 
-#: 「正文自述时长 ≠ 任务时长」这条阻断项的文案前缀（文案唯一来源见
-#: `reference_contract.duration_consistency_issues`）。
-_STATED_DURATION_BLOCKING_PREFIX = "Seedance 提示词正文自述时长（"
-#: 复用守卫判据 1（本次时长 ≠ 上一版时长）的文案前缀与「上一版秒数」抓取 ——
-#: 文案里自己给了出口：「或把时长改回上一版的秒数」，用户照做之后这条就该消失。
-_REUSE_DURATION_CHANGED_PREFIX = "本次时长是 "
-_REUSE_GUARD_PREVIOUS_SECONDS = re.compile(
-    r"上一版计划里的提示词是按\s*(\d+)\s*秒写的"
-)
-
-
-def refresh_duration_blocking_issues(
-    payload: dict[str, Any],
-    *,
-    explicit_duration_edit: bool = False,
-) -> None:
-    """按**当前**的 `prompt` / `duration` 重算「时长不一致」阻断项（就地改 payload）。
-
-    **为什么必须重算**（2026-10-13「小猫钓鱼」审批一直报「无效」的根因）：
-    这类阻断项是**存量字符串** —— 由复用守卫（`_reuse_guard_reasons`）或改时长写进
-    `blocking_issues`，但**改时长（`patch_task`）与改提示词都不会重新评估它**。
-    实锤（run `788ab355`）：用户把任务时长从 18 改成 12、正文本来就是「共12秒」、
-    时间轴 0-8s/8-12s（**两边已经一致**），可旧快照还写着「12 秒与任务时长 18 秒不一致」
-    → `TaskPlan.approve()` 见 `blocking_issues` 非空就抛错 → 审批 422，
-    界面上只显示「审批无效」，用户无论怎么改都批不了。
-
-    两族文案分头处理（只动「时长」这一族，别的不碰）：
-
-    * 「正文自述时长（X 秒）与任务时长（Y 秒）不一致」→ **整族重算**：按当前
-      `prompt`/`duration` 重新判定，一致就清掉、真不一致就补回来（口径与提交时校验
-      完全一致，不会放过真的问题）。**读取视图、审批校验、改字段都要跑**。
-    * 「本次时长是 X 秒，而上一版计划里的提示词是按 Y 秒写的」→ **只在用户显式改时长
-      时**（`explicit_duration_edit=True`，即 `patch_task`）才按「已改回 Y」清掉。
-      读取视图时**绝不能清**：克隆那一步任务时长可能还没被换成新值，此时
-      `duration == Y` 是「还没应用」而不是「用户改回来了」—— 误清会让 2026-10-10 的
-      P0 守卫形同虚设（`test_rerun_with_new_duration_does_not_preserve_prompt_verbatim`）。
-    """
-    raw = payload.get("blocking_issues")
-    current = [str(item) for item in raw] if isinstance(raw, list) else []
-    duration = payload.get("duration")
-    duration_is_int = isinstance(duration, int) and not isinstance(duration, bool)
-    kept: list[str] = []
-    for item in current:
-        if item.startswith(_STATED_DURATION_BLOCKING_PREFIX):
-            continue  # 这一族下面按当前值重算
-        if explicit_duration_edit and item.startswith(_REUSE_DURATION_CHANGED_PREFIX):
-            previous = _REUSE_GUARD_PREVIOUS_SECONDS.search(item)
-            if (
-                previous is not None
-                and duration_is_int
-                and duration == int(previous.group(1))
-            ):
-                continue  # 用户按文案照做、把时长改回上一版 → 「时长变了」这条理由消失
-        kept.append(item)
-    refreshed = [
-        *kept,
-        *duration_consistency_issues(payload.get("prompt"), duration),
-    ]
-    deduped = list(dict.fromkeys(refreshed))
-    if deduped != current:
-        payload["blocking_issues"] = deduped
-
-
+#: 「正文自述时长 ≠ 任务时长」阻断项的重算逻辑**已下沉到 domain 层**
+#: （`domain.reference_contract.refresh_duration_blocking_issues`）——
+#: 2026-10-21：它必须挂在**所有合并路径**共用的
+#: `plan.reconcile_task_asset_coverage` 上，否则客户端回传的过期阻断项
+#: 会在 `human_approval` 节点里把用户改对的计划重新判死。
+#: 这里保留同名再导出，历史调用点（patch_task / _validate_decision / 测试）不受影响。
 class GraphRuntime:
     _RECOVERABLE_STATUSES = frozenset(
         {"created", "running", "resuming", "waiting_provider", "delivering"}
@@ -248,6 +287,8 @@ class GraphRuntime:
         video_analyzer: Any | None = None,
         #: 公开图床：把成片传成 https 链接，才能作为 video_url 附进多模态请求。
         public_media_host: Any | None = None,
+        #: 清洗范围探针（2026-10-28）：重洗前先确认"洗哪儿、哪儿不许动"。
+        cleanup_scope_probe: Any | None = None,
     ) -> None:
         self.graph = graph
         self.repository = repository
@@ -264,6 +305,8 @@ class GraphRuntime:
         # 让融合模型看到实际画面（不抽帧）。
         self.video_analyzer = video_analyzer
         self.public_media_host = public_media_host
+        # 清洗范围探针（清洗前确认范围）—— 重洗路径也走它，见 `reclean_reference`。
+        self.cleanup_scope_probe = cleanup_scope_probe
         # 成片公开链接缓存：同一条成片只上传一次（sha256 缺失时用 artifact_id 顶）。
         self._take_media_cache = MediaUploadCache(
             Path(settings.data_dir) / "take-media-links.json"
@@ -614,6 +657,9 @@ class GraphRuntime:
             # 2026-10-10「铲」任务：融合只往声音段塞了 4 个字、画面段一字未动，
             # 事件却说「已按本次返工要求改写提示词」—— 用户以为改了、其实没改。
             rewrote_prompt = False
+            #: 本次返工里「融合没生效」的真实原因（超长被拒 / 上游报错 / 模型原样返回），
+            #: 写事件时如实转述（2026-11-05）。
+            last_fusion_reason: str | None = None
             # 只有「有返工要求」才改写提示词；要求为空 = **一个字都不改**
             # （不调融合模型、不产生费用），只把已批准计划原样搬进待审批。
             if feedback_text and selected_task_id_set:
@@ -666,6 +712,10 @@ class GraphRuntime:
                     # 与图节点 review_artifacts 共用同一套语义：历次返工要求
                     # 只累积不覆盖、优先 AI 融合、永不因超长失败。
                     base_prompt, requirements = rework_inputs(task, feedback_text)
+                    # 融合为什么没生效（超长被拒 / 上游报错 / 模型原样返回）由它带回，
+                    # 下面写事件时如实转述 —— 以前只能写「一致或不合契约」，用户
+                    # 看到的是「没给我改提示词」却说不出原因（2026-11-05 MM day16 视频3）。
+                    fusion_diagnostics: dict[str, Any] = {}
                     prompt, _truncated, _must_avoid = await build_rework_prompt(
                         base_prompt,
                         # 只喂**本轮**要求；`requirements`（累积）仍写回任务做记录。
@@ -673,10 +723,16 @@ class GraphRuntime:
                         fuse=self.rework_fuser,
                         visual_context=visual_context,
                         media_parts=media_parts,
+                        diagnostics=fusion_diagnostics,
                     )
                     # 与图节点 `review_artifacts` 的判定口径保持一致（只差空白 = 没改）。
                     if prompt.strip() != (base_prompt or "").strip():
                         rewrote_prompt = True
+                        last_fusion_reason = None
+                    else:
+                        last_fusion_reason = str(
+                            fusion_diagnostics.get("rejection_reason") or ""
+                        ).strip() or "原因未记录"
                     updated_tasks.append(
                         task.model_copy(
                             update={
@@ -712,7 +768,7 @@ class GraphRuntime:
             #     一个字都不改、不产生费用"）；
             #   - 拦住时给的是**人话 + 出口**：点「重新运行」并填写返工要求，融合链路
             #     会按新时长重写时间轴与全部时长表述。
-            guard_reasons = self._reuse_guard_reasons(
+            guard_reasons, guard_warnings = self._reuse_guard_reasons(
                 approved_plan,
                 target_duration=duration,
                 # checkpoint 里的 media_assets 是 **dict**，不是 MediaAsset 对象。
@@ -726,23 +782,26 @@ class GraphRuntime:
                     if isinstance(asset, dict) and asset.get("asset_id")
                 },
             )
-            if guard_reasons:
+            if guard_reasons or guard_warnings:
                 guarded_tasks = []
                 for task in approved_plan.tasks:
-                    reasons = guard_reasons.get(task.task_id)
-                    if not reasons:
+                    reasons = (guard_reasons or {}).get(task.task_id) or []
+                    warns = (guard_warnings or {}).get(task.task_id) or []
+                    if not reasons and not warns:
                         guarded_tasks.append(task)
                         continue
-                    existing = list(task.blocking_issues)
-                    guarded_tasks.append(
-                        task.model_copy(
-                            update={
-                                "blocking_issues": list(
-                                    dict.fromkeys([*existing, *reasons])
-                                )
-                            }
+                    updates: dict[str, Any] = {}
+                    if reasons:
+                        updates["blocking_issues"] = list(
+                            dict.fromkeys([*task.blocking_issues, *reasons])
                         )
-                    )
+                    if warns:
+                        # 格式类的提示只进 warnings：审批页看得见，但不挡路
+                        #（2026-10-30：用户明确要求这类阻塞删掉）。
+                        updates["warnings"] = list(
+                            dict.fromkeys([*task.warnings, *warns])
+                        )
+                    guarded_tasks.append(task.model_copy(update=updates))
                 approved_plan = approved_plan.model_copy(
                     update={"tasks": guarded_tasks}
                 )
@@ -805,6 +864,12 @@ class GraphRuntime:
             await self.repository.create_run(
                 run_id, thread_id, request.source_url, status="created"
             )
+            # **素材不变量**（2026-10-28 用户口径：「素材变了是绝对不允许的」）：
+            # 重跑复用上一版计划时**不重新入库**，于是新 run 的清洗台账是空的 ——
+            # 而预览与提交都只看**本 run 的台账**，结果审批页会把素材显示成
+            # **带水印的原图**（用户看到的"素材又变了"就是这个）。
+            # 直接把源运行的台账整份继承过来：清洗版文件在文档级 inputs 目录里，路径照样有效。
+            await self._inherit_cleanup_ledger(source_run_id, run_id)
             config = self._config(thread_id)
             try:
                 await self._graph_aupdate_state(
@@ -828,9 +893,14 @@ class GraphRuntime:
                 # 2026-10-10（「铲」任务）：送了模型、但**正文一个字没改**（融合结果与
                 # 原文一致，或被落点契约拦下后回退）。必须如实说 —— 否则用户会以为
                 # 「提示词改了、画面却没变」，把力气白花在一轮轮重跑上。
+                # 2026-11-05（MM day16 视频3）：还要带上**真实原因**。那次的真相是
+                # 「4 次改写都只超 19~38 字被整条拒掉」，而这里只写「与原文一致或
+                # 不合契约」，用户看到的就是「没给我改提示词」却说不出为什么。
                 clone_summary = (
                     "已复用上一版已批准计划，但本次返工没有改变提示词正文"
-                    "（融合结果与原文一致或不合契约，已按原样保留）"
+                    "（"
+                    + (last_fusion_reason or "融合结果与原文一致或不合契约")
+                    + "，已按原样保留）"
                 )
             await self.repository.append_event(
                 run_id,
@@ -867,10 +937,10 @@ class GraphRuntime:
         *,
         target_duration: int | None,
         mime_types: Mapping[str, str],
-    ) -> dict[str, list[str]]:
+    ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
         """②-b：复用上一版计划时，哪些任务**不能原样保留**（task_id → 人话原因）。
 
-        三条判据（任一命中即拦）：
+        返回 `(要拦住审批的, 只提示不拦的)` 两份；四类判据：
 
         1. **本次时长 ≠ 被克隆计划的时长**（调用方显式给了 `target_duration` 时）：
            提示词里的时间轴与「预计 N 秒」全是按旧时长写的，原样保留必然对不上
@@ -881,8 +951,17 @@ class GraphRuntime:
            而本计划的 `reference_images` 里没有对应素材（上一版修复时被摘掉了），
            或者已经留下「参考  中…」这种被削掉主语的空洞。用户已知口径：点返工不填
            要求会把修复前的旧提示词搬回来、带出 `@视频N` 空洞。
+
+        ⚠️ 第 3、4 类（锚点空洞 / 悬空引用）**只进 warnings，不再拦住审批**
+        （2026-10-30 用户口径：「本来就没有图片6，他还是给我阻塞了，把这个阻塞的删了」）：
+        它们是格式层问题，补一句或删一个 token 就能继续，没有理由把用户卡在审批页；
+        更要紧的是这两类判据都从**当前** prompt 推出来，写成 blocking_issues 之后就变成
+        **存量字符串** —— 提示词后来修好了、旧字符串还留着，`TaskPlan.approve()` 见非空
+        即抛错，用户怎么改都批不了（实测 run `e92f45bb`：prompt 里只有 @图片1~@图片4
+        与 @视频1，阻塞项却写着「引用了 @图片6」）。
         """
-        reasons: dict[str, list[str]] = {}
+        blocking: dict[str, list[str]] = {}
+        warnings: dict[str, list[str]] = {}
         for task in plan.tasks:
             # token 按**实际提交顺序**编号（`reference_tokens` 同一套规则），否则
             # 「@图片2 有没有对应素材」会判错。
@@ -897,6 +976,8 @@ class GraphRuntime:
                 valid_tokens = set()
 
             task_reasons: list[str] = []
+            #: 只提示、不拦审批的那些（锚点空洞 / 悬空引用）。
+            task_warnings: list[str] = []
             effective_duration = (
                 target_duration if isinstance(target_duration, int) else task.duration
             )
@@ -917,23 +998,26 @@ class GraphRuntime:
             )
             holes = dangling_reference_mentions(task.prompt)
             if holes:
-                task_reasons.append(
+                task_warnings.append(
                     "提示词里有被削掉主语的空洞（" + "、".join(holes[:3]) + "）："
                     "上一版摘素材时把句子打断了，原样保留会让模型拿到一句缺主语的话。"
-                    "请填写返工要求让模型重写这一句。"
+                    "建议填写返工要求让模型重写这一句（不拦审批）。"
                 )
             for mention in re.findall(r"@(图片|视频|音频)(\d+)", task.prompt):
                 token = f"@{mention[0]}{mention[1]}"
                 if token in valid_tokens:
                     continue
-                task_reasons.append(
+                task_warnings.append(
                     f"提示词引用了 {token}，但本次计划的参考素材里没有对应的"
-                    f"{mention[0]}（上一版可能已被摘掉）：请填写返工要求让模型重写，"
-                    f"或手动把 {token} 改成实际存在的素材引用。"
+                    f"{mention[0]}（上一版可能已被摘掉）。模型会忽略这个引用；"
+                    f"要改的话请填写返工要求让模型重写，或手动把 {token} 改成实际存在的"
+                    f"素材引用（不拦审批）。"
                 )
             if task_reasons:
-                reasons[task.task_id] = list(dict.fromkeys(task_reasons))
-        return reasons
+                blocking[task.task_id] = list(dict.fromkeys(task_reasons))
+            if task_warnings:
+                warnings[task.task_id] = list(dict.fromkeys(task_warnings))
+        return blocking, warnings
 
     def _has_background(self, name: str) -> bool:
         return any(
@@ -1191,6 +1275,39 @@ class GraphRuntime:
             )
         except (TimeoutError, Exception):
             _LOGGER.exception("取消运行时更新 checkpoint 失败: %s", run_id)
+    async def _inherit_cleanup_ledger(
+        self, source_run_id: str, run_id: str
+    ) -> None:
+        """把源运行的**参考图清洗台账**整份继承给新 run（重跑复用计划时用）。
+
+        为什么必须继承（2026-10-28 用户报「我点重新运行素材还是变了」）：
+        重跑复用上一版计划时**不重新入库**，也就没有清洗这一环；而预览
+        （`get_reference_file`）与提交（`nodes._clean_assets`）都只看**本 run** 的台账 ——
+        台账为空 ⇒ 回退成**带水印的原图**，用户看到的就是"素材变了"。
+        清洗版文件写在**文档级** `data/runs/<doc_token>/inputs/` 下，与 run 无关，所以直接搬台账即可。
+
+        任何失败都只警告、不阻断重跑（素材回退原图是可用的，虽然不理想）。
+        """
+        try:
+            from feishu_generation_agent.integrations.reference_watermark_clean import (
+                cleanup_status_path,
+                read_cleanup_status,
+            )
+
+            outputs_dir = Path(self.settings.outputs_dir)
+            source = read_cleanup_status(source_run_id, outputs_dir)
+            if not source:
+                return
+            target = cleanup_status_path(run_id, outputs_dir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+            tmp.write_text(
+                json.dumps(source, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+            os.replace(tmp, target)
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("继承参考图清洗台账失败，按原图继续", exc_info=True)
+
     async def _run_to_approval(
         self,
         run_id: str,
@@ -1260,6 +1377,56 @@ class GraphRuntime:
         except ValidationError:
             return None
 
+    async def plan_portal_view(self, thread_id: str) -> dict[str, Any]:
+        """Portal 用的一次性摘要：`{"prompt": 正文, "has_reference_video": 有没有挂参考视频, "title": 文档标题}`。
+
+        为什么要「有没有挂参考视频」这一位（2026-10-29 用户报「计算费用应该按挂没挂参考
+        视频判断单价」）：方舟对「有/无输入视频」是两档单价（Seedance 2.5 差 1.6 倍），
+        而**方舟自己的任务列表/详情只返回输出内容**（`content.content.video_url` = 成片，
+        实测 100/100 条如此），从它那儿看不出输入侧有没有视频。唯一知道真相的是**提交方**，
+        也就是这里：计划的 `reference_plan` / `reference_images` 里 role 带 video 的素材
+        就是这次提交给方舟的参考视频。
+
+        读不到（没有 thread_id / 库读失败 / 状态里没有计划）就返回空视图 —— 调用方回落
+        占位串与「无输入视频」档，绝不因为读不到而让历史列表失败。
+        """
+        view: dict[str, Any] = {
+            "prompt": "",
+            "has_reference_video": False,
+            # 文档标题：没有多维表格绑定的运行（「直接分析需求文档」）在列表里没有
+            # display_text 可用，只能拿标题当那一行的名字（2026-10-30）。
+            "title": "",
+            # 本条运行的产出类型（video / image）：直连任务重跑时要用它，否则
+            # 源运行没有已批准计划、退回重新规划那一步会按默认的 video 重做
+            # （图片需求的直连任务会被规划成视频）。
+            "planning_mode": "",
+        }
+        if not thread_id:
+            return view
+        try:
+            snapshot = await self.graph.aget_state(self._config(thread_id))
+        except Exception:  # noqa: BLE001 - 历史列表不该因读 checkpoint 失败而报错
+            return view
+        state = dict(snapshot.values or {})
+        view["title"] = str(state.get("document_title") or "").strip()
+        view["planning_mode"] = str(state.get("planning_mode") or "").strip()
+        for key in ("approved_plan", "draft_plan"):
+            plan = state.get(key)
+            if not isinstance(plan, dict):
+                continue
+            if not view["has_reference_video"]:
+                view["has_reference_video"] = plan_has_reference_video(plan)
+            if view["prompt"]:
+                continue
+            prompts = [
+                str(task.get("prompt") or "").strip()
+                for task in (plan.get("tasks") or [])
+                if isinstance(task, dict) and str(task.get("prompt") or "").strip()
+            ]
+            if prompts:
+                view["prompt"] = "\n\n".join(prompts)[:2000]
+        return view
+
     async def plan_prompt_text(self, thread_id: str) -> str:
         """这条运行实际使用的**生成提示词**（Portal 的「创作记录」正文）。
 
@@ -1269,26 +1436,9 @@ class GraphRuntime:
         真正的正文在 `approved_plan`（已批准）/ `draft_plan`（草稿）的 `tasks[].prompt` 里。
 
         取不到返回空串，由调用方回落占位文案 —— 绝不因为读不到正文而让历史列表失败。
+        正文与「有没有参考视频」都来自同一次 checkpoint 读取，见 `plan_portal_view`。
         """
-        if not thread_id:
-            return ""
-        try:
-            snapshot = await self.graph.aget_state(self._config(thread_id))
-        except Exception:  # noqa: BLE001 - 历史列表不该因取正文失败而报错
-            return ""
-        state = dict(snapshot.values or {})
-        for key in ("approved_plan", "draft_plan"):
-            plan = state.get(key)
-            if not isinstance(plan, dict):
-                continue
-            prompts = [
-                str(task.get("prompt") or "").strip()
-                for task in (plan.get("tasks") or [])
-                if isinstance(task, dict) and str(task.get("prompt") or "").strip()
-            ]
-            if prompts:
-                return "\n\n".join(prompts)[:2000]
-        return ""
+        return str((await self.plan_portal_view(thread_id)).get("prompt") or "")
 
     async def _checkpoint_has_valid_planning_prompt(
         self,
@@ -1443,6 +1593,10 @@ class GraphRuntime:
                 "tasks": tasks,
                 "document_summary": plan.get("document_summary", ""),
                 "media_assets": media_assets,
+                # 参考图去水印的后台进度台账（2026-10-20 用户口径：每张参考图要有前端反馈）。
+                # 形如 {"image-1": {"status": "running", "message": "正在去水印…"}}；
+                # 没有这份文件时返回空 dict，前端就不显示状态。
+                "watermark_cleanup": _read_watermark_cleanup(self.settings, run_id),
                 "excluded_assets": plan.get("excluded_assets", []),
                 "coverage": coverage,
                 "vision_descriptions": state.get("vision_descriptions", []),
@@ -1936,6 +2090,16 @@ class GraphRuntime:
                 replacement_asset_ids = None
             else:
                 replaced_asset_id = references[replace_index].asset_id
+                # 「替换」= **原地**换掉那一格的素材，槽位跟着被替换的那一格走。
+                # 客户端给的 `order` 在替换场景下**不可信**：前端提交的是下拉框里
+                # 「同类型内的序号」（视频1 的序号是 1），而它在任务里的全局槽位是 2
+                # （图片1 占 1）—— 照实采用就与图片1 撞车，`canonicalize_references`
+                # 判 order 重复 → 422「图片引用无效」（2026-10-30 用户报「替换视频会失败」，
+                # 替换图片没事正因为图片的同类型序号恰好等于全局槽位）。
+                # 槽位由服务端说了算，就不必指望每个客户端都算对。
+                reference = reference.model_copy(
+                    update={"order": references[replace_index].order}
+                )
                 references[replace_index] = reference
                 replacement_asset_ids = {replaced_asset_id: asset_id}
             assets = self._state_assets(state)
@@ -2119,6 +2283,68 @@ class GraphRuntime:
                 plan, removed_asset_ids={asset_id}
             )
             await self._persist_draft(run, state, updated_plan, assets)
+
+    async def remove_asset(
+        self,
+        run_id: str,
+        *,
+        asset_id: str,
+    ) -> None:
+        """把一个素材从**这次运行**里移除（服务器上的文件保留）。
+
+        用户 2026-11-04：「已排除的素材可不可以加一个删除和重新挂素材的功能」，
+        并自己选定了语义：**删除 = 从本次运行移除、文件保留**（不是删文件，也不是
+        "从排除里拿回来"）。
+
+        与 `exclude_asset` 的分工：
+          * **排除** = 这次不用它，但仍然登记在案（覆盖门要求「每个素材要么被任务引用、
+            要么被排除」，所以排除是"留个说法"）；
+          * **删除** = 当它跟本次任务无关，直接从素材集合里拿掉 —— 覆盖门不再管它，
+            「已排除」里也跟着消失。
+
+        这是人做的决定，所以同样走 `_waiting_state`（非可编辑状态直接拒）。还被任务
+        引用的素材**拒绝删除**：要人先去任务上摘掉，绝不偷偷改计划。
+        只读 `media_assets`（分镜候选在 `storyboard_assets`，另一条通道，别混进来 ——
+        混进来就会触发「未覆盖素材」门禁，见 `_state_assets` 的说明）。
+        """
+        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
+        if lock.locked():
+            raise RunConflict("运行正在更新，请稍后重试")
+        async with lock:
+            run, state = await self._waiting_state(run_id)
+            plan = self._state_plan(state)
+            referenced = {
+                reference.asset_id
+                for task in plan.tasks
+                for reference in task.reference_images
+            }
+            if asset_id in referenced:
+                raise RunValidationError(
+                    f"素材 {asset_id} 还被任务引用，请先从任务上摘掉再删除"
+                )
+            media_assets: list[MediaAsset] = []
+            found = False
+            for item in state.get("media_assets") or []:
+                try:
+                    asset = MediaAsset.model_validate(item)
+                except Exception:  # noqa: BLE001 —— 坏素材不该挡住这次删除
+                    continue
+                if asset.asset_id == asset_id:
+                    found = True
+                    continue
+                media_assets.append(asset)
+            if not found:
+                raise RunValidationError(f"素材 {asset_id} 不存在")
+            updated_plan = TaskPlan(
+                tasks=plan.tasks,
+                document_summary=plan.document_summary,
+                excluded_assets=[
+                    item
+                    for item in plan.excluded_assets
+                    if item.asset_id != asset_id
+                ],
+            )
+            await self._persist_draft(run, state, updated_plan, media_assets)
 
     _PATCHABLE_TASK_FIELDS = {
         "prompt",
@@ -2442,6 +2668,9 @@ class GraphRuntime:
             tasks: list[GenerationTask] = []
             optimized: list[str] = []
             unchanged: list[str] = []
+            #: 「没改动」的**真实原因**（2026-11-05）：以前只说「多半是模型限流或
+            #: 上游报错」，把「超长被契约拒掉」也蒙在里面。
+            unchanged_reasons: dict[str, str] = {}
             # 审批页优化**也要看上一版成片**（用户 2026-09-28）：这条路以前完全不看
             # 视频，才会把「气球从手上方滑走」改成一段自相矛盾的病句。当前 run 还没
             # 生成（artifacts=0），成片在**同一条需求上一个跑完的 run** 里。
@@ -2477,6 +2706,7 @@ class GraphRuntime:
                     tasks.append(task)
                     continue
                 base_prompt, requirements = rework_inputs(task, text)
+                fusion_diagnostics: dict[str, Any] = {}
                 prompt, truncated, _must_avoid = await build_rework_prompt(
                     base_prompt,
                     # 只喂**本轮**要求；`requirements`（累积）仍写回任务做记录。
@@ -2484,6 +2714,7 @@ class GraphRuntime:
                     fuse=self.rework_fuser,
                     visual_context=visual_context,
                     media_parts=media_parts,
+                    diagnostics=fusion_diagnostics,
                 )
                 updates: dict[str, Any] = {
                     "prompt": prompt,
@@ -2496,9 +2727,16 @@ class GraphRuntime:
                     ),
                 }
                 if truncated:
+                    trimmed_chars = int(fusion_diagnostics.get("trimmed_chars") or 0)
                     updates["warnings"] = [
                         *task.warnings,
-                        "优化要求过多，提示词已截断；历史要求仍完整保留",
+                        (
+                            # 2026-11-05：新路径——融合结果只多出几十字，裁掉尾部后
+                            # 照样采纳（旧口径是整条丢弃、正文一个字不改）。
+                            f"融合结果超长，已按句子边界裁掉结尾 {trimmed_chars} 字后采纳"
+                            if trimmed_chars
+                            else "优化要求过多，提示词已截断；历史要求仍完整保留"
+                        ),
                     ]
                 # 手工编辑过的提示词以人的版本为准：清空槽位，避免后续校验用槽位
                 # 拼装把这次改写覆盖掉（与 patch_task 同一口径）。
@@ -2506,6 +2744,9 @@ class GraphRuntime:
                 tasks.append(task.model_copy(update=updates))
                 if prompt.strip() == (task.prompt or "").strip():
                     unchanged.append(task.task_id)
+                    unchanged_reasons[task.task_id] = str(
+                        fusion_diagnostics.get("rejection_reason") or ""
+                    ).strip()
                 else:
                     optimized.append(task.task_id)
 
@@ -2520,8 +2761,12 @@ class GraphRuntime:
                         f"已按「{text[:80]}」用 AI 重写提示词："
                         + ("、".join(optimized) if optimized else "无")
                         + (
-                            f"；融合未生效（多半是模型限流或上游报错）："
-                            + "、".join(unchanged)
+                            "；融合未生效（"
+                            + "；".join(
+                                f"{task_id}：{unchanged_reasons.get(task_id) or '原因未记录'}"
+                                for task_id in unchanged
+                            )
+                            + "）"
                             if unchanged
                             else ""
                         )
@@ -2529,16 +2774,104 @@ class GraphRuntime:
                 )
             except Exception:  # noqa: BLE001 —— 记事件失败不该挡住优化本身
                 _LOGGER.warning("记录提示词优化事件失败 run=%s", run_id, exc_info=True)
+            # 2026-10-22 用户要求：「优化所选提示词」也要看到改动差异，并与「重做」同一个接口口径。
+            # 对比数据在这里一次给出（**只含正文真被改写过的任务**），前端拿到就能立刻渲染 diff，
+            # 不必等 poll 回来的那一版视图 —— 轮询慢一拍时用户也已经看到「改了哪几句」。
+            # 原样保留（融合没生效）的任务不给对比：那是「没改」，给了反而误导。
+            comparisons = self._rework_comparisons(
+                tasks, only=set(optimized)
+            )
             return {
                 "status": "updated",
                 "optimized_task_ids": optimized,
                 "unchanged_task_ids": unchanged,
+                "comparisons": comparisons,
             }
+
+    async def set_reference_cleanup_decision(
+        self,
+        run_id: str,
+        asset_id: str,
+        decision: str,
+        selected: str | None = None,
+    ) -> dict[str, Any]:
+        """记录用户对这张参考图去水印结果的选择（`auto` / `cleaned` / `original`）。
+
+        用户 2026-10-23 口径：「可以让用户看到清洗后的图片自由选择原图或者继续重新清洗」。
+        存进台账后，**预览与提交都按它生效**（`_adopted_cleanup_path` 是唯一收口点）。
+        非法取值抛 `RunValidationError`（前端只可能传这三个）。
+        """
+        from feishu_generation_agent.integrations.reference_watermark_clean import (
+            read_cleanup_status,
+            set_cleanup_decision,
+        )
+
+        outputs_dir = Path(self.settings.outputs_dir)
+        entry = read_cleanup_status(run_id, outputs_dir).get(asset_id)
+        if not entry:
+            # 台账里没有这张图 → 说明它压根没参与过去水印（没水印 / 不是图片 / 清洗没开）。
+            # 不写一个"空条目"进去：那会让前端以为它清洗过（而且 `effective_cleanup_path`
+            # 会把它当"有结论"从而跳过兜底清洗）。
+            raise RunValidationError(
+                f"参考图 {asset_id} 没有去水印记录（可能未检测到水印），无需选择"
+            )
+        if not await set_cleanup_decision(
+            run_id,
+            outputs_dir,
+            asset_id,
+            decision,
+            selected=selected,
+            # 2026-10-28：把这个选择按**原图内容 sha** 记进跨运行记忆 —— 下一版运行
+            # （新 run）自动继承，不再被重置成 auto 后回退原图。
+            data_dir=Path(self.settings.data_dir),
+            source_path=(
+                await self.get_reference_file(run_id, asset_id, prefer_cleaned=False)
+            )[0],
+        ):
+            raise RunValidationError(
+                "这一版清洗把画面里的文字/内容洗掉了，不能选用；"
+                "请重新清洗，或选择用原图"
+            )
+        return read_cleanup_status(run_id, outputs_dir).get(asset_id) or {}
+
+    async def reclean_reference(self, run_id: str, asset_id: str) -> dict[str, Any]:
+        """**重新清洗**这张参考图：产出新版本（`-nowm-2`…），旧版本保留。
+
+        重绘有随机性 —— 重洗是拿到更干净一版的最实际手段（**刻意不做局部重绘**：
+        用户 2026-10-23「局部重绘拼接的时候会有明显漏洞」）。
+        """
+        from feishu_generation_agent.integrations.reference_watermark_clean import (
+            read_cleanup_status,
+            reclean_reference_image,
+        )
+
+        # `prefer_cleaned=False` 拿到的是**原图**（清洗版是另存的文件，不改 `local_path`）。
+        original, _mime = await self.get_reference_file(
+            run_id, asset_id, prefer_cleaned=False
+        )
+        outputs_dir = Path(self.settings.outputs_dir)
+        probe = self.cleanup_scope_probe
+        await reclean_reference_image(
+            original,
+            run_id=run_id,
+            outputs_dir=outputs_dir,
+            asset_id=asset_id,
+            # 重洗 = 重新来过 → 顺手抹掉跨运行记忆，免得更早那次的旧选择又被搬回来。
+            data_dir=Path(self.settings.data_dir),
+            # 重洗前同样先确认清洗范围（不然重洗会再把字洗掉一次）。
+            scope_probe=(
+                (lambda asset: probe.probe(asset)) if probe is not None else None
+            ),
+        )
+        return read_cleanup_status(run_id, outputs_dir).get(asset_id) or {}
 
     async def get_reference_file(
         self,
         run_id: str,
         asset_id: str,
+        *,
+        prefer_cleaned: bool = True,
+        version: int | None = None,
     ) -> tuple[Path, str]:
         run = await self.repository.get_run(run_id)
         if run is None:
@@ -2555,6 +2888,25 @@ class GraphRuntime:
                 except Exception:
                     break
                 resolved_path = asset.local_path.resolve()
+                # 参考图去水印（2026-10-20 用户口径：「对应参考图给出前端反馈」）：
+                # 后台清洗**完成并采用**之后，缩略图直接给**清洗版** —— 界面上的素材图
+                # 会自动变成干净的那张；没洗成/没水印就仍然是原图。
+                # `prefer_cleaned=False` 时强制给原图：前端「原图 / 已去水印版」切换用
+                # （同一个端点 + `?original=1`，不新增端点）。**原图永远可看**是硬要求 ——
+                # 用户 2026-10-10 撤掉旧版去水印功能的理由就是「它把我的原图改掉了」。
+                if version is not None:
+                    # 指定版本（前端列历史版本、来回切用）；只认台账里记过的版本。
+                    picked = _cleanup_version_path(
+                        self.settings, run_id, asset_id, int(version)
+                    )
+                    if picked is not None and picked.is_file():
+                        resolved_path = picked.resolve()
+                elif prefer_cleaned:
+                    cleaned = _adopted_cleanup_path(self.settings, run_id, asset_id)
+                    if cleaned is not None and cleaned.is_file():
+                        #: 再 resolve 一次不是多余的：下面拿它跟**绝对**允许根比 is_relative_to，
+                        #: 任何来源的相对路径都会判否 → break → 预览 404（2026-10-20 实测踩到）。
+                        resolved_path = cleaned.resolve()
                 # 文档素材落在 data/ 下，而分镜候选图是 provider 结果、落在 outputs/
                 # 下（materialize_provider_result 的落盘位置）。两个根都是本应用自己
                 # 的目录，都要放行 —— 只认 data/ 会让预览 404（2026-09-22 实跑踩到）。
@@ -2817,6 +3169,41 @@ class GraphRuntime:
             except Exception:  # noqa: BLE001 —— 坏素材不该挡住其它素材
                 continue
         return assets
+
+    @staticmethod
+    def _rework_comparisons(
+        tasks: list[GenerationTask],
+        *,
+        only: set[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """给「改了哪几句」用的对比数据（2026-10-22 用户要求：优化提示词也要看得到差异）。
+
+        两条返工链路（原地优化 / 退回重跑）都要能展示对比，所以口径收在这一处：
+
+        - `previous_prompt` = **本次改写之前**那一版，是 diff 的左边（与前端
+          `PromptDiff.reworkBasePrompt` 的优先字段一致）；
+        - `base_prompt` = 冻结锚点（首次返工之前那版），只在没有 previous 时兜底；
+        - `current_prompt` = 改写后的正文，diff 的右边。
+
+        只回正文，不回 segments —— 句子级 diff 由前端 `prompt-diff.js` 算，
+        这里**不重复实现**，也不产生任何额外模型调用。
+        """
+        result: dict[str, dict[str, Any]] = {}
+        for task in tasks:
+            if only is not None and task.task_id not in only:
+                continue
+            previous = (task.rework_previous_prompt or "").strip()
+            frozen = (task.rework_base_prompt or "").strip()
+            current = (task.prompt or "").strip()
+            base = previous or frozen
+            result[task.task_id] = {
+                "previous_prompt": task.rework_previous_prompt or "",
+                "base_prompt": base,
+                "current_prompt": task.prompt or "",
+                "requirements": list(task.rework_requirements or []),
+                "changed": bool(base) and current != previous,
+            }
+        return result
 
     @staticmethod
     def _task(plan: TaskPlan, task_id: str) -> tuple[int, GenerationTask]:

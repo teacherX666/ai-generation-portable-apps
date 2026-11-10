@@ -79,19 +79,40 @@ async def build_planning_media_parts(
     public_media_host: PublicMediaHost,
     cache: MediaUploadCache,
     max_items: int = PLANNING_MEDIA_MAX_ITEMS,
+    issues: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """按文档顺序把可用的图片/视频变成 content parts。
 
     单个素材上传失败只跳过它（规划照常进行），绝不让规划因为媒体准备失败而失败。
+
+    `issues`（2026-10-28）：**每一次跳过都要留痕**。以前三处跳过全是静默的 ——
+    摸不到本地文件的素材连日志都没有，上传失败只写 `_LOGGER.warning`，而这一步
+    决定"参考图到底有没有交给规划器"。需求1「铲蜡」排查时就是靠 `media-upload-cache.json`
+    里有没有那条 TOS 链接来反向确认的，属于"得靠翻缓存文件才能知道"的可见性缺口。
+    传了 `issues` 的调用方负责把它呈现到 run 事件/审批页。
     """
-    usable = [
-        asset
-        for asset in assets
-        if asset.download_error is None
-        and asset.mime_type.startswith(("image/", "video/"))
-        and Path(asset.local_path).is_file()
-    ]
+    skip_notes: list[str] = []
+
+    def note(message: str) -> None:
+        skip_notes.append(message)
+        if issues is not None:
+            issues.append(message)
+
+    usable = []
+    for asset in assets:
+        if asset.download_error is not None:
+            note(f"素材 {asset.asset_id} 下载失败（{asset.download_error}），本次规划不带它")
+            continue
+        if not asset.mime_type.startswith(("image/", "video/")):
+            continue  # 音频等本来就不进多模态规划，不是异常
+        if not Path(asset.local_path).is_file():
+            note(f"素材 {asset.asset_id} 的本地文件不存在，本次规划不带它")
+            continue
+        usable.append(asset)
     if len(usable) > max_items:
+        note(
+            f"素材 {len(usable)} 个超过一次规划上限 {max_items}，只带前 {max_items} 个"
+        )
         _LOGGER.warning(
             "素材 %d 个超过一次规划上限 %d，只带前 %d 个（其余仍以文字形式在提示词里）",
             len(usable),
@@ -111,6 +132,10 @@ async def build_planning_media_parts(
                     asset.mime_type,
                 )
             except (PublicMediaUploadError, OSError) as exc:
+                note(
+                    f"素材 {asset.asset_id} 上传公开图床失败，本次规划不带它"
+                    f"（{type(exc).__name__}: {str(exc)[:80]}）"
+                )
                 _LOGGER.warning(
                     "素材上传失败，本次规划不带它 asset=%s err=%s",
                     asset.asset_id,

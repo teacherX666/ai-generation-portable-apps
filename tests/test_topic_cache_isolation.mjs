@@ -51,6 +51,8 @@ function loadApp({ script, path, factoryName, formId, resultsId, eventsId }) {
     alert() {}, confirm: () => true,
   };
   vm.createContext(sandbox);
+  // 共享卡片库先加载：app.js 的 isCancellableJob / jobDisplayStatus 是它的薄封装。
+  vm.runInContext(fs.readFileSync(`${script.slice(0, script.lastIndexOf('/'))}/job-cards.js`, 'utf8'), sandbox);
   vm.runInContext(fs.readFileSync(script, 'utf8'), sandbox);
   return { app: window[factoryName](), window, results, events };
 }

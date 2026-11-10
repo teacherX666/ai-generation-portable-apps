@@ -3080,3 +3080,19 @@ html[data-theme="dark"],
 :root[data-theme="dark"] /* 挪到预留区上方，与展开的历史条不重叠 */ /* 归档卡片的「删除」按钮：和「恢复」并排，样式区分（危险操作用红色描边） */ /* 归档卡片的「删除」：只留垃圾桶图标，不要文字（用户 2026-09-21） */ .fc-delete-archived { display: grid; place-items: center; margin-left: 6px; width: 28px; height: 28px; padding: 0; border: 1px solid rgba(220,90,90,.45); border-radius: 8px; color: light-dark(#c0504f, #e3b0b0); background: #171c23; cursor: pointer; }
 
 
+
+/* 浏览器**原生全屏**（视频播放条右下角 ⛶）必须看到完整画面，不能被缩略图规则放大裁切
+ * （2026-10-30 用户在飞书模块报「视频会被放大」）。全屏时浏览器只把元素宽高铺满屏幕，
+ * 作者样式里的 object-fit / max-height 照旧生效 —— 网格与素材行为了裁方形缩略图写的是
+ * `object-fit: cover`，一进全屏就变成「铺满再裁掉两边」。这里给全屏态一条压倒性规则：
+ * 铺满 + contain（留黑边、绝不裁切），并放开缩略图的尺寸/圆角约束。只影响全屏态。 */
+video:fullscreen,
+video:-webkit-full-screen {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: contain !important;
+  border-radius: 0 !important;
+  background: #000;
+}

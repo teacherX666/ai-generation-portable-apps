@@ -237,3 +237,37 @@ async def test_fusion_without_media_parts_stays_plain_text() -> None:
     await planner.fuse_rework_prompt("原始提示词", ["动作慢一点"])
 
     assert isinstance(model.requests[0][1]["content"], str)
+
+
+# --- 2026-11-05：字数预算必须显式告诉模型（超长被整条拒掉 = 返工白做）---
+
+
+async def test_fusion_request_states_the_remaining_length_budget() -> None:
+    """系统提示词只说「不超过 2500」，模型不知道原文已经占了多少。
+
+    run `7e708f8e`：原文 2469 字（只剩 31 字余量），模型 4 次都写到 2519~2538，
+    每次都只超 19~38 字却被整条拒掉 → 用户看到「提示词一个字没改」。
+    """
+    model = FakeFuseModel(_FUSED)
+    planner = DeepSeekPlanner(model)
+    base = "甲" * 2469
+
+    await planner.fuse_rework_prompt(base, ["动作慢一点"])
+
+    user_content = model.requests[0][1]["content"]
+    assert "字数预算" in user_content
+    assert "2469" in user_content
+    assert "31 字余量" in user_content
+    assert "2500" in user_content
+    assert "删掉等量以上" in user_content
+
+
+async def test_fusion_request_tells_the_model_to_shrink_when_already_at_the_cap() -> None:
+    model = FakeFuseModel(_FUSED)
+    planner = DeepSeekPlanner(model)
+
+    await planner.fuse_rework_prompt("甲" * 2520, ["动作慢一点"])
+
+    user_content = model.requests[0][1]["content"]
+    assert "已经达到（或超出）硬上限" in user_content
+    assert "净删" in user_content

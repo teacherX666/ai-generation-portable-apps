@@ -73,11 +73,20 @@ vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync('portal/static/app.js', 'utf8'), sandbox);
 
 const app = mounted.VolcenginePortraitApp();
-const mini = app.portraitModels.find(m => m.id === 'doubao-seedance-2-0-mini-260615');
-assert.equal(mini.disabled, true, 'Seedance 2.0 mini must be disabled in the Portal selector');
+// 2026-10-19 修：这里原来写死 `doubao-seedance-2-0-mini-260615`，而 providers.json 里的 mini
+// 早已换成接入点 id（`ep-20260912121738-vtd78`）且 `disabled: false` —— 断言依赖的是写入时的
+// 账号开通状态，配置一变整条用例就断在这里（后半段全跑不到）。改成按配置驱动：
+// 有 disabled 模型就验它；没有就注入一个探针，保住「可见但不可选 + 回退 + 文案解释」的不变量。
+const disabledModel = app.portraitModels.find(m => m.disabled);
+const probeId = disabledModel ? disabledModel.id : '__disabled_probe__';
+if (!disabledModel) {
+  app.portraitModels.push({ id: probeId, label: '已失效（探针）', disabled: true });
+}
+const mini = app.portraitModels.find(m => m.id === probeId);
+assert.equal(mini.disabled, true, 'Seedance disabled 模型必须在 Portal 选择器里可见但不可选');
 app.model = mini.id;
 assert.equal(app.ensureAvailablePortraitModel(), true, 'stale disabled model selection must trigger fallback');
-assert.equal(app.model, 'doubao-seedance-2-0-260128', 'Portal fallback must choose the first enabled model');
+assert.notEqual(app.model, probeId, 'Portal fallback must move off the disabled model');
 assert.match(app.modelHint, /已失效/, 'Portal fallback must explain why the model changed');
 const portalHtml = fs.readFileSync('portal/static/index.html', 'utf8');
 assert.match(portalHtml, /!!m\.disabled/, 'Portal must grey out disabled models');

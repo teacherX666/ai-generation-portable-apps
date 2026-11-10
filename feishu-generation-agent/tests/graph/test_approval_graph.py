@@ -334,6 +334,13 @@ def test_agent_state_and_graph_services_contracts_are_stable():
             "production_task_store",
             # 能直接看视频的分析器（ds4.1 多模态）：参考视频只作分镜参考，不抽帧。
             "video_analyzer",
+            # 2026-10-27 方案 C：一次**任务单纯**的读图调用（同一个 DeepSeek 多模态模型），
+            # 产出可校验事实；多模态规划模式下规划器是顺带读图的，实测会把
+            # 「三个色区、每区上百颗小滴」概括成「三颗」。
+            "image_facts",
+            # 2026-10-28 用户方案：清洗之前先让多模态模型确认"洗哪儿、哪儿不许动"
+            # （治「重新清洗把我的品牌字也洗掉了」）。
+            "cleanup_scope_probe",
             # 公开图床：多模态规划把原图/视频传上去拿链接给模型看。
             "public_media_host",
             "image_providers",
@@ -425,7 +432,10 @@ async def test_direct_graph_run_snapshots_exact_prime_prompt(
     assert planning_prompt.prompt_sha256 == (
         # 2026-10-12：视频契约按「原图保真」口径改过（水印不再触发 usable=false），
         # 哈希随之更新 —— 有意改动，见 tests/unit/test_reference_fidelity_rules.py。
-        "65fb914f8005792653c2ec688ad0c704dae50769dc90893d265db7fb88ed2f8b"
+        # 2026-10-27：新增「画面内容优先级」条款（文档的『以事件描述为主、参考感觉为辅』
+        # 只适用于动作/节奏/时间分配；画面内容、布局、数量与形态、配色、材质、光位与色温
+        # 一律以 @图片N 为唯一基准）—— 有意改动，哈希再次更新。
+        "22f52ff62c902a7801d9e415c5c02326db3ff3006178622512d35623901be093"
     )
     assert fake_services.planner.system_prompts == [planning_prompt.prompt_text]
 
@@ -810,6 +820,131 @@ async def test_reject_with_feedback_replans_and_interrupts_again(
     assert fake_services.planner.audit_calls == 2
     _assert_no_paid_side_effects(fake_services)
     assert await fake_services.repository.count_operations() == 0
+
+
+class _ChangedDocumentSource:
+    """审批期间用户改了文档：版本号变了、多挂了一条参考视频。"""
+
+    def __init__(self, document: Any) -> None:
+        self.document = document
+        self.ingest_calls = 0
+        self.revision_calls = 0
+
+    async def ingest(self, request: Any) -> Any:
+        assert request.source_url.startswith("https://")
+        self.ingest_calls += 1
+        return self.document
+
+    async def get_revision(self, source_url: str) -> int:
+        assert source_url.startswith("https://")
+        self.revision_calls += 1
+        return self.document.revision
+
+
+def _document_with_added_reference_video(document: Any, video_path: Any) -> Any:
+    video = MediaAsset(
+        asset_id="video-1",
+        source_block_id="video-1",
+        origin="feishu",
+        file_token="fictional-video-token",
+        local_path=video_path,
+        mime_type="video/mp4",
+        size=video_path.stat().st_size,
+        sha256="graph-sha-video-1",
+    )
+    return document.model_copy(
+        update={
+            "revision": document.revision + 1,
+            "media_assets": [*document.media_assets, video],
+            "text_view": document.text_view + "\n[block:video-1] [video:video-1]",
+            "blocks": [
+                *document.blocks,
+                DocumentBlock(
+                    block_id="video-1",
+                    parent_id="page-1",
+                    block_type="file",
+                    order=3,
+                    path=["page-1", "video-1"],
+                    text="",
+                ),
+            ],
+        }
+    )
+
+
+async def test_reject_reingests_document_when_it_changed_since_ingest(
+    fake_services: GraphServices,
+    tmp_path: Any,
+):
+    """用户 2026-10-27：「退回修改计划的时候不会重新查看文档挂上新增的参考视频」。
+
+    退回以前无条件跳 `plan_requirements`，用的是**首次入库那份**文档快照 —— 审批期间
+    往文档里补的参考视频对规划器等于不存在。文档版本号变了就必须先回 `ingest_source`
+    重读，再重规划；退回意见照旧要传进规划器。
+    """
+    saver = InMemorySaver()
+    config = _config("thread-reject-source-changed")
+    run_id = "run-reject-source-changed"
+    graph = build_graph(fake_services, saver)
+    await graph.ainvoke(_input(run_id, "thread-reject-source-changed"), config=config)
+    assert fake_services.document_source.ingest_calls == 1
+
+    video_path = tmp_path / "new-reference.mp4"
+    video_path.write_bytes(b"fictional-new-reference-video")
+    changed_document = _document_with_added_reference_video(
+        fake_services.document_source.document, video_path
+    )
+    changed_source = _ChangedDocumentSource(changed_document)
+    resumed_graph = build_graph(
+        replace(fake_services, document_source=changed_source), saver
+    )
+
+    result = await resumed_graph.ainvoke(
+        Command(resume={"action": "reject", "feedback": "按新参考视频重排"}),
+        config=config,
+    )
+
+    payload = _interrupt_payload(result)
+    assert payload["action"] == "review_plan"
+    assert "按新参考视频重排" in payload["task_plan"]["tasks"][0]["prompt"]
+    # 真的重读了文档（不是只重规划），新挂的参考视频进了这次规划的素材列表。
+    assert changed_source.revision_calls == 1
+    assert changed_source.ingest_calls == 1
+    assert [asset["asset_id"] for asset in result["media_assets"]] == [
+        "asset-1",
+        "video-1",
+    ]
+    assert result["document_revision"] == changed_document.revision
+    events = await fake_services.repository.list_events(run_id)
+    assert any(
+        event["node"] == "human_approval" and event["status"] == "source_changed"
+        for event in events
+    )
+    _assert_no_paid_side_effects(fake_services)
+    assert await fake_services.repository.count_operations() == 0
+
+
+async def test_reject_keeps_replanning_only_when_document_unchanged(
+    fake_services: GraphServices,
+):
+    """文档没变就不许重读：少一次全量素材下载，也保住上一轮的素材编辑。"""
+    saver = InMemorySaver()
+    config = _config("thread-reject-source-same")
+    graph = build_graph(fake_services, saver)
+    await graph.ainvoke(_input("run-reject-source-same", "thread-reject-source-same"), config=config)
+
+    result = await graph.ainvoke(
+        Command(resume={"action": "reject", "feedback": "画面改为暖色"}),
+        config=config,
+    )
+
+    assert _interrupt_payload(result)["action"] == "review_plan"
+    assert fake_services.document_source.ingest_calls == 1
+    assert fake_services.document_source.revision_calls == 1
+    events = await fake_services.repository.list_events("run-reject-source-same")
+    assert not any(
+        event["status"] == "source_changed" for event in events
+    )
 
 
 async def test_cancel_ends_without_generation(fake_services: GraphServices):

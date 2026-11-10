@@ -139,11 +139,14 @@ def test_video_planner_prompt_hash_is_still_frozen():
     2026-10-12：视频契约按「原图保真」口径改过（水印不再触发 `usable=false`、
     「不要水印/Logo」收窄到第三方），哈希随之更新 —— 改动是有意的，见
     `tests/unit/test_reference_fidelity_rules.py`。
+    2026-10-27：新增「画面内容优先级」条款（文档的『以事件描述为主、参考感觉为辅』
+    只适用于动作/节奏/时间分配；画面内容、布局、数量与形态、配色、材质、光位与色温
+    一律以 `@图片N` 为唯一基准）—— 有意改动，哈希再次更新。
     """
     assert hashlib.sha256(
         planner_system_prompt().encode("utf-8")
     ).hexdigest() == (
-        "65fb914f8005792653c2ec688ad0c704dae50769dc90893d265db7fb88ed2f8b"
+        "22f52ff62c902a7801d9e415c5c02326db3ff3006178622512d35623901be093"
     )
 
 

@@ -53,9 +53,26 @@ def _image_bytes(image_format: str, color: str) -> bytes:
     return buffer.getvalue()
 
 
+def _reference_image_bytes(image_format: str, color: str) -> bytes:
+    """**合规尺寸**的参考图样本（400x300 = 120,000 像素）。
+
+    上游对参考图的硬约束是三条并列的：每边 300~6000px、宽高比 0.40~2.50、
+    **总像素 ≥90,000**（r2v）。适配层现在会在提交前把不合规的图**等比放大**
+    （`_ensure_reference_pixel_floor`，2026-11-05），所以拿 2x2 的图当"参考图"
+    断言"提交的字节原样不变"已经不成立 —— 那正是它该被修掉的情形。
+    凡是断言 data URL 字节的用例，用这个尺寸的样本。
+    """
+    buffer = BytesIO()
+    Image.new("RGB", (400, 300), color).save(buffer, format=image_format)
+    return buffer.getvalue()
+
+
 PNG_BLUE = _image_bytes("PNG", "blue")
 PNG_RED = _image_bytes("PNG", "red")
 JPEG_GREEN = _image_bytes("JPEG", "green")
+#: 同上，但尺寸合规（不会被提交前的像素保障改写）
+PNG_BLUE_REF = _reference_image_bytes("PNG", "blue")
+JPEG_GREEN_REF = _reference_image_bytes("JPEG", "green")
 FIXTURE_DIR = Path(__file__).parents[1] / "fixtures"
 
 
@@ -69,6 +86,15 @@ def _asset(
     extension = ".jpg" if mime_type == "image/jpeg" else ".png"
     path = tmp_path / f"{asset_id}{extension}"
     path.write_bytes(content)
+    # 尺寸从**真实字节**读，不再写死 —— 素材记录与文件不一致本身就是一类生产事故
+    # （2026-11-05：清洗版把 193x261 的小图换进来、尺寸却沿用旧记录，守卫因此误判达标）。
+    width = height = 0
+    if mime_type.startswith("image/"):
+        try:
+            with Image.open(BytesIO(content)) as image:
+                width, height = image.size
+        except Exception:  # noqa: BLE001 - 非图片字节（视频/音频/损坏样本）保持 0
+            width = height = 0
     return MediaAsset(
         asset_id=asset_id,
         source_block_id=f"block-{asset_id}",
@@ -77,8 +103,8 @@ def _asset(
         mime_type=mime_type,
         size=len(content),
         sha256=sha256(content).hexdigest(),
-        width=2,
-        height=2,
+        width=width,
+        height=height,
     )
 
 
@@ -87,13 +113,13 @@ def _assets(tmp_path: Path) -> list[MediaAsset]:
         _asset(
             tmp_path,
             "asset-blue",
-            content=PNG_BLUE,
+            content=PNG_BLUE_REF,
             mime_type="image/png",
         ),
         _asset(
             tmp_path,
             "asset-green",
-            content=JPEG_GREEN,
+            content=JPEG_GREEN_REF,
             mime_type="image/jpeg",
         ),
     ]
@@ -493,8 +519,8 @@ async def test_submit_preserves_explicit_reference_order_and_official_payload(
     assert [
         part["image_url"]["url"] for part in image_parts
     ] == [
-        "data:image/png;base64," + base64.b64encode(PNG_BLUE).decode("ascii"),
-        "data:image/jpeg;base64," + base64.b64encode(JPEG_GREEN).decode("ascii"),
+        "data:image/png;base64," + base64.b64encode(PNG_BLUE_REF).decode("ascii"),
+        "data:image/jpeg;base64," + base64.b64encode(JPEG_GREEN_REF).decode("ascii"),
     ]
     assert "submission_id" not in request.content.decode("utf-8")
     assert submission.provider == "seedance"

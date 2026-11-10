@@ -173,13 +173,39 @@ def _supported_resolution(
     value: str | None,
     capability: VideoModelCapability,
 ) -> str:
-    normalized = (value or "").strip().lower().replace("×", "x")
+    """把分辨率夹到模型允许的档位。
+
+    2026-10-15 用户报「拯救香水执行失败 generation_invalid_resolution」：
+    任务值是 **`720*1280`（星号）**，而这里只把 `×` 换成 `x` → 认不出来 →
+    回落到默认值。虽然默认值恰好是 720p（结果"碰巧对"），但**认不出来就等于把
+    档位选择权丢了**（真给 1080p 的模型时会被悄悄降级）；而且这条链只在"计划生成/
+    校验"时跑，走「复用已批准计划」的路径根本不经过它 → 脏值直达上游。
+    所以这里把分隔符认全（`×` `*` `✕` `x` `X`、空格），并按**像素尺寸反推档位**。
+    """
+    normalized = (value or "").strip().lower().replace(" ", "")
+    for separator in ("×", "*", "✕", "⨯", "х"):
+        normalized = normalized.replace(separator, "x")
     if normalized in capability.resolutions:
         return normalized
     rank = {"480p": 1, "720p": 2, "1080p": 3, "4k": 4}
     requested_rank = rank.get(normalized)
     if requested_rank is None:
-        return capability.default_resolution
+        # 像素尺寸写法（720x1280 / 1280x720 / 1080x1920…）→ 按短边定档
+        import re as _re
+
+        match = _re.fullmatch(r"(\d+)x(\d+)", normalized)
+        if match is not None:
+            short_side = min(int(match.group(1)), int(match.group(2)))
+            if short_side <= 540:
+                requested_rank = 1
+            elif short_side <= 800:
+                requested_rank = 2
+            elif short_side <= 1200:
+                requested_rank = 3
+            else:
+                requested_rank = 4
+        else:
+            return capability.default_resolution
     lower = [
         item
         for item in capability.resolutions

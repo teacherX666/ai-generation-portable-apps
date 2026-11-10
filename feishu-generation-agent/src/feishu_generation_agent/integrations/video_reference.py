@@ -177,6 +177,13 @@ class VideoInfo:
     #: 视频编码（ffprobe `codec_name`，例如 `h264` / `hevc`）。默认 None 是为了
     #: 兼容既有调用方（测试桩）—— 拿不到就当"不知道"，不猜。
     codec: str | None = None
+    #: **音轨编码**（ffprobe `codec_name`，例如 `aac` / `hevc` 的 `aac`（HE-AAC 也是 aac）
+    #: / `mp3`）。2026-10-15 新增：上游对参考视频的**音轨**有硬要求，实测
+    #: HE-AAC 会被拒（`invalid_media`），AAC-LC 正常 —— 所以这里必须能读出 profile。
+    audio_codec: str | None = None
+    #: 音轨 profile（ffprobe `profile`，例如 `LC` / `HE-AAC`）。判据看它，不看 codec_name：
+    #: HE-AAC 与 AAC-LC 的 `codec_name` 都是 `aac`，只靠 codec_name 分不出来。
+    audio_profile: str | None = None
 
 
 def _parse_fps(value: object) -> float | None:
@@ -208,7 +215,7 @@ def probe_video_info(video_path: Path) -> VideoInfo | None:
                 "-v",
                 "error",
                 "-show_entries",
-                "stream=codec_type,codec_name,width,height,avg_frame_rate",
+                "stream=codec_type,codec_name,profile,width,height,avg_frame_rate",
                 "-show_entries",
                 "format=duration,bit_rate,size",
                 "-of",
@@ -256,6 +263,12 @@ def probe_video_info(video_path: Path) -> VideoInfo | None:
         size_bytes = path.stat().st_size
     except OSError:
         return None
+    audio_streams = [
+        stream
+        for stream in streams
+        if isinstance(stream, dict) and stream.get("codec_type") == "audio"
+    ]
+    first_audio = audio_streams[0] if audio_streams else {}
     return VideoInfo(
         width=width,
         height=height,
@@ -263,13 +276,20 @@ def probe_video_info(video_path: Path) -> VideoInfo | None:
         duration=duration,
         bitrate_bps=bitrate,
         size_bytes=size_bytes,
-        has_audio=any(
-            isinstance(stream, dict) and stream.get("codec_type") == "audio"
-            for stream in streams
-        ),
+        has_audio=bool(audio_streams),
         codec=(
             str(video["codec_name"])
             if isinstance(video.get("codec_name"), str)
+            else None
+        ),
+        audio_codec=(
+            str(first_audio["codec_name"])
+            if isinstance(first_audio.get("codec_name"), str)
+            else None
+        ),
+        audio_profile=(
+            str(first_audio["profile"])
+            if isinstance(first_audio.get("profile"), str)
             else None
         ),
     )
@@ -579,6 +599,148 @@ def compress_video(
         max_long_side=applied_long_side,
     )
 
+
+
+#: 上游接受的参考视频规格（2026-10-15 实测）。
+#:
+#: 证据链：**同一份参考视频**（1080x1920 / H.264 High / 9.03s）
+#: * 原始音轨是 **HE-AAC** → 生产上 **6 次全部失败**（`input media detect failed:
+#:   invalid_media` / 光秃秃的 `Bad Request`，`code=poll_invalidparameter`）；
+#: * 本地转成 `-c:v libx264 -c:a aac`（**AAC-LC**）后，用同一条通道发 4 秒最小探针
+#:   → **一次成功**（`_diag/probe_seedance_reference_video.py`）。
+#: 所以判据是：视频 H.264 **且** 音轨 AAC-LC。
+_ACCEPTED_VIDEO_CODECS = frozenset({"h264"})
+_ACCEPTED_AUDIO_CODECS = frozenset({"aac"})
+#: ffprobe 的 `profile`：AAC-LC 报 `LC`；HE-AAC 报 `HE-AAC`（codec_name 都是 `aac`，
+#: 只靠 codec_name 分不出来，必须看 profile）。
+_ACCEPTED_AUDIO_PROFILES = frozenset({"lc", "lc-aac"})
+
+
+def reference_video_needs_normalizing(info: VideoInfo | None) -> bool:
+    """这段参考视频要不要先转码成 H.264 + AAC-LC。拿不到参数时不转（不猜）。"""
+    if info is None:
+        return False
+    if (info.codec or "").lower() not in _ACCEPTED_VIDEO_CODECS:
+        return True
+    if not info.has_audio:
+        return False
+    if (info.audio_codec or "").lower() not in _ACCEPTED_AUDIO_CODECS:
+        return True
+    profile = (info.audio_profile or "").strip().lower()
+    # profile 读不到时按"需要转"处理 —— HE-AAC 与 AAC-LC 的 codec_name 完全一样，
+    # 认不出来就等于把 6 次连败的风险留在路上；转一次很便宜，被拒一次很贵。
+    return profile not in _ACCEPTED_AUDIO_PROFILES
+
+
+def normalize_reference_video(video_path: Path) -> Path | None:
+    """把参考视频规范化成上游接受的规格（H.264 + AAC-LC），不需要就返回 None。
+
+    2026-10-15 用户报「手工串珠任务没有成功过一次」：那条需求 10-09 用**纯图片**跑通过 4 次，
+    10-15 改用**带参考视频**的版本后连续 6 次失败。定位到参考视频的音轨是 HE-AAC，
+    上游拒收；转成 AAC 后同一条通道一次成功。所以在**上传之前**统一转一遍。
+    """
+    try:
+        info = probe_video_info(video_path)
+    except Exception:  # noqa: BLE001
+        return None
+    if not reference_video_needs_normalizing(info):
+        return None
+    output_path = video_path.with_name(f"{video_path.stem}-aaclc{video_path.suffix}")
+    try:
+        if output_path.is_file() and output_path.stat().st_mtime >= video_path.stat().st_mtime:
+            return output_path
+        ffmpeg = _binary("ffmpeg")
+        subprocess.run(
+            [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(video_path),
+                "-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast",
+                "-crf", "20", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(output_path),
+            ],
+            capture_output=True, text=True, timeout=900, check=True,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        return None
+    return output_path
+
+
+def _parse_aspect_ratio(value: str | None) -> float | None:
+    """把 `9:16` / `16:9` 解析成宽高比浮点；`adaptive`/空/非法返回 None。"""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower().replace("：", ":")
+    if text in {"", "adaptive", "auto"}:
+        return None
+    head, _, tail = text.partition(":")
+    try:
+        width, height = float(head), float(tail)
+    except ValueError:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width / height
+
+
+def reframe_reference_video(video_path: Path, aspect_ratio: str | None) -> Path | None:
+    """把参考视频**裁成目标任务画幅**（cover 居中裁切）；不需要或失败返回 None。
+
+    2026-10-16 用户报「为什么西兰花那个视频不是 9.16」——实测：
+    * 生产 run `83ec21ff`：任务 `aspect_ratio=9:16`，但带了**横屏参考视频**（958×702）
+      → 方舟强制 `adaptive`（比例跟随输入视频）→ 成片 **1112×834**（横屏）✗；
+    * 对照（只有参考图的 run `f82c8813` / `732b2bd5`）：成片 **720×1280** ✓ 正确。
+
+    原因是方舟硬约束：**带参考视频的任务 `ratio` 只能 `adaptive`，输出比例跟随输入
+    视频**（不这样做会直接 400，见 `_apply_frame_ratio_constraint`）。所以在**提交前**
+    把参考视频裁成任务要的画幅，输出才会是用户要的比例。
+
+    用 **cover 居中裁切**（不引入黑边/模糊填充等会被当成画面内容的伪影）；参考视频
+    在任务里只承担"动作节奏/风格参考"，裁掉两侧不影响它的作用。
+    """
+    target = _parse_aspect_ratio(aspect_ratio)
+    if target is None:
+        return None
+    try:
+        info = probe_video_info(video_path)
+    except Exception:  # noqa: BLE001
+        return None
+    if info is None or not info.width or not info.height:
+        return None
+    current = info.width / info.height
+    if abs(current - target) / target <= 0.02:
+        return None          # 比例已经够接近，不必重编码
+    if current > target:
+        crop_w, crop_h = int(round(info.height * target)) // 2 * 2, info.height
+    else:
+        crop_w, crop_h = info.width, int(round(info.width / target)) // 2 * 2
+    crop_w = max(2, min(crop_w, info.width))
+    crop_h = max(2, min(crop_h, info.height))
+    output_path = video_path.with_name(f"{video_path.stem}-{crop_w}x{crop_h}{video_path.suffix}")
+    try:
+        if output_path.is_file() and output_path.stat().st_mtime >= video_path.stat().st_mtime:
+            return output_path
+        subprocess.run(
+            [
+                _binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(video_path),
+                "-vf", f"crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2",
+                "-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast",
+                "-crf", "20", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(output_path),
+            ],
+            capture_output=True, text=True, timeout=900, check=True,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        return None
+    return output_path
 
 
 def trim_video(

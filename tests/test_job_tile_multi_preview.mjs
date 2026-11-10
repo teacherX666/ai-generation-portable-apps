@@ -143,6 +143,10 @@ function makeSandbox(pathname) {
 
 function loadApp(relPath, factoryName, pathname) {
   const { sandbox, previewDialog, previewBody } = makeSandbox(pathname);
+  // 共享卡片库必须先加载：app.js（seedance 与 portal 都是）把 isCancellableJob /
+  // jobDisplayStatus / renderDetailHtml 委托给 window.JobCards，缺了它建格子就 TypeError。
+  const cardsPath = `${relPath.slice(0, relPath.lastIndexOf('/'))}/job-cards.js`;
+  vm.runInContext(fs.readFileSync(cardsPath, 'utf8'), sandbox);
   vm.runInContext(fs.readFileSync(relPath, 'utf8'), sandbox);
   return { app: sandbox.window[factoryName](), previewDialog, previewBody };
 }

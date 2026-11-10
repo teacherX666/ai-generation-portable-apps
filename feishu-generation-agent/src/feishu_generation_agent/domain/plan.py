@@ -231,20 +231,36 @@ class GenerationTask(BaseModel):
     @field_validator("resolution", mode="before")
     @classmethod
     def normalize_video_resolution(cls, value: object) -> object:
+        """把各种写法的分辨率统一成供应商要的档位（`480p` / `720p` / `1080p` / `4k`）。
+
+        2026-10-15 用户报「拯救香水执行失败 generation_invalid_resolution」：
+        run `05244f6c` 的任务 `resolution = "720*1280"`（**星号**），而这里原来只把
+        `×` 换成 `x`、别名表里只有 `720x1280` → 没命中 → **原样下发给方舟** →
+        `Input validation failed`。同一天里其它成功的 run 分辨率都是 `720p`，
+        所以只有改过分辨率的那几条会中招。
+
+        修法两层：① 常见分隔符（`×` `*` `✕` `x` `X`、空格）统一成 `x`；
+        ② **按像素尺寸反推档位**（短边 ≤540→480p、≤800→720p、≤1200→1080p、否则 4k），
+        不再依赖有限的别名表 —— `720*1280`、`1280 × 720`、`720 X 1280` 都能归一。
+        """
         if not isinstance(value, str):
             return value
-        normalized = value.strip().lower().replace("×", "x")
-        aliases = {
-            "480x854": "480p",
-            "854x480": "480p",
-            "720x1280": "720p",
-            "1280x720": "720p",
-            "1080x1920": "1080p",
-            "1920x1080": "1080p",
-            "2160x3840": "4k",
-            "3840x2160": "4k",
-        }
-        return aliases.get(normalized, normalized)
+        raw = value.strip().lower().replace(" ", "")
+        for separator in ("×", "*", "✕", "⨯", "х"):
+            raw = raw.replace(separator, "x")
+        if raw in {"480p", "720p", "1080p", "2k", "4k", "adaptive", "auto", ""}:
+            return raw
+        match = re.fullmatch(r"(\d+)x(\d+)", raw)
+        if match is None:
+            return raw
+        short_side = min(int(match.group(1)), int(match.group(2)))
+        if short_side <= 540:
+            return "480p"
+        if short_side <= 800:
+            return "720p"
+        if short_side <= 1200:
+            return "1080p"
+        return "4k"
 
     @property
     def resolved_image_provider(self) -> ImageProvider | None:
@@ -634,6 +650,36 @@ def reconcile_task_asset_coverage(
     plan: TaskPlan,
     tasks: list[GenerationTask],
 ) -> TaskPlan:
+    """把**客户端回传的任务**并进服务端计划（素材覆盖按差集重算）。
+
+    ⚠️ 2026-10-21：这里必须先**重算派生类阻断项**再用。审批请求体（`DecisionRequest.tasks`）
+    带着浏览器那一份任务，而浏览器可能拿着**过期快照** —— 用户改完时长还没轮询到新视图
+    就点了「批准并开始生成」，那份旧任务里仍留着「正文自述时长（10 秒）与任务时长（14 秒）
+    不一致」的字符串；原样并进来后 `approved_subset()` 见 `blocking_issues` 非空就抛错
+    → 用户明明改对了却永远批不了。
+
+    生产实锤（run `c4163b7b`，2026-10-21）：服务端 checkpoint 里 `duration=10`、
+    `blocking_issues` 已空，三次「批准」仍然秒失败，日志堆栈落在
+    `graph/nodes.py:1716`（`human_approval` 节点内的 `approved_subset`）。
+
+    `blocking_issues` 是**服务端派生字段**，所以合并时按当前 `prompt`/`duration` 重算
+    「时长不一致」那一族（一致就清、真不一致就补回来）。重算放在这个**共用入口**上，
+    是为了让 `human_approval` / `revalidate_approval` / `approved_plan_from_state` /
+    `_validate_decision` 四条路径拿到**完全一致**的结果 —— 否则
+    `revalidate_approval` 里「候选计划 vs checkpoint 计划」的逐字比对会因一边刷新
+    另一边没刷新而假报不一致。
+    """
+    # 函数内 import：本模块被 `domain.reference_contract` 依赖，模块级反向导入会成环。
+    from feishu_generation_agent.domain.reference_contract import (
+        refresh_duration_blocking_issues,
+    )
+
+    reconciled_tasks: list[GenerationTask] = []
+    for task in tasks:
+        payload = task.model_dump(mode="json")
+        refresh_duration_blocking_issues(payload)
+        reconciled_tasks.append(GenerationTask.model_validate(payload))
+
     previous_ids = {
         reference.asset_id
         for task in plan.tasks
@@ -641,11 +687,11 @@ def reconcile_task_asset_coverage(
     }
     updated_ids = {
         reference.asset_id
-        for task in tasks
+        for task in reconciled_tasks
         for reference in task.reference_images
     }
     candidate = TaskPlan(
-        tasks=tasks,
+        tasks=reconciled_tasks,
         document_summary=plan.document_summary,
         excluded_assets=[
             item

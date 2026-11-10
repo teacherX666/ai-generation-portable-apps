@@ -165,7 +165,7 @@ async function loadApp(fetch) {
     clearInterval() {},
     console,
   };
-  for (const file of ["api-paths.js", "app.js"]) {
+  for (const file of ["api-paths.js", "prompt-diff.js", "app.js"]) {
     vm.runInNewContext(readFileSync(join(STATIC, file), "utf8"), context);
   }
   await settle();
@@ -188,11 +188,22 @@ function fetchForRun(requests) {
       return jsonResponse(200, view);
     }
     if (url === "/api/runs/run-1/optimize-prompts" && options.method === "POST") {
+      // 2026-10-22：优化接口现在**回带对比数据**（与「重做」同一个口径）——
+      // 改写前那一版 / 冻结锚点 / 改写后 / 本次要求。前端据此立刻渲染差异面板。
       return jsonResponse(200, {
         run_id: "run-1",
         status: "updated",
         optimized_task_ids: ["task-1"],
         unchanged_task_ids: [],
+        comparisons: {
+          "task-1": {
+            previous_prompt: "自由女神在晨光中缓缓抬起手臂",
+            base_prompt: "自由女神在晨光中缓缓抬起手臂",
+            current_prompt: "自由女神在晨光中非常缓慢地抬起手臂，动作比原来慢一半",
+            requirements: ["手臂抬起的动作再慢一点"],
+            changed: true,
+          },
+        },
       });
     }
     throw new Error(`unexpected request: ${url} ${options.method || "GET"}`);
@@ -272,4 +283,45 @@ test("prompt optimiser stays hidden outside the approval stage", async () => {
   });
 
   assert.equal(app.getNode("prompt-optimize-box").hidden, true);
+});
+
+/**
+ * 2026-10-22 用户要求：「优化所选提示词的按钮也要看到改动差异，和重做用同一个接口」。
+ *
+ * 服务端在优化接口里直接回 `comparisons`，前端必须**立刻**把「改动对比」画出来，
+ * 而不是干等下一拍轮询（轮询慢时用户会以为「点了没反应」）。
+ */
+test("optimising shows the prompt diff immediately (same payload as rework)", async () => {
+  const requests = [];
+  const app = await loadApp(fetchForRun(requests));
+
+  // 优化前：没有对比面板（这条任务还没有返工历史）。
+  const before = descendants(app.getNode("task-list"))
+    .filter((node) => node.className === "rework-compare");
+  assert.equal(before.length, 0, "优化前不该有对比面板");
+
+  const feedback = app.getNode("prompt-optimize-feedback");
+  feedback.value = "手臂抬起的动作再慢一点";
+  await feedback.dispatch("input");
+  await settle();
+  await app.getNode("optimize-prompts-button").dispatch("click");
+  await settle();
+
+  const boxes = descendants(app.getNode("task-list"))
+    .filter((node) => node.className === "rework-compare");
+  assert.equal(boxes.length, 1, "优化后必须立刻出现「返工对比」面板");
+
+  const texts = descendants(boxes[0]).map((node) => node.textContent).join("\n");
+  assert.match(texts, /改写|新增/, "面板要给出新增/改写统计");
+  assert.match(texts, /手臂抬起的动作再慢一点/, "面板要列出本次返工要求");
+  assert.match(
+    texts,
+    /自由女神在晨光中缓缓抬起手臂/,
+    "面板要给出改写前那一版正文（diff 的左边）",
+  );
+  assert.match(
+    texts,
+    /非常缓慢地抬起手臂/,
+    "面板要给出改写后的正文（diff 的右边）",
+  );
 });

@@ -75,8 +75,8 @@ test("参考素材缩略图、排除素材、成片卡片都挂了单击预览",
   const referenceRow = appSource.slice(refStart, refEnd);
   assert.match(
     referenceRow,
-    /attachSingleClickPreview\(image, agentUrl\(asset\.preview_url\)\)/,
-    "参考素材缩略图必须能单击预览",
+    /attachSingleClickPreview\(image, currentImageUrl\)/,
+    "参考素材缩略图必须能单击预览；挂的是「当前版本」取值函数（切换原图/清洗版后放大要跟着走）",
   );
   assert.match(
     referenceRow,

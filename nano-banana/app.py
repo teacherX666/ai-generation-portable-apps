@@ -1147,6 +1147,73 @@ def request_chat_completion(url: str, api_key: str, payload: dict[str, Any], tim
     return request_json("POST", url, api_key, payload, timeout=timeout)
 
 
+#: 参考图压缩上限（2026-10-15 新增，修「image2.5 用不了了」）。
+#:
+#: 事故与实测（同一模型 nano-banana2[2K]-base，同一条 chiyun 通道）：
+#:   * 两张**原图**参考（7MB+2MB → payload 11.5MB）→ HTTP 200 但要 **158.7 秒**
+#:     → 上传中途连接被掐断 → `request_json` 重试 6 次 → 用户看到
+#:     `URLError: <urlopen error EOF occurred in violation of protocol>`；
+#:   * 同样两张图压到 1024px（payload 0.3MB）→ **28.4 秒**返回 200。
+#: 结论：**参考图必须先压再发**，否则慢到会被网络掐断。
+#: 可用环境变量调：NANO_BANANA_REF_MAX_SIDE / NANO_BANANA_REF_SOFT_BYTES。
+REFERENCE_MAX_SIDE = int(os.environ.get("NANO_BANANA_REF_MAX_SIDE", "1536") or "1536")
+REFERENCE_SOFT_BYTES = int(os.environ.get("NANO_BANANA_REF_SOFT_BYTES", str(1200 * 1024)))
+
+
+def shrink_reference_image(filename: str, blob: bytes) -> tuple[str, bytes, str]:
+    """把过大的参考图缩到上限内，返回 `(filename, blob, mime)`。
+
+    只在「长边超过上限」或「体积超过软上限」时才动手；**任何异常都原样返回**
+    —— 压缩是为了加速，绝不该因为压缩失败把用户的作业弄挂。
+    带 alpha 的保持 PNG（避免透明背景变黑），其余转 JPEG q88。
+    """
+    mime = mimetypes.guess_type(filename)[0] or "image/png"
+    if not mime.startswith("image/") or not blob:
+        return filename, blob, mime
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(blob)) as image:
+            image.load()
+            width, height = image.size
+            long_side = max(width, height)
+            if long_side <= REFERENCE_MAX_SIDE and len(blob) <= REFERENCE_SOFT_BYTES:
+                return filename, blob, mime
+            has_alpha = image.mode in ("RGBA", "LA") or (
+                image.mode == "P" and "transparency" in image.info
+            )
+            if has_alpha:
+                # 很多 PNG **带 alpha 通道但整张不透明**（相机/截图导出常见）。这种情况
+                # 走 JPEG 能把 6.6MB 压到几百 KB；只有真的用到透明像素时才保留 PNG。
+                try:
+                    alpha = image.convert("RGBA").getchannel("A")
+                    if alpha.getextrema()[0] >= 255:
+                        has_alpha = False
+                except Exception:
+                    pass
+            if long_side > REFERENCE_MAX_SIDE:
+                scale = REFERENCE_MAX_SIDE / float(long_side)
+                image = image.resize(
+                    (max(1, int(width * scale)), max(1, int(height * scale))),
+                    Image.LANCZOS,
+                )
+            buffer = BytesIO()
+            if has_alpha:
+                image.convert("RGBA").save(buffer, "PNG", optimize=True)
+                out_name, out_mime = f"{Path(filename).stem}.png", "image/png"
+            else:
+                image.convert("RGB").save(buffer, "JPEG", quality=88, optimize=True)
+                out_name, out_mime = f"{Path(filename).stem}.jpg", "image/jpeg"
+            data = buffer.getvalue()
+            if not data:
+                return filename, blob, mime
+            return out_name, data, out_mime
+    except Exception:
+        return filename, blob, mime
+
+
 def multipart_post(url: str, api_key: str, fields: dict[str, str], files: list[tuple[str, str, bytes, str]], timeout: int = 300, max_retries: int = 1) -> dict[str, Any]:
     """POST multipart，可选重试。
 
@@ -2865,6 +2932,18 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         base_url = str(provider_cfg.get("base_url") or "").rstrip("/")
         if not base_url:
             raise RuntimeError("托管供应商缺少官方 Base URL 配置")
+    elif provider_cfg.get("base_url") and not is_local_provider:
+        # 2026-10-15 修复（用户报「我的 image2.5 用不了了」）：
+        # 以前**只有** company_key 供应商会锁官方端点，其余 provider 的 base_url 来自
+        # `values.get("base_url") or DEFAULT_BASE_URL`，而 DEFAULT_BASE_URL 是 **t8star**。
+        # 于是「选 gemini(Chiyun) 但请求里没带 base_url」= 拿 Chiyun 的 key 去打 t8star：
+        #   * t8star 回 `无效的令牌`（实测应用事件原文）；
+        #   * 而 t8star 在本机**根本不通**（直连 64 秒超时）→ 另一种表现是
+        #     `URLError: EOF occurred in violation of protocol`（用户看到的那个）。
+        # 显式把 base_url 指定成 `https://chiyun.work` 后同一条通道 40.4 秒出图 ✓。
+        # 凡是配置里声明了 base_url 的云端 provider，一律锁它自己的端点；本地分支
+        # （comfyui_workflow）继续走下方它自己的固定网关地址。
+        base_url = str(provider_cfg.get("base_url") or "").rstrip("/")
     if provider_cfg.get("api_style") == "comfyui_workflow":
         # Local ComfyUI via AI Port. Lock the endpoint to the configured local
         # gateway so a client-supplied base_url can never redirect free work.
@@ -3081,7 +3160,8 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
                 if not file_data:
                     continue
                 filename, blob = file_data
-                mime = mimetypes.guess_type(filename)[0] or "image/png"
+                # 2026-10-15：参考图先压缩再进 payload（原图 11.5MB → 158.7 秒 → 被掐断）
+                filename, blob, mime = shrink_reference_image(filename, blob)
                 reference_files.append((filename, blob, mime))
                 image_count += 1
 
@@ -3166,9 +3246,11 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
             if not file_data:
                 continue
             filename, blob = file_data
+            # 2026-10-15：参考图先压缩再进 payload（原图 11.5MB → 158.7 秒 → 被掐断）
+            filename, blob, mime = shrink_reference_image(filename, blob)
             parts.append({
                 "inline_data": {
-                    "mime_type": mimetypes.guess_type(filename)[0] or "image/png",
+                    "mime_type": mime,
                     "data": base64.b64encode(blob).decode("utf-8"),
                 }
             })
@@ -3181,6 +3263,18 @@ def run_one(job_id: str, index: int, values: dict[str, Any], files: dict[str, tu
         if seed > 0:
             generation_config["seed"] = seed
         model_path = urllib.parse.quote(common["model"], safe="")
+        # 2026-10-15 诊断：用户报「image2.5 用不了了」。应用内失败是 `无效的令牌`，
+        # 而用同一份 secrets.json 的 key 直连同一条 URL 是 200 —— 必须把「应用真正
+        # 发出去的 URL / 用的 key（掩码）/ 载荷大小」落到事件里，否则只能互相猜。
+        try:
+            _payload_bytes = len(json.dumps({"contents": [{"parts": parts}]}).encode("utf-8"))
+            add_event(
+                job_id,
+                f"Upstream: {base_url}/v1beta/models/{model_path}:generateContent "
+                f"key={mask_key(api_key)} payload={_payload_bytes / 1024 / 1024:.2f}MB refs={image_count}",
+            )
+        except Exception:
+            pass
         result = request_gemini_generate(
             f"{base_url}/v1beta/models/{model_path}:generateContent",
             api_key,

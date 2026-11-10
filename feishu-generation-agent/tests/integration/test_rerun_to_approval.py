@@ -554,13 +554,16 @@ async def test_rerun_blocks_reused_prompt_with_stale_stated_duration(
         await runtime.close()
 
 
-async def test_rerun_blocks_reused_prompt_with_dangling_video_token(
+async def test_rerun_warns_but_does_not_block_on_dangling_video_token(
     fake_services: GraphServices,
 ) -> None:
-    """`@视频N` 空洞：提示词引用了不存在于本次计划的参考视频 → 拦住并给出出口。
+    """`@视频N` 悬空引用：**只写 warning，不拦审批**（2026-10-30 用户口径）。
 
-    这正是用户记过的「点返工重做但不填返工要求会把修复前的旧提示词原样搬回来」
-    （上一版摘掉参考视频后，正文里还留着 `@视频1`）。
+    背景：这条判据本来是会拦住审批的（用户已知口径：点返工不填要求会把修复前的旧提示词
+    原样搬回来、正文里还留着 `@视频1`）。但用户 2026-10-30 明确要求把这类阻塞删掉：
+    「本来就没有图片6，他还是给我阻塞了，把这个阻塞的删了」——它是**格式类**问题，
+    而且判据是从**当前** prompt 推出来的存量字符串，提示词改好之后旧字符串还留着，
+    用户怎么改都批不了（实锤 run `e92f45bb`）。
     """
     runtime, _planner = await _runtime_at_approval(
         fake_services,
@@ -586,8 +589,10 @@ async def test_rerun_blocks_reused_prompt_with_dangling_video_token(
 
         after = await runtime.get_run_view(cloned_run_id)
         task = after["approval"]["tasks"][0]
-        assert task["blocking_issues"]
-        assert any("@视频1" in text for text in task["blocking_issues"])
+        # 不拦审批……
+        assert task["blocking_issues"] == []
+        # ……但要让用户看得见这件事（不许静默）
+        assert any("@视频1" in text for text in task["warnings"])
     finally:
         await runtime.close()
 

@@ -370,9 +370,16 @@ async def analyze_artifacts(
             findings = await analyze_take(analyzer, asset, prompt)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("审片失败 artifact=%s", asset.asset_id, exc_info=True)
+            # 2026-10-21：以前只回 `看片失败：RuntimeError`，界面上完全看不出为什么
+            # （用户原话「看片失败：RuntimeError怎么失败了」）。把异常正文带上，
+            # 方舟的 400 原话（比如 video_url 拉取超时）就直接可见了。
+            detail = str(exc).strip()
             return {
                 "available": False,
-                "reason": f"看片失败：{type(exc).__name__}",
+                "reason": (
+                    f"看片失败：{type(exc).__name__}"
+                    + (f"（{detail[:200]}）" if detail else "")
+                ),
                 "summary": "",
                 "problems": [],
                 "uncertainties": [],
@@ -532,6 +539,20 @@ class DeepSeekVideoInsight:
             )
             response.raise_for_status()
             body = response.json()
+        except httpx.HTTPStatusError as exc:
+            # 把方舟的原话带出来（截断）。它对「视频拉取超时 / 参数不合法」的解释
+            # 才是可操作的；只写 `参考视频分析请求失败：<asset_id>` 等于没说
+            # （2026-10-21 审片事故就是被这句挡住的）。
+            detail = ""
+            try:
+                detail = (exc.response.text or "").strip()
+            except Exception:  # noqa: BLE001
+                detail = ""
+            suffix = f"（HTTP {exc.response.status_code}"
+            suffix += f"：{detail[:300]}）" if detail else "）"
+            raise RuntimeError(
+                f"参考视频分析请求失败：{asset.asset_id}{suffix}"
+            ) from exc
         except httpx.HTTPError as exc:
             raise RuntimeError(f"参考视频分析请求失败：{asset.asset_id}") from exc
         except ValueError as exc:

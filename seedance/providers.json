@@ -133,7 +133,8 @@
           ],
           "resolutions": [
             "480p",
-            "720p"
+            "720p",
+            "1080p"
           ],
           "ratios": [
             "21:9",
@@ -144,6 +145,9 @@
             "9:16",
             "adaptive"
           ],
+          "capabilities": {
+            "draft": true
+          },
           "defaults": {
             "duration": 10
           }

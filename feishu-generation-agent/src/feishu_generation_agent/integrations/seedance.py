@@ -5,8 +5,10 @@ from io import BytesIO
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import stat
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 import unicodedata
@@ -27,9 +29,14 @@ from feishu_generation_agent.domain.errors import (
     ErrorDetail,
 )
 from feishu_generation_agent.domain.plan import GenerationTask, ImageReference, SEEDANCE_PROMPT_SUBMIT_MAX_CHARS
+from feishu_generation_agent.integrations.video_reference import (
+    normalize_reference_video,
+    reframe_reference_video,
+)
 from feishu_generation_agent.domain.video_models import (
     VIDEO_MODEL_BY_ID,
     VideoModelCapability,
+    _supported_resolution,
 )
 from feishu_generation_agent.domain.reference_contract import (
     canonicalize_references,
@@ -46,8 +53,82 @@ from feishu_generation_agent.integrations.rework_prompt import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _border_median_color(image: Any) -> tuple[int, ...]:
+    """取四边像素的**中位色**当补边底色（分镜表切片多是纯色底，视觉几乎无感）。"""
+    try:
+        width, height = image.size
+        pixels: list[tuple[int, ...]] = []
+        for x in range(width):
+            pixels.append(tuple(image.getpixel((x, 0)))[:3])
+            pixels.append(tuple(image.getpixel((x, height - 1)))[:3])
+        for y in range(height):
+            pixels.append(tuple(image.getpixel((0, y)))[:3])
+            pixels.append(tuple(image.getpixel((width - 1, y)))[:3])
+        channels = list(zip(*pixels))
+        return tuple(
+            sorted(channel)[len(channel) // 2] for channel in channels
+        )
+    except Exception:  # noqa: BLE001
+        return (255, 255, 255)
+
 #: 供应商错误消息里像密钥的片段要抹掉（错误文本会进日志与界面）。
 _SECRET_LIKE = re.compile(r"\b(?:ark|sk)-[A-Za-z0-9._-]{8,}")
+
+
+#: 上游对参考图的硬约束（Ark）。**三条并列**，缺一条就被整单拒：
+#: 每边 300~6000px、宽高比 0.40~2.50、总像素 ≥90,000（仅 r2v）。
+#:
+#: 总像素这条是 2026-11-05 才暴露的（`doubao-seedance-2-5` 的 r2v）：
+#:
+#:     the parameter image pixel count specified in the request must be greater
+#:     than or equal to 90000 for model doubao-seedance-2-5 in r2v
+#:
+#: ⚠️ 它与「每边 ≥300px」**互不蕴含**：`300x300` 正好 90,000 是边界，
+#: 而 `190x147` 按面积放大到 90,000 后是 `342x264` —— 面积够了、短边仍只有 264。
+#: 所以倍数必须取**两者较大者**。
+_REFERENCE_MIN_SIDE = 300
+_REFERENCE_MAX_SIDE = 6000
+_REFERENCE_MIN_PIXELS = 90_000
+
+
+def reference_min_scale(width: int, height: int) -> float:
+    """把参考图放大到「每边 ≥300px **且** 总像素 ≥90,000」所需的倍数（已达标返回 1.0）。
+
+    这是**唯一一份**这套数学 —— `integrations.seedance` 的提交保障与
+    `graph.nodes` 的「执行前整理素材」都调它。2026-11-05 之前两边各写一套，
+    结果只补了面积、漏了短边（`190x147` → `342x264`，短边仍 264）——
+    同一个约束在两处各判一套，必然再次打架。
+    """
+    if width <= 0 or height <= 0:
+        return 1.0
+    side_scale = max(_REFERENCE_MIN_SIDE / width, _REFERENCE_MIN_SIDE / height)
+    area_scale = (
+        (_REFERENCE_MIN_PIXELS / (width * height)) ** 0.5
+        if width * height < _REFERENCE_MIN_PIXELS
+        else 1.0
+    )
+    return max(side_scale, area_scale, 1.0)
+
+
+def reference_target_size(width: int, height: int) -> tuple[int, int]:
+    """放大后的目标尺寸（等比，两条约束都满足；已达标则原样返回）。"""
+    scale = reference_min_scale(width, height)
+    if scale <= 1:
+        return width, height
+    target_width = max(_REFERENCE_MIN_SIDE, round(width * scale))
+    target_height = max(_REFERENCE_MIN_SIDE, round(height * scale))
+    # 放大后也不能超过上限：超过就整体缩回去（仍保持比例）。
+    overflow = max(
+        target_width / _REFERENCE_MAX_SIDE,
+        target_height / _REFERENCE_MAX_SIDE,
+        1,
+    )
+    return (
+        max(_REFERENCE_MIN_SIDE, round(target_width / overflow)),
+        max(_REFERENCE_MIN_SIDE, round(target_height / overflow)),
+    )
+
 
 
 def _redact_secret_like(text: str) -> str:
@@ -361,7 +442,7 @@ class SeedanceVideoGenerator:
         task: GenerationTask,
         references: list[Any],
     ) -> GenerationTask:
-        """首帧 / 首尾帧任务的 ratio **只能**是 `adaptive`，下发前就地改写。
+        """首帧/首尾帧 **以及带参考视频** 的任务，ratio 只能是 `adaptive`，下发前就地改写。
 
         2026-10-09 生产事故（飞书 Agent 第一次真正走到「首尾帧」这条分支）：审批通过的
         任务带着 `reference_mode=first_last_frame` + `first_frame/last_frame`，而
@@ -372,26 +453,146 @@ class SeedanceVideoGenerator:
             image. Request id: 021791525053115795aa3a4ba36fe8857
             (code: submit_invalidparameter.tasktypeconstraint)
 
-        方舟文档（Seedance 2.5 输出参数）原文：视频编辑、视频延长、**首帧/首尾帧生视频**
-        这几类任务下 `ratio` 仅支持 `adaptive`，不支持自行设置具体宽高比。
-        Portal 的视频生成模块 2026-10-08 已在 `seedance/app.py` 的 `build_payload` 里
-        做过同样的归一（commit 10071e7）；这里是同一条约束在飞书 Agent 这条独立客户端
-        上的补齐 —— 能力表本来就允许 `adaptive`（`VIDEO_MODELS[].aspect_ratios`），
-        缺的只是「按引用角色改写下发值」这一步。
+        2026-10-15 追加（用户报 `Bad Request …（poll_invalidparameter）`，同一文档
+        「12 秒纯图片」成功、「22 秒 + **参考视频**」连败三次）：**带 `reference_video`
+        的任务同样中招** —— 方舟会**按提示词**把任务判成「视频延长 / 视频编辑」，而这类
+        任务 `ratio` 同样只支持 `adaptive`。仓库里早有这条错误的原文留档：
 
-        只改**下发用**的副本，不动审批通过的 task 本身（计划/审批记录保持用户确认的
-        原样）；没有首尾帧时原值原样保留，多参考图与文生视频不受影响。
+            Seedance identified your task as video extension based on your prompt.
+            For this task type, the output ratio follows the input video selected for
+            extension. Issues: [0] `ratio` must be `adaptive`.
+
+        原来这里只认 `_FRAME_ROLES`（首帧/首尾帧），`reference_video` 漏掉了 —— 于是
+        带着参考视频的任务始终下发 `9:16`，必然 400。**判据放宽到「含参考视频」是安全的**：
+        `adaptive` 本来就在能力表的允许集合里（`VIDEO_MODELS[].aspect_ratios`），
+        多参考图与纯文生视频不受影响（没有参考视频时原值原样保留）。
+
+        只改**下发用**的副本，不动审批通过的 task 本身（计划/审批记录保持用户确认的原样）。
         """
-        if not any(reference.role in _FRAME_ROLES for reference in references):
+        needs_adaptive = any(
+            reference.role in _FRAME_ROLES or reference.role == "reference_video"
+            for reference in references
+        )
+        if not needs_adaptive:
             return task
         if task.aspect_ratio == "adaptive":
             return task
         _LOGGER.info(
-            "Seedance frame mode forces ratio=adaptive (was %s); task=%s",
+            "Seedance frame/reference-video mode forces ratio=adaptive (was %s); task=%s",
             task.aspect_ratio,
             task.task_id,
         )
         return task.model_copy(update={"aspect_ratio": "adaptive"})
+
+    async def _normalize_video_references(
+        self,
+        assets: list[MediaAsset],
+        contents: list[bytes],
+        *,
+        aspect_ratio: str | None = None,
+    ) -> tuple[list[MediaAsset], list[bytes]]:
+        """把参考视频转成上游接受的规格（**H.264 + AAC-LC**）后再上传。
+
+        2026-10-15「手工串珠没有成功过一次」的根因：参考视频音轨是 HE-AAC，上游拒收
+        （6/6 失败）；本地转成 AAC 后同一条通道的 4 秒探针**一次成功**。转码是阻塞的
+        ffmpeg 调用，放线程里跑，别卡事件循环；任何失败都按原样提交（不因为转码失败
+        把本来能跑的任务判死 —— 上游若真拒绝，还有执行层的修复梯子兜底）。
+
+        2026-10-16 追加（用户报「为什么西兰花那个视频不是 9.16」）：带参考视频的任务
+        方舟强制 `ratio=adaptive`、**输出比例跟随输入的参考视频**，所以横屏参考视频
+        会把成片带成横屏。这里在提交前把参考视频**裁成任务要的画幅**（cover）。
+        """
+        if not any(str(asset.mime_type).startswith("video/") for asset in assets):
+            return assets, contents
+        normalized_assets: list[MediaAsset] = []
+        normalized_contents: list[bytes] = []
+        for asset, content in zip(assets, contents, strict=True):
+            if not str(asset.mime_type).startswith("video/"):
+                normalized_assets.append(asset)
+                normalized_contents.append(content)
+                continue
+            try:
+                normalized = await asyncio.to_thread(
+                    normalize_reference_video, Path(asset.local_path)
+                )
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning(
+                    "参考视频规范化失败，按原样提交 asset=%s", asset.asset_id, exc_info=True
+                )
+                normalized = None
+            # 画幅跟随：把参考视频裁成任务要的比例（否则 adaptive 会把成片带成横屏）
+            try:
+                source = normalized or Path(asset.local_path)
+                reframed = await asyncio.to_thread(
+                    reframe_reference_video, source, aspect_ratio
+                )
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning(
+                    "参考视频画幅归一失败，按原样提交 asset=%s", asset.asset_id, exc_info=True
+                )
+                reframed = None
+            if reframed is not None:
+                _LOGGER.info(
+                    "参考视频已裁成任务画幅 %s：asset=%s -> %s",
+                    aspect_ratio,
+                    asset.asset_id,
+                    reframed.name,
+                )
+                normalized = reframed
+            if normalized is None:
+                normalized_assets.append(asset)
+                normalized_contents.append(content)
+                continue
+            data = normalized.read_bytes()
+            _LOGGER.info(
+                "参考视频已规范化（H.264+AAC-LC）asset=%s -> %s",
+                asset.asset_id,
+                normalized.name,
+            )
+            normalized_assets.append(
+                asset.model_copy(
+                    update={
+                        "local_path": normalized,
+                        "size": len(data),
+                        "sha256": sha256(data).hexdigest(),
+                    }
+                )
+            )
+            normalized_contents.append(data)
+        return normalized_assets, normalized_contents
+
+    def _clamp_task_to_capability(self, task: GenerationTask) -> GenerationTask:
+        """提交前把 `resolution` / `duration` 夹进本通道能力表允许的范围。
+
+        见 `submit` 里的注释：这是**最后一道关卡**（计划期归一覆盖不到「复用已批准计划」
+        与审批页改参这两条路）。`duration` 超范围时上游同样会拒（2026-10-10 的
+        `duration must be less than or equal to` 教训），所以一并夹。
+        """
+        capability = self._capability
+        if capability is None:
+            return task
+        update: dict[str, object] = {}
+        resolution = _supported_resolution(task.resolution, capability)
+        if resolution != task.resolution:
+            _LOGGER.warning(
+                "分辨率按能力表夹取：%s → %s（task=%s 原值来自计划/复用/人工编辑）",
+                task.resolution,
+                resolution,
+                task.task_id,
+            )
+            update["resolution"] = resolution
+        duration = task.duration
+        if isinstance(duration, int) and not isinstance(duration, bool):
+            clamped = min(capability.duration_max, max(capability.duration_min, duration))
+            if clamped != duration:
+                _LOGGER.warning(
+                    "时长按能力表夹取：%s → %s 秒（task=%s）",
+                    duration,
+                    clamped,
+                    task.task_id,
+                )
+                update["duration"] = clamped
+        return task.model_copy(update=update) if update else task
 
     async def submit(
         self,
@@ -403,12 +604,27 @@ class SeedanceVideoGenerator:
         # This is a local crash-correlation token owned by the orchestration layer.
         # Ark does not support client-assigned task IDs, so it must not cross the API.
         del submission_id
+        # 2026-10-15 根治「拯救香水 generation_invalid_resolution」：
+        # 计划期的能力归一（`normalize_video_task_payload`）只覆盖「生成新计划 → 校验」
+        # 这条路；走「复用上一版已批准计划」或审批页改过参数时**根本不经过它**，
+        # 脏值（生产真值 `720*1280`）直达上游被判 `Input validation failed`。
+        # 所以在**提交前**再夹一次 —— 这是最后一道关卡，无论值从哪来都成立。
+        task = self._clamp_task_to_capability(task)
         if self._image_url_resolver is not None:
             # 单一判据：视频要么直传上游，要么由执行层降级成抽帧 —— 适配层不再
             # 静默改写引用（2026-10-08 合并两处互相矛盾的摘除逻辑）。
             self._reject_video_references(task)
             task, assets = self._strip_audio_references(task, assets)
         references, ordered_assets, contents = self._validate_submission(task, assets)
+        # 2026-10-15（用户报「手工串珠任务没有成功过一次」）：**上传之前**把参考视频
+        # 规范化成上游能接受的规格（H.264 + AAC-LC）。同一份参考视频实测：
+        # 音轨 HE-AAC → 生产 6 次全败（invalid_media / Bad Request）；
+        # 转成 AAC 后同一条通道的 4 秒探针一次成功。不转就必然被拒，转了才对得上。
+        ordered_assets, contents = await self._normalize_video_references(
+            ordered_assets,
+            contents,
+            aspect_ratio=task.aspect_ratio,
+        )
         task = self._apply_frame_ratio_constraint(task, references)
         request_content: list[dict[str, Any]] = [
             {"type": "text", "text": self._prompt(task, references)}
@@ -417,6 +633,13 @@ class SeedanceVideoGenerator:
             references, ordered_assets, contents, strict=True
         ):
             if asset.mime_type.startswith("image/"):
+                # 2026-11-02（用户报「记忆碎片任务失败：expected the aspect ratio to be
+                # between 0.39 and 2.50, but received image with aspect ratio: 2.76」）：
+                # **参考图的长宽比也是上游硬约束** —— 文档里的分镜表切片经常是"细长条"
+                # （那一批实测 411×1135=0.362、280×766=0.366、640×2004=0.319，长边/短边
+                # 2.76/2.74/3.13），一提交就被拒。**这不该让用户去改图**，提交前补齐即可。
+                content = self._fit_reference_aspect_ratio(asset, content)
+                content = self._ensure_reference_pixel_floor(asset, content)
                 if self._image_url_resolver is not None:
                     url = await self._image_url_resolver(task, reference, asset, content)
                     if not isinstance(url, str) or not url.startswith("asset://"):
@@ -1171,6 +1394,155 @@ class SeedanceVideoGenerator:
             value.st_size,
             value.st_mtime_ns,
         )
+
+    #: 上游对**参考图长宽比**的硬约束（Ark 原文：`expected the aspect ratio to be between
+    #: 0.39 and 2.50`）。这里留出更宽的余量（0.42 / 2.40）并向上取整 —— 边界值四舍五入
+    #: 差一个像素就又会贴到上限上被拒（实测 306/766=0.3995 就落在 0.40 的刀口上）。
+    _REFERENCE_ASPECT_MIN = 0.42
+    _REFERENCE_ASPECT_MAX = 2.40
+
+    #: 上游对**参考图总像素数**的硬下限（r2v）。Ark 原文（2026-11-05 生产实测）：
+    #: `the parameter image pixel count specified in the request must be greater than
+    #: or equal to 90000 for model doubao-seedance-2-5 in r2v`。
+    #:
+    #: ⚠️ 与「每边 ≥300px」是**并列的两条**约束，互不蕴含（300x300 正好 90,000 是边界；
+    #: 340x260 = 88,400 两边都过 300px 却仍不达标）。`graph/nodes.py` 的
+    #: `_REFERENCE_MIN_PIXELS` 是同一个数 —— 那处管"执行前整理素材"，这里管
+    #: **提交那一刻真正发出去的字节**（提交路径上还有换去水印版等会换掉素材的环节，
+    #: 只有这里能兜住所有情况）。两处都改时记得一起改。
+    _REFERENCE_MIN_PIXELS = 90_000
+
+    def _fit_reference_aspect_ratio(
+        self, asset: MediaAsset, content: bytes
+    ) -> bytes:
+        """参考图长宽比超范围时**补边**到合法区间（内容一个像素都不裁）。
+
+        为什么是补边不是裁剪：这些图是文档里的分镜表切片（细长条），裁掉两头会丢掉
+        用户写在那里的分镜内容；补边只加背景色，内容完整保留。
+
+        补边颜色取**四边像素的中位色**（分镜表通常是纯色底，视觉上几乎看不出补过）。
+        任何异常都返回原字节 —— 这只是"让它能提交"，绝不能因为它把任务弄失败。
+        """
+        try:
+            with Image.open(BytesIO(content)) as image:
+                image.load()
+                width, height = image.size
+                if not width or not height:
+                    return content
+                ratio = width / height
+                if (
+                    self._REFERENCE_ASPECT_MIN
+                    <= ratio
+                    <= self._REFERENCE_ASPECT_MAX
+                ):
+                    return content
+                if ratio < self._REFERENCE_ASPECT_MIN:
+                    # +1：向上取整，保证补完**严格**落在区间内（浮点/取整都不贴边）
+                    target_w = int(height * self._REFERENCE_ASPECT_MIN) + 1
+                    target_h = height
+                else:
+                    target_w = width
+                    target_h = int(width / self._REFERENCE_ASPECT_MAX) + 1
+                canvas = Image.new(
+                    image.mode if image.mode in {"RGB", "RGBA"} else "RGB",
+                    (target_w, target_h),
+                    _border_median_color(image),
+                )
+                canvas.paste(
+                    image,
+                    ((target_w - width) // 2, (target_h - height) // 2),
+                )
+                buffer = BytesIO()
+                canvas.save(buffer, format="PNG")
+        except Exception:  # noqa: BLE001 - 补边失败就按原图提交（不因为增量能力失败）
+            _LOGGER.warning(
+                "Seedance 参考图长宽比补齐失败，按原图提交 asset=%s",
+                asset.asset_id,
+                exc_info=True,
+            )
+            return content
+        _LOGGER.warning(
+            "Seedance 参考图长宽比超范围（%dx%d ratio=%.3f），已补边到 %dx%d 后提交 "
+            "asset=%s",
+            width,
+            height,
+            ratio,
+            target_w,
+            target_h,
+            asset.asset_id,
+        )
+        return buffer.getvalue()
+
+    def _ensure_reference_pixel_floor(
+        self, asset: MediaAsset, content: bytes
+    ) -> bytes:
+        """提交前**最后一道**尺寸保障：总像素不足 90,000 就地等比放大。
+
+        为什么必须在**适配层**再做一次（2026-11-05 生产事故，同一报错连修两次）：
+
+            上游原文：The parameter `content[6]` specified in the request is not
+            valid: the parameter image pixel count specified in the request must be
+            greater than or equal to 90000 for model doubao-seedance-2-5 in r2v
+
+        第一版只在 `graph/nodes.py` 的「执行前整理素材」里加了这条判据，但**提交路径
+        上还有别的环节会替换素材**，被替换进来的文件没经过那道闸：
+
+        - `nodes._clean_media_assets` 在提交前把素材换成台账里的**去水印版**
+          （`_with_cleaned_file`）—— 清洗是**整张重绘**，实测清洗版可以比原图小得多
+          （`193x261` = 50,373 像素、`190x147` = 27,930 像素，都远低于 90,000），
+          而 `_upscale_reference` 已经因为"尺寸达标"跳过了；
+        - 同族的还有台账复用（跨运行沿用旧结论）、比例补齐（`_fit_reference_aspect_ratio`
+          会换一份新字节）。
+
+        所以判据放在**真正要发出去的那份字节**上：上游认的、也是我们唯一能保证的，
+        就是这里 `content` 的像素数。与既有的比例补齐同一个模式 —— 能就地修好的
+        硬约束，不该丢给用户去改图（用户 2026-09-18 口径：「不要拦截，能不能帮我
+        自动等比例放大」）。
+
+        任何异常都返回原字节 —— 这只是"让它能提交"，绝不能因为它把任务弄失败。
+        """
+        try:
+            with Image.open(BytesIO(content)) as image:
+                image.load()
+                width, height = image.size
+                if not width or not height:
+                    return content
+                if reference_min_scale(width, height) <= 1:
+                    return content
+                target_width, target_height = reference_target_size(width, height)
+                resized = image.convert("RGB").resize(
+                    (target_width, target_height), Image.Resampling.LANCZOS
+                )
+                buffer = BytesIO()
+                resized.save(buffer, format="PNG")
+        except Exception:  # noqa: BLE001 - 放大失败就按原字节提交（不因增量能力失败）
+            _LOGGER.warning(
+                "Seedance 参考图像素补足失败，按原图提交 asset=%s",
+                asset.asset_id,
+                exc_info=True,
+            )
+            return content
+        if reference_min_scale(target_width, target_height) > 1:
+            # 取整/上限回缩后仍不达标（理论到不了，到了就不要装作修好了）。
+            _LOGGER.warning(
+                "Seedance 参考图放大后仍不达标（%dx%d），按原图提交 asset=%s",
+                target_width,
+                target_height,
+                asset.asset_id,
+            )
+            return content
+        _LOGGER.warning(
+            "Seedance 参考图尺寸不足（%dx%d=%d 像素），已等比放大到 %dx%d 后提交 asset=%s",
+            width,
+            height,
+            width * height,
+            target_width,
+            target_height,
+            asset.asset_id,
+        )
+        # 放大可能让比例越过 0.42~2.40 的窗口（取整放大的边界效应），补一次比例。
+        resized_bytes = buffer.getvalue()
+        return self._fit_reference_aspect_ratio(asset, resized_bytes)
 
     def _validate_image_content(self, asset: MediaAsset, content: bytes) -> None:
         try:

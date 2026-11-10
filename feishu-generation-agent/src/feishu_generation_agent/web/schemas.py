@@ -145,6 +145,21 @@ class ExcludedAssetRequest(BaseModel):
     asset_id: str = Field(min_length=1)
 
 
+class WatermarkDecisionRequest(BaseModel):
+    """用户对某张参考图去水印结果的选择（2026-10-23）。
+
+    用户口径：「可以让用户看到清洗后的图片自由选择原图或者继续重新清洗」——所以护栏
+    从**硬拦截**降级为**建议**：`cleaned` 表示"我看过图了，就用清洗版"（即使护栏判了
+    `kept` 也照用），`original` 表示"用原图"，`auto` 表示交回护栏自动判定。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["auto", "cleaned", "original"]
+    #: 有多个历史版本时指定用哪一版（台账里的清洗版路径）；不传 = 用最新一版。
+    selected: str | None = None
+
+
 class TaskPatchRequest(BaseModel):
     """审批页任务字段热修改。字段白名单在 runtime.patch_task 里再校验一遍。"""
 

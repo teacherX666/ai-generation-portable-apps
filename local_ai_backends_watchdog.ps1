@@ -100,6 +100,23 @@ function Initialize-BackendEnvironment {
     $env:HF_ENDPOINT = "https://hf-mirror.com"
     $env:HF_HOME = "E:\AI Tool\models\huggingface-cache"
     $env:HF_HUB_DISABLE_TELEMETRY = "1"
+    # ── 2026-10-28：修「智能抠图 (SAM3) 打标签全挂」──
+    # 本机注册表钉着 ProxyEnable=1 / ProxyServer="socks=127.0.0.1:1080"（Jamjams）。
+    # Windows 的 urllib 把 `socks=` **一律**映射成 `socks4://`，而 **httpx 不支持 socks4**
+    # （在 Proxy 构造的 scheme 校验就抛 ValueError）。ComfyUI 的 Qwen3-VL 打标签节点会做一次
+    # HuggingFace 版本检查 → 构造 httpx.Client 时就被这个代理打死：
+    #   实测日志 `ValueError: Unknown scheme for proxy URL URL('socks4://127.0.0.1:1080')`
+    #   → workflow interrupted → label 全丢 → image_segment 报「检测结果为空或全部被过滤」。
+    # （注意：1080 实际是 SOCKS5，裸握手回 \x05\x00；但注册表的 `socks=` 语义救不了它，
+    #   而 hf-mirror.com 走代理也连不通 —— 直连 HF 同样超时。）
+    # 模型（Qwen3-VL-4B-FP8 / SAM3 / Florence）都已在本地，那次调用只是"查版本"，
+    # 关掉 HF 的联网调用即可：跳过该调用，且不再构造带代理的 httpx 客户端。
+    # 真正生效的那个开关（实测 HF_HUB_OFFLINE 拦不住）：
+    # transformers 的 hub_kernels 在**导入时**读 `USE_HUB_KERNELS`（默认 YES）。
+    # 不关掉它，Qwen3-VL 的 forward 会被 `use_kernel_forward_from_hub` 包一层 →
+    # 推理时走 `lazy_load_kernel` → `kernels.get_kernel` → `huggingface_hub` →
+    # 构造 httpx.Client → 撞上注册表的 socks4 → `workflow interrupted`。
+    # 关掉之后 forward 走原生实现，不再有任何 HF 调用。
     $env:TRUST_REMOTE_CODE = "1"
     $env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,max_split_size_mb:128"
     $env:CUDA_CACHE_PATH = "$ComfyRoot\.cuda_cache"

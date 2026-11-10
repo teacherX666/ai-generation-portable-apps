@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 import uuid
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -231,63 +232,178 @@ def _read_json_key(rel_path: str, key_path: list[str] | None = None,
     return str(node or "").strip()
 
 
-_ARK_TASKS_CACHE: dict[str, Any] = {"ts": 0.0, "data": {}}
+_ARK_TASKS_CACHE: dict[str, Any] = {"ts": 0.0, "data": {}, "ok": False}
 _ARK_TASKS_TTL = 600.0
+# 取不到时也不要每次刷页面都重打一轮（最多 8~20 个请求），退避 2 分钟再试。
+_ARK_TASKS_FAIL_TTL = 120.0
+_ARK_LIST_URL = "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
+_ARK_PAGE_SIZE = 100
+_ARK_MAX_PAGES = 20
+# 方舟列表接口在「key 权限不是 All」时**必须**带 filter.model，所以要有一份模型清单才能查全。
+# 这几条只是兜底（本平台实际在用的方舟视频模型）；优先用各子应用 providers.json 里真实配的。
+_ARK_MODELS_FALLBACK = (
+    "doubao-seedance-2-5-260628",
+    "doubao-seedance-2-0-260128",
+    "doubao-seedance-2-0-fast-260128",
+    "ep-20260912121738-vtd78",
+)
+_ARK_LOG_STATE: dict[str, str] = {"mode": ""}
 _RELAY_CACHE: dict[str, Any] = {}
 
 
+def ark_task_models(table: dict | None = None) -> list[str]:
+    """逐模型查方舟任务列表时用的模型清单（去重保序，不猜模型名）。
+
+    来源优先级：pricing.json 的 `ark_source.models` 手写覆盖 → 各子应用 providers.json 里
+    指向方舟的通道 `models[]`（这是本平台真正在用的模型）→ pricing.json 的
+    `endpoint_aliases` 键 → 内置兜底。查不到的模型方舟会返 404/400，忽略即可。
+    """
+    table = table or pricing_table()
+    models: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in models:
+            models.append(text)
+
+    src = table.get("ark_source") or {}
+    for item in (src.get("models") or []):
+        add(item)
+    # 手写清单只当**补充**，不能因此漏掉别的模型：providers.json 里的才是真正在用的。
+    for app in ("seedance", "volcengine-portrait", "nano-banana"):
+        for cfg in _app_providers(app).values():
+            if "volces.com" not in str(cfg.get("host") or ""):
+                continue
+            for mid in (cfg.get("models") or []):
+                add(mid)
+    for key in (table.get("endpoint_aliases") or {}):
+        add(key)
+    for item in _ARK_MODELS_FALLBACK:
+        add(item)
+    return models
+
+
+def _ark_fetch_page(key: str, page: int, model: str = "") -> tuple[list[dict] | None, bool]:
+    """取一页方舟任务列表 → (items|None, 是否命中「必须带 filter.model」)。
+
+    `items is None` = 这一页没取到（网络/HTTP/权限问题），调用方停止翻页。
+    """
+    url = f"{_ARK_LIST_URL}?page_size={_ARK_PAGE_SIZE}&page_num={page}"
+    if model:
+        url += "&filter.model=" + urllib.parse.quote(model, safe="")
+    opener = getattr(UPSTREAM, "open", urllib.request.urlopen)
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+        with opener(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        if not isinstance(payload, dict):
+            return [], False
+        return (payload.get("items") or []), False
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            body = ""
+        return None, "filter.model" in body
+    except Exception:  # noqa: BLE001
+        return None, False
+
+
+def _ark_task_entry(item: dict) -> dict:
+    """方舟任务 → 我们需要的用量字段。
+
+    ⚠️ **不要**从 `content` 推断「有没有输入视频」：列表/详情返回的 `content` 是**输出**
+    （成片的 video_url / last_frame_url），实测 100/100 条都只有这些键，与输入无关
+    （API 文档也写明 items.content 是「输出内容」）。有/无输入视频只能由**提交方**告诉我们：
+    飞书任务看计划的 reference_plan（见 feishu `/api/portal/history` 的 has_reference_video），
+    子应用任务看表单里的文件字段。
+    """
+    usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
+    return {
+        "tokens": int(usage.get("total_tokens") or usage.get("completion_tokens") or 0),
+        "model": str(item.get("model") or ""),
+        "resolution": str(item.get("resolution") or ""),
+        "duration": int(item.get("duration") or 0),
+        "status": str(item.get("status") or ""),
+        "has_input_video": False,
+    }
+
+
+def _ark_scan_pages(key: str, model: str = "") -> tuple[dict[str, dict], bool]:
+    """扫完某个（可选模型过滤的）查询的所有页 → ({任务号: 用量}, 是否必须带 filter.model)。"""
+    index: dict[str, dict] = {}
+    for page in range(1, _ARK_MAX_PAGES + 1):
+        items, need_model = _ark_fetch_page(key, page, model)
+        if items is None:
+            return index, need_model
+        if not items:
+            break
+        for item in items:
+            if isinstance(item, dict) and item.get("id"):
+                index[str(item["id"])] = _ark_task_entry(item)
+        if len(items) < _ARK_PAGE_SIZE:
+            break
+    return index, False
+
+
+def _ark_log_state(mode: str, count: int) -> None:
+    """方舟索引的取数状态只在**变化**时打一行日志（portal.out.log 已经很大了）。"""
+    state = f"{mode}:{'有' if count else '空'}"
+    if _ARK_LOG_STATE.get("mode") == state:
+        return
+    _ARK_LOG_STATE["mode"] = state
+    if count and mode == "per-model":
+        print(f"  [usage] 方舟列表要求 filter.model（这把 key 权限不是 All）"
+              f"→ 逐模型查询到 {count} 个任务", flush=True)
+    elif count:
+        print(f"  [usage] 方舟任务索引已刷新：{count} 个任务", flush=True)
+    else:
+        print("  [usage] 方舟任务列表取不到 → 飞书任务将没有 token/金额"
+              "（见 ark_task_index 的注释）", flush=True)
+
+
 def ark_task_index() -> dict[str, dict]:
-    """方舟**账号级**任务索引：{任务id: {tokens, model, resolution, has_input_video, duration}}。
+    """方舟**账号级**任务索引：{任务id: {tokens, model, resolution, duration, status}}。
 
     为什么要它：飞书任务的 token 消耗只记在方舟那边（飞书自己不上报 usage），而飞书 Agent 的
     `operations` 表里存着方舟任务号（实测 seedance2.5 560 条里 540 条有 `official_id`）。
-    有了这张索引，飞书任务就能补上**真实** token 与金额，连「有/无输入视频」档位都准确
-    （列表里成功任务带 `content`，看有没有 video_url 就知道）。
+    有了这张索引，飞书任务就能补上**真实** token 与金额。
+
+    ⚠️ 2026-10-29 实测（用户报「飞书 Agent（自带 key）计算不了费用了」）：方舟对
+    **权限不是 All** 的 key 强制要求 `filter.model`，不带就
+    `400 InvalidParameter: The parameter filter.model ... is required when the API key's
+    permissions are not 'All'`。旧实现不带过滤、一遇错就 `break`，索引恒为空 →
+    飞书行的 token 与金额**全部消失**（页面只剩「—」）。现在的做法：先按老方式不带过滤试，
+    一旦命中这个错误，就**逐模型**（`filter.model=…`，清单见 `ark_task_models`）翻完所有页再合并。
 
     失败/超时一律返回上次缓存或空表：这是**锦上添花**的数据，绝不能拖垮统计页。
     """
     now = time.time()
-    if _ARK_TASKS_CACHE["data"] and now - float(_ARK_TASKS_CACHE["ts"]) < _ARK_TASKS_TTL:
-        return _ARK_TASKS_CACHE["data"]
+    ttl = _ARK_TASKS_TTL if _ARK_TASKS_CACHE.get("ok") else _ARK_TASKS_FAIL_TTL
+    if now - float(_ARK_TASKS_CACHE.get("ts") or 0.0) < ttl:
+        return _ARK_TASKS_CACHE.get("data") or {}
     table = pricing_table()
     src = table.get("ark_source") or {}
     key = _read_json_key(str(src.get("key_file") or ""), key_field=str(src.get("key_field") or ""))
     if not key:
-        return _ARK_TASKS_CACHE["data"] or {}
-    index: dict[str, dict] = {}
-    opener = getattr(UPSTREAM, "open", urllib.request.urlopen)
-    for page in range(1, 21):                      # 最多 20 页 × 100 = 2000 条，够覆盖保留期
-        url = (f"https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
-               f"?page_size=100&page_num={page}")
-        try:
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
-            with opener(req, timeout=20) as resp:
-                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except Exception:  # noqa: BLE001
-            break
-        items = payload.get("items") or []
-        if not items:
-            break
-        for item in items:
-            if not isinstance(item, dict) or not item.get("id"):
-                continue
-            usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
-            content = item.get("content") if isinstance(item.get("content"), dict) else {}
-            parts = content.get("content") if isinstance(content.get("content"), list) else []
-            index[str(item["id"])] = {
-                "tokens": int(usage.get("total_tokens") or usage.get("completion_tokens") or 0),
-                "model": str(item.get("model") or ""),
-                "resolution": str(item.get("resolution") or ""),
-                "duration": int(item.get("duration") or 0),
-                "status": str(item.get("status") or ""),
-                "has_input_video": any(
-                    str(part.get("type") or "") == "video_url"
-                    for part in parts if isinstance(part, dict)),
-            }
+        return _ARK_TASKS_CACHE.get("data") or {}
+    index, need_model = _ark_scan_pages(key)
+    mode = "all"
+    if need_model:
+        mode = "per-model"
+        merged: dict[str, dict] = {}
+        for model in ark_task_models(table):
+            part, _ = _ark_scan_pages(key, model)
+            merged.update(part)
+        index = merged
     if index:
-        _ARK_TASKS_CACHE["data"] = index
-        _ARK_TASKS_CACHE["ts"] = now
-    return _ARK_TASKS_CACHE["data"] or {}
+        _ARK_TASKS_CACHE.update({"data": index, "ts": now, "ok": True})
+    else:
+        # 保留上次的数据（宁可显示稍旧的用量，也不要因为一次失败全部变「—」）
+        _ARK_TASKS_CACHE.update({"ts": now, "ok": False})
+    _ark_log_state(mode, len(index))
+    return index or (_ARK_TASKS_CACHE.get("data") or {})
 
 
 def relay_usage_entries() -> dict[str, list[dict]]:
@@ -421,7 +537,9 @@ def _apply_ark_usage(rows: list[dict]) -> int:
         tokens = 0
         model = ""
         resolution = ""
-        has_input = False
+        # 「有没有输入视频」以**提交方**告诉我们的为准（飞书行的 has_reference_video）。
+        # 方舟任务里取不到这一位（content 是输出内容，见 _ark_task_entry），不能靠它覆盖。
+        has_input = bool(row.get("has_input_video"))
         seconds = 0
         task_statuses: list[str] = []
         for task_id in ids:
@@ -584,6 +702,16 @@ _METADATA_MAX_BODY = 256 * 1024 * 1024
 _METADATA_MAX_TEXT_VALUE = 128 * 1024
 
 
+def _disposition_filename(disposition: str) -> str | None:
+    """从 Content-Disposition 取 filename：不是文件部分返回 None，空槽位返回 ""。"""
+    match = re.search(r'filename\*?=(?:"([^"]*)"|([^;\s]*))', disposition or "", flags=re.IGNORECASE)
+    if not match:
+        return None
+    if match.group(1) is not None:
+        return match.group(1)
+    return match.group(2) or ""
+
+
 def _extract_multipart_text_fields(content_type: str, body: bytes,
                                    file_fields: list[str] | None = None) -> dict:
     """Extract text form fields without decoding large file payloads.
@@ -636,9 +764,13 @@ def _extract_multipart_text_fields(content_type: str, body: bytes,
                 pos = next_pos
                 continue
             field_name = name_match.group(1)
-            if "filename=" in disposition.lower():
-                # 文件部分：只记名字，绝不读内容（body 里可能是几十 MB 的参考视频）
-                if file_fields is not None and field_name:
+            filename = _disposition_filename(disposition)
+            if filename is not None:
+                # 文件部分：只记名字，绝不读内容（body 里可能是几十 MB 的参考视频）。
+                # ⚠️ `filename=""` = 这个槽位**没选文件**：浏览器会把没选的文件输入也塞进
+                # multipart（实测 seedance 表单里 ref_video_1..3 全是 `b''`）。以前一律当成
+                # 「挂了参考视频」→ 单价串到「有输入视频」档（2.5 差 1.6 倍，用户 2026-10-29 报）。
+                if file_fields is not None and field_name and filename:
                     file_fields.append(field_name)
                 pos = next_pos
                 continue
@@ -1573,6 +1705,13 @@ _DEFAULT_PRICING: dict[str, Any] = {
              "元/百万 token，image 时是元/张。"),
     "endpoint_aliases": {
         "ep-20260912121738-vtd78": "seedance-2.0-mini",
+    },
+    # 方舟账号级任务列表的数据源。**别漏**：`state/pricing.json` 被删/写坏时会回落到这张
+    # 内置表，没有 ark_source 就等于飞书任务的 token 与金额静默消失（2026-10-29 踩过）。
+    "ark_source": {
+        "key_file": "seedance/state/secrets.json",
+        "key_field": "volcengine_api_key",
+        "models": list(_ARK_MODELS_FALLBACK),
     },
     "families": [
         {
@@ -4326,7 +4465,10 @@ class Handler(SimpleHTTPRequestHandler):
                     "provider": "", "provider_label": "飞书 Agent（自带 key）",
                     "provider_detail": "飞书任务由飞书 Agent 自己的 key 发起（方舟 key）",
                     "title": str(rec.get("prompt") or "")[:200],
-                    "resolution": "", "has_input_video": False, "media_fields": [],
+                    # 「有/无输入视频」两档单价差 1.6 倍。方舟那边看不到输入侧（content 是
+                    # 输出内容），所以由飞书 Agent 从计划的 reference_plan 里报上来。
+                    "resolution": "", "has_input_video": bool(rec.get("has_reference_video")),
+                    "media_fields": [],
                     "runs": 1, "images": 0, "seconds": 0,
                     "tokens": 0, "unit_price": None, "unit": "",
                     "amount": None, "currency": "CNY",

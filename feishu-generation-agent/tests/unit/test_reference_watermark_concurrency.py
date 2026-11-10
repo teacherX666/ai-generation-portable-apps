@@ -176,10 +176,17 @@ def test_wiring_guard_concurrency_is_actually_wired() -> None:
 
 
 def test_ledger_write_is_atomic_and_locked() -> None:
-    """台账写入必须加锁 + 原子替换（固定 tmp 名在并发下会互相截断）。"""
-    source = inspect.getsource(module._write_status)
+    """台账写入必须加锁 + 原子替换（固定 tmp 名在并发下会互相截断）。
+
+    2026-10-23：读-改-写抽成 `_mutate_status`（"用户决定"和"版本历史"都要原子改同一个
+    JSON），锁与原子替换随之搬过去 —— **不变量不变**，断言跟着搬到新家。
+    """
+    source = inspect.getsource(module._mutate_status)
     assert "_STATUS_LOCK" in source
     assert "os.replace" in source
+    # 各个写入入口都必须走它，不许自己另写一套（漏一个就会丢更新）。
+    for name in ("_write_status", "record_cleanup_attempt", "set_cleanup_decision"):
+        assert "_mutate_status" in inspect.getsource(getattr(module, name)), name
 
 
 def test_default_concurrency_is_three() -> None:

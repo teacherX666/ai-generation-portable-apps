@@ -35,6 +35,12 @@ class VisionAnalyzer(Protocol):
     async def analyze(self, asset: MediaAsset) -> VisionDescription:
         raise NotImplementedError
 
+    async def cached_description(
+        self, asset: MediaAsset
+    ) -> VisionDescription | None:
+        """只读缓存里的描述（给参考图去水印的前置判据用，见 integrations/vision.py）。"""
+        raise NotImplementedError
+
 
 class RequirementPlanner(Protocol):
     async def plan(

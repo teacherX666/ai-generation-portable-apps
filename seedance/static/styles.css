@@ -1309,3 +1309,19 @@ html, body { height: 100%; overflow: hidden; }
 #sd-draft-status { color: var(--text-secondary); }
 
 
+
+/* 浏览器**原生全屏**（视频播放条右下角 ⛶）必须看到完整画面，不能被缩略图规则放大裁切
+ * （2026-10-30 用户在飞书模块报「视频会被放大」）。全屏时浏览器只把元素宽高铺满屏幕，
+ * 作者样式里的 object-fit / max-height 照旧生效 —— 网格与素材行为了裁方形缩略图写的是
+ * `object-fit: cover`，一进全屏就变成「铺满再裁掉两边」。这里给全屏态一条压倒性规则：
+ * 铺满 + contain（留黑边、绝不裁切），并放开缩略图的尺寸/圆角约束。只影响全屏态。 */
+video:fullscreen,
+video:-webkit-full-screen {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: contain !important;
+  border-radius: 0 !important;
+  background: #000;
+}

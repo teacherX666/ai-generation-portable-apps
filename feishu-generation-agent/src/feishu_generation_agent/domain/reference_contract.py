@@ -88,6 +88,115 @@ def duration_consistency_issues(
     ]
 
 
+#: 「正文自述时长 ≠ 任务时长」这条阻断项的文案前缀（文案唯一来源就是上面的
+#: `duration_consistency_issues`）。
+STATED_DURATION_BLOCKING_PREFIX = "Seedance 提示词正文自述时长（"
+#: 复用守卫判据 1（本次时长 ≠ 上一版时长）的文案前缀与「上一版秒数」抓取 ——
+#: 文案里自己给了出口：「或把时长改回上一版的秒数」，用户照做之后这条就该消失。
+#: 文案产生方见 `graph.runtime.GraphRuntime._reuse_guard_reasons`。
+REUSE_DURATION_CHANGED_PREFIX = "本次时长是 "
+_REUSE_GUARD_PREVIOUS_SECONDS = re.compile(
+    r"上一版计划里的提示词是按\s*(\d+)\s*秒写的"
+)
+
+#: 已删除的「参考图保真校验」写过的阻断项前缀（2026-10-28）。
+#:
+#: 那条校验用正则匹配「一颗/三颗/十颗」，会误伤「数**十颗**」「十**几颗**」这种**本来就
+#: 表示"多"**的写法，把正常提示词判成"写少了"并卡住审批（用户原话：「把这个阻塞删了，碍事」）。
+#: 写入方已整块删除，但**存量快照里还留着这条字符串** —— run `6005a4b9`（切瑞士卷 TASK-01）
+#: 就是这样：该 run 创建于我删代码之前，计划里的 `blocking_issues` 仍带着它，
+#: `TaskPlan.approve()` 见非空即抛错，用户怎么都批不了。
+#:
+#: 处理原则与「时长族」完全一致：**派生出来的结论，在被依赖的那一刻必须按当前代码口径重算**，
+#: 不能当数据存着不管。下面在同一个循环里把它清掉 —— 这个函数挂在所有合并路径
+#: （读视图 / `patch_task` / `_validate_decision` / 合并客户端任务）上，清一次就全通。
+LEGACY_FIDELITY_BLOCKING_PREFIX = "参考图保真校验未过"
+
+#: 复用守卫写过的「格式类」阻断项前缀（2026-10-30 起改为**只提示不拦**）。
+#:
+#: 用户原话：「本来就没有图片6，他还是给我阻塞了，把这个阻塞的删了」——实锤 run
+#: `e92f45bb`：提示词里只有 `@图片1~@图片4` 与 `@视频1`，快照里的阻塞项却写着
+#: 「提示词里引用了 @图片6」：**判据是从当时的 prompt 推出来的存量字符串**，
+#: 提示词后来修好了也没人重算它，`TaskPlan.approve()` 见非空就抛错，用户怎么改都批不了。
+#:
+#: 这两族（悬空引用 / 锚点空洞）现在只进 `warnings`（写入方见
+#: `graph.runtime.GraphRuntime._reuse_guard_reasons`），下面把**存量字符串**一并清掉。
+REFERENCE_MENTION_BLOCKING_PREFIX = "提示词引用了 @"
+DANGLING_HOLE_BLOCKING_PREFIX = "提示词里有被削掉主语的空洞"
+#: 上面两族现在写给用户的措辞（带「不拦审批」那句），存量条目可能没有，所以按前缀匹配。
+_REFERENCE_FORMAT_BLOCKING_PREFIXES = (
+    REFERENCE_MENTION_BLOCKING_PREFIX,
+    DANGLING_HOLE_BLOCKING_PREFIX,
+)
+
+
+def refresh_duration_blocking_issues(
+    payload: dict[str, Any],
+    *,
+    explicit_duration_edit: bool = False,
+) -> None:
+    """按**当前**的 `prompt` / `duration` 重算「时长不一致」阻断项（就地改 payload）。
+
+    **为什么必须重算**（2026-10-13「小猫钓鱼」审批一直报「无效」的根因）：
+    这类阻断项是**存量字符串** —— 由复用守卫（`_reuse_guard_reasons`）或改时长写进
+    `blocking_issues`，但改时长（`patch_task`）与改提示词都不会重新评估它。
+    实锤（run `788ab355`）：用户把任务时长从 18 改成 12、正文本来就是「共12秒」、
+    时间轴 0-8s/8-12s（**两边已经一致**），可旧快照还写着「12 秒与任务时长 18 秒不一致」
+    → `TaskPlan.approve()` 见 `blocking_issues` 非空就抛错 → 审批 422，
+    界面上只显示「审批无效」，用户无论怎么改都批不了。
+
+    **为什么放在 domain 层**（2026-10-21）：`blocking_issues` 是**服务端派生字段**，
+    但审批请求体里带着浏览器那一份任务（`DecisionRequest.tasks`），浏览器可能拿着
+    **过期快照**（改完时长还没轮询到新视图就点了批准）→ 合并进计划后
+    `approved_subset()` 看到旧字符串就拒。生产实锤：run `c4163b7b` 服务端 checkpoint
+    里 `duration=10`、`blocking_issues` 已空，审批仍然秒失败
+    （日志堆栈 `graph/nodes.py:1716`，即 `human_approval` 节点内的 `approved_subset`）。
+    因此重算必须挂在**所有合并路径**共用的 `reconcile_task_asset_coverage` 上，
+    而不是只在 `patch_task` / `_validate_decision` 里各修一次。
+
+    两族文案分头处理（只动「时长」这一族，别的不碰）：
+
+    * 「正文自述时长（X 秒）与任务时长（Y 秒）不一致」→ **整族重算**：按当前
+      `prompt`/`duration` 重新判定，一致就清掉、真不一致就补回来（口径与提交时校验
+      完全一致，不会放过真的问题）。**读取视图、审批校验、改字段、合并客户端任务都要跑**。
+    * 「本次时长是 X 秒，而上一版计划里的提示词是按 Y 秒写的」→ **只在用户显式改时长
+      时**（`explicit_duration_edit=True`，即 `patch_task`）才按「已改回 Y」清掉。
+      读取视图/合并时**绝不能清**：克隆那一步任务时长可能还没被换成新值，此时
+      `duration == Y` 是「还没应用」而不是「用户改回来了」—— 误清会让 2026-10-10 的
+      P0 守卫形同虚设（`test_rerun_with_new_duration_does_not_preserve_prompt_verbatim`）。
+    """
+    raw = payload.get("blocking_issues")
+    current = [str(item) for item in raw] if isinstance(raw, list) else []
+    duration = payload.get("duration")
+    duration_is_int = isinstance(duration, int) and not isinstance(duration, bool)
+    kept: list[str] = []
+    for item in current:
+        if item.startswith(STATED_DURATION_BLOCKING_PREFIX):
+            continue  # 这一族下面按当前值重算
+        if item.startswith(LEGACY_FIDELITY_BLOCKING_PREFIX):
+            continue  # 2026-10-28：写入方已删除，存量字符串一律清掉（见常量注释）
+        if item.startswith(_REFERENCE_FORMAT_BLOCKING_PREFIXES):
+            # 2026-10-30：悬空引用 / 锚点空洞改为**只提示不拦**。存量快照里还留着它们，
+            # 不清掉的话用户永远卡在「审批无效」上（见常量注释里的 run e92f45bb）。
+            continue
+        if explicit_duration_edit and item.startswith(REUSE_DURATION_CHANGED_PREFIX):
+            previous = _REUSE_GUARD_PREVIOUS_SECONDS.search(item)
+            if (
+                previous is not None
+                and duration_is_int
+                and duration == int(previous.group(1))
+            ):
+                continue  # 用户按文案照做、把时长改回上一版 → 「时长变了」这条理由消失
+        kept.append(item)
+    refreshed = [
+        *kept,
+        *duration_consistency_issues(payload.get("prompt"), duration),
+    ]
+    deduped = list(dict.fromkeys(refreshed))
+    if deduped != current:
+        payload["blocking_issues"] = deduped
+
+
 def single_whole_clip_timeline_hint(
     prompt: object,
     duration: object,

@@ -11,7 +11,7 @@ body { display:grid; grid-template:"top top top" 44px "shots view panel" 1fr / 2
 button { background:#334155; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:4px 10px; cursor:pointer; }
 button:hover { filter:brightness(1.15); }
 button.primary { background:var(--accent); border-color:var(--accent); }
-button.green { background:#16a34a; border-color:#16a34a; }
+button.green { background:var(--success); border-color:var(--success); }
 button.danger { background:var(--danger); border-color:var(--danger); }
 button.block { width:100%; margin-bottom:6px; }
 select,input[type=number],input:not([type]),textarea { background:#0f172a; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:4px 6px; }

@@ -43,7 +43,14 @@ def build_graph(services: GraphServices, checkpointer: Any):
     builder.add_node(
         "human_approval",
         partial(human_approval, services=services),
-        destinations=("plan_requirements", "revalidate_approval", END),
+        # 退回时：文档在审批期间被改过 → 回 `ingest_source` 重新读文档（否则新挂的
+        # 参考视频对规划器不可见）；没改过 → 直接 `plan_requirements` 只重规划。
+        destinations=(
+            "ingest_source",
+            "plan_requirements",
+            "revalidate_approval",
+            END,
+        ),
     )
     builder.add_node(
         "revalidate_approval",

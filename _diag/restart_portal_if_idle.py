@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_PORTS = [9090, 9089]
 SUBPORT_WAIT_SECONDS = 180
 PORTAL_WAIT_SECONDS = 120
+#: 看门狗：负责拉起 Portal 并常驻。**本脚本杀完必须确保它在跑**（见 `ensure_watchdog`）。
+WATCHDOG = ROOT / "portal_watchdog.ps1"
 
 
 def run(cmd: list[str]) -> str:
@@ -66,6 +68,48 @@ def children_of(pid: int) -> list[int]:
 
 def kill(pid: int) -> None:
     run(["taskkill", "/F", "/PID", str(pid)])
+
+
+def watchdog_pid() -> int:
+    """现在有没有看门狗进程在跑（命令行里带 portal_watchdog.ps1）。"""
+    out = run([
+        "powershell", "-NoProfile", "-NonInteractive", "-Command",
+        "Get-CimInstance Win32_Process -Filter \"Name like '%powershell%'\" | "
+        "Where-Object { [string]$_.CommandLine -like '*portal_watchdog.ps1*' } | "
+        "Select-Object -First 1 -ExpandProperty ProcessId",
+    ])
+    for tok in out.split():
+        try:
+            return int(tok)
+        except ValueError:
+            continue
+    return 0
+
+
+def ensure_watchdog() -> tuple[bool, str]:
+    """**杀 Portal 之前就必须确认看门狗在跑**，否则杀完没人拉、网站躺平。
+
+    2026-10-29 事故：本脚本只 `taskkill` 然后**干等看门狗**，而看门狗当时没在跑
+    （计划任务只在登录时触发，进程早没了）→ Portal 被杀了 2 分钟没人拉起，
+    用户来报「网站怎么坏了」。现在的规矩：**杀之前**先确保看门狗活着。
+    """
+    pid = watchdog_pid()
+    if pid:
+        return True, f"看门狗已在跑（pid={pid}）"
+    if not WATCHDOG.is_file():
+        return False, f"看门狗脚本不存在：{WATCHDOG}"
+    run([
+        "powershell", "-NoProfile", "-NonInteractive", "-Command",
+        f"Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden "
+        f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{WATCHDOG}'",
+    ])
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        time.sleep(2)
+        pid = watchdog_pid()
+        if pid:
+            return True, f"看门狗已拉起（pid={pid}）"
+    return False, "看门狗拉不起来（20 秒内没看到进程）"
 
 
 def listening_ports() -> set[int]:
@@ -139,6 +183,14 @@ def main() -> int:
         print("--dry-run：不做任何动作。")
         return 0
 
+    # ⚠️ **杀之前**先确认看门狗在跑（2026-10-29）：以前是杀了之后干等它，
+    # 而它当时不在 → 没人拉起 Portal → 网站躺平、用户来报「网站怎么坏了」。
+    ok, msg = ensure_watchdog()
+    print(f"看门狗检查：{msg}")
+    if not ok:
+        print("!! 看门狗不在且拉不起来 —— **中止重启**（宁可不动，也不把网站留在死状态）。")
+        return 6
+
     print("先杀 Portal（避免它的健康循环在半路把子应用拉起来），再杀子进程…")
     kill(pid)
     time.sleep(2)
@@ -158,7 +210,8 @@ def main() -> int:
         if new_pid and new_pid != pid:
             break
     if not new_pid or new_pid == pid:
-        print("!! Portal 没有被看门狗拉起，请人工介入")
+        print("!! Portal 没有被看门狗拉起。请手动执行：")
+        print(f'   powershell -NoProfile -ExecutionPolicy Bypass -File "{WATCHDOG}"')
         return 5
     print(f"Portal 已由看门狗拉起：新 pid={new_pid}")
 

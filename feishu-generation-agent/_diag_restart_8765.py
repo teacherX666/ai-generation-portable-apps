@@ -20,6 +20,12 @@ REPO = Path(r"C:\Users\123\Documents\LTX\ai-generation-portable-apps\feishu-gene
 BASE = "http://127.0.0.1:8765"
 HEADERS = {"X-Portal-User-Id": "6b34d9e8-3058-41b6-89b2-4cedac2362ee"}
 
+#: ⚠️ 必须 `trust_env=False`。本机注册表钉着 `ProxyEnable=1 / socks=127.0.0.1:1080`
+#: （那个死代理），`httpx.get` 默认会经 `getproxies()` 读到它 → 健康检查每次都抛异常
+#: → 循环里 `continue` 到超时，脚本**误报「重启超时」**，而服务其实早就 ready 了。
+#: 2026-10-28 实测踩到：报超时，但 8765 已监听、`/api/health` 200、进程启动时间也对。
+_CLIENT = httpx.Client(trust_env=False, timeout=15.0)
+
 
 def non_terminal_runs() -> list[tuple]:
     con = sqlite3.connect(f"file:{REPO / 'data' / 'agent.sqlite3'}?mode=ro", uri=True)
@@ -61,12 +67,20 @@ def newest_source_mtime() -> float:
 
 
 def process_start(pid: int) -> str:
+    """新进程启动时间，**不变式格式** `yyyyMMddHHmmss`。
+
+    ⚠️ 不要直接取 `CreationDate`：CIM 返回 DateTime，PowerShell 按**本机区域**渲染成
+    「2026年10月28日 9:55:03」，下面的 `strptime("%Y%m%d%H%M%S")` 必然抛 ValueError。
+    这个洞以前被「健康检查先超时」挡住，2026-10-28 修掉代理问题后才暴露 ——
+    脚本重启明明成功，却在最后一步崩掉。
+    """
     return _run(
         [
             "powershell",
             "-NoProfile",
             "-Command",
-            f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate",
+            f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}')."
+            "CreationDate.ToString('yyyyMMddHHmmss')",
         ]
     ).strip()
 
@@ -106,7 +120,7 @@ def main() -> None:
         new_pids = feishu_pids()
         if new_pids:
             try:
-                health = httpx.get(
+                health = _CLIENT.get(
                     f"{BASE}/api/health", headers=HEADERS, timeout=10.0
                 ).json()
             except Exception:  # noqa: BLE001
@@ -122,16 +136,19 @@ def main() -> None:
     newest = newest_source_mtime()
     print(f"最新源码 mtime：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(newest))}")
     for pid in new_pids:
-        # CreationDate 形如 20261010120105.123456+480
+        # `process_start` 现在保证是 yyyyMMddHHmmss；仍按「取前 14 位数字」解析，
+        # 免得将来有人改了格式整条脚本又在最后一步崩掉。
         text = process_start(pid)
-        stamp = text.split(".")[0]
-        if len(stamp) >= 14:
-            started = time.mktime(time.strptime(stamp[:14], "%Y%m%d%H%M%S"))
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if len(digits) >= 14:
+            started = time.mktime(time.strptime(digits[:14], "%Y%m%d%H%M%S"))
             print(
                 f"  pid {pid} 启动 {time.strftime('%H:%M:%S', time.localtime(started))} "
                 f"> 源码 mtime？{started > newest}"
             )
-    health = httpx.get(f"{BASE}/api/health", headers=HEADERS, timeout=10.0).json()
+        else:
+            print(f"  !! 无法解析启动时间 pid={pid} text={text!r} —— 请人工核对")
+    health = _CLIENT.get(f"{BASE}/api/health", headers=HEADERS, timeout=10.0).json()
     print("health ready =", health.get("ready"))
     print("被中断的 run_id：", pending or "无")
 

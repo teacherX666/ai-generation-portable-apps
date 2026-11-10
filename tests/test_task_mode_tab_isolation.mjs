@@ -15,11 +15,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-function makeOption(value) { return { value, textContent: value }; }
+function makeOption(value) {
+  // dataset 必须给：syncFrameRatioLock / syncDraftResolution 都用 dataset 记「临时补的选项」，
+  // 假元素缺它会在 changeTaskMode 里直接 TypeError（这个文件因此长期一条用例都跑不到）。
+  return { value, textContent: value, dataset: {} };
+}
 function makeSelect(name, values) {
   const options = values.map(makeOption);
   const s = {
-    name, tagName: 'SELECT', type: 'select-one', options,
+    name, tagName: 'SELECT', type: 'select-one', options, dataset: {},
     _value: values[0],
     get value() { return this._value; },
     set value(v) { this._value = v; },
@@ -69,6 +73,8 @@ const sandbox = {
   crypto: { randomUUID: () => 'uuid' },
   console, setTimeout, setInterval: () => 1, clearInterval() {},
   alert() {}, confirm: () => true, DataTransfer: class {},
+  // 锁 ratio / 锁分辨率时会 new Option(...) 补占位选项（真浏览器行为）。
+  Option: class { constructor(text, value) { this.textContent = text; this.value = value; this.dataset = {}; } },
 };
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync('seedance/static/app.js', 'utf8'), sandbox);
@@ -77,10 +83,13 @@ const providers = JSON.parse(fs.readFileSync('seedance/providers.json', 'utf8'))
 const app = sandbox.window.SeedanceApp();
 app.providers = { volcengine: providers.providers.volcengine };
 app.models = providers.providers.volcengine.models.map(m => ({
+  // key 必须有：applyModelLimits 与样片模式守卫都按 key 找当前条目（缺了会匹配到第一个条目）。
+  key: m.id,
   id: m.id, label: m.label,
   duration_range: m.duration_range || null,
   resolutions: m.resolutions || null,
   ratios: m.ratios || null,
+  draft: !!(m.capabilities && m.capabilities.draft),
 }));
 app.applyModelLimits();
 

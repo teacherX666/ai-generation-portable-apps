@@ -383,6 +383,16 @@ class VisionDescription(BaseModel):
     colors: list[str]
     probable_role: str
     uncertainties: list[str]
+    # 2026-10-27 方案 C：由「专门读图」调用产出的**可校验事实**。
+    # 全部可选、带默认值 —— 向后兼容：旧的 `vision_cache` JSON 与 Claude 路径都不带它们。
+    # 为什么要单独存：规划调用同时扛着约 3.9 万字的契约 + 文档，实测（需求1「铲蜡」
+    # run `453e8074`）它把参考图里「三个色区、每区上百颗独立小滴、右侧连成一片」
+    # 概括成「三颗蜡滴（左红中蓝右浅绿）」。这几个字段是**读图专用的产物**，
+    # 既注入规划，也用来做保真校验（`planner._check_reference_facts_fidelity`）。
+    regions: list[str] = Field(default_factory=list)
+    surface: str = ""
+    camera: str = ""
+    light: str = ""
 
 
 class VideoReferenceKind(StrEnum):

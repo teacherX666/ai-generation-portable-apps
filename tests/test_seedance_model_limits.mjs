@@ -97,15 +97,30 @@ const volcengine = providers.providers.volcengine;
 
 const app = sandbox.window.SeedanceApp();
 app.providers = { volcengine };
-app.models = sandbox.buildUnifiedVideoModels({ volcengine }, true);
-modelSelect.options = app.models.map(m => ({ value: m.key, textContent: m.label }));
 function limitsFor(id) {
   return volcengine.models.find(m => m.id === id);
 }
 
-assert.equal(limitsFor('doubao-seedance-2-0-mini-260615').disabled, true,
-  'Seedance 2.0 mini must stay visible but disabled while the Ark account lacks access');
-modelSelect.value = 'doubao-seedance-2-0-mini-260615';
+//: 2026-10-15 修：这里原来断言 `doubao-seedance-2-0-mini-260615` 必须 disabled，但
+//: providers.json 里的 mini 早已换成接入点 id（`ep-20260912121738-vtd78`）且
+//: `disabled: false` —— 那条断言依赖的是**写入时的账号开通状态**，跟配置脱节后
+//: 整个文件就断在这一行，后面所有用例一条都跑不到（跑一次就能看到 TypeError）。
+//: 改成按配置驱动：谁 disabled 就验谁；一个都没有时注入一个探针模型，保住「可见但不可选 +
+//: 触发回退 + 文案解释」这几条不变量的覆盖。
+const disabledEntry = volcengine.models.find(m => m.disabled);
+const disabledId = disabledEntry ? disabledEntry.id : '__disabled_probe__';
+if (!disabledEntry) {
+  volcengine.models.push({
+    id: disabledId, label: '已失效（探针）', disabled: true,
+    duration_range: [4, 15], resolutions: ['480p'], ratios: ['16:9'],
+  });
+}
+app.models = sandbox.buildUnifiedVideoModels({ volcengine }, true);
+modelSelect.options = app.models.map(m => ({ value: m.key, textContent: m.label }));
+
+assert.equal(limitsFor(disabledId).disabled, true,
+  'disabled 模型必须可见但不可选（灰显 + 回退），不能直接从列表里消失');
+modelSelect.value = disabledId;
 assert.equal(app.ensureAvailableModel(), true, 'a disabled model must trigger fallback');
 assert.equal(modelSelect.value, app.models[0].key, 'fallback must select the first enabled model');
 assert.match(app.modelHint, /已失效/, 'fallback must explain why the model changed');
@@ -126,10 +141,40 @@ assert.deepEqual(
   spec25.resolutions,
   '2.5 resolution list must match providers.json',
 );
+//: 2026-10-15 修：原来这里断言「2.5 不提供 1080p」，理由是「提供了会让方舟异步报错」。
+//: 那条判断来自 providers.json 自己漏抄（官方能力表里 2.5 就是 480p/720p/1080p，1080p 为
+//: 10bit），而**样片模式的成片阶段更是强制要求 1080p** —— 声明里缺了它，seedance 自己的
+//: `validate_model_capabilities` 会把合法的成片请求拦下来。改为：必须提供 1080p、不得提供 4k
+//: （4k 是 2.0 独有）。
 assert.ok(
-  !resolutionSelect.options.some(o => o.value === '1080p' || o.value === '4k'),
-  '2.5 does not support 1080p/4k — offering them would produce an async Ark error',
+  resolutionSelect.options.some(o => o.value === '1080p'),
+  '2.5 must offer 1080p — 样片模式的成片阶段强制 1080p，而本地能力校验按这份声明放行',
 );
+assert.ok(
+  !resolutionSelect.options.some(o => o.value === '4k'),
+  '2.5 does not support 4k（2.0 独有）— offering it would produce an async Ark error',
+);
+
+// --- 分辨率选项上的价格提示（2026-10-19）-----------------------------------
+// 官方价格表：2.5 的 1080p 是 720p 的 2.5 倍（¥18.71 vs ¥7.56，5 秒 16:9 无输入视频）。
+// 高价档必须让用户看得见价格，否则很容易随手选到最贵的一档。
+// 注意只改**显示**：option.value 必须是原枚举值，后端按 providers.json 校验，改了会被判"不支持"。
+modelSelect.value = 'doubao-seedance-2-5-260628';
+resolutionSelect.value = '720p';
+app.applyModelLimits();
+const opt25 = Object.fromEntries(resolutionSelect.options.map(o => [o.value, o.textContent]));
+assert.equal(opt25['1080p'], '1080p（约 ¥19/5秒）', '2.5 的 1080p 必须带价格提示');
+assert.equal(opt25['720p'], '720p', '720p 不加提示（它是常规档）');
+assert.equal(opt25['480p'], '480p');
+assert.ok(resolutionSelect.options.every(o => o.value === o.value.trim()), 'option.value 不能被改成带提示的文案');
+
+// 2.0 的 1080p 不加提示 —— 不同模型同档价位差很多，编一个数不如不标。
+modelSelect.value = 'doubao-seedance-2-0-260128';
+resolutionSelect.value = '1080p';
+app.applyModelLimits();
+const opt20 = Object.fromEntries(resolutionSelect.options.map(o => [o.value, o.textContent]));
+assert.equal(opt20['1080p'], '1080p', '2.0 的价格提示不在本表覆盖范围，不能瞎标');
+assert.equal(resolutionSelect.value, '1080p', '带提示不影响取值（这一档对 2.0 是合法的）');
 
 // --- 2.0: 15s ceiling, 1080p/4k available --------------------------------
 modelSelect.value = 'doubao-seedance-2-0-260128';

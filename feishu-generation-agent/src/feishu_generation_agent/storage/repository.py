@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS runs (
   owner_user_id TEXT NOT NULL DEFAULT 'prime-local',
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  archived_at TEXT,
+  archived_auto INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,7 +203,15 @@ class Repository:
         *,
         owner_user_id: str | None = None,
         statuses: set[str] | frozenset[str] | None = None,
+        exclude_archived: bool = False,
     ) -> list[dict[str, Any]]:
+        """列出运行。
+
+        `exclude_archived=True` 时跳过已进回收站的（`archived_at` 非空）—— 任务记录
+        列表要用它（用户 2026-10-30：直连任务也要有「删除进回收站 + 超 10 条自动
+        回收」，与多维表格任务同一套）。默认不过滤：恢复、续跑、统计这些链路本来
+        就只按状态取行，多一个过滤条件只会让它们少看到东西。
+        """
         owner_user_id = self._read_owner(owner_user_id)
         owner_clause = (
             "owner_user_id = ?" if owner_user_id is not None else "1 = 1"
@@ -209,6 +219,7 @@ class Repository:
         owner_parameters: tuple[str, ...] = (
             (owner_user_id,) if owner_user_id is not None else ()
         )
+        archived_clause = " AND archived_at IS NULL" if exclude_archived else ""
         if statuses is not None:
             values = sorted(statuses)
             if not values:
@@ -217,9 +228,10 @@ class Repository:
             cursor = await self._connection.execute(
                 f"""
                 SELECT run_id, thread_id, source_url, owner_user_id, status,
-                       created_at, updated_at
+                       created_at, updated_at, archived_at, archived_auto
                 FROM runs
-                WHERE {owner_clause} AND status IN ({placeholders})
+                WHERE {owner_clause}{archived_clause}
+                  AND status IN ({placeholders})
                 ORDER BY created_at ASC
                 """,
                 (*owner_parameters, *values),
@@ -228,13 +240,98 @@ class Repository:
             cursor = await self._connection.execute(
                 f"""
                 SELECT run_id, thread_id, source_url, owner_user_id, status,
-                       created_at, updated_at
+                       created_at, updated_at, archived_at, archived_auto
                 FROM runs
-                WHERE {owner_clause}
+                WHERE {owner_clause}{archived_clause}
                 ORDER BY created_at ASC
                 """,
                 owner_parameters,
             )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+    async def archive_runs(
+        self, run_ids: list[str], *, auto: bool = False
+    ) -> int:
+        """把这几条运行移进回收站（`archived_at` 打时间戳）。
+
+        **粒度是"整条任务"**：直连任务没有多维表格记录，同一份文档的历次重跑就是
+        一条任务的多个版本 —— 调用方（`web/app.py`）按文档 token 把整组 run_id 传给
+        这里，一次全归档，与多维表格那条「删一次整条记录一起进回收站」口径一致。
+
+        `auto=True` 表示这是「超过 10 条任务」的自动回收（回收站里会标出来，用户能
+        区分"系统回收的"和"我自己删的"）。
+        """
+        ids = [str(run_id) for run_id in run_ids if str(run_id or "").strip()]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        cursor = await self._connection.execute(
+            f"""
+            UPDATE runs
+               SET archived_at = ?,
+                   archived_auto = ?
+             WHERE run_id IN ({placeholders})
+               AND archived_at IS NULL
+            """,
+            (
+                _now(),
+                1 if auto else 0,
+                *ids,
+            ),
+        )
+        updated = int(cursor.rowcount or 0)
+        await self._connection.commit()
+        await cursor.close()
+        return updated
+
+    async def restore_runs(self, run_ids: list[str]) -> int:
+        """把这几条运行移出回收站（整组一起回来）。
+
+        与多维表格那条一样：**恢复时刻意不顺手归档别的**——恢复一条会让可见任务变成
+        11 条，宁可如实显示 11 条，也不让用户"什么都没做却少了一条"。
+        """
+        ids = [str(run_id) for run_id in run_ids if str(run_id or "").strip()]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        cursor = await self._connection.execute(
+            f"""
+            UPDATE runs
+               SET archived_at = NULL,
+                   archived_auto = 0
+             WHERE run_id IN ({placeholders})
+               AND archived_at IS NOT NULL
+            """,
+            tuple(ids),
+        )
+        updated = int(cursor.rowcount or 0)
+        await self._connection.commit()
+        await cursor.close()
+        return updated
+
+    async def list_archived_runs(
+        self, *, owner_user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """回收站里的运行（直连任务用；多维表格那边查的是绑定表）。"""
+        owner_user_id = self._read_owner(owner_user_id)
+        owner_clause = (
+            "owner_user_id = ?" if owner_user_id is not None else "1 = 1"
+        )
+        parameters: tuple[str, ...] = (
+            (owner_user_id,) if owner_user_id is not None else ()
+        )
+        cursor = await self._connection.execute(
+            f"""
+            SELECT run_id, thread_id, source_url, owner_user_id, status,
+                   created_at, updated_at, archived_at, archived_auto
+            FROM runs
+            WHERE {owner_clause} AND archived_at IS NOT NULL
+            ORDER BY archived_at DESC
+            """,
+            parameters,
+        )
         rows = await cursor.fetchall()
         await cursor.close()
         return [dict(row) for row in rows]
@@ -992,6 +1089,15 @@ class Repository:
             await connection.execute(
                 "ALTER TABLE runs ADD COLUMN owner_user_id "
                 "TEXT NOT NULL DEFAULT 'prime-local'"
+            )
+        # 2026-10-30：直连任务（左上角「生成计划」）也要能「删除 = 进回收站」与
+        # 「超过 10 条自动回收」，与多维表格任务同一套 —— 那两件事在绑定表里是
+        # `deleted` / `archived_auto`，运行时这张表以前没有对应字段。
+        if "archived_at" not in columns:
+            await connection.execute("ALTER TABLE runs ADD COLUMN archived_at TEXT")
+        if "archived_auto" not in columns:
+            await connection.execute(
+                "ALTER TABLE runs ADD COLUMN archived_auto INTEGER NOT NULL DEFAULT 0"
             )
 
     @staticmethod

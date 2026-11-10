@@ -104,6 +104,18 @@ async def test_optimize_prompts_rewrites_in_place_and_stays_at_approval(
         assert result["optimized_task_ids"] == ["task-video"]
         assert result["unchanged_task_ids"] == []
 
+        # 2026-10-22 用户要求：「优化所选提示词」也要看到改动差异，且与「重做」同一个接口口径。
+        # 所以返回值必须带上对比数据（改写前那一版 / 冻结锚点 / 改写后 / 本次要求），
+        # 前端据此立刻渲染 diff，不必干等轮询。只含**真被改写**的任务。
+        comparisons = result["comparisons"]
+        assert set(comparisons) == {"task-video"}
+        item = comparisons["task-video"]
+        assert item["previous_prompt"] == before
+        assert item["base_prompt"] == before
+        assert item["current_prompt"].endswith("（已按「动作再慢一点，结尾保持稳定」改写）")
+        assert item["requirements"] == ["动作再慢一点，结尾保持稳定"]
+        assert item["changed"] is True
+
         after = await runtime.get_run_view("run-optimize")
         task = after["approval"]["tasks"][0]
         # 提示词被 AI 改写了，而且**没有**重新规划、没有新 run。

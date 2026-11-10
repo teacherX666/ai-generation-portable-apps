@@ -106,6 +106,66 @@ async def test_extreme_aspect_ratio_is_not_blocked(tmp_path: Path) -> None:
     assert kept[0].height >= 300  # 高度被抬到下限
 
 
+async def test_sides_ok_but_too_few_pixels_is_also_upscaled(tmp_path: Path) -> None:
+    """**每边 ≥300px 不等于总像素达标**（2026-11-05 生产事故）。
+
+    上游对 `doubao-seedance-2-5` 的 r2v 是**两条并列约束**：每边 300~6000px 之外，
+    参考图总像素还必须 ≥90,000。340x260 两边都过了 300px 这道闸，却只有 88,400 像素，
+    旧守卫放行 → 上游整单拒：
+
+        The parameter `content[6]` specified in the request is not valid: the
+        parameter image pixel count ... must be greater than or equal to 90000
+        for model doubao-seedance-2-5 in r2v
+
+    判别力：这条用例在只按短边放大的旧实现下**必红**（短边已达标 → 不放大）。
+    """
+    from feishu_generation_agent.graph.nodes import _without_unusable_references
+
+    services = _Services()
+    assets = [_png(tmp_path, "narrow-tall", 340, 260)]
+
+    kept = await _without_unusable_references(assets, "run-1", services)
+
+    assert [asset.asset_id for asset in kept] == ["narrow-tall"]
+    fixed = kept[0]
+    assert fixed.width >= 300 and fixed.height >= 300
+    assert fixed.width * fixed.height >= 90_000
+    # 比例保持
+    assert abs(fixed.width / fixed.height - 340 / 260) < 0.02
+
+
+async def test_long_short_side_image_gets_area_not_just_side(tmp_path: Path) -> None:
+    """1000x100：总像素 100,000 早就够了，卡的是短边（100px）。
+
+    这条钉住「两条约束取较大者」——短边放大 3 倍后面积会飙到 900,000，
+    说明短边约束确实在主导，而不是被面积判据顺手带过。
+    """
+    from feishu_generation_agent.graph.nodes import _without_unusable_references
+
+    services = _Services()
+    assets = [_png(tmp_path, "long-thin", 1000, 100)]
+
+    kept = await _without_unusable_references(assets, "run-1", services)
+
+    fixed = kept[0]
+    assert fixed.height >= 300 and fixed.width >= 300
+    assert fixed.width * fixed.height >= 90_000
+    assert abs(fixed.width / fixed.height - 10.0) < 0.2
+
+
+async def test_image_meeting_both_constraints_is_left_alone(tmp_path: Path) -> None:
+    """两条约束都满足的图不放大、不写事件（避免每次白转一次 PNG）。"""
+    from feishu_generation_agent.graph.nodes import _without_unusable_references
+
+    services = _Services()
+    assets = [_png(tmp_path, "exact-floor", 300, 300)]  # 300x300 = 恰好 90,000
+
+    kept = await _without_unusable_references(assets, "run-1", services)
+
+    assert kept[0].local_path == assets[0].local_path
+    assert services.repository.events == []
+
+
 async def test_unknown_size_is_not_blocked(tmp_path: Path) -> None:
     """拿不到尺寸就不要乱拦，交给供应商判断。"""
     from feishu_generation_agent.graph.nodes import _without_unusable_references

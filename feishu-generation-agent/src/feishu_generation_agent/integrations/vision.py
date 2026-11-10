@@ -175,6 +175,28 @@ class ClaudeVisionAnalyzer:
             raise self._error_for(asset, _ModelRefusal())
         return shared_description.model_copy(update={"asset_id": asset.asset_id})
 
+    async def cached_description(self, asset: MediaAsset) -> VisionDescription | None:
+        """**只读**这张图已经缓存的视觉描述；缓存里没有就返回 `None`（绝不打模型）。
+
+        给「参考图去水印」的前置判据用（2026-10-22）：清洗前想判"这张图上有没有用户
+        手绘的标记（红圈/标注框）"，**不能为此多打一次模型** —— 多模态规划流水线下
+        `analyze_images` 不产描述，但回退路径（`_describe_images`）会把描述写进缓存，
+        所以读缓存是这类图唯一免费的语义来源。任何异常都当"没有描述"处理。
+        """
+        if asset.download_error is not None:
+            return None
+        cache_key = f"{asset.sha256}:{self.model_name}:{self.prompt_version}"
+        try:
+            cached = await self._repository.get_vision_cache(cache_key)
+        except Exception:  # noqa: BLE001
+            return None
+        if cached is None:
+            return None
+        try:
+            return VisionDescription.model_validate(cached)
+        except Exception:  # noqa: BLE001
+            return None
+
     async def analyze_video(
         self,
         asset: MediaAsset,

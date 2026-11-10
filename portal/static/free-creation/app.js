@@ -83,7 +83,7 @@ const els = {
   shell: $("#fc-shell"), sidebar: $("#fc-sidebar"), menu: $("#menu-button"),
   scrim: $("#sidebar-scrim"), newChat: $("#new-chat"), conversations: $("#conversation-list"),
   conversationCount: $("#conversation-count"),
-  download: $("#download-latest"), stage: $("#stage"),
+  download: $("#download-latest"), stage: $("#stage"), draftFinalize: $("#draft-finalize"), draftFinalizeLabel: $("#draft-finalize-label"),
   previewPanel: $("#preview-panel"), previewMedia: $("#preview-media"), mediaLoading: $("#media-loading"),
   historyToggle: $("#history-toggle"), historyStrip: $("#history-strip"), refine: $("#refine-latest"),
   prompt: $("#prompt"), attachments: $("#attachment-list"), modeSwitch: $("#mode-switch"),
@@ -681,14 +681,44 @@ function setMode(mode) {
     editOnly: true,
     duration: [-1, -1],
     //: 2026-09-29：这里以前写死 ["720p","1080p","2K"]，而它下发的模型是
-    //: doubao-seedance-2-5-260628 —— **真实只支持 480p/720p**（providers.json）。
-    //: 于是编辑态的下拉里多出 1080p / 2K 两个"奇怪的选项"：选中提交会被 seedance 的
-    //: `validate_model_capabilities` 直接拒掉（「分辨率 2K 不支持，可用：480p / 720p」），
-    //: 而真正能用的 480p 反而没列出来。改为**跟随真实模型的配置**：上游能力变了这里
-    //: 自动跟着变；取不到时退回该模型的真实下限。
+    //: doubao-seedance-2-5-260628。当时 providers.json 给它声明的是 480p/720p，
+    //: 于是编辑态下拉里多出 2K 这个"奇怪的选项"：选中提交会被 seedance 的
+    //: `validate_model_capabilities` 直接拒掉（「分辨率 2K 不支持，可用：480p / 720p」）。
+    //: 改为**跟随真实模型的配置**：上游能力变了这里自动跟着变；取不到时退回该模型的真实下限。
+    //:
+    //: ⚠️ 2026-10-19 更正：上面那句「2.5 真实只支持 480p/720p」是**当时**的结论 ——
+    //: 2026-08-07 的官方能力矩阵确实只写 480p/720p。现在官方已支持 1080p
+    //: （教程能力表：2.5 = 480p / 720p / 1080p(10bit)；价格表也单列了 1080p 档：
+    //: 5 秒 16:9 无输入视频 18.71 元/条，是 720p 的 2.5 倍）。providers.json 已补上。
     resolutions: editSourceModel ? [...editSourceModel.resolutions] : ["480p", "720p"],
     ratios: ["adaptive"],
     defaults: {},
+  });
+  //: 样片模式（Draft）入口 —— 用户 2026-10-15：「还是接在自由创作里的，云端模型加一个样片模式」。
+  //:
+  //: 官方把生成拆成两段：先用 480P 低成本试方向（`draft: true`），满意后基于 Step1 返回的
+  //: **任务 id** 出正式成片（提示词/参考素材/随机种子/宽高比/时长由模型自动复用，只重新
+  //: 指定分辨率）。仅 Seedance 2.5 支持；开启样片模式后**只允许 480p**，传其他分辨率直接报错。
+  //:
+  //: 做成独立的云端模型条目（与上面「视频编辑」同一套伪 id 手法）：选它就等于开样片模式。
+  //: 真实模型 id 仍然下发 doubao-seedance-2-5-260628 —— 伪 id 发出去方舟会报
+  //: `InvalidEndpointOrModel.NotFound`（2026-09-21 已踩过）。分辨率锁死 480p。
+  const draftSourceModel = video.find((model) => model.id === "doubao-seedance-2-5-260628");
+  video.unshift({
+    id: "seedance-2.5-draft",
+    modelId: "doubao-seedance-2-5-260628",
+    label: "Seedance 2.5 · 样片模式（480P 快速试错）",
+    provider: "volcengine",
+    providerLabel: "火山方舟",
+    local: false,
+    available: true,
+    badge: "DRAFT",
+    draft: true,
+    duration: draftSourceModel ? [...draftSourceModel.duration] : [4, 30],
+    //: 只有 480p 一项 = 参数面板里自然锁死，用户不可能选错（选了上游也只会报错）。
+    resolutions: ["480p"],
+    ratios: draftSourceModel ? [...draftSourceModel.ratios] : ["16:9", "9:16", "1:1"],
+    defaults: { ...(draftSourceModel?.defaults || {}) },
   });
   state.models = { video, image };
   state.selected.video = video.find((model) => model.available && model.id === "doubao-seedance-2-5-260628") || video.find((model) => model.available) || video[0] || null;
@@ -800,7 +830,17 @@ const PARAM_OPTION_LABELS = { "4k": "4K" };
 function paramOptionLabel(option) {
   return PARAM_OPTION_LABELS[String(option)] || option;
 }
-function paramField(label, options, key, value) {
+//: 分辨率上的**价格提示**：只标「贵到会被随手选错」的档位，而且只在明确知道价位的模型上标。
+//: 官方价格表（2026-10 抓取，5 秒 16:9、输入不含视频）：Seedance 2.5 → 480p ¥3.36 /
+//: 720p ¥7.56 / **1080p ¥18.71**（1080p 是 720p 的 2.5 倍）。值本身绝不动，只改显示。
+const RESOLUTION_PRICE_HINTS = { "doubao-seedance-2-5-260628": { "1080p": "约 ¥19/5秒" } };
+function resolutionLabelFor(value, model) {
+  const base = paramOptionLabel(value);
+  const key = String(model?.modelId || model?.id || "");
+  const hint = (RESOLUTION_PRICE_HINTS[key] || {})[String(value)];
+  return hint ? `${base}（${hint}）` : base;
+}
+function paramField(label, options, key, value, labelFor = paramOptionLabel) {
   const wrap = document.createElement("div");
   wrap.className = "fc-param-field";
   wrap.innerHTML = `<label>${escapeHtml(label)}</label><div class="fc-param-options"></div>`;
@@ -810,7 +850,7 @@ function paramField(label, options, key, value) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `fc-param-option${String(option) === String(value) ? " is-active" : ""}`;
-    button.textContent = paramOptionLabel(option);
+    button.textContent = labelFor(option);
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       state.params[state.mode][key] = option;
@@ -911,7 +951,7 @@ function renderParams() {
     //: "只能选 -1 秒、默认 0"（2026-09-21）。这里直接不给这两个控件，改成说明文字。
     if (model.editOnly) {
       els.paramForm.append(
-        paramField("分辨率", model.resolutions || ["720p"], "resolution", params.resolution),
+        paramField("分辨率", model.resolutions || ["720p"], "resolution", params.resolution, (option) => resolutionLabelFor(option, model)),
         paramNumberField("重复次数", "repeat_count", params.repeat_count, 1, 4, "次", "范围 1-4 次"),
       );
       const editHint = document.createElement("p");
@@ -924,7 +964,7 @@ function renderParams() {
     const end = model.duration?.[1] || 15;
     els.paramForm.append(
       paramField("\u753b\u9762\u6bd4\u4f8b", model.ratios || ["16:9"], "ratio", params.ratio),
-      paramField("\u5206\u8fa8\u7387", model.resolutions || ["720p"], "resolution", params.resolution),
+      paramField("\u5206\u8fa8\u7387", model.resolutions || ["720p"], "resolution", params.resolution, (option) => resolutionLabelFor(option, model)),
       paramNumberField("\u65f6\u957f", "duration", params.duration, start, end, "\u79d2", `\u8303\u56f4 ${start}-${end} \u79d2`),
       paramNumberField("\u91cd\u590d\u6b21\u6570", "repeat_count", params.repeat_count, 1, 4, "\u6b21", "\u8303\u56f4 1-4 \u6b21"),
     );
@@ -949,7 +989,7 @@ function renderParamSummary() {
   const isEdit = (Boolean(state.editSourceTaskId) || Boolean(model?.editOnly)) && canRefine(model);
   const capability = model?.module;
   if (els.modelSummary) els.modelSummary.textContent = model?.label || "\u9009\u62e9\u6a21\u578b";
-  const verb = capability === "image_segment" ? "开始抠图" : capability === "video_upscale" ? "开始超分" : state.mode === "video" ? "\u751f\u6210\u89c6\u9891" : "\u751f\u6210\u56fe\u7247";
+  const verb = capability === "image_segment" ? "开始抠图" : capability === "video_upscale" ? "开始超分" : model?.draft ? "生成样片（480P）" : state.mode === "video" ? "\u751f\u6210\u89c6\u9891" : "\u751f\u6210\u56fe\u7247";
   //: 有任务在跑时，这个按钮变成**方形暂停键**，点它就是取消（用户 2026-09-21 要求：
   //: 「当前任务在进行的话没办法开始生成，那个键就会变成一个暂停任务的标记」）。
   const running = runningTask();
@@ -963,11 +1003,12 @@ function renderParamSummary() {
   els.refine.disabled = !refineAllowed;
   els.refine.setAttribute("aria-pressed", String(isEdit));
   els.refine.classList.toggle("is-active", isEdit);
-  els.refine.title = refineAllowed ? "\u5728\u5f53\u524d\u7ed3\u679c\u4e0a\u7ee7\u7eed\u4fee\u6539" : "抠图 / 超分不支持继续修改";
+  els.refine.title = refineAllowed ? "\u5728\u5f53\u524d\u7ed3\u679c\u4e0a\u7ee7\u7eed\u4fee\u6539" : model?.draft ? "样片模式不支持继续修改：请用结果上的「用这条样片出成片」" : "抠图 / 超分不支持继续修改";
   const chips = [];
   if (capability === "image_segment") chips.push(`${values.max_objects} 个物体`, `阈值 ${values.threshold}`);
   else if (capability === "video_upscale") chips.push(values.upscale_target, values.speed_mode === "fast" ? "快速" : "标准", `CRF ${values.crf}`);
   else if (state.mode === "video" && isEdit) chips.push("\u667a\u80fd\u89c6\u9891\u7f16\u8f91");
+  else if (state.mode === "video" && model?.draft) chips.push("样片模式", "480p", `${values.duration}s`, "低成本试错");
   else if (state.mode === "video") chips.push(values.ratio, values.resolution, `${values.duration}s`, values.repeat_count > 1 ? `\u00d7${values.repeat_count}` : "\u4e0d\u91cd\u590d");
   else chips.push(values.aspect_ratio, values.image_size, values.repeat_count > 1 ? `\u00d7${values.repeat_count}` : "1 \u5f20");
   els.paramSummary.innerHTML = chips.map((chip) => `<span class="fc-param-chip"><strong>${escapeHtml(chip)}</strong></span>`).join("");
@@ -977,7 +1018,8 @@ function renderParamSummary() {
 }
 // 「继续修改」只在云端 Seedance 的视频编辑与图片修改里有实现；本地视频模型、抠图、
 // 超分都没有这个能力（本地视频会把编辑请求当成一次全新生成，白烧算力）。
-function canRefine(model) { return !model?.module && !(model?.local && state.mode === "video"); }function autoResize() { els.prompt.style.height = "auto"; els.prompt.style.height = `${Math.min(220, els.prompt.scrollHeight)}px`; }
+// 样片模式同样没有：它的产物是 480P 草稿，出成片走「用这条样片出成片」（见 finalizeDraft）。
+function canRefine(model) { return !model?.draft && !model?.module && !(model?.local && state.mode === "video"); }function autoResize() { els.prompt.style.height = "auto"; els.prompt.style.height = `${Math.min(220, els.prompt.scrollHeight)}px`; }
 
 function mediaKind(file) {
   const mime = (file.type || "").toLowerCase(), ext = (file.name || "").split(".").pop()?.toLowerCase();
@@ -1315,6 +1357,12 @@ async function buildPayload() {
     else media[`ref_audio_${audioIndex++}`] = item;
   }
   const editSourceTaskId = state.editSourceTaskId;
+  //: 样片模式是独立的两段式入口（先出 480P 样片，再用样片出成片），**没有**「在原结果上
+  //: 继续修改」的语义 —— 那会变成一次视频编辑任务，跟样片模式互相打架。这里显式拦住，
+  //: 并告诉用户替代路径，而不是让方舟回一个看不懂的异步报错。
+  if (model?.draft && editSourceTaskId) {
+    throw new Error("样片模式不支持「继续修改」：请在样片结果上点「用这条样片出成片」，或切回 Seedance 2.5 再改");
+  }
   //: 选了独立的「视频编辑」模型（model.editOnly）也算编辑态 —— 这时原视频由用户
   //: 自己上传，不要求它来自某条历史结果。
   const isEdit = Boolean(editSourceTaskId) || Boolean(model?.editOnly);
@@ -1369,6 +1417,9 @@ async function buildPayload() {
         //: 注意：如果账号在控制台开了「AI 生成水印」，平台会**强制**加，API 传 false 也压不住
         //: —— 那种情况要去火山引擎控制台 →「AI生成水印设置」→ 打开「去除水印」开关。
         watermark: "0",
+        //: 样片模式（第一段）：下发 draft=1。后端会顺手把分辨率钉成 480p（官方硬约束：
+        //: 开启样片模式后只支持 480p，传别的直接报错），界面这边也已经锁死 480p。
+        ...(model.draft ? { draft: "1" } : {}),
         media,
       },
     };
@@ -1391,6 +1442,9 @@ async function buildPayload() {
   const taskPrompt = prompt || (capability === "image_segment" ? "智能抠图" : capability === "video_upscale" ? "视频超分" : "");
   const conversation = activeConversation();
   const task = { id: uid(), app: route.app, base: route.base, jobPath: route.jobPath, module: capability || null, mode: state.mode, prompt: taskPrompt, model: model.label, modelId: model.id, provider: model.provider, params: structuredClone(state.params[state.mode]), attachments: state.attachments.map((item) => item.file.name), status: "running", progress: "正在提交任务", conversationId: conversation.id, editSourceTaskId: state.editSourceTaskId || null, createdAt: Date.now(), updatedAt: Date.now() };
+  //: 这条是不是样片（Draft）。只有它才在结果出来后显示「用这条样片出成片」——
+  //: 普通生成的任务 id 不是 Draft 任务 id，填进 draft_task 会被方舟拒。
+  if (model?.draft) task.draft = true;
   conversation.tasks.push(task); conversation.updatedAt = task.createdAt;
   state.activeTaskId = task.id; renderConversations(); renderPreview(); setBusy(true); saveStore();
   try {
@@ -1403,6 +1457,68 @@ async function buildPayload() {
     const body = await response.json().catch(() => ({}));
     if (!response.ok || body.ok === false) throw new Error(body.error || body.detail || `提交失败 (${response.status})`);
     task.jobId = body.job_id; task.progress = app === "local-ai" ? "任务已进入本地队列" : "任务已进入云端队列"; saveStore();
+    pollTask(task).catch((error) => { task.status = "failed"; task.error = error.message; task.updatedAt = Date.now(); saveStore(); renderPreview(); renderConversations(); });
+  } catch (error) {
+    task.status = "failed"; task.error = error.message; task.updatedAt = Date.now(); saveStore(); renderConversations(); renderPreview(); toast(error.message, "error");
+  } finally { setBusy(false); }
+}
+//: 成片的分辨率：**官方规定只有 1080p**。
+//:
+//: 《Doubao Seedance 2.5 教程 · 样片模式 · Step2》参数表原文：「`resolution` 必须传入，
+//: 仅支持设置为 `1080p`」，其余参数（提示词/素材/时长/比例/种子/有声/任务类型）由模型
+//: 自动复用、禁止传入。2026-10-15 实测印证：发 720p 会被同步拒 ——
+//: `the parameter resolution specified in the request is not valid ... in draft_task
+//:  final stage; received: "720p"`。
+//: 所以这里不再「按模型声明推最高档」，直接钉死 1080p（也正对上宣传口径「480P 试错、
+//: 1080P 一次成片」）。
+function draftFinalResolution() { return "1080p"; }
+//: 样片模式第二段：「用这条样片出成片」（用户 2026-10-15 选定：预览区一个按钮）。
+//:
+//: 官方口径（《创建视频生成任务》+《Seedance 2.5 教程 · 样片模式》）：
+//: 基于样片任务 ID 生成正式视频时，提示词、参考素材、随机种子、宽高比与时长由模型
+//: **自动复用**、禁止重复传入，可重新指定的是目标分辨率 —— 所以这里**只发
+//: draft_task_id + 目标分辨率**，不带 media（后端的 build_payload 也据此只放
+//: content=[draft_task] 一项，素材一个都不再挂，省掉一次白跑的上传）。
+//: id 必须是 Step1 返回的**任务 id**，不是 upstreamTaskId（官方原文点名的坑）。
+async function finalizeDraft(sourceTask) {
+  if (state.busy) return;
+  //: 只有真正的样片结果才给点：普通任务 id 填进 draft_task 会被方舟拒。
+  if (!sourceTask?.draft || !sourceTask.resultTaskId) {
+    toast("这条结果没有拿到样片的任务 ID，无法出成片", "error");
+    return;
+  }
+  const resolution = draftFinalResolution();
+  const conversation = activeConversation();
+  const task = {
+    id: uid(), app: "seedance", base: "/seedance", jobPath: "/api/jobs", module: null, mode: "video",
+    prompt: `用样片出成片（${resolution}）`, model: `Seedance 2.5 · 成片（${resolution}）`,
+    modelId: "doubao-seedance-2-5-260628", provider: "volcengine", params: { resolution },
+    attachments: [], status: "running", progress: "正在提交成片任务",
+    conversationId: conversation.id, draftFinalizeOf: sourceTask.id,
+    createdAt: Date.now(), updatedAt: Date.now(),
+  };
+  conversation.tasks.push(task); conversation.updatedAt = task.createdAt;
+  state.activeTaskId = task.id; renderConversations(); renderPreview(); setBusy(true); saveStore();
+  try {
+    const payload = {
+      provider: "volcengine",
+      //: 下发真实模型 id（伪 id 发出去方舟报 InvalidEndpointOrModel.NotFound）。
+      model: "doubao-seedance-2-5-260628",
+      prompt: task.prompt,
+      draft_task_id: sourceTask.resultTaskId,
+      resolution,
+      //: 第二段不指定时长（模型沿用样片），发 -1：后端把作业时长先记 0、等方舟回报真实
+      //: 时长再回填 —— 否则 Portal 按 done × duration 记秒数会记成用户乱填的值。
+      duration: -1,
+      ratio: "adaptive",
+      repeat_count: 1,
+      concurrency: 1,
+      media: {},
+    };
+    const response = await fetch("/seedance/api/jobs/json", { method: "POST", headers: { "Content-Type": "application/json", "X-Workspace-Id": conversation.id }, body: JSON.stringify(payload) });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.ok === false) throw new Error(body.error || body.detail || `提交失败 (${response.status})`);
+    task.jobId = body.job_id; task.progress = "成片任务已进入云端队列"; saveStore();
     pollTask(task).catch((error) => { task.status = "failed"; task.error = error.message; task.updatedAt = Date.now(); saveStore(); renderPreview(); renderConversations(); });
   } catch (error) {
     task.status = "failed"; task.error = error.message; task.updatedAt = Date.now(); saveStore(); renderConversations(); renderPreview(); toast(error.message, "error");
@@ -1464,6 +1580,9 @@ async function pollTask(task) {
       const urls = (Array.isArray(result.download_urls) ? result.download_urls : []).map((url) => absoluteMediaUrl(base, url)).filter(Boolean);
       task.resultUrls = urls.length ? urls : [task.resultUrl];
       task.resultName = result.filename || `${task.mode === "video" ? "video" : "image"}-${task.id.slice(0, 8)}`;
+      //: 留下**上游任务 id**：样片模式的第二段要拿它当 draft_task.id（官方原文特别提醒
+      //: 别拿 upstreamTaskId 当这个 id）。普通生成留着它只是为了排查问题，没有别的用途。
+      if (result.task_id) task.resultTaskId = String(result.task_id);
       //: 「视频编辑」最坑的失败模式是**静默返回原片**：任务成功、能播、用户看不出变化。
       //: 后端会拿产物和原片做同帧抽样比对，差得太小就带 edit_noop 上来，这里必须说出来
       //: （用户 2026-09-22：「完全就是返回的原视频，我说的内容他是一点没改」）。
@@ -1493,8 +1612,14 @@ async function pollTask(task) {
 }
 function renderPreview({ animateSwitch = false } = {}) {
   const task = activeTask();
-  if (!task) { els.previewPanel.hidden = true; els.previewPanel.classList.remove("is-switching", "is-editing"); els.stage.classList.remove("is-preview"); els.download.disabled = true; return; }
+  if (!task) { els.previewPanel.hidden = true; els.previewPanel.classList.remove("is-switching", "is-editing"); els.stage.classList.remove("is-preview"); els.download.disabled = true; els.draftFinalize.hidden = true; return; }
   els.previewPanel.hidden = false; els.stage.classList.add("is-preview");
+  //: 样片模式第二段入口：只有「这条是样片、且已经拿到上游任务 id 的成功结果」才显示。
+  //: 成片自己不带 draft 标记，所以不会出现「拿成片再出成片」。
+  const canFinalize = Boolean(task.draft && task.status === "success" && task.resultUrl && task.resultTaskId);
+  els.draftFinalize.hidden = !canFinalize;
+  //: 只改文字的 span（按钮里还有个图标 svg，不能整个 textContent 覆盖）。
+  if (canFinalize) els.draftFinalizeLabel.textContent = `用这条样片出成片（${draftFinalResolution()}）`;
   els.previewPanel.classList.toggle("is-editing", Boolean(state.editSourceTaskId && task.id === state.editSourceTaskId));
   if (animateSwitch) {
     els.previewPanel.classList.remove("is-switching");
@@ -1891,6 +2016,8 @@ function bindEvents() {
     generate();
   });
   els.upload.addEventListener("click", () => els.fileInput.click());
+  //: 「用这条样片出成片」= 样片模式第二段，提交的是**当前预览里那条样片**（用户 2026-10-15）。
+  els.draftFinalize.addEventListener("click", () => { const task = activeTask(); if (task) finalizeDraft(task); });
   els.fileInput.addEventListener("change", () => { addFiles(els.fileInput.files); els.fileInput.value = ""; });
   els.modeSwitch.querySelectorAll(".fc-mode-option").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
   els.modelModeSwitch.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));

@@ -3,6 +3,13 @@
 
 默认 dry-run（只报告，不动任何文件）；加 --apply 才真执行。六个职责：
 
+  0. 低磁盘水位自动收紧（2026-10-30 新增）：保留期只认年龄、不看剩余空间，
+     盘子快满时"每天照常清 7 天前的东西"救不了场（实测 2026-10-30：C 盘仅剩
+     19.5GB，而清理器把产物挪进**同一块盘**的回收站、8 天后才真删，净腾不出空间）。
+     现在：仓库所在卷剩余 < --low-disk-gb（默认 25GB）时，把保留期收到下限 ——
+     outputs 最短 3 天、回收站最短 1 天。**只收不放**（取 min，命令行传更短的值仍生效），
+     探测失败或盘不紧张时**原样不动**（方向安全）。--no-auto-tighten 可关掉。
+
   1. outputs 产物按龄清理（--outputs-retention，默认 14 天）：
      文件已在飞书多维表格同步过的（feishu-output-sync 的 synced 表，
      fingerprint = sha1(相对路径|size|mtime)，与 sync.py 同口径）→ 直接删除；
@@ -70,6 +77,9 @@ OUTPUT_DIRS = [
     "volcengine-portrait/outputs",
     "volcengine-portrait/视频生成合集",
     "volcengine-portrait/uploads",
+    # 2026-11-04 补：飞书 Agent 的产物目录以前不在白名单，是「永远的缺口」
+    # （8.02 GB，超 7 天 4.56 GB，见 _diag/20261021_处置记录）。口径与其他子应用一致。
+    "feishu-generation-agent/outputs",
 ]
 
 EXTS = {".mp4", ".png", ".jpg", ".jpeg", ".webp"}
@@ -396,6 +406,35 @@ def run_trash_purge(hits: list[tuple[Path, int]], apply: bool) -> int:
     return freed
 
 
+# ── 0. 低磁盘水位自动收紧 ──────────────────────────────────────────────────
+
+LOW_DISK_FREE_GB = 25.0          # 低于此剩余空间 → 收紧保留期
+LOW_DISK_OUTPUTS_RETENTION = 3   # 低水位下 outputs 保留天数（下限）
+LOW_DISK_TRASH_DAYS = 1          # 低水位下回收站保留天数（下限）
+
+
+def free_gb_for(path: Path) -> float | None:
+    """path 所在卷的剩余空间（GB）。探测失败返回 None —— 调用方必须当成
+    「不收紧」，绝不允许把探测失败读成「盘满了」。"""
+    try:
+        return shutil.disk_usage(str(path)).free / 1024 ** 3
+    except OSError:
+        return None
+
+
+def tighten_for_low_disk(free_gb: float | None, outputs_retention: int, trash_days: int,
+                         threshold: float = LOW_DISK_FREE_GB) -> tuple[int, int, bool]:
+    """返回 (outputs_retention, trash_days, tightened)。
+
+    **只收不放**：低水位时取 min(请求值, 下限)，所以命令行传更短的值照样生效；
+    盘不紧张 / 探测失败 → 原样返回。"""
+    if free_gb is None or free_gb >= threshold:
+        return outputs_retention, trash_days, False
+    return (min(outputs_retention, LOW_DISK_OUTPUTS_RETENTION),
+            min(trash_days, LOW_DISK_TRASH_DAYS),
+            True)
+
+
 # ── main ───────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -407,17 +446,36 @@ def main() -> int:
                     help="workspace preset.json 超过该天数未编辑才清 media/（默认 30）")
     ap.add_argument("--trash-days", type=int, default=TRASH_RETENTION_DAYS,
                     help="回收站 ai-portable-cleanup-* 目录保留天数（默认 30）")
+    ap.add_argument("--low-disk-gb", type=float, default=LOW_DISK_FREE_GB,
+                    help="剩余空间低于该值（GB）就收紧保留期（默认 25）")
+    ap.add_argument("--no-auto-tighten", action="store_true",
+                    help="关掉低磁盘水位自动收紧，完全按命令行给的保留期执行")
     args = ap.parse_args()
+
+    free_gb = None if args.no_auto_tighten else free_gb_for(REPO_ROOT)
+    outputs_days, trash_days, tightened = tighten_for_low_disk(
+        free_gb, args.outputs_retention, args.trash_days, args.low_disk_gb)
 
     mode = "执行" if args.apply else "dry-run"
     print(f"=== ai-portal 每日清理（{mode}） {dt.datetime.now():%Y-%m-%d %H:%M:%S} ===")
-    print(f"outputs 保留 {args.outputs_retention} 天；workspace 参考素材阈值 {args.workspace_days} 天")
+    if args.no_auto_tighten:
+        print("低磁盘水位收紧：已关闭（--no-auto-tighten）")
+    elif free_gb is None:
+        print(f"⚠️ 剩余空间探测失败（阈值 {args.low_disk_gb:g}GB）：按原保留期执行，不收紧")
+    elif tightened:
+        print(f"⚠️ 低磁盘水位：仓库所在卷仅剩 {free_gb:.1f}GB < {args.low_disk_gb:g}GB → "
+              f"保留期已收紧（outputs {args.outputs_retention}→{outputs_days} 天、"
+              f"回收站 {args.trash_days}→{trash_days} 天）")
+    else:
+        print(f"磁盘水位正常：剩余 {free_gb:.1f}GB ≥ {args.low_disk_gb:g}GB，保留期不收紧")
+    print(f"outputs 保留 {outputs_days} 天；workspace 参考素材阈值 {args.workspace_days} 天")
     print()
 
     synced = load_synced_fingerprints()
-    print(f"[1/5] outputs 产物（> {args.outputs_retention} 天）")
+    suffix = "（低水位收紧）" if tightened else ""
+    print(f"[1/5] outputs 产物（> {outputs_days} 天）{suffix}")
     print(f"      飞书已同步指纹表：{len(synced)} 条（命中 → 直接删；未命中 → 回收站）")
-    hits = collect_outputs(dt.date.today() - dt.timedelta(days=args.outputs_retention))
+    hits = collect_outputs(dt.date.today() - dt.timedelta(days=outputs_days))
     if hits:
         total = sum(sz for _, sz, _ in hits)
         deleted, trashed, skipped_today, trash_bytes = run_outputs(hits, synced, args.apply)
@@ -458,8 +516,8 @@ def main() -> int:
     print(f"      移除 {hist_removed} 条超龄/超量记录" + ("" if args.apply else "（dry-run）"))
     print()
 
-    print(f"[6/6] 回收站二次清理（ai-portable-cleanup-* 超 {args.trash_days} 天彻底删除）")
-    trash_hits = collect_trash_dirs(args.trash_days)
+    print(f"[6/6] 回收站二次清理（ai-portable-cleanup-* 超 {trash_days} 天彻底删除）{suffix}")
+    trash_hits = collect_trash_dirs(trash_days)
     if trash_hits:
         trash_freed = run_trash_purge(trash_hits, args.apply)
         print(f"      命中 {len(trash_hits)} 个目录 {human_size(trash_freed)}"

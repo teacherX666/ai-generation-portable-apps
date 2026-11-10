@@ -150,9 +150,41 @@ def test_override_repeats_the_game_screen_clause() -> None:
         assert token in REFERENCE_FIDELITY_OVERRIDE, token
 
 
-def test_override_keeps_the_closed_list_of_allowed_exclusions() -> None:
-    """「不参考」仍然只允许写两件事 —— 游戏画面不在其中。"""
-    assert "只允许写两件事" in REFERENCE_FIDELITY_OVERRIDE
+def test_override_closes_the_exclusion_list_to_third_party_watermarks_only() -> None:
+    """「不参考」**只允许**写一件事：第三方 AI 工具 / 外部平台的角标水印。
+
+    2026-10-27 口径收窄（P0）：旧覆盖块把「与本次画面无关的维度（原图的静止姿势、
+    原机位、原光线）」列为**允许**排除 —— 那正是**关掉参考图的开关**（用户
+    2026-10-13 铁律）。实测代价：需求1「铲蜡」8 个提示词版本里 5 个写着
+    「不参考原图静止平铺的俯拍机位与原图均匀布光」，成片的桌面、光位与蜡滴布局
+    全部脱离参考图。
+    """
+    text = REFERENCE_FIDELITY_OVERRIDE
+    assert "只允许" in text
+    assert "第三方" in text
+    assert "即梦" in text
+    assert "usable=false" in text
+    # 必须**明文禁止**把机位 / 构图 / 光线 / 光位 / 色温 / 背景 / 场景 / 姿势写进「不参考」
+    assert "严禁" in text
+    for token in ("机位", "构图", "光线", "光位", "色温", "背景", "姿势"):
+        assert token in text, token
+    # 并给出正向替代写法（不能只说不许）
+    assert "正向的运动描述" in text
+
+
+def test_override_never_lists_the_reference_camera_or_light_as_excludable() -> None:
+    """判别力自检：旧口径把「原机位 / 原光线」放进**允许**清单，这条必须红。
+
+    守的是「不许再有关掉参考图的口子」，不是某一句的字面。
+    """
+    text = REFERENCE_FIDELITY_OVERRIDE
+    # 旧的封闭清单写法必须消失
+    assert "只允许写两件事" not in text
+    # 「原机位 / 原光线」不得作为**允许排除**的维度出现
+    assert "原机位" not in text
+    assert "原光线" not in text
+    # 也不得把禁句当反例抄进来（点名即投喂：规划器会照抄示例句式，压口红任务已实锤）
+    assert "不参考原图" not in text
 
 
 # --- 覆盖块：必须排在技能段之后 ---
@@ -188,8 +220,26 @@ def test_contract_carries_the_same_rule_for_the_no_skill_case() -> None:
     assert "水印、平台标识、界面文字、标题与品牌字样" in _PLAN_SYSTEM_PROMPT
 
 
-def test_override_names_both_the_third_party_watermarks_and_the_only_allowed_narrows() -> None:
-    assert "第三方" in REFERENCE_FIDELITY_OVERRIDE
-    assert "即梦" in REFERENCE_FIDELITY_OVERRIDE
-    assert "静止姿势" in REFERENCE_FIDELITY_OVERRIDE
-    assert "usable=false" in REFERENCE_FIDELITY_OVERRIDE
+def test_contract_puts_the_reference_image_above_the_document_prose() -> None:
+    """契约正文必须写明：文字只管动作/节奏，画面内容以参考图为唯一基准。
+
+    这是「以事件描述为主、参考感觉为辅」这句文档口径的**唯一对冲**。
+    实测根因（2026-10-27 需求1「铲蜡」run `453e8074`）：规划器按该口径字面执行，
+    在 `warnings` 里自己写着「以文档事件描述为主、图片质感为辅」，
+    于是把参考图的浅色木纹桌面改成了深色，并把「三个色区、每区上百颗小滴」
+    概括成「三颗蜡滴（左红中蓝右浅绿）」。
+    """
+    text = _PLAN_SYSTEM_PROMPT
+    assert "以事件描述为主、参考感觉为辅" in text  # 口径被点名
+    assert "只适用于动作、节奏与时间分配" in text  # 但被收窄
+    assert "为唯一基准" in text
+    assert "以参考图为准" in text
+    # 不得用概括文字覆盖参考图里可数可见的事实
+    assert "可数" in text
+
+
+def test_override_repeats_the_priority_rule() -> None:
+    """覆盖块（排在技能段之后）里也要有优先级条款 —— 技能段会把它压过去。"""
+    assert "以事件描述为主、参考感觉为辅" in REFERENCE_FIDELITY_OVERRIDE
+    assert "只适用于动作、节奏与时间分配" in REFERENCE_FIDELITY_OVERRIDE
+    assert "以参考图为准" in REFERENCE_FIDELITY_OVERRIDE

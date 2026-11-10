@@ -136,3 +136,9 @@ drama-pipeline/skills/free/*.zip
 
 # è¿ç§»åŒ…ï¼ˆgit bundle äº§ç‰©ï¼Œéšæ—¶å¯é‡æ–°ç”Ÿæˆï¼‰
 _migration/
+
+# Word/Office ´ò¿ªÎÄµµÊ±Éú³ÉµÄËøÎÄ¼ş
+~\$*
+
+# ·ÉÊé Agent µÄÒ»´ÎĞÔ·ÖÎö½Å±¾Óë²úÎï£¨º¬¿Í»§ËØ²ÄÖ¡£¬ÎğÈë¿â£©
+feishu-generation-agent/_diag/

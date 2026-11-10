@@ -148,6 +148,13 @@ class GraphServices:
     production_task_store: Any | None = None
     #: 能**直接看视频**的分析器（ds4.1 多模态）。参考视频只作分镜参考，不再抽帧。
     video_analyzer: Any | None = None
+    #: 方案 C（用户 2026-10-27）：一次**任务单纯**的读图调用（同一个 DeepSeek 多模态模型）。
+    #: 多模态规划模式下用它产出可校验事实，注入规划并供保真校验比对。
+    #: 为 None 时退回旧行为（规划器顺带读图），规划不受影响。
+    image_facts: Any | None = None
+    #: 清洗范围探针（用户 2026-10-28）：清洗前确认"洗哪儿、哪儿不许动"。
+    #: 为 None 时跳过探针、按老逻辑清洗（不阻断）。
+    cleanup_scope_probe: Any | None = None
     #: 公开图床（多模态规划要把原图/视频传上去拿 https 链接给模型看）。
     public_media_host: Any | None = None
     # 图片 provider registry：{"banana": gen, "seedream": gen, "gpt-image2": gen}。
@@ -904,6 +911,17 @@ async def ingest_source(
                             "reference_watermark_cleanup_concurrency",
                             None,
                         ),
+                        # 用户手绘标记（红圈/标注框）优先于水印：有就整张不洗（2026-10-22）。
+                        # 只读视觉描述缓存 —— 返工的同一张图第二轮起就能命中缓存。
+                        annotation_reason=lambda asset: _user_annotation_skip_reason(
+                            services, asset
+                        ),
+                        # 用户上一版做过的"用原图 / 用清洗版"选择按原图 sha 存在这里，
+                        # 新运行直接继承（2026-10-28：以前每版都被重置成 auto）。
+                        data_dir=services.settings.data_dir,
+                        # 清洗之前先让多模态模型确认"洗哪儿、哪儿不许动"（2026-10-28 用户方案）。
+                        # 探针失败返回 None → 照常洗（用户口径：失败也能洗，反正能选原图）。
+                        scope_probe=lambda asset: _cleanup_scope_probe(services, asset),
                     )
                 )
             except Exception:  # noqa: BLE001
@@ -980,9 +998,19 @@ async def analyze_images(
         # 少一层跨模型转述损耗。文本模式（`planning_pipeline=text`）仍走原来的
         # Claude 逐图分析 —— 那条路需要结构化描述当输入。
         if _planning_pipeline(services) == "multimodal":
+            # 方案 C（用户 2026-10-27）：多模态模式下规划器是**顺带**读图的 —— 同一次
+            # 调用里它还要扛整份契约（约 3.9 万字 system prompt）+ 文档，实测
+            # （需求1「铲蜡」run `453e8074`）把参考图里「三个色区、每区上百颗独立小滴、
+            # 右侧连成一片」概括成「三颗蜡滴（左红中蓝右浅绿）」，把中性偏冷的光写成
+            # 「暖调」。这里补一次**专门读图**（同一个 DeepSeek 多模态模型，只喂图）：
+            # 产出的事实随 `vision_descriptions` 注入规划，并供 `_check_reference_facts_fidelity`
+            # 比对成片提示词。读图失败只记 issue，绝不阻断规划。
+            facts, fact_issues = await _read_reference_facts(document, services)
             return {
-                "vision_descriptions": [],
-                "vision_issues": [],
+                "vision_descriptions": [
+                    fact.model_dump(mode="json") for fact in facts
+                ],
+                "vision_issues": fact_issues,
                 "normalized_document": document_json,
                 "media_assets": document_json["media_assets"],
             }
@@ -1050,22 +1078,74 @@ def _planning_pipeline(services: GraphServices) -> str:
     return pipeline
 
 
-async def _planning_media_parts(
+async def _read_reference_facts(
     document: NormalizedDocument,
     services: GraphServices,
-) -> list[dict[str, Any]]:
-    """多模态规划要带的媒体（按文档顺序，链接走 sha256 缓存）。"""
+) -> tuple[list[Any], list[str]]:
+    """方案 C：一次**任务单纯**的读图，产出可校验事实。
+
+    与后面 `_planning_media_parts` 共用同一个「sha256 → 公开链接」缓存，
+    所以不会因为读图多传一次图（同一张图只上传一次）。
+    任何失败都只转成可读 issue。
+    """
+    reader = getattr(services, "image_facts", None)
+    if reader is None:
+        return [], []
     host = getattr(services, "public_media_host", None)
     if host is None:
-        return []
+        return [], ["读图跳过：未配置公开图床，参考图无法交给读图模型"]
+    images = [
+        asset
+        for asset in document.media_assets
+        if asset.mime_type.startswith("image/")
+        and asset.download_error is None
+        and Path(asset.local_path).is_file()
+    ]
+    if not images:
+        return [], []
     cache = MediaUploadCache(
         Path(services.settings.data_dir) / "media-upload-cache.json"
     )
-    return await build_planning_media_parts(
+    upload_issues: list[str] = []
+    parts = await build_planning_media_parts(
+        images,
+        public_media_host=host,
+        cache=cache,
+        issues=upload_issues,
+    )
+    if len(parts) != len(images):
+        # 刻意保守：张数对不上就不猜 —— 把 A 的读图结果贴到 B 上比不读更坏。
+        return [], [
+            *upload_issues,
+            f"读图跳过：{len(images)} 张参考图只拿到 {len(parts)} 个可读链接",
+        ]
+    facts, issues = await reader.read(images, parts)
+    return facts, [*upload_issues, *issues]
+
+
+async def _planning_media_parts(
+    document: NormalizedDocument,
+    services: GraphServices,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """多模态规划要带的媒体（按文档顺序，链接走 sha256 缓存）。
+
+    返回 `(parts, issues)`。2026-10-28 起**不再静默**：任何素材被跳过都会出现在
+    issues 里，由调用方写进 run 事件 + 审批页的 `vision_issues`。
+    """
+    host = getattr(services, "public_media_host", None)
+    if host is None:
+        return [], ["未配置公开图床：本次多模态规划**没有附任何参考图/视频**"]
+    issues: list[str] = []
+    cache = MediaUploadCache(
+        Path(services.settings.data_dir) / "media-upload-cache.json"
+    )
+    parts = await build_planning_media_parts(
         list(document.media_assets),
         public_media_host=host,
         cache=cache,
+        issues=issues,
     )
+    return parts, issues
 
 
 async def _history_context_for_plan(
@@ -1122,6 +1202,15 @@ async def _plan_with_optional_fallback(
     回退路径等价于改造前的行为 —— 保证「切到多模态」不会比现在更差。
     """
     planner = services.planner
+    if media_parts and not _planner_supports_media_parts(planner):
+        # 静默缺口收口（2026-10-28）：参考图会因为规划器签名不认 `media_parts`
+        # 而无声消失 —— 那时提示词只能靠模型对素材的想象，正是需求1「铲蜡」这类
+        # 事故的温床。写 run 事件，让「这轮根本没带图」一眼可见。
+        await _record_visibility_event(
+            services,
+            state.get("run_id"),
+            "规划器不支持多模态 media_parts：本次规划**未附任何参考图/视频**",
+        )
     common = {
         **_planner_prompt_argument(planner, planning_prompt),
         **_planner_mode_argument(planner, mode),
@@ -1145,7 +1234,15 @@ async def _plan_with_optional_fallback(
         if not fallback:
             raise
         _LOGGER.warning("多模态规划失败，回退纯文本流程（懒补图片视觉描述）")
-        lazy_descriptions = await _describe_images(document, services)
+        lazy_descriptions, describe_issues = await _describe_images(
+            document, services
+        )
+        if describe_issues:
+            await _record_visibility_event(
+                services,
+                state.get("run_id"),
+                "回退纯文本流程时图片描述不完整：" + "；".join(describe_issues[:5]),
+            )
         return await planner.plan(
             document,
             lazy_descriptions,
@@ -1166,26 +1263,64 @@ def _history_context_argument(
     return {"history_context": history_context}
 
 
+def _planner_supports_media_parts(planner: Any) -> bool:
+    """规划器是否认 `media_parts`（签名探测，与其它可选参数同一套）。"""
+    try:
+        return "media_parts" in signature(planner.plan).parameters
+    except (TypeError, ValueError):  # 不可内省的 callable：按不支持处理
+        return False
+
+
 def _planning_media_argument(
     planner: Any,
     media_parts: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """只在 planner 支持 `media_parts` 时才传（与其它可选参数同一套签名探测）。"""
+    """只在 planner 支持 `media_parts` 时才传（与其它可选参数同一套签名探测）。
+
+    ⚠️ 不支持时这里是**静默**返回 `{}` 的 —— 参考图会无声消失。调用方
+    （`_plan_with_optional_fallback`）必须用 `_planner_supports_media_parts`
+    自己判一次并留痕（2026-10-28 可见性收口）。
+    """
     if not media_parts:
         return {}
-    if "media_parts" not in signature(planner.plan).parameters:
+    if not _planner_supports_media_parts(planner):
         return {}
     return {"media_parts": media_parts}
+
+
+async def _record_visibility_event(
+    services: GraphServices,
+    run_id: str | None,
+    summary: str,
+    node: str = "plan_requirements",
+) -> None:
+    """把「本该看见、却一直被静默掉」的事写进 run 事件。
+
+    可见性收口（2026-10-28）：这条链路上原有的静默点让「参考图到底交没交给模型」
+    只能靠翻 `media-upload-cache.json` 反推。事件写失败**绝不影响主流程** ——
+    它只是可见性，不是新的失败点。
+    """
+    if not run_id:
+        return
+    _LOGGER.warning("%s", summary)
+    try:
+        await services.repository.append_event(run_id, node, "completed", summary)
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("记录可见性事件失败：%s", summary, exc_info=True)
 
 
 async def _describe_images(
     document: NormalizedDocument,
     services: GraphServices,
-) -> list[VisionDescription]:
-    """逐张图片做视觉描述（回退路径与现有流程共用）。"""
+) -> tuple[list[VisionDescription], list[str]]:
+    """逐张图片做视觉描述（回退路径与现有流程共用）。
+
+    返回 `(descriptions, issues)`。**逐张失败都要留痕** —— 旧实现把异常塞回
+    outcomes 再筛掉，全失败时返回 `[]`、规划照常跑，界面上一个字都没有。
+    """
     analyzer = services.vision_analyzer
     if analyzer is None:
-        return []
+        return [], ["未配置视觉分析器：回退路径**没有拿到任何图片描述**"]
     assets = [
         asset
         for asset in document.media_assets
@@ -1202,9 +1337,17 @@ async def _describe_images(
                 return exc
 
     outcomes = await asyncio.gather(*(analyze_one(asset) for asset in assets))
-    return [
-        outcome for outcome in outcomes if isinstance(outcome, VisionDescription)
-    ]
+    descriptions: list[VisionDescription] = []
+    issues: list[str] = []
+    for asset, outcome in zip(assets, outcomes):
+        if isinstance(outcome, VisionDescription):
+            descriptions.append(outcome)
+            continue
+        issues.append(
+            f"图片描述失败 {asset.asset_id}："
+            f"{type(outcome).__name__}: {str(outcome)[:80]}"
+        )
+    return descriptions, issues
 
 
 async def plan_requirements(
@@ -1235,8 +1378,27 @@ async def plan_requirements(
         # 开关以「前端高级设置里的偏好」为准，环境变量只作兜底（用户 2026-09-18）。
         pipeline = _planning_pipeline(services)
         media_parts: list[dict[str, Any]] = []
+        media_issues: list[str] = []
         if pipeline == "multimodal" and mode != "image":
-            media_parts = await _planning_media_parts(document, services)
+            media_parts, media_issues = await _planning_media_parts(
+                document, services
+            )
+            if media_issues:
+                # 可见性（2026-10-28）：这三处跳过以前全是静默的 —— 出问题时只能靠
+                # 翻 `media-upload-cache.json` 反推「参考图到底交没交给模型」。
+                # 现在同时写 run 事件（时间线可见）与 `vision_issues`（审批页可见）。
+                for message in media_issues:
+                    _LOGGER.warning("多模态规划媒体缺口：%s", message)
+                try:
+                    await services.repository.append_event(
+                        state["run_id"],
+                        "plan_requirements",
+                        "completed",
+                        "多模态规划媒体缺口（参考素材未全部交给规划器）："
+                        + "；".join(media_issues[:5]),
+                    )
+                except Exception:  # noqa: BLE001 —— 事件只是可见性，绝不因此失败
+                    _LOGGER.warning("记录媒体缺口事件失败", exc_info=True)
         # 知识库必须在 planner **之前**查：命中的规则当上下文喂给 planner，
         # 让它一次就把经验写进提示词。旧做法是写完再改写提示词（且逐任务调导演台），
         # 既和 planner 打架，又要多花 N 次调用。
@@ -1283,6 +1445,15 @@ async def plan_requirements(
             "draft_plan": plan_json,
             "task_plan": plan_json,
         }
+        # 媒体缺口并入 `vision_issues`（审批页读这个字段，见 web/static/app.js）。
+        # **必须合并而不是覆盖** —— `analyze_images` 已经写过一轮（读图 issues），
+        # 直接赋值会把它抹掉。去重保序。
+        if media_issues:
+            merged_issues = list(state.get("vision_issues") or [])
+            for message in media_issues:
+                if message not in merged_issues:
+                    merged_issues.append(message)
+            updates["vision_issues"] = merged_issues
         # 素材库参考图要进 document.media_assets，否则 _task_assets 解析
         # 不到这些 asset_id，执行阶段会直接判定计划无效。
         character_media = await _character_media_assets(
@@ -1645,6 +1816,57 @@ def _parse_approval(value: Any) -> ApprovalDecision:
     return decision
 
 
+async def _source_changed_since_ingest(
+    state: AgentState,
+    services: GraphServices,
+) -> bool:
+    """退回重规划前判断源文档有没有变过 —— 变过就重读文档，没变就只重规划。
+
+    用户 2026-10-27：「为什么我飞书模块退回修改计划的时候不会重新查看文档挂上新增的
+    参考视频」。退回路径以前**无条件**直接跳 `plan_requirements`，而它读的是 state 里
+    **首次入库那一份** `normalized_document` —— 用户在文档里后加的参考视频/图片对规划器
+    等于不存在（只有 `planner_feedback` 传得进去）。
+
+    这里只多花一次 `get_revision`（读文档元信息，**不下素材**）。真的变了才走
+    `ingest_source` 全量重读；代价要说清楚：素材 `image-N`/`video-N` 会按新文档顺序
+    重排，上一轮在审批页选的分镜图与手动替换的参考图随之失效 —— 所以**没变就不重读**。
+
+    判不出来（没有 URL / 没有入库快照 / 取版本失败）一律**当作没变**：一次网络抖动
+    不该把用户卡在审批页，退回必须永远可用。
+    """
+    source_url = state.get("source_url")
+    known_revision = state.get("document_revision")
+    if (
+        not isinstance(source_url, str)
+        or not source_url
+        or not isinstance(known_revision, int)
+        or isinstance(known_revision, bool)
+        or known_revision < 0
+    ):
+        return False
+    try:
+        current_revision = await services.document_source.get_revision(source_url)
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("退回重规划前读取文档版本失败，按未变更处理", exc_info=True)
+        return False
+    if not isinstance(current_revision, int) or isinstance(current_revision, bool):
+        return False
+    if current_revision == known_revision:
+        return False
+    try:
+        await services.repository.append_event(
+            state.get("run_id", "unknown-run"),
+            "human_approval",
+            "source_changed",
+            f"文档在审批期间有改动（版本 {known_revision} → {current_revision}），"
+            "已重新读取文档与参考素材后再规划",
+        )
+    except Exception:  # noqa: BLE001
+        # 事件只是可见性，写不进去绝不能让退回失败。
+        _LOGGER.warning("记录文档变更事件失败", exc_info=True)
+    return True
+
+
 async def human_approval(
     state: AgentState,
     config: RunnableConfig,
@@ -1658,6 +1880,9 @@ async def human_approval(
         decision = _parse_approval(resume_value)
         decision_json = _json_model(decision)
         if decision.action == "reject":
+            # 文档在审批期间被改过（用户往文档里补了参考视频/图片）→ 必须**重读文档**
+            # 才能看见新素材；没改过就维持原行为（只重规划，不重新下载素材）。
+            source_changed = await _source_changed_since_ingest(state, services)
             return Command(
                 update={
                     "approval_decision": decision_json,
@@ -1666,7 +1891,7 @@ async def human_approval(
                     "approved_plan": None,
                     "status": "running",
                 },
-                goto="plan_requirements",
+                goto="ingest_source" if source_changed else "plan_requirements",
             )
         if decision.action == "cancel":
             return Command(
@@ -3055,6 +3280,20 @@ _REFERENCE_MAX_SIDE = 6000
 _REFERENCE_MIN_ASPECT = 0.4
 _REFERENCE_MAX_ASPECT = 2.5
 
+#: 参考图的**总像素数**下限。这是与「每边 ≥300px」**并列的第二条硬约束**，
+#: 不是它的推论 —— 两边都 ≥300px 的图仍可能不达标（300x300 正好 90,000 是边界）。
+#:
+#: 2026-11-05 生产实测（runs `4026ade8` / `98d6e6f8` / `f90d75c9`，全部
+#: `doubao-seedance-2-5` 的 r2v）：
+#:
+#:     The parameter `content[6]` specified in the request is not valid: the
+#:     parameter image pixel count specified in the request must be greater than
+#:     or equal to 90000 for model doubao-seedance-2-5 in r2v
+#:
+#: 当时本机守卫只有 `_REFERENCE_MIN_SIDE`（每边 300px），这类图**全部放行**、
+#: 由上游在 submit 阶段整单拒掉 —— 用户看到的还是一句「生成服务拒绝了请求」。
+_REFERENCE_MIN_PIXELS = 90_000
+
 
 def _reference_size_problem(asset: MediaAsset) -> str | None:
     """参考图尺寸不符合火山要求时返回原因，符合则返回 None。"""
@@ -3066,6 +3305,11 @@ def _reference_size_problem(asset: MediaAsset) -> str | None:
         return None  # 拿不到尺寸就不拦，交给供应商判断
     if width < _REFERENCE_MIN_SIDE or height < _REFERENCE_MIN_SIDE:
         return f"尺寸 {width}x{height} 小于 {_REFERENCE_MIN_SIDE}px"
+    if width * height < _REFERENCE_MIN_PIXELS:
+        return (
+            f"尺寸 {width}x{height}（{width * height} 像素）"
+            f"小于 {_REFERENCE_MIN_PIXELS} 像素"
+        )
     if width > _REFERENCE_MAX_SIDE or height > _REFERENCE_MAX_SIDE:
         return f"尺寸 {width}x{height} 超过 {_REFERENCE_MAX_SIDE}px"
     ratio = width / height
@@ -3079,28 +3323,28 @@ def _upscale_reference(asset: MediaAsset) -> MediaAsset | None:
 
     用户口径（2026-09-18）：「不要拦截，能不能帮我自动等比例放大」—— 火山要求参考图
     每边 ≥300px，文档里的横幅（384x254）以前会让整单被拒，现在直接放大后再提交。
+
+    **必须同时满足两条约束**（2026-11-05 补第二条，见 `_REFERENCE_MIN_PIXELS`）：
+    每边 ≥300px **且** 总像素 ≥90,000。这两条互不蕴含 —— 1000x100 总像素够但短边
+    只有 100px；340x260 两边都 ≥300px 却只有 88,400 像素。所以倍数取两者较大者：
+    短边按 `300/短边`、面积按 `sqrt(90000/面积)`，等比放大后一定同时达标。
+
     放大失败（文件损坏等）返回 None，由调用方决定丢弃。
+
+    ⚠️ 2026-11-05：尺寸数学**不再写在这里**，改调
+    `integrations.seedance.reference_target_size` —— 提交路径（`_ensure_reference_pixel_floor`）
+    与这里必须**同一份判据**。上一版两处各写一套，只补了面积、漏了短边
+    （`190x147` → `342x264`，短边仍 264），于是修完还在犯同一个错。
     """
     width = int(getattr(asset, "width", 0) or 0)
     height = int(getattr(asset, "height", 0) or 0)
     if width <= 0 or height <= 0:
         return None
-    scale = max(
-        _REFERENCE_MIN_SIDE / width,
-        _REFERENCE_MIN_SIDE / height,
-    )
-    if scale <= 1:
+    from feishu_generation_agent.integrations.seedance import reference_target_size
+
+    target_width, target_height = reference_target_size(width, height)
+    if (target_width, target_height) == (width, height):
         return None
-    target_width = max(_REFERENCE_MIN_SIDE, round(width * scale))
-    target_height = max(_REFERENCE_MIN_SIDE, round(height * scale))
-    # 放大后也不能超过上限：超过就整体缩回去（仍保持比例）。
-    overflow = max(
-        target_width / _REFERENCE_MAX_SIDE,
-        target_height / _REFERENCE_MAX_SIDE,
-        1,
-    )
-    target_width = max(_REFERENCE_MIN_SIDE, round(target_width / overflow))
-    target_height = max(_REFERENCE_MIN_SIDE, round(target_height / overflow))
     source = Path(str(asset.local_path))
     target = source.with_name(f"{source.stem}-upscaled.png")
     try:
@@ -4326,6 +4570,62 @@ def _upstream_text_rejection_reason(
     return text.strip().splitlines()[0][:200]
 
 
+async def _user_annotation_skip_reason(
+    services: GraphServices,
+    asset: MediaAsset,
+) -> str | None:
+    """这张参考图上有没有**用户手绘的标记**（红圈/标注框）？有就返回原因、不去水印。
+
+    2026-10-22 事故（用户原话「9090 端口飞书模块的红车引导效果一直不好」）：用户在
+    游戏截图的**车阵里手绘了一个红圈**圈住那辆红车 —— 那是"是哪辆车"的唯一指认标记，
+    提示词里写的就是「图一红圈中的红车」。自动去水印把它当成叠加标记**整条重画掉了**，
+    模型拿到的参考图上再也没有圈 → 只能瞎猜 → 同一个项目返工了 6 轮以上。
+
+    这里读的是**已缓存**的视觉描述（`cached_description`，只读、绝不打模型）；判据本身
+    在生产 378 条参考图描述上校准过（命中 7 条、逐条核对全是真手绘标注）。
+    多模态规划流水线下常常没有描述 —— 那条路靠 `clean_reference_image` 里的
+    **局部块护栏**兜底，所以这里返回 None 不等于"没保护"。
+    """
+    analyzer = getattr(services, "vision_analyzer", None)
+    peek = getattr(analyzer, "cached_description", None)
+    if peek is None:
+        return None
+    try:
+        description = await peek(asset)
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("读视觉描述缓存失败 asset=%s", asset.asset_id, exc_info=True)
+        return None
+    from feishu_generation_agent.integrations.reference_watermark_clean import (
+        ANNOTATION_SKIP_REASON,
+        mentions_user_annotation,
+    )
+
+    return ANNOTATION_SKIP_REASON if mentions_user_annotation(description) else None
+
+
+async def _cleanup_scope_probe(
+    services: GraphServices,
+    asset: MediaAsset,
+) -> Any:
+    """清洗前问一次模型：这张图该洗哪儿、哪儿是画面内容不许动。
+
+    用户 2026-10-28 方案：「还是用原本的清洗，但在清洗之前先丢给模型确认清洗范围」——
+    起因是同一天那次清洗把「即梦AI」角标去掉了、**也把品牌字 "Jewel Loop" 洗掉了**，
+    而灰度护栏判它"已去水印并采用"（低对比度的浮雕字消失，整图均值看不出来）。
+
+    设计取舍：**探针失败返回 None**，清洗照常进行 —— 用户明确「失败也可以洗，因为我给
+    用户选择的空间，可以用原图」。所以这里绝不抛异常、绝不阻断清洗。
+    """
+    probe = getattr(services, "cleanup_scope_probe", None)
+    if probe is None:
+        return None
+    try:
+        return await probe.probe(asset)
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("清洗范围探针异常，按老逻辑清洗 asset=%s", asset.asset_id, exc_info=True)
+        return None
+
+
 async def _clean_media_assets(
     services: GraphServices,
     run_id: str,
@@ -4341,15 +4641,26 @@ async def _clean_media_assets(
     ① 保真护栏（与原图逐像素比对，差异超标就保留原图）；② 原图永不改动（另存 `-nowm`）；
     ③ 台账写进任务事件（可见）。
 
+    2026-10-22 再补两道（治"红圈被洗掉"）：④ **手绘标记的图根本不去洗**（见
+    `_user_annotation_skip_reason`）；⑤ 清洗模块里的**局部块护栏**（整图均值看不见
+    "局部被抹掉"，见 `reference_watermark_clean` 的模块 docstring）。
+
     2026-10-20：改成**受控并发**。以前是串行 `for`，而每张图要跑一次图片模型
     （实测 73~90 秒）—— 参考图一多，提交前这段兜底就把生成拖住十几分钟。
     每张图互相独立，用信号量限流即可；结果按**原顺序**返回（下游按下标引用素材）。
+
+    2026-10-23：**台账优先**。后台清洗（`ingest_source`）早就在规划前跑完了，所以这里
+    第一件事是**读台账**：有结论就直接用，**不再重新洗一遍** —— 以前这里压根不看台账、
+    自己又洗一次，于是「审批页看到的那版 ≠ 真正提交的那版」，而且每张图白花一次图片
+    模型调用。用户的选择（`decision`）**压倒护栏判定**：他说用清洗版就用，说用原图就用
+    原图（用户 2026-10-23 口径：「让用户看到清洗后的图片自由选择」）。
     """
     from hashlib import sha256
 
     from feishu_generation_agent.integrations.reference_watermark_clean import (
-        clean_reference_image,
-        has_overlay_watermark,
+        effective_cleanup_path,
+        file_sha256,
+        recorded_version_sha,
     )
 
     concurrency = max(
@@ -4372,35 +4683,150 @@ async def _clean_media_assets(
             path = Path(asset.local_path)
             if not path.is_file() or "-nowm" in path.stem:
                 return asset                      # 已经洗过的不重复跑
-            # 与后台那条路径同款：检测是纯 Python 逐像素循环，丢线程别占事件循环。
-            if not await asyncio.to_thread(has_overlay_watermark, path):
-                return asset
-            record = await clean_reference_image(path, asset_id=asset.asset_id)
-            if not record.adopted or record.cleaned is None:
-                # 只有**真的检测到叠加水印**时才留痕（"没水印、没处理"不写事件 ——
-                # 既不刷屏，也不破坏"每个节点 started/completed 成对"的既有契约，
-                # 审批图测试就是严格断言这个事件流的）。
-                if record.cleaned is not None or "未检测到" not in record.reason:
+
+            # ① **台账优先**（2026-10-23）：后台清洗早已跑过、或用户已选过版本 —— 直接用台账
+            #    的结论，**不再重新洗一遍**（否则就是"审批页看到的那版 ≠ 真正提交的那版"，
+            #    而且每张图白花一次图片模型调用）。有结论时**用户的选择压倒护栏判定**：
+            #    「护栏判 kept、但用户看过图决定用清洗版」必须照用。
+            entry = _reference_cleanup_entry(services, run_id, asset.asset_id)
+            if entry and str(entry.get("status") or "") != "running":
+                decision = str(entry.get("decision") or "auto")
+                chosen = (
+                    None if decision == "original" else effective_cleanup_path(entry)
+                )
+                if chosen is not None and chosen.is_file():
+                    # **素材指纹不变量**（2026-10-28 用户口径：「素材变了是绝对不允许的」）：
+                    # 清洗版文件名会随版本复用（`-nowm.png` 每次覆盖），所以提交前必须
+                    # 核对"这一版还是不是当时台账记的那一版"。对不上就**拦住**，
+                    # 绝不静默换成悄悄被改写过的文件。
+                    recorded = recorded_version_sha(entry, chosen)
+                    actual = await asyncio.to_thread(file_sha256, chosen)
+                    if recorded and actual and recorded != actual:
+                        raise RunValidationError(
+                            f"参考图 {asset.asset_id} 的清洗版文件与台账记录不一致"
+                            "（素材在审批后被改写），已阻止提交；请重新清洗后再点生成"
+                        )
                     await _safe_event(
-                        services, run_id, f"参考图 {asset.asset_id} 水印清洗：{record.reason}"
+                        services,
+                        run_id,
+                        f"参考图 {asset.asset_id} 使用去水印版"
+                        f"（{entry.get('message') or '已去水印'}）",
+                    )
+                    return _with_cleaned_file(asset, chosen)
+                if decision == "original":
+                    await _safe_event(
+                        services,
+                        run_id,
+                        f"参考图 {asset.asset_id} 按你的选择保留原图（不去水印）",
                     )
                 return asset
-            data = record.cleaned.read_bytes()
+
+            # ② 台账里没有这张图的结论（清洗开关没开 / 后台任务没跑成）→
+            #    **不在这里洗**（2026-10-28 用户口径：「素材变了是绝对不允许的」）。
+            #    审批页此刻显示的也是原图（预览与提交共用 `effective_cleanup_path` 同一个
+            #    收口点），所以"提交原图"与用户看到的一致；而在这里顺手洗一版，
+            #    正是"素材在用户不知情的情况下变了"的来源（旧实现就是靠这条悄悄换掉素材的）。
             await _safe_event(
                 services,
                 run_id,
-                f"参考图 {asset.asset_id} 已去水印（{record.reason}；原图保留：{path.name}）",
+                f"参考图 {asset.asset_id} 没有去水印结论，本次按原图提交（不改素材）",
             )
-            return asset.model_copy(
-                update={
-                    "local_path": record.cleaned,
-                    "size": len(data),
-                    "sha256": sha256(data).hexdigest(),
-                }
-            )
+            return asset
 
     # `gather` 保序：返回顺序与入参一致，下游按下标引用素材不会错位。
     return list(await asyncio.gather(*(clean_one(asset) for asset in assets)))
+
+
+def _reference_cleanup_entry(
+    services: GraphServices, run_id: str, asset_id: str
+) -> dict[str, Any]:
+    """读参考图去水印台账里这张图的条目（读不到 / 读失败都返回 `{}`）。
+
+    读台账只是"少洗一次 + 让用户的选择生效"，**绝不允许**它出错就中断提交。
+    """
+    try:
+        from feishu_generation_agent.integrations.reference_watermark_clean import (
+            read_cleanup_status,
+        )
+
+        ledger = read_cleanup_status(run_id, Path(services.settings.outputs_dir))
+        entry = ledger.get(asset_id)
+        return entry if isinstance(entry, dict) else {}
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("读参考图清洗台账失败 asset=%s", asset_id, exc_info=True)
+        return {}
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    """按**真实字节**判断图片类型；认不出返回 None。
+
+    为什么要它（2026-10-27 生产事故）：换成"去水印清洗版"时，如果只改 `local_path` 而不改
+    `mime_type`，提交时拼出的 data URL 就会"声明 jpeg、字节却是 PNG" —— 方舟在提交阶段校验
+    素材真实格式，直接拒：`generation_mime_mismatch`（参考素材无法用于生成）。
+    事件里只会写"生成失败"，看不出是格式问题，所以这里按字节兜住。
+    """
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:2] == b"BM":
+        return "image/bmp"
+    return None
+
+
+def _with_cleaned_file(asset: MediaAsset, cleaned: Path) -> MediaAsset:
+    """把"这次提交用的副本"换成清洗版 —— **原图始终不动**（2026-10-19 的护栏②）。
+
+    ⚠️ 2026-10-27：**必须同步 `mime_type`**。清洗版由图片模型产出、**恒定是 PNG**，
+    而素材记录里可能还是原图的 `image/jpeg`；不跟着改就会在提交阶段被方舟打回
+    （`generation_mime_mismatch`）。按真实字节嗅探，认不出时才沿用原声明。
+
+    ⚠️ 2026-11-05：**必须同步 `width` / `height`**。清洗版会把整张图**重绘**，
+    尺寸**不保证**与原图一致（实测清洗版比原图小得多）。以前只改路径、尺寸沿用
+    原素材记录，于是下游的尺寸守卫（每边 ≥300px、总像素 ≥90,000）判的是**旧尺寸**：
+
+    - 台账里那张 `193x261`（=50,373 像素）的去水印版被换回来时，
+      `_upscale_reference` 已经按"放大过"跳过了 → 提交的仍是 50,373 像素的原文件
+      → 上游整单拒 `image pixel count must be greater than or equal to 90000`。
+
+    尺寸既然是从文件读的，就按**真实文件**读，别让记录与文件两套数字。
+    """
+    from hashlib import sha256
+
+    data = cleaned.read_bytes()
+    update: dict[str, Any] = {
+        "local_path": cleaned,
+        "size": len(data),
+        "sha256": sha256(data).hexdigest(),
+    }
+    real_mime = _sniff_image_mime(data)
+    if real_mime and real_mime != asset.mime_type:
+        _LOGGER.warning(
+            "清洗版格式与素材声明不一致，已按真实字节修正 mime：%s -> %s（asset=%s）",
+            asset.mime_type, real_mime, asset.asset_id,
+        )
+        update["mime_type"] = real_mime
+    try:
+        with Image.open(BytesIO(data)) as image:
+            width, height = image.size
+    except Exception:  # noqa: BLE001 - 读不出尺寸就沿用原记录，不因增量能力失败
+        _LOGGER.warning(
+            "读清洗版尺寸失败，沿用素材记录 asset=%s", asset.asset_id, exc_info=True
+        )
+    else:
+        if (width, height) != (asset.width, asset.height):
+            _LOGGER.warning(
+                "清洗版尺寸与素材记录不一致，已修正：%sx%s -> %sx%s（asset=%s）",
+                asset.width, asset.height, width, height, asset.asset_id,
+            )
+        update["width"] = width
+        update["height"] = height
+    return asset.model_copy(update=update)
+
 
 
 async def _safe_event(services: GraphServices, run_id: str, summary: str) -> None:

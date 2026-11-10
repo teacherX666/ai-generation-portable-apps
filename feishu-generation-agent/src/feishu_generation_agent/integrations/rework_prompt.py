@@ -87,6 +87,20 @@ def _clip(text: str, limit: int) -> str:
     return text[:limit]
 
 
+#: 融合结果只超出预算这么多字时，按句子边界裁掉尾巴后**采纳**，而不是整条丢弃。
+#:
+#: 2026-11-05（MM长线优化_day16 视频3，run `7e708f8e`）：正文已经 2469/2500，而本轮
+#: 返工要求本身就要占几十字，模型 4 次改写分别落在 2538 / 2519 / 2525 / 2526 ——
+#: **4 次全部因为「超长」被契约整条拒掉**，回退成「正文原样保留」，用户看到的就是
+#: 「重做 + 提示词优化之后提示词一个字没改」。
+#: 只多几十个字（尾巴上多一两句）不该等价于「这轮返工白做」；裁完仍要重过一遍
+#: 全部契约（丢令牌 / 多令牌 / 结构破坏照样拦）。
+_FUSION_TRIM_MAX_OVERFLOW = 60
+
+#: 可裁剪的句子边界：只允许落在这里，绝不把一句话切一半。
+_SENTENCE_BOUNDARY = re.compile(r"[。！？；\n]")
+
+
 def split_legacy_requirements(prompt: str) -> tuple[str, list[str]]:
     """拆出提示词里历史遗留的 `【返工要求】` 段。
 
@@ -724,6 +738,44 @@ def is_acceptable_fusion(
     )
 
 
+def trim_overflow_to_budget(
+    fused: str | None,
+    *,
+    max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
+) -> str | None:
+    """**轻微超长**的融合结果按句子边界裁到预算内；裁不了返回 None。
+
+    只管「裁」，不管「能不能用」—— 裁完必须再过一遍 `fusion_rejection_reason`
+    （丢素材引用 / 多出引用 / 结构破坏照旧拦）。三种情况返回 None，一律交回
+    调用方走原来的「重试 → 回退」路径：
+
+      - 超出预算太多（> `_FUSION_TRIM_MAX_OVERFLOW`）—— 那不是"尾巴多了几句"，
+        而是整段跑偏，裁了也不是模型本意；
+      - 前 `max_chars` 个字里没有任何句子边界 —— 只能把一句话切一半，宁可不裁；
+      - 裁完为空、或与原文一样长。
+    """
+    if not isinstance(fused, str) or len(fused) <= max_chars:
+        return None
+    if len(fused) - max_chars > _FUSION_TRIM_MAX_OVERFLOW:
+        return None
+    window = fused[:max_chars]
+    cut = 0
+    for match in _SENTENCE_BOUNDARY.finditer(window):
+        cut = match.end()
+    if cut <= 0:
+        return None
+    trimmed = window[:cut].rstrip()
+    # 不许把 ``【小节】`` 抬头切掉一半（落单的左括号说明切在了小节中间）。
+    if trimmed.count("【") != trimmed.count("】"):
+        last_open = trimmed.rfind("【")
+        if last_open <= 0:
+            return None
+        trimmed = trimmed[:last_open].rstrip()
+    if not trimmed or len(trimmed) >= len(fused):
+        return None
+    return trimmed
+
+
 def fusion_requirements(feedback: str) -> list[str]:
     """喂给融合器本次要落实的要求：**只取本轮**（用户 2026-09-29：「把累积的规则删了」）。
 
@@ -869,6 +921,7 @@ async def build_rework_prompt(
     visual_context: str = "",
     media_parts: Sequence[dict[str, Any]] | None = None,
     max_chars: int = SEEDANCE_PROMPT_MAX_CHARS,
+    diagnostics: dict[str, Any] | None = None,
 ) -> tuple[str, bool, list[str]]:
     """把「原始提示词 + 全部历史返工要求」变成一条可直接生成的新提示词。
 
@@ -887,6 +940,15 @@ async def build_rework_prompt(
     融合结果不合约时会**重试** `_FUSION_ATTEMPTS` 次再回退：真实模型在同一
     输入下仍会偶发违反契约，一次失败就整段贴会让用户以为「返工没生效」。
     上游抛错不重试（httpx 客户端已带 max_retries），避免真故障时把返工拖长。
+
+    **轻微超长不再整条丢弃**（2026-11-05）：融合结果只超出 `max_chars` 不超过
+    `_FUSION_TRIM_MAX_OVERFLOW` 字时，先按句子边界裁到预算内再验收，通过就采纳
+    （此时 `truncated=True`）。正文已接近上限的任务（实测 2469/2500）否则**每一轮
+    返工都会因为多出几十字而白做**。
+
+    `diagnostics` 是可选的出参 dict：调用方传进来就能拿到这次融合为何没生效
+    （`rejection_reason`）与被裁掉多少字（`trimmed_chars`），用于把界面上的
+    「融合结果与原文一致或不合契约」换成**真实原因**。
     """
     if fuse is not None:
         accepts_context = _accepts_keyword(fuse, "visual_context")
@@ -942,8 +1004,36 @@ async def build_rework_prompt(
                 # 刻意**不再**把 must_avoid 补进正文：用户 2026-09-18 明确要求
                 # 「不要越叠越多」，补写只能追加到末尾，正是他要避免的形态。
                 # 要求本身仍在 rework_requirements 里累积，下一轮还会带上。
+                if diagnostics is not None:
+                    diagnostics["rejection_reason"] = None
+                    diagnostics["trimmed_chars"] = 0
                 return fused, False, must_avoid
+            # 轻微超长先试着按句子边界裁到预算内再验收（2026-11-05）：整条丢掉会
+            # 让「正文已接近上限」的任务**每一轮返工都白做**（见上方常量注释）。
+            trimmed = trim_overflow_to_budget(fused, max_chars=max_chars)
+            if trimmed is not None:
+                trimmed_reason = fusion_rejection_reason(
+                    trimmed,
+                    base_prompt=base_prompt,
+                    max_chars=max_chars,
+                    requirements=requirements,
+                    visual_context=visual_context,
+                )
+                if trimmed_reason is None:
+                    _LOGGER.warning(
+                        "返工提示词融合结果超长（%d > %d），已按句子边界裁掉 %d 字后采纳",
+                        len(fused),
+                        max_chars,
+                        len(fused) - len(trimmed),
+                    )
+                    if diagnostics is not None:
+                        diagnostics["rejection_reason"] = None
+                        diagnostics["trimmed_chars"] = len(fused) - len(trimmed)
+                    return trimmed, True, must_avoid
+                reason = f"{reason}；裁剪后仍不合契约：{trimmed_reason}"
             rejection = reason
+            if diagnostics is not None:
+                diagnostics["rejection_reason"] = reason
             _LOGGER.warning(
                 "返工提示词融合结果不合契约（第 %d/%d 次尝试）：%s",
                 attempt,
@@ -953,6 +1043,15 @@ async def build_rework_prompt(
     prompt, truncated = build_fallback_prompt(
         base_prompt, requirements, max_chars=max_chars
     )
+    if diagnostics is not None and not diagnostics.get("rejection_reason"):
+        # 走到这里说明这次融合彻底没生效。如实写下原因，别让界面只会说
+        # 「融合结果与原文一致或不合契约」——那句话把「超长被拒」和「模型没改」
+        # 混成一句，用户根本看不出该改什么（2026-11-05 用户报障的原话就是
+        # 「结果没有给我修改提示词」）。
+        if fuse is None:
+            diagnostics["rejection_reason"] = "未配置返工融合模型"
+        else:
+            diagnostics["rejection_reason"] = "上游报错或连续 4 次不合契约"
     return prompt, truncated, []
 
 

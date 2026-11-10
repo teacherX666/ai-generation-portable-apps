@@ -384,6 +384,8 @@
    *  - `human_approval/started` 与前一个事件之间的间隔 = 计划审批停留
    *  - `verify_and_download_artifacts/completed` 之后的第一个事件之前的间隔
    *    = 成片审核停留
+   *  - **还没结束**（run 仍停在等人工的节点上）时，最后那段「等你看」的等待也算人工 ——
+   *    否则累计耗时随停留时间无限增长（见下面 2026-10-20 的注释）
    */
   function runElapsedBreakdown(view, now = Date.now()) {
     const totalMs = runElapsedMs(view, now);
@@ -413,6 +415,28 @@
       awaitingReview =
         current.node === "verify_and_download_artifacts" &&
         current.status === "completed";
+    }
+    // 仍在等人工：把「最后一个事件 → now」这一段也算人工。
+    //
+    // 2026-10-20 用户：「怎么生成累计耗时这么长」。实测真实生成 4m39s 的 run
+    //（1e4f0e24）停在 waiting_review 两小时后，界面显示累计 2h46m —— 因为上面的循环
+    // 只扣「事件之间」的间隔，最后那段**还在等你看**的等待从没被扣，全算进了系统耗时，
+    // 于是随着 run 停在页面上无限增长。
+    // 判据是**最后一个事件本身**表示在等人：计划审批（human_approval/started 一类）
+    // 或成片审核（awaitingReview 为真，即 verify_and_download_artifacts/completed）。
+    // 正在干活的任务（如 execute_selected_tasks/running）不在此列 —— 那段确实是系统时间。
+    if (!TERMINAL_RUN_STATUSES.has(view.status) && events.length) {
+      const last = events[events.length - 1] || {};
+      const waitingForHuman =
+        awaitingReview
+        || (last.node === "human_approval"
+            && ["started", "running", "waiting_review", "pending"].includes(
+              String(last.status || ""),
+            ));
+      const lastMs = parseServerTime(last.created_at);
+      if (waitingForHuman && Number.isFinite(lastMs)) {
+        humanMs += Math.max(0, now - lastMs);
+      }
     }
     const human = Math.min(humanMs, totalMs);
     return { totalMs, humanMs: human, systemMs: Math.max(0, totalMs - human) };

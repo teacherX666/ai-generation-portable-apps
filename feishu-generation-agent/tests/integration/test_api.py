@@ -514,6 +514,72 @@ async def test_portal_history_falls_back_when_prompt_unavailable(
     assert response.status_code == 200
     item = next(i for i in response.json()["items"] if i["job_id"] == "run-noprompt")
     assert item["prompt"] == "飞书任务 Agent 生成任务"
+    assert item["has_reference_video"] is False
+
+
+async def test_portal_history_flags_reference_video_for_pricing(
+    tmp_path: Path,
+) -> None:
+    """Portal 要能知道这次有没有挂参考视频 —— 方舟「有/无输入视频」是两档单价（差 1.6 倍）。
+
+    方舟自己的任务接口只返回**输出**内容（content.video_url = 成片），看不出输入侧；
+    唯一知道真相的是提交方，也就是飞书这边计划的 reference_plan / reference_images。
+    真机依据（2026-10-29）：今天 12 条运行里有 8 条的计划带 `video-1` 素材。
+    """
+    from feishu_generation_agent.web import app as web_app
+
+    web_app._PORTAL_PROMPT_CACHE.clear()
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime
+        for run_id, thread_id, plan in (
+            ("run-video-ref", "thread-video-ref", {
+                "tasks": [{
+                    "task_id": "task-1",
+                    "prompt": "参考视频1的动作顺序",
+                    "reference_plan": [
+                        {"asset_id": "image-1", "role": "shot", "usable": True},
+                        {"asset_id": "video-1", "role": "video", "usable": True},
+                    ],
+                }],
+            }),
+            ("run-image-only", "thread-image-only", {
+                "tasks": [{
+                    "task_id": "task-1",
+                    "prompt": "只参考图片",
+                    "reference_plan": [
+                        {"asset_id": "image-1", "role": "shot", "usable": True},
+                    ],
+                    "reference_images": [
+                        {"asset_id": "image-1", "role": "reference_image", "order": 1},
+                    ],
+                }],
+            }),
+            ("run-uploaded-video", "thread-uploaded-video", {
+                "tasks": [{
+                    "task_id": "task-1",
+                    "prompt": "本地新上传的参考视频",
+                    # 本地新上传的素材 id 是 upload-<hash>，只能靠 role 才认得出来
+                    "reference_images": [
+                        {"asset_id": "upload-abc123", "role": "reference_video", "order": 1},
+                    ],
+                }],
+            }),
+        ):
+            await repository.create_run(
+                run_id, thread_id, f"https://acme.feishu.cn/docx/{run_id}",
+                owner_user_id="user-a",
+            )
+            await repository.update_run_status(run_id, "waiting_review", owner_user_id="user-a")
+            await graph.aupdate_state(
+                {"configurable": {"thread_id": thread_id}}, {"draft_plan": plan},
+            )
+        response = await client.get("/api/portal/history", headers=_USER_A_HEADERS)
+
+    assert response.status_code == 200
+    by_id = {i["job_id"]: i for i in response.json()["items"]}
+    assert by_id["run-video-ref"]["has_reference_video"] is True
+    assert by_id["run-uploaded-video"]["has_reference_video"] is True
+    assert by_id["run-image-only"]["has_reference_video"] is False, "只有图片 → 无输入视频档"
 
 
 async def test_portal_history_exposes_waiting_review_artifact_preview(
@@ -2671,6 +2737,55 @@ async def test_replace_and_unlink_reference_keep_content_file(tmp_path: Path):
         assert after["approval"]["tasks"][0]["reference_images"] == [
             {"asset_id": replacement_id, "role": "reference_image", "order": 1}
         ]
+
+
+async def test_replace_video_survives_client_sending_type_index_order(tmp_path: Path):
+    """2026-10-30 用户报「飞书模块替换视频会失败」的回归。
+
+    前端「替换」提交的是下拉框里那个**同类型序号**（`ReviewState.referenceTypeIndex`
+    —— 视频1 的序号是 1），而它在任务里的**全局槽位**是 2（图片1 占 1）。照实采用就与
+    图片1 撞车：`canonicalize_references` 判 order 重复 → `_task_with_references`
+    把它映射成 422「图片引用无效」。生产实测（run `31770465`，图片1 + 视频1）报的就是
+    这个 422，而且文件已经存进 `inputs/` 却没有挂上任务 —— 失败点在保存**之后**。
+    替换 = 原地换素材，槽位必须跟被替换的那一格走：客户端算错了也不该失败。
+    """
+    async with _environment(tmp_path) as (client, runtime, graph, repository):
+        del runtime, graph, repository
+        run_id = (
+            await client.post(
+                "/api/runs",
+                json={"source_url": "https://acme.feishu.cn/docx/replace-video-ref"},
+            )
+        ).json()["run_id"]
+        await _wait_for_status(client, run_id, "waiting_approval")
+        added = await client.post(
+            f"/api/runs/{run_id}/references",
+            data={"task_id": "task-1", "role": "reference_video", "order": "2"},
+            files={"file": ("clip.mp4", b"\x00\x00\x00\x18ftypisom", "video/mp4")},
+        )
+        assert added.status_code == 201
+        video_id = added.json()["asset_id"]
+
+        replaced = await client.post(
+            f"/api/runs/{run_id}/references",
+            data={
+                "task_id": "task-1",
+                "role": "reference_video",
+                "order": "1",  # ← 前端替换视频时发的「同类型序号」，生产上就是它撞的车
+                "replaces_asset_id": video_id,
+            },
+            files={"file": ("clip2.mp4", b"\x00\x00\x00\x18ftypmp42", "video/mp4")},
+        )
+        assert replaced.status_code == 201, replaced.text
+
+        refs = (
+            await client.get(f"/api/runs/{run_id}")
+        ).json()["approval"]["tasks"][0]["reference_images"]
+        assert [(ref["role"], ref["order"]) for ref in refs] == [
+            ("reference_image", 1),
+            ("reference_video", 2),  # 原地保留槽位，没有被压成 1
+        ]
+        assert refs[1]["asset_id"] == replaced.json()["asset_id"]
 
 
 async def test_reference_edits_reconcile_exclusions_on_the_server(

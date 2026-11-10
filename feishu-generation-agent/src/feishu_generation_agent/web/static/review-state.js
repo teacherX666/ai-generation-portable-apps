@@ -417,7 +417,30 @@
       && !state.submitting
       && state.selectedTaskIds.length
       && assetCoverage(view).uncovered_count === 0
+      && approvalBlockingIssues(state).length === 0
     );
+  }
+
+  /**
+   * 勾选任务里还没解决的阻塞项。
+   *
+   * `blocking_issues` 是**服务端派生**字段（由当前 prompt/duration 算出来），但审批请求体
+   * 会把浏览器这一份任务**原样回传**（`DecisionRequest.tasks`）。2026-10-21 生产事故
+   * （飞书任务「刺绣牡丹」run `c4163b7b`）：用户把任务时长改成 10 秒、服务端 checkpoint
+   * 里 `duration=10` 且已无阻塞项，可浏览器那份还带着旧的
+   * 「正文自述时长（10 秒）与任务时长（14 秒）不一致」→ 合并后
+   * `approved_subset()` 抛「task task-1 has blocking issues and cannot be approved」
+   * → 连点三次「批准并开始生成」全部秒失败，还各记一条失败任务。
+   *
+   * 所以：**本地还看得见阻塞项就不许提交**，等界面刷新到服务端重算后的视图再点。
+   */
+  function approvalBlockingIssues(state) {
+    const selected = new Set(state.selectedTaskIds || []);
+    return draftTasks(state)
+      .filter((task) => selected.has(task.task_id))
+      .flatMap((task) => (
+        (task.blocking_issues || []).map((text) => `${task.task_id}：${text}`)
+      ));
   }
 
   /**
@@ -457,6 +480,13 @@
     }
     if (assetCoverage(draftView(state)).uncovered_count !== 0) {
       throw new Error("素材覆盖不完整，请先处理未使用素材");
+    }
+    const blocking = approvalBlockingIssues(state);
+    if (blocking.length) {
+      // 不再放行到服务端去失败：那会白记一条失败任务，用户还看不到原因。
+      throw new Error(
+        `还有未解决的阻塞项，请按提示改好并等界面刷新后再点「批准并开始生成」：${blocking.join("；")}`,
+      );
     }
     return {
       action: "approve",
@@ -518,6 +548,11 @@
     return JSON.stringify(stableValue({
       tasks: approval.tasks || [],
       selected_task_ids: approval.selected_task_ids || [],
+      // 去水印台账（2026-10-26）：参考图卡片上的「用清洗版 / 用原图 / 重新清洗」、
+      // 缩略图给原图还是清洗版，**全由它决定**，而它不在 `tasks` 里。
+      // 不计入身份的话，用户点完按钮（或后台清洗刚跑完）身份判据判"没变"→ 不重建 →
+      // 界面停在原样，看起来就是「点了没反应」（用户 2026-10-26 原话）。
+      watermark_cleanup: approval.watermark_cleanup || null,
     }));
   }
 
@@ -662,6 +697,7 @@
     mergeServerView,
     adoptSelfSavedView,
     patchTask,
+    approvalBlockingIssues,
     referenceMutationDirective,
     selectedTaskIds,
     shouldRefreshTaskEditor,

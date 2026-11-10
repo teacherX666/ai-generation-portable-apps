@@ -341,7 +341,10 @@ async def test_local_and_portal_direct_run_creation_have_explicit_snapshots(
     assert local_prompt.prompt_sha256 == (
         # 2026-10-12：视频契约按「原图保真」口径改过（水印不再触发 usable=false），
         # 哈希随之更新 —— 有意改动，见 tests/unit/test_reference_fidelity_rules.py。
-        "65fb914f8005792653c2ec688ad0c704dae50769dc90893d265db7fb88ed2f8b"
+        # 2026-10-27：新增「画面内容优先级」条款（文档的『以事件描述为主、参考感觉为辅』
+        # 只适用于动作/节奏/时间分配；画面内容、布局、数量与形态、配色、材质、光位与色温
+        # 一律以 @图片N 为唯一基准）—— 有意改动，哈希再次更新。
+        "22f52ff62c902a7801d9e415c5c02326db3ff3006178622512d35623901be093"
     )
     assert portal_prompt is not None
     assert portal_prompt.owner_user_id == "user-a"
@@ -1051,11 +1054,16 @@ async def test_archive_restore_and_archived_runs_endpoints(tmp_path) -> None:
     assert archived.status_code == 200
     assert archived.json()[0]["run_id"] == "run-archived"
     assert archive.status_code == 200
-    assert archive.json() == {"run_id": "run-old", "status": "archived"}
+    # 2026-10-30：归档/恢复收成一对统一口子（`/api/runs/{id}/archive|restore`），
+    # 响应里多一个 `mode` 说明这次是哪条通道处理的（直连任务也走这两个口子）。
+    assert archive.json() == {
+        "run_id": "run-old", "status": "archived", "mode": "bitable",
+    }
     assert restore.status_code == 200
     assert restore.json() == {
         "run_id": "run-archived",
         "status": "restored",
+        "mode": "bitable",
     }
     assert production.archive_calls == ["run-old"]
     assert production.restore_calls == ["run-archived"]

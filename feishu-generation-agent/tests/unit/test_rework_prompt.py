@@ -15,6 +15,7 @@ from feishu_generation_agent.integrations.rework_prompt import (
     parse_fusion_payload,
     rework_inputs,
     split_legacy_requirements,
+    trim_overflow_to_budget,
 )
 
 #: 墨滴任务第 7 轮真实攒出来的「必须避免」（2026-09-17 生产快照，21 条）。
@@ -1120,3 +1121,120 @@ def test_inherit_rework_requirements_without_history_is_a_noop() -> None:
 
     assert inherit_rework_requirements(plan, []) == 0
     assert "rework_requirements" not in plan["tasks"][0]
+
+
+# --- 2026-11-05：轻微超长的融合结果按句子边界裁剪后**采纳**，不再整条丢弃 ---
+#
+# 事故现场（MM长线优化_day16 视频3 / run `7e708f8e`）：正文已经 2469/2500，模型 4 次
+# 改写分别 2538 / 2519 / 2525 / 2526 —— **每次都只多 19~38 字**却被整条拒掉，回退成
+# 「正文原样保留」，用户看到的就是「重做 + 提示词优化之后提示词一个字没改」。
+
+
+async def test_slightly_overlong_fusion_is_trimmed_and_adopted(caplog) -> None:
+    """只多几十字 → 裁掉结尾多余句子后采纳，而不是让这轮返工白做。"""
+    import logging
+
+    base = "@图片1 中的猫坐在窗台上。"
+    # 前 10 个字的余量刚好装下第一句新内容，第二句开始被裁掉。
+    fused = base + "它缓缓起身。" + "尾巴轻轻摆动，最后停在门口不动了。"
+
+    async def fuse(original_prompt: str, requirements: list[str]):
+        return {"prompt": fused, "must_avoid": []}
+
+    with caplog.at_level(logging.WARNING):
+        prompt, truncated, _must_avoid = await build_rework_prompt(
+            base, ["动作慢一点"], fuse=fuse, max_chars=len(base) + 10
+        )
+
+    assert prompt != base  # 采纳了模型改写，而不是"一个字没改"
+    assert len(prompt) <= len(base) + 10
+    assert prompt.endswith("。")  # 只落在句子边界，不切半句
+    assert prompt.startswith(base)
+    assert truncated is True
+    assert any("裁掉" in record.getMessage() for record in caplog.records)
+
+
+async def test_slightly_overlong_fusion_still_must_pass_the_other_contracts() -> None:
+    """裁剪不是免检通道：裁完丢了素材引用照样得回退。"""
+    base = "@图片1 与 @图片2 中的猫在跑。"
+    fused = "@图片1 中的猫在跑。" + "描述" * 20 + "，另外 @图片2 也在跑。"
+
+    async def fuse(original_prompt: str, requirements: list[str]):
+        return {"prompt": fused, "must_avoid": []}
+
+    prompt, truncated, _must_avoid = await build_rework_prompt(
+        base, ["动作慢一点"], fuse=fuse, max_chars=len(base) + 5
+    )
+
+    assert prompt == base  # 裁剪会丢掉 @图片2 → 不接受
+    assert truncated is False
+
+
+async def test_wildly_overlong_fusion_is_not_trimmed() -> None:
+    """超太多说明整段跑偏：裁了也不是模型本意，照旧回退（不裁）。"""
+    base = "@图片1 中的猫坐在窗台上。"
+
+    async def fuse(original_prompt: str, requirements: list[str]):
+        return {"prompt": base + "。" + "额外内容" * 40, "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        base, ["动作慢一点"], fuse=fuse, max_chars=len(base) + 10
+    )
+
+    assert prompt == base
+
+
+def test_trim_overflow_to_budget_boundaries() -> None:
+    """裁剪的边界：够不着 / 没有句子边界 / 超太多 / 切进【小节】中间。"""
+    # 没超预算 → 不裁
+    assert trim_overflow_to_budget("短句。", max_chars=100) is None
+    # 没有任何句子边界 → 宁可不裁，也不把一句话切一半
+    assert trim_overflow_to_budget("甲" * 50, max_chars=40) is None
+    # 超太多 → 不裁（那不是"尾巴多了几句"，是整段跑偏）
+    assert trim_overflow_to_budget("甲。" * 60, max_chars=40) is None
+    # 正常裁剪：落在句子边界上
+    assert (
+        trim_overflow_to_budget("第一句。第二句。第三句很长很长。", max_chars=12)
+        == "第一句。第二句。"
+    )
+    # 会切进【小节】中间 → 退到该小节之前（不许留下半截抬头）
+    partial = "甲" * 30 + "【约束一；约束二】后续正文还有很多内容。"
+    assert trim_overflow_to_budget(partial, max_chars=35) == "甲" * 30
+
+
+async def test_diagnostics_reports_the_real_reason_for_the_user() -> None:
+    """界面上的「没有给我修改提示词」必须能说出**真实原因**。"""
+    base = "@图片1 中的猫坐在窗台上。"
+    diagnostics: dict[str, object] = {}
+
+    async def fuse(original_prompt: str, requirements: list[str]):
+        # 超太多 → 不裁 → 4 次重试都回退
+        return {"prompt": base + "。" + "额外内容" * 40, "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        base,
+        ["动作慢一点"],
+        fuse=fuse,
+        max_chars=len(base) + 10,
+        diagnostics=diagnostics,
+    )
+
+    assert prompt == base
+    reason = str(diagnostics.get("rejection_reason") or "")
+    assert "超长" in reason  # 不是含糊的「与原文一致或不合契约」
+
+
+async def test_diagnostics_cleared_when_the_fusion_lands() -> None:
+    """融合成功时不留假原因（否则事件会误报"没生效"）。"""
+    base = "@图片1 中的猫坐在窗台上。"
+    diagnostics: dict[str, object] = {"rejection_reason": "上一次的旧原因"}
+
+    async def fuse(original_prompt: str, requirements: list[str]):
+        return {"prompt": base + "它慢慢走开。", "must_avoid": []}
+
+    prompt, _truncated, _must_avoid = await build_rework_prompt(
+        base, ["动作慢一点"], fuse=fuse, diagnostics=diagnostics
+    )
+
+    assert prompt != base
+    assert diagnostics["rejection_reason"] is None

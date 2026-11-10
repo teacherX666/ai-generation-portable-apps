@@ -95,6 +95,63 @@ function view({
   };
 }
 
+// 2026-10-21 生产事故：飞书任务「刺绣牡丹」run `c4163b7b` —— 用户把任务时长改成 10 秒、
+// 服务端 checkpoint 里已经重算掉阻塞项，可浏览器那份任务还带着旧的
+// 「正文自述时长（10 秒）与任务时长（14 秒）不一致」，批准请求把它**原样回传** →
+// 服务端 `approved_subset()` 判死 → 连点三次「批准并开始生成」全部秒失败，
+// 还白记三条失败任务。所以：本地还看得见阻塞项时**不许提交**。
+const _STALE_DURATION_BLOCKING =
+  "Seedance 提示词正文自述时长（10 秒）与任务时长（14 秒）不一致："
+  + "请把正文里所有时长表述改成 14 秒，或把任务时长改回正文写的秒数。";
+
+test("勾选任务还带阻塞项时不许批准（避免白记一条失败任务）", () => {
+  const serverView = view({ selectedTaskIds: ["task-1"] });
+  serverView.approval.tasks[0].blocking_issues = [_STALE_DURATION_BLOCKING];
+  const state = ReviewState.mergeServerView(ReviewState.createReviewState(), serverView);
+
+  assert.equal(ReviewState.canApprove(state), false);
+  assert.throws(
+    () => ReviewState.buildApprovalPayload(state),
+    /还有未解决的阻塞项/,
+  );
+});
+
+test("只有勾选的任务才算数：没勾的任务带阻塞项不影响批准", () => {
+  const serverView = view({ selectedTaskIds: ["task-2"] });
+  serverView.approval.tasks[0].blocking_issues = [_STALE_DURATION_BLOCKING];
+  const state = ReviewState.mergeServerView(ReviewState.createReviewState(), serverView);
+
+  assert.deepEqual(ReviewState.approvalBlockingIssues(state), []);
+  assert.equal(ReviewState.canApprove(state), true);
+});
+
+test("阻塞项按服务端视图判定：本地改了字段、还没轮询到新视图时仍然拦着", () => {
+  const serverView = view({ selectedTaskIds: ["task-1"] });
+  serverView.approval.tasks[0].blocking_issues = [_STALE_DURATION_BLOCKING];
+  let state = ReviewState.mergeServerView(ReviewState.createReviewState(), serverView);
+
+  // 乐观更新：patchTask 只写本地 editsByTaskId，服务端重算要等下一次 poll 才回来。
+  state = ReviewState.patchTask(state, "task-1", { duration: 10 });
+
+  assert.equal(ReviewState.canApprove(state), false);
+  assert.match(ReviewState.approvalBlockingIssues(state)[0], /时长/);
+});
+
+test("服务端重算掉阻塞项之后（新视图）立刻可以批准", () => {
+  const blockingView = view({ selectedTaskIds: ["task-1"], revision: 8 });
+  blockingView.approval.tasks[0].blocking_issues = [_STALE_DURATION_BLOCKING];
+  let state = ReviewState.mergeServerView(ReviewState.createReviewState(), blockingView);
+  assert.equal(ReviewState.canApprove(state), false);
+
+  const cleanView = view({ selectedTaskIds: ["task-1"], revision: 9 });
+  cleanView.approval.tasks[0].duration = 10;
+  state = ReviewState.mergeServerView(state, cleanView);
+
+  assert.deepEqual(ReviewState.approvalBlockingIssues(state), []);
+  assert.equal(ReviewState.canApprove(state), true);
+  assert.equal(ReviewState.buildApprovalPayload(state).tasks[0].duration, 10);
+});
+
 test("批准 payload 里的分镜帧只回传标量字段（candidates 是视图对象，不能原样回传）", () => {
   // 2026-09-22 实跑：视图里的 candidates 是 {asset_id, preview_url, selected} 对象，
   // 而任务模型里 candidates 是 asset_id 字符串数组 —— 原样回传会让批准请求校验失败
@@ -150,6 +207,30 @@ test("task editor refreshes only when the effective server plan changes", () => 
   assert.equal(
     ReviewState.shouldRefreshTaskEditor(same, changed, true),
     true,
+  );
+});
+
+// 2026-10-26（用户）：「9090 端口飞书模块新加的用清洗版点了没反应」。
+// 参考图卡片上的「用清洗版 / 用原图 / 重新清洗」和缩略图给哪个版本，全由
+// `approval.watermark_cleanup` 决定，而它**不在 tasks 里** —— 身份判据漏了它，
+// 于是用户点完按钮（或后台清洗刚跑完）编辑器都判"没变"、不重建，界面纹丝不动。
+test("去水印台账变化也要重建任务编辑器", () => {
+  const initial = ReviewState.mergeServerView(ReviewState.createReviewState(), view());
+  const withCleaned = view();
+  withCleaned.approval.watermark_cleanup = {
+    "asset-1": {
+      status: "kept",
+      message: "已保留原图",
+      cleaned: "data/runs/run-1/inputs/asset-1-nowm.png",
+      decision: "cleaned",
+    },
+  };
+  const afterDecision = ReviewState.mergeServerView(initial, withCleaned);
+
+  assert.equal(
+    ReviewState.shouldRefreshTaskEditor(initial, afterDecision, true),
+    true,
+    "只改去水印选择（tasks 没变）时界面也必须跟着变",
   );
 });
 
