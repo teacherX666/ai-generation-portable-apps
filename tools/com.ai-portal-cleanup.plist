@@ -6,12 +6,20 @@
     <string>com.ai-portal-cleanup</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/python3.12</string>
-        <string>/Users/260413a/ai-generation-portable-apps/tools/cleanup_daily.py</string>
+        <string>/Users/red105/Documents/Codex/2026-08-24/ni-2/repo/.venv/bin/python</string>
+        <string>/Users/red105/Documents/Codex/2026-08-24/ni-2/repo/tools/cleanup_daily.py</string>
         <string>--apply</string>
+        <string>--outputs-retention</string>
+        <string>3</string>
+        <string>--workspace-media-days</string>
+        <string>7</string>
+        <string>--caches-days</string>
+        <string>14</string>
+        <string>--trash-days</string>
+        <string>1</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/260413a/ai-generation-portable-apps</string>
+    <string>/Users/red105/Documents/Codex/2026-08-24/ni-2/repo</string>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
@@ -19,10 +27,17 @@
         <key>Minute</key>
         <integer>47</integer>
     </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/red105</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    </dict>
     <key>StandardOutPath</key>
-    <string>/Users/260413a/Library/Logs/ai-portal-cleanup.log</string>
+    <string>/Users/red105/Library/Logs/ai-portal-cleanup.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/260413a/Library/Logs/ai-portal-cleanup.log</string>
+    <string>/Users/red105/Library/Logs/ai-portal-cleanup.log</string>
     <key>ProcessType</key>
     <string>Background</string>
 </dict>

@@ -41,6 +41,7 @@ class AppSpec:
     port_env: str                        # e.g. "SEEDANCE_PORT"
     port_default: int                    # e.g. 8787
     managed: bool = True
+    interpreter: Optional[str] = None  # relative to repo root or absolute
 
     mount: Mount = "iframe"
     iframe_url: Optional[str] = None     # mount=iframe
@@ -88,6 +89,7 @@ def _spec_from_dict(d: dict[str, Any], repo_root: Path) -> AppSpec:
         port_env=d["port_env"],
         port_default=int(d["port_default"]),
         managed=bool(d.get("managed", True)),
+        interpreter=d.get("interpreter"),
         mount=d.get("mount", "iframe"),
         iframe_url=d.get("iframe_url"),
         component_factory=d.get("component_factory"),

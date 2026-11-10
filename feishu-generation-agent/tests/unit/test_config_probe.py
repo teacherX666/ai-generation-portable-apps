@@ -231,14 +231,18 @@ async def test_seedance_probe_reads_model_list_instead_of_unsupported_detail(
 
     await probe(_bitable_settings(tmp_path), network=True)
 
-    seedance_calls = [
-        item for item in calls if item[0].startswith("https://ark.cn-beijing")
-    ]
-    assert seedance_calls == [
+    # 2026-09-15 起 deepseek 也指向火山方舟（DeepSeek V4.1 Flash），
+    # 所以 /models 探测会出现两条 Ark 记录：deepseek + seedance。
+    ark_calls = [item for item in calls if item[0].startswith("https://ark.cn-beijing")]
+    assert ark_calls == [
+        (
+            "https://ark.cn-beijing.volces.com/api/v3/models",
+            "deepseek-model",
+        ),
         (
             "https://ark.cn-beijing.volces.com/api/v3/models",
             "seedance-model",
-        )
+        ),
     ]
 
 

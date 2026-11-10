@@ -132,6 +132,7 @@ class Settings(BaseSettings):
     # seedream 走火山方舟，复用 ark_api_key / ark_base_url。
     # 统一写模型名（doubao-…）而不是账号相关的 endpoint id（ep-…），
     # 让配置可移植；ep-… 由 VIDEO_MODEL_BY_ID / 别名表兼容。
+    # 新项目 COOP_YZQ 下按模型名调用会 403，使用控制台推理接入点。
     seedream_model: str = "doubao-seedream-5-0-pro-260628"
     # 规划阶段为每个时间段生成几张分镜关键帧候选。**默认 0 = 关闭**（用户
     # 2026-09-22：「不用分镜图模式，默认改成不启用吧，现在很多 bug，而且时间还是很长」）。
@@ -163,7 +164,7 @@ class Settings(BaseSettings):
     aiport_video_model: str = "minimax_h3_all_reference"
     volcengine_access_key: SecretStr | None = None
     volcengine_secret_key: SecretStr | None = None
-    volcengine_project_name: str = "Seedance2.0"
+    volcengine_project_name: str = "COOP_YZQ"
     tos_bucket: str | None = None
     tos_region: str = "cn-beijing"
     langsmith_tracing: bool = False

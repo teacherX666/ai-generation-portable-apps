@@ -196,13 +196,31 @@ dreamina/         → Image/video via Dreamina CLI wrapper
 
 ### Volcengine Portrait 子应用要点
 
-- **ProjectName 硬编码 `Seedance2.0`**（所有 Action 无例外），`handle_virtual_groups_post` 移除了从请求体覆盖能力
+- **ProjectName 默认 `COOP_YZQ`**（2026-09-11 由 `Seedance2.0` 改名来的新项目，项目 id 不同、素材库不共享）；可用 `volcengine-portrait/config.json` 的 `project_name` 覆盖，请求体仍不能覆盖（`handle_virtual_groups_post` 已移除该能力）
+- **AK/SK 是按 IAM 项目授权的**：换 AK/SK 必须同时把项目名换成该 key 被授权的那一个，否则素材库所有 Action 直接 `AccessDenied`（实测：新 key 只授权 `COOP_YZQ`，旧 key 只授权 `Seedance2.0`）
 - **真人认证是控制台流程，没有 API**：真人和虚拟素材最终都是 `asset://` 引用，Real handler 全部委托给 Virtual handler
 - **Ark Files API `purpose` 只接受 `user_data` 或 `agent`**（`private-avatar` 会 400；旧文档写错了）
 - CreateAsset 需要**公开可访问的 HTTP/HTTPS URL**，Ark v3 上传后返回的 URL 需 Bearer Token → TOS 后端拉不到 → 走 `_upload_to_public_host()` 传 uguu.se
 - **Portal 需 do_DELETE + Access-Control-Allow-Methods: DELETE**（SimpleHTTPRequestHandler 默认不支持 DELETE，返 501 HTML 会让前端解析失败）
 - Windows `cgi.FieldStorage` 必须显式传入 `CONTENT_LENGTH` 到 environ
 - SK 是原始值，**不做 base64 解码**，`_normalize_sk() = return raw_sk`
+
+### 火山方舟：模型名 vs 推理接入点（ep-）
+
+- 换到新项目 `COOP_YZQ` 后，**部分模型名不再被授权**（2026-09-14 实测）：
+  `doubao-seedream-5-0-pro-260628`、`doubao-seedance-2-0-mini-260615` 按模型名调用返回
+  `403 AccessDenied`；其余 `doubao-seedance-2-0-260128` / `-fast-260128` / `2-5-260628` 按名字仍可用
+- 这两个模型必须走控制台建的**推理接入点**（当前值）：
+  Seedream 5.0 Pro = `ep-20260912121809-6wt62`，Seedance 2.0 mini = `ep-20260912121738-vtd78`
+- 接入点是**项目/部署相关**的，换项目或换 key 时要在控制台重建，并同步更新所有落点：
+  `seedance/providers.json`、`seedance/static/app.js`、`portal/static/app.js`（`portraitModels`）、
+  `nano-banana/providers.json`、`nano-banana/app.py`（FALLBACK_PROVIDERS）、`nano-banana/static/app.js`、
+  `director/providers.json`、`director/app.py` 的两个默认值、
+  `feishu-generation-agent/src/feishu_generation_agent/config.py`（`seedream_model`）、
+  `volcengine-portrait/app.py`（`_MODEL_MAX_DURATION`）
+- **零成本判定某个 id 是否可用**：带一个非法参数发一次请求看错误码 ——
+  `InvalidParameter` = 模型/接入点已路由成功（只是参数不合法），`AccessDenied` = 没权限，
+  `InvalidEndpointOrModel.NotFound` = 不存在。图像用 `size: "3K"`，视频用 `duration: 999`
 
 ### 端口冲突（release 打包）
 

@@ -600,20 +600,22 @@ async def api_jobs_json(request: Request):
 
 @app.post("/api/jobs")
 async def api_jobs_create(request: Request):
-    values, files = await _parse_multipart(request)
+    values, uploaded_files = await _parse_multipart(request)
     provider = str(values.get("provider") or "t8star")
     api_key = legacy.resolve_provider_api_key(provider, str(values.get("api_key") or ""))
     if not api_key:
         return JSONResponse(status_code=400, content=legacy.api_error("invalid_request", "API key is required"))
-    # Drop keys pointing at file fields (already extracted).
-    submit_values = {k: v for k, v in values.items() if k not in files}
-    submit_values["api_key"] = api_key
-    submit_files = {k: v for k, v in files.items() if v and v[1]}
-    request_data = legacy.summarize_values_files(submit_values, submit_files)
     ws = _ws_id(request)
+    # Resolve both newly uploaded files and saved_media references.
+    submit_files = _resolve_submit_files(values, uploaded_files, ws)
+    # Drop keys pointing at file fields (already extracted).
+    submit_values = {k: v for k, v in values.items() if k not in submit_files}
+    submit_values["api_key"] = api_key
+    request_data = legacy.summarize_values_files(submit_values, submit_files)
     username = legacy._decode_username(_HandlerShim(request))
     job_id = legacy.create_job(
-        submit_values, submit_files, "page", "multipart", request_data, ws, username=username,
+        submit_values, submit_files, "page", "multipart", request_data, ws,
+        username=username, media_scope=ws,
     )
     return _job_created_response(job_id)
 
@@ -659,6 +661,23 @@ class _FileItem:
     def __init__(self, filename: str, blob: bytes):
         self.filename = filename
         self.file = io.BytesIO(blob)
+
+
+def _resolve_submit_files(values: dict[str, str], files: dict[str, tuple[str, bytes]], ws_id: str) -> dict[str, tuple[str, bytes]]:
+    """Resolve uploaded *and* saved workspace media for the FastAPI job path.
+
+    The stdlib handler already did this through ``get_file_or_saved``; the
+    FastAPI port initially only looked at actual multipart uploads, so a
+    reference image that was uploaded earlier (``saved_media``) was silently
+    dropped and img2img failed with "至少需要一张参考图".
+    """
+    form = _FormShim(values, files)
+    resolved: dict[str, tuple[str, bytes]] = {}
+    for key in legacy.FILE_FIELDS:
+        item = legacy.get_file_or_saved(form, key, ws_id)
+        if item:
+            resolved[key] = item
+    return resolved
 
 
 async def _parse_multipart(request: Request) -> tuple[dict[str, str], dict[str, tuple[str, bytes]]]:
