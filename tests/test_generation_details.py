@@ -115,6 +115,43 @@ class PricingQuoteTests(unittest.TestCase):
                        has_input_video=False, tokens=1_000_000)
         self.assertEqual(q["unit_price"], 44.88)
 
+    def test_seedance_25_1080p_is_priced(self):
+        """2026-11-10 用户报「seedance 2.5 的 1080p 计算不了费用」。
+
+        根因：该族的 resolution_buckets 只列了 480p/720p，prices 里又没有 default，
+        于是 1080p 整档返回 amount=None。而 2.5 的样片模式成片**只能出 1080p**，
+        等于这一档的钱永远算不出来。
+        """
+        q = self.quote(model="doubao-seedance-2-5-260628", resolution="1080p",
+                       has_input_video=False, tokens=1_000_000)
+        self.assertEqual(q["unit_price"], 76.68, msg=q)
+        self.assertEqual(q["unit"], "CNY/百万token")
+        self.assertAlmostEqual(q["amount"], 76.68, places=4)
+        self.assertEqual(q["source"], "pricing_table")
+        self.assertEqual(q["tier"], "1080p")
+
+        q_in = self.quote(model="doubao-seedance-2-5-260628", resolution="1080p",
+                          has_input_video=True, tokens=1_000_000)
+        self.assertEqual(q_in["unit_price"], 46.00, msg=q_in)
+
+    def test_seedance_25_480p_720p_still_share_the_combined_bucket(self):
+        """1080p 的补丁不能改变 480p/720p 共用一个计费项的既有口径。"""
+        for res in ("480p", "720p"):
+            with self.subTest(res=res):
+                q = self.quote(model="doubao-seedance-2-5-260628", resolution=res,
+                               has_input_video=False, tokens=1_000_000)
+                self.assertEqual(q["unit_price"], 67.17, msg=q)
+                self.assertEqual(q["tier"], "480p/720p")
+
+    def test_missing_resolution_tier_is_flagged_not_silent(self):
+        """族认得出来、但该分辨率没有档位时，必须留下可查的痕迹（过去是完全静默的）。"""
+        self.mod._UNPRICED_WARNED.clear()
+        q = self.quote(model="doubao-seedance-2-5-260628", resolution="8k",
+                       has_input_video=False, tokens=1_000_000)
+        self.assertIsNone(q["amount"])
+        self.assertEqual(q["source"], "unpriced_resolution")
+        self.assertIn(("seedance-2.5", "8k"), self.mod._UNPRICED_WARNED)
+
     def test_unknown_model_gets_no_amount(self):
         """认不出的模型绝不给一个看起来合理的数字。"""
         q = self.quote(model="some-unknown-model", resolution="720p", tokens=123456)
@@ -596,6 +633,15 @@ class BillingItemTests(unittest.TestCase):
         self.assertEqual(
             self.label("Seedance 2.5", "480p", has_input_video=True),
             "Doubao-Seedance-2.5在线推理480P/720P（有输入视频）")
+
+    def test_seedance_25_1080p_has_its_own_billing_item(self):
+        """2.5 的 1080p 成片是独立计费项，不能沿用 480P/720P 的名字（对账会错）。"""
+        self.assertEqual(
+            self.label("Seedance 2.5", "1080p", has_input_video=False),
+            "Doubao-Seedance-2.5在线推理1080P（无输入视频）")
+        self.assertEqual(
+            self.label("Seedance 2.5", "1080p", has_input_video=True),
+            "Doubao-Seedance-2.5在线推理1080P（有输入视频）")
 
     def test_seedance_20_resolution_tiers(self):
         self.assertEqual(self.label("Seedance 2.0", "1080p"),

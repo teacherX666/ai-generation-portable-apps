@@ -1717,8 +1717,22 @@ _DEFAULT_PRICING: dict[str, Any] = {
         {
             "id": "seedance-2.5", "label": "Seedance 2.5", "unit": "video",
             "match": ["doubao-seedance-2-5"],
-            "resolution_buckets": {"480p": "480p/720p", "720p": "480p/720p"},
-            "prices": {"480p/720p": {"no_input_video": 67.17, "input_video": 40.29}},
+            # ⚠️ 1080p 必须在这里有档位：2.5 的样片模式成片**只能出 1080p**。
+            # 2026-11-10 用户报「1080p 算不了费用」：那时 buckets 只有 480p/720p、
+            # prices 里又没有 default，于是 1080p 整档静默返回 amount=None（页面显示「—」）。
+            "resolution_buckets": {"480p": "480p/720p", "720p": "480p/720p", "1080p": "1080p"},
+            "prices": {
+                "480p/720p": {"no_input_video": 67.17, "input_video": 40.29},
+                # 1080p 单价推导（账单里还没有这一项 —— 成片是 2026-10 才上的功能，
+                # 现有消费明细导出只到 2026-09）：
+                #   实测 15 条 1080p 无输入视频任务：tokens/秒 = 48,668~49,106（均值 48,797，±0.5%）
+                #   → 5 秒 ≈ 243,985 tokens；
+                #   官方价（5 秒 16:9 无输入视频）≈ ¥18.71（2026-10-19 实跑约 18.9 元/条）
+                #   → 18.71 ÷ 0.243985 ≈ 76.7 元/百万 token；
+                #   有输入视频档按同族 480P/720P 的比值（40.29÷67.17=0.5998）折算 ≈ 46.0。
+                # 拿到包含 1080P 计费项的新账单后，应改用账单反推值覆盖这里。
+                "1080p": {"no_input_video": 76.68, "input_video": 46.00},
+            },
         },
         {
             "id": "seedance-2.0-fast", "label": "Seedance 2.0 fast", "unit": "video",
@@ -1866,6 +1880,25 @@ _APP_DEFAULT_FAMILIES = {
     "drama-pipeline": ("local-video",),   # 出片固定交本机 MiniMax H3，云费用 ¥0
 }
 
+#: 已经提醒过「某模型族缺某分辨率档位」的组合，避免每个请求刷屏日志
+_UNPRICED_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_unpriced_resolution(family_id: str, res_key: str) -> None:
+    """模型族认得出来、但该分辨率没有档位时提醒一次。
+
+    这是**静默算不出钱**的典型成因：2026-11-10 用户报「seedance 2.5 的 1080p 计算不了费用」，
+    根因就是该族的 `resolution_buckets` 只列了 480p/720p、`prices` 里又没有 `default`，
+    于是 1080p 整档返回 amount=None、页面只剩「—」，而日志里一个字都没有。
+    """
+    key = (family_id, res_key or "")
+    if key in _UNPRICED_WARNED:
+        return
+    _UNPRICED_WARNED.add(key)
+    print(f"  [pricing] ⚠️ 模型族 {family_id} 没有「{res_key or '(空)'}」档位 → "
+          f"这一档的金额会显示为「—」。请在该族的 resolution_buckets 与 prices 里补上。",
+          flush=True)
+
 
 def quote_generation(
     *,
@@ -1925,7 +1958,13 @@ def quote_generation(
         bucket = "default" if "default" in prices else None
     tier = prices.get(str(bucket)) if bucket is not None else None
     if not isinstance(tier, dict):
-        return {**blank, "label": label, "family_id": family_id, "unit": "CNY/百万token"}
+        # 认得出模型族、却取不到该分辨率的档位 → 这一档的金额整片显示「—」。
+        # 过去这里是**完全静默**的（2026-11-10 用户报 seedance 2.5 的 1080p 算不出费用
+        # 就是这么来的）→ 现在打一次日志，并把原因写进 source 供页面/导出区分。
+        _warn_unpriced_resolution(family_id, res_key)
+        return {**blank, "label": label, "family_id": family_id,
+                "unit": "CNY/百万token", "source": "unpriced_resolution",
+                "tier": res_key or "(空)"}
     field = "input_video" if has_input_video else "no_input_video"
     unit_price = tier.get(field)
     if not isinstance(unit_price, (int, float)):
@@ -1952,6 +1991,8 @@ _BILLING_SEEDANCE_BASE = {
 _BILLING_SEEDANCE_RES = {
     ("2.5", "480p"): "480P/720P",
     ("2.5", "720p"): "480P/720P",
+    # 2.5 的 1080p 成片（样片模式）是独立计费项，与 2.0 的 1080P 同名写法。
+    ("2.5", "1080p"): "1080P",
     ("2.0", "1080p"): "1080P",
     ("2.0", "4k"): "4k",
 }
